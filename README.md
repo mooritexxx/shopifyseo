@@ -4,7 +4,7 @@
 
 A self-hosted SEO platform for Shopify store operators. It pulls your catalog, Google Search Console, GA4, PageSpeed, and indexing data into a local SQLite database and provides AI-powered SEO recommendations, keyword clustering, and blog article generation — all running on your own machine with no data leaving your environment.
 
-![ShopifySEO demo](docs/demo.gif)
+![ShopifySEO demo](docs/demo2.gif)
 
 Setup takes about 15 minutes.
 

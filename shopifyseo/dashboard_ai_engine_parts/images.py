@@ -12,7 +12,7 @@ import urllib.request
 from typing import Callable
 
 from ..dashboard_http import HttpRequestError, request_json
-from .config import GEMINI_API_URL, OPENAI_API_URL
+from .config import DEFAULT_OPENROUTER_MODEL, GEMINI_API_URL, OPENAI_API_URL, OPENROUTER_API_URL
 from .providers import extract_content, extract_gemini_content
 from .settings import ai_settings
 from ..seo_slug import slugify_article_handle
@@ -107,6 +107,122 @@ def _gemini_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> 
     raise RuntimeError("Gemini response contained no inline image (check model supports image output)")
 
 
+def _decode_data_url_image(url: str) -> tuple[bytes, str]:
+    m = re.match(r"^data:([^;]+);base64,(.+)$", (url or "").strip(), re.DOTALL)
+    if not m:
+        raise RuntimeError("Image URL was not a base64 data: URL")
+    mime = m.group(1).strip() or "image/png"
+    raw = base64.b64decode(m.group(2))
+    return raw, mime
+
+
+def _extract_openrouter_generated_image(response: dict) -> tuple[bytes, str]:
+    choices = response.get("choices") or []
+    if not choices:
+        raise RuntimeError("OpenRouter image response missing choices")
+    msg = (choices[0].get("message") or {})
+    for img in msg.get("images") or []:
+        if not isinstance(img, dict):
+            continue
+        url_obj = img.get("image_url") or img.get("imageUrl")
+        if isinstance(url_obj, dict):
+            url = (url_obj.get("url") or "").strip()
+        elif isinstance(url_obj, str):
+            url = url_obj.strip()
+        else:
+            url = ""
+        if url.startswith("data:"):
+            return _decode_data_url_image(url)
+    raise RuntimeError("OpenRouter response contained no inline image (check model supports image output via OpenRouter)")
+
+
+def _openrouter_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> tuple[bytes, str]:
+    """Image generation via OpenRouter chat completions + modalities (see OpenRouter image generation docs)."""
+    if not (api_key or "").strip():
+        raise RuntimeError("OpenRouter API key is missing")
+    m = (model or "").strip()
+    if not m:
+        raise RuntimeError("OpenRouter image model is empty")
+    headers = {"Authorization": f"Bearer {api_key.strip()}"}
+    last_err: Exception | None = None
+    for modalities in (["image", "text"], ["image"]):
+        try:
+            response = request_json(
+                OPENROUTER_API_URL,
+                method="POST",
+                headers=headers,
+                payload={
+                    "model": m,
+                    "messages": [{"role": "user", "content": (prompt or "").strip()}],
+                    "modalities": modalities,
+                },
+                timeout=timeout,
+            )
+            return _extract_openrouter_generated_image(response)
+        except (HttpRequestError, RuntimeError) as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"OpenRouter image generation failed: {last_err}") from last_err
+
+
+def _openrouter_caption_image_alt(
+    api_key: str,
+    image_bytes: bytes,
+    mime: str,
+    timeout: int,
+    *,
+    model: str,
+    instruction: str | None = None,
+    alt_max_len: int = 125,
+) -> str | None:
+    if not (api_key or "").strip():
+        return None
+    m = (mime or "image/png").strip() or "image/png"
+    model_id = (model or "").strip() or DEFAULT_OPENROUTER_MODEL
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    data_url = f"data:{m};base64,{b64}"
+    text_part = (instruction or "").strip() or _ALT_CAPTION_INSTRUCTION
+    last_err: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(1.5 * attempt)
+        try:
+            response = request_json(
+                OPENROUTER_API_URL,
+                method="POST",
+                headers={"Authorization": f"Bearer {api_key.strip()}"},
+                payload={
+                    "model": model_id,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": text_part},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        }
+                    ],
+                    "max_tokens": 512 if alt_max_len > 200 else 256,
+                    "temperature": 0.3,
+                },
+                timeout=timeout,
+            )
+            text = extract_content(response)
+        except HttpRequestError as exc:
+            last_err = exc
+            logger.warning("OpenRouter vision caption attempt %d failed: %s", attempt + 1, exc)
+            continue
+        except RuntimeError as exc:
+            last_err = exc
+            logger.warning("OpenRouter vision caption extraction attempt %d failed: %s", attempt + 1, exc)
+            continue
+        out = _sanitize_image_alt(text, max_len=alt_max_len)
+        if out:
+            return out
+    logger.warning("OpenRouter vision caption failed after 3 attempts: %s", last_err)
+    return None
+
+
 def _generate_article_image_bytes(settings: dict, *, provider: str, model: str, prompt: str) -> tuple[bytes, str]:
     prov = (provider or "").strip().lower()
     timeout = int(settings["timeout"])
@@ -114,6 +230,8 @@ def _generate_article_image_bytes(settings: dict, *, provider: str, model: str, 
         return _openai_image_bytes(settings["openai_api_key"], model, prompt, timeout)
     if prov == "gemini":
         return _gemini_image_bytes(settings["gemini_api_key"], model, prompt, timeout)
+    if prov == "openrouter":
+        return _openrouter_image_bytes(settings["openrouter_api_key"], model, prompt, timeout)
     raise RuntimeError(f"Unsupported image provider: {provider}")
 
 
@@ -676,7 +794,7 @@ def _vision_alt_for_article_image(
     model = (settings.get("vision_model") or "").strip()
     timeout = int(settings.get("timeout") or 90)
 
-    if prov not in ("gemini", "openai"):
+    if prov not in ("gemini", "openai", "openrouter"):
         return None
 
     instr = _build_article_image_vision_instruction(
@@ -696,6 +814,13 @@ def _vision_alt_for_article_image(
             if not key:
                 return None
             return _openai_caption_image_alt(key, image_bytes, mime, timeout, model=model, instruction=instr, alt_max_len=125)
+        if prov == "openrouter":
+            key = (settings.get("openrouter_api_key") or "").strip()
+            if not key:
+                return None
+            return _openrouter_caption_image_alt(
+                key, image_bytes, mime, timeout, model=model, instruction=instr, alt_max_len=125
+            )
     except Exception:
         logger.debug("Vision alt for article image failed", exc_info=True)
     return None
@@ -766,6 +891,13 @@ def vision_suggest_catalog_image_alt(
         if not key:
             return None
         return _openai_caption_image_alt(
+            key, image_bytes, mime, to, model=model, instruction=instr, alt_max_len=512
+        )
+    if prov == "openrouter":
+        key = (settings.get("openrouter_api_key") or "").strip()
+        if not key:
+            return None
+        return _openrouter_caption_image_alt(
             key, image_bytes, mime, to, model=model, instruction=instr, alt_max_len=512
         )
     return None
@@ -876,15 +1008,18 @@ def try_prepare_article_images_bundle(
     if not model_raw:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
         return None, "", [], ["Skipping images: set Image generation model in Settings."]
-    if prov not in {"openai", "gemini"}:
+    if prov not in {"openai", "gemini", "openrouter"}:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
-        return None, "", [], [f"Skipping images: provider {prov!r} is not supported yet (use OpenAI or Gemini)."]
+        return None, "", [], [f"Skipping images: provider {prov!r} is not supported yet (use OpenAI, Gemini, or OpenRouter)."]
     if prov == "openai" and not settings["openai_api_key"]:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
         return None, "", [], ["Skipping images: OpenAI API key is missing in Settings."]
     if prov == "gemini" and not settings["gemini_api_key"]:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
         return None, "", [], ["Skipping images: Gemini API key is missing in Settings."]
+    if prov == "openrouter" and not settings["openrouter_api_key"]:
+        emit("No images — WebP encoding not needed.", "encode", "skipped")
+        return None, "", [], ["Skipping images: OpenRouter API key is missing in Settings."]
 
     headline = (title or "").strip() or "Vape blog article"
     seed = (topic or "").strip() or headline
@@ -1083,12 +1218,14 @@ def test_image_model(conn: sqlite3.Connection, settings_override: dict[str, str]
         raise RuntimeError("Set Image generation provider in Settings.")
     if not model_raw:
         raise RuntimeError("Set Image generation model in Settings.")
-    if prov not in {"openai", "gemini"}:
-        raise RuntimeError(f"Image test supports OpenAI and Gemini only (got {prov!r}).")
+    if prov not in {"openai", "gemini", "openrouter"}:
+        raise RuntimeError(f"Image test supports OpenAI, Gemini, and OpenRouter only (got {prov!r}).")
     if prov == "openai" and not (settings["openai_api_key"] or "").strip():
         raise RuntimeError("OpenAI API key is missing in Settings.")
     if prov == "gemini" and not (settings["gemini_api_key"] or "").strip():
         raise RuntimeError("Gemini API key is missing in Settings.")
+    if prov == "openrouter" and not (settings["openrouter_api_key"] or "").strip():
+        raise RuntimeError("OpenRouter API key is missing in Settings.")
 
     raw_bytes, mime = _generate_article_image_bytes(
         settings,
@@ -1120,17 +1257,29 @@ def test_vision_model(conn: sqlite3.Connection, settings_override: dict[str, str
         raise RuntimeError("Vision provider could not be resolved. Set Generation provider or Vision override in Settings.")
     if not model_raw:
         raise RuntimeError("Vision model could not be resolved. Set Vision model or Generation model in Settings.")
-    if prov not in {"openai", "gemini"}:
-        raise RuntimeError(f"Vision test supports OpenAI and Gemini only (got {prov!r}).")
+    if prov not in {"openai", "gemini", "openrouter"}:
+        raise RuntimeError(f"Vision test supports OpenAI, Gemini, and OpenRouter only (got {prov!r}).")
     if prov == "openai" and not (settings.get("openai_api_key") or "").strip():
         raise RuntimeError("OpenAI API key is missing in Settings.")
     if prov == "gemini" and not (settings.get("gemini_api_key") or "").strip():
         raise RuntimeError("Gemini API key is missing in Settings.")
+    if prov == "openrouter" and not (settings.get("openrouter_api_key") or "").strip():
+        raise RuntimeError("OpenRouter API key is missing in Settings.")
 
     caption: str | None = None
     if prov == "gemini":
         caption = _gemini_caption_image_alt(
             (settings.get("gemini_api_key") or "").strip(),
+            _VISION_TEST_IMAGE_PNG,
+            "image/png",
+            timeout,
+            model=model_raw,
+            instruction=_VISION_MODEL_TEST_INSTRUCTION,
+            alt_max_len=200,
+        )
+    elif prov == "openrouter":
+        caption = _openrouter_caption_image_alt(
+            (settings.get("openrouter_api_key") or "").strip(),
             _VISION_TEST_IMAGE_PNG,
             "image/png",
             timeout,

@@ -16,7 +16,6 @@ import {
   fingerprintAiReview,
   fingerprintAiSidekick,
   fingerprintAiVision,
-  fingerprintDataforseo,
   fingerprintGoogleAds,
   fingerprintShopify,
   loadConnectionStore,
@@ -68,12 +67,7 @@ export function SettingsPage() {
   });
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testTarget, setTestTarget] = useState<"generation" | "review" | "sidekick" | "image" | "vision">("generation");
-  const [geminiModels, setGeminiModels] = useState<string[]>([]);
-  const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const [openRouterModels, setOpenRouterModels] = useState<string[]>([]);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [dfsStatus, setDfsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
-  const [dfsDetail, setDfsDetail] = useState("");
   const [googleAdsStatus, setGoogleAdsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
   const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
@@ -98,9 +92,23 @@ export function SettingsPage() {
   const [imageTestElapsedMs, setImageTestElapsedMs] = useState(0);
 
   useEffect(() => {
-    if (query.data) {
-      setValues(query.data.values);
-    }
+    if (!query.data) return;
+    const raw = query.data.values;
+    const next = { ...raw } as Record<string, string>;
+    const coerceProvider = (key: string, allowEmpty: boolean) => {
+      const v = (next[key] ?? "").trim();
+      if (allowEmpty && v === "") return;
+      if (v && v.toLowerCase() !== "openrouter") next[key] = "openrouter";
+    };
+    coerceProvider("ai_generation_provider", false);
+    if (!(next.ai_generation_provider || "").trim()) next.ai_generation_provider = "openrouter";
+    coerceProvider("ai_sidekick_provider", true);
+    coerceProvider("ai_review_provider", false);
+    if (!(next.ai_review_provider || "").trim()) next.ai_review_provider = "openrouter";
+    coerceProvider("ai_image_provider", false);
+    if (!(next.ai_image_provider || "").trim()) next.ai_image_provider = "openrouter";
+    coerceProvider("ai_vision_provider", true);
+    setValues(next);
   }, [query.data]);
 
   useEffect(() => {
@@ -208,34 +216,6 @@ export function SettingsPage() {
     };
   }, [testModalOpen, testTarget, imageTestMutation.isPending]);
 
-  async function validateDataforseo() {
-    setDfsStatus("checking");
-    setDfsDetail("");
-    try {
-      const res = await fetch("/api/keywords/target/validate-dataforseo", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dataforseo_api_login: valuesRef.current.dataforseo_api_login || "",
-          dataforseo_api_password: valuesRef.current.dataforseo_api_password || ""
-        })
-      });
-      const json = (await res.json()) as { ok: boolean; detail: string };
-      setDfsStatus(json.ok ? "ok" : "error");
-      setDfsDetail(json.detail || "");
-      if (json.ok) {
-        const fp = fingerprintDataforseo(valuesRef.current);
-        setConnectionStore((prev) => ({
-          ...prev,
-          dataforseo: { status: "live", fingerprint: fp, validatedAt: new Date().toISOString() }
-        }));
-      }
-    } catch {
-      setDfsStatus("error");
-      setDfsDetail("Network error — could not reach the server.");
-    }
-  }
-
   async function validateGoogleAds() {
     setGoogleAdsStatus("checking");
     setGoogleAdsDetail("");
@@ -323,49 +303,13 @@ export function SettingsPage() {
     }
   }
 
-  const ollamaModelsMutation = useMutation({
-    mutationFn: (payload: { ollama_base_url: string; ollama_api_key: string }) =>
-      postJson("/api/settings/ollama-models", modelsSchema, payload),
-    onSuccess: (result) => setOllamaModels(result.models),
-    onError: () => setOllamaModels([])
-  });
-  const anthropicModelsMutation = useMutation({
-    mutationFn: (payload: { anthropic_api_key: string }) =>
-      postJson("/api/settings/anthropic-models", modelsSchema, payload),
-    onSuccess: (result) => setAnthropicModels(result.models),
-    onError: () => setAnthropicModels([])
-  });
-  const geminiModelsMutation = useMutation({
-    mutationFn: (payload: { gemini_api_key: string }) =>
-      postJson("/api/settings/gemini-models", modelsSchema, payload),
-    onSuccess: (result) => setGeminiModels(result.models),
-    onError: () => setGeminiModels([])
-  });
   const openRouterModelsMutation = useMutation({
     mutationFn: (payload: { openrouter_api_key: string }) =>
       postJson("/api/settings/openrouter-models", modelsSchema, payload),
     onSuccess: (result) => setOpenRouterModels(result.models),
     onError: () => setOpenRouterModels([])
   });
-  const ollamaBaseUrl = values.ollama_base_url || "http://localhost:11434";
-  const ollamaApiKey = values.ollama_api_key || "";
-  const geminiApiKey = values.gemini_api_key || "";
-  const anthropicApiKey = values.anthropic_api_key || "";
   const openrouterApiKey = values.openrouter_api_key || "";
-
-  useEffect(() => {
-    if (!query.data) return;
-    geminiModelsMutation.mutate({
-      gemini_api_key: geminiApiKey
-    });
-  }, [query.data, geminiApiKey]);
-
-  useEffect(() => {
-    if (!query.data) return;
-    anthropicModelsMutation.mutate({
-      anthropic_api_key: anthropicApiKey
-    });
-  }, [query.data, anthropicApiKey]);
 
   useEffect(() => {
     if (!query.data) return;
@@ -374,21 +318,13 @@ export function SettingsPage() {
     });
   }, [query.data, openrouterApiKey]);
 
-  useEffect(() => {
-    if (!query.data) return;
-    ollamaModelsMutation.mutate({
-      ollama_base_url: ollamaBaseUrl,
-      ollama_api_key: ollamaApiKey
-    });
-  }, [query.data, ollamaBaseUrl, ollamaApiKey]);
-
   if (query.isLoading) return <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">Loading settings…</div>;
   if (query.error || !query.data) return <div className="rounded-[30px] border border-[#ffd2c5] bg-[#fff4ef] p-8 text-[#8f3e20] shadow-panel">{(query.error as Error)?.message || "Could not load settings."}</div>;
 
-  const generationProvider = values.ai_generation_provider || "openai";
-  const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openai";
-  const reviewProvider = values.ai_review_provider || "openai";
-  const imageProvider = values.ai_image_provider || "openai";
+  const generationProvider = values.ai_generation_provider || "openrouter";
+  const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openrouter";
+  const reviewProvider = values.ai_review_provider || "openrouter";
+  const imageProvider = values.ai_image_provider || "openrouter";
   const activeTabConfig = settingsTabs.find((tab) => tab.id === activeTab) ?? settingsTabs[0];
 
   function openTestModal(target: "generation" | "review" | "sidekick") {
@@ -461,17 +397,11 @@ export function SettingsPage() {
     values,
     setValues,
     query: query.data,
-    ollamaModels,
-    geminiModels,
-    anthropicModels,
     openRouterModels,
     openTestModal,
     openImageTestModal,
     openVisionTestModal,
     aiTestBusy,
-    dfsStatus,
-    dfsDetail,
-    validateDataforseo,
     googleAdsStatus,
     googleAdsDetail,
     validateGoogleAds,
@@ -558,7 +488,7 @@ export function SettingsPage() {
           testTarget === "image"
             ? "Generates a small sample image with your selected provider and model. Nothing is saved to Shopify."
             : testTarget === "vision"
-              ? "Sends a tiny test image to your Vision provider and model (OpenAI or Gemini). Nothing is saved to Shopify."
+              ? "Sends a tiny test image to your Vision provider and model (including OpenRouter-routed multimodal models). Nothing is saved to Shopify."
               : "Runs a targeted AI provider and model connection test for the selected settings block."
         }
       >

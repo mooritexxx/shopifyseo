@@ -737,10 +737,10 @@ def suggest_catalog_image_alt_vision(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         settings = ai_settings(conn)
         prov = (settings.get("vision_provider") or "").strip().lower()
-        if prov not in {"openai", "gemini"}:
+        if prov not in {"openai", "gemini", "openrouter"}:
             return {
                 "ok": False,
-                "message": "Vision alt suggestions require Vision provider set to OpenAI or Gemini in Settings → AI models.",
+                "message": "Vision alt suggestions require Vision provider set to OpenAI, Gemini, or OpenRouter in Settings → AI models.",
             }
     finally:
         conn.close()

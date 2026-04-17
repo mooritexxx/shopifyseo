@@ -19,7 +19,6 @@ import {
   fingerprintAiReview,
   fingerprintAiSidekick,
   fingerprintAiVision,
-  fingerprintDataforseo,
   fingerprintGoogleAds,
   fingerprintShopify,
   type ConnectionStatusStore
@@ -32,7 +31,7 @@ export const settingsTabs = [
   {
     id: "integrations",
     label: "Integrations",
-    description: "Provider keys, DataForSEO, and connections that power AI and keyword research."
+    description: "OpenRouter API key for all AI features (routing to models you enable on openrouter.ai)."
   },
   {
     id: "ai-models",
@@ -53,14 +52,10 @@ export const settingsTabs = [
 
 export type SettingsTabId = (typeof settingsTabs)[number]["id"];
 
-export const providerOptions = ["openai", "gemini", "anthropic", "openrouter", "ollama"] as const;
+export const providerOptions = ["openrouter"] as const;
 
 export const staticModelOptionsByProvider: Record<string, string[]> = {
-  openai: ["gpt-5-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-4.1-mini"],
-  gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-  anthropic: ["claude-opus-4-6", "claude-3-7-sonnet-latest", "claude-sonnet-4-20250514", "claude-3-5-sonnet-latest"],
-  openrouter: ["z-ai/glm-4.5-air:free"],
-  ollama: ["kimi-k2.5:cloud", "llama3.1", "llama3.1:8b", "qwen2.5", "qwen2.5:14b", "mistral", "deepseek-r1:8b"]
+  openrouter: ["z-ai/glm-4.5-air:free"]
 };
 
 /** Mirrors `shopifyseo/dashboard_ai_engine_parts/config.py` (DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES). */
@@ -96,17 +91,11 @@ export type RenderSettingsTabSectionsProps = {
   values: Record<string, string>;
   setValues: Dispatch<SetStateAction<Record<string, string>>>;
   query: SettingsPayload;
-  ollamaModels: string[];
-  geminiModels: string[];
-  anthropicModels: string[];
   openRouterModels: string[];
   openTestModal: (target: "generation" | "review" | "sidekick") => void;
   openImageTestModal: () => void;
   openVisionTestModal: () => void;
   aiTestBusy: boolean;
-  dfsStatus: "idle" | "checking" | "ok" | "error";
-  dfsDetail: string;
-  validateDataforseo: () => void | Promise<void>;
   googleAdsStatus: "idle" | "checking" | "ok" | "error";
   googleAdsDetail: string;
   validateGoogleAds: () => void | Promise<void>;
@@ -128,17 +117,11 @@ export function renderSettingsTabSections({
   values,
   setValues,
   query,
-  ollamaModels,
-  geminiModels,
-  anthropicModels,
   openRouterModels,
   openTestModal,
   openImageTestModal,
   openVisionTestModal,
   aiTestBusy,
-  dfsStatus,
-  dfsDetail,
-  validateDataforseo,
   googleAdsStatus,
   googleAdsDetail,
   validateGoogleAds,
@@ -157,15 +140,9 @@ export function renderSettingsTabSections({
   const tabSections = {
     integrations: [
       {
-        title: "Provider Credentials",
-        description: "API keys and base URL for each vendor. Only keys for providers you use need to be set.",
-        fields: ["openai_api_key", "gemini_api_key", "anthropic_api_key", "openrouter_api_key", "ollama_api_key", "ollama_base_url"] as const
-      },
-      {
-        title: "DataForSEO",
-        description:
-          "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
-        fields: ["dataforseo_api_login", "dataforseo_api_password"] as const
+        title: "OpenRouter",
+        description: "Single API key; select models per task on the AI Models tab.",
+        fields: ["openrouter_api_key"] as const
       }
     ],
     "ai-models": [
@@ -237,15 +214,12 @@ export function renderSettingsTabSections({
     ]
   } as const;
 
-  const generationProvider = values.ai_generation_provider || "openai";
-  const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openai";
-  const reviewProvider = values.ai_review_provider || "openai";
-  const imageProvider = values.ai_image_provider || "openai";
-  const visionProvider = values.ai_vision_provider || generationProvider || "openai";
+  const generationProvider = values.ai_generation_provider || "openrouter";
+  const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openrouter";
+  const reviewProvider = values.ai_review_provider || "openrouter";
+  const imageProvider = values.ai_image_provider || "openrouter";
+  const visionProvider = values.ai_vision_provider || generationProvider || "openrouter";
 
-  const dfsFp = fingerprintDataforseo(values);
-  const dfsLive =
-    connectionStore.dataforseo?.status === "live" && connectionStore.dataforseo.fingerprint === dfsFp;
   const googleAdsFp = fingerprintGoogleAds(values);
   const googleAdsLive =
     connectionStore.googleAds?.status === "live" && connectionStore.googleAds.fingerprint === googleAdsFp;
@@ -253,25 +227,9 @@ export function renderSettingsTabSections({
   const shopifyLive =
     connectionStore.shopify?.status === "live" && connectionStore.shopify.fingerprint === shopifyFp;
 
-  function modelOptionsFor(provider: string, currentValue: string) {
+  function modelOptionsFor(_provider: string, currentValue: string) {
     const base =
-      provider === "ollama"
-        ? ollamaModels.length
-          ? ollamaModels
-          : staticModelOptionsByProvider.ollama
-        : provider === "gemini"
-          ? geminiModels.length
-            ? geminiModels
-            : staticModelOptionsByProvider.gemini
-          : provider === "anthropic"
-            ? anthropicModels.length
-              ? anthropicModels
-              : staticModelOptionsByProvider.anthropic
-            : provider === "openrouter"
-              ? openRouterModels.length
-                ? openRouterModels
-                : staticModelOptionsByProvider.openrouter
-              : staticModelOptionsByProvider[provider] || [];
+      openRouterModels.length > 0 ? openRouterModels : staticModelOptionsByProvider.openrouter || [];
     const sortedBase = sortModelOptions(base);
     if (currentValue && !sortedBase.includes(currentValue)) {
       return sortModelOptions([currentValue, ...sortedBase]);
@@ -288,7 +246,7 @@ export function renderSettingsTabSections({
         </div>
         {(() => {
           const t = section.title;
-          if (t === "Provider Credentials") {
+          if (t === "OpenRouter") {
             return (
               <div className="flex flex-wrap items-center justify-end gap-3">
                 {query.ai_configured ? (
@@ -395,23 +353,6 @@ export function renderSettingsTabSections({
                 )}
                 <Button variant="secondary" onClick={() => openVisionTestModal()} disabled={aiTestBusy}>
                   Test vision
-                </Button>
-              </div>
-            );
-          }
-          if (t === "DataForSEO") {
-            const hasCreds = !!(values.dataforseo_api_login?.trim() && values.dataforseo_api_password?.trim());
-            return (
-              <div className="flex flex-wrap items-center justify-end gap-3">
-                {!hasCreds ? (
-                  <SettingsConnectionBadge label="Not configured" tone="warning" />
-                ) : dfsLive ? (
-                  <SettingsConnectionBadge label="Live" tone="success" />
-                ) : (
-                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
-                )}
-                <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
-                  {dfsStatus === "checking" ? "Checking…" : "Validate access"}
                 </Button>
               </div>
             );
@@ -575,13 +516,6 @@ export function renderSettingsTabSections({
           {ga4CacheDetail}
         </div>
       ) : null}
-      {section.title === "DataForSEO" && dfsStatus !== "idle" && dfsStatus !== "checking" ? (
-        <div
-          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${dfsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
-        >
-          {dfsDetail}
-        </div>
-      ) : null}
       {section.title === "Google Ads" && googleAdsStatus !== "idle" && googleAdsStatus !== "checking" ? (
         <div
           className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${googleAdsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
@@ -722,14 +656,14 @@ export function renderSettingsTabSections({
               <Select
                 value={
                   key === "ai_sidekick_provider"
-                    ? values.ai_sidekick_provider || values.ai_generation_provider || "openai"
+                    ? values.ai_sidekick_provider || values.ai_generation_provider || "openrouter"
                     : key === "ai_image_provider"
-                      ? values.ai_image_provider || "openai"
+                      ? values.ai_image_provider || "openrouter"
                       : key === "ai_vision_provider"
                         ? (values.ai_vision_provider ?? "") === ""
                           ? "__inherit__"
-                          : values.ai_vision_provider || values.ai_generation_provider || "openai"
-                        : values[key] || "openai"
+                          : values.ai_vision_provider || values.ai_generation_provider || "openrouter"
+                        : values[key] || "openrouter"
                 }
                 onValueChange={(nextProvider) =>
                   setValues((current) => {
@@ -758,7 +692,7 @@ export function renderSettingsTabSections({
                       };
                     }
                     if (key === "ai_vision_provider") {
-                      const genProv = current.ai_generation_provider || "openai";
+                      const genProv = current.ai_generation_provider || "openrouter";
                       const effectiveProvider = nextProvider === "__inherit__" ? "" : nextProvider;
                       if (!effectiveProvider.trim()) {
                         return {
@@ -826,7 +760,7 @@ export function renderSettingsTabSections({
                   setValues((current) => ({
                     ...current,
                     ai_sidekick_provider:
-                      current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openai",
+                      current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openrouter",
                     ai_sidekick_model: next
                   }))
                 }

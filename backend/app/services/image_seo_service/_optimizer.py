@@ -245,7 +245,7 @@ def _draft_optimize_product_image_impl(
     if auto_vision:
         settings = ai_settings(conn)
         prov = (settings.get("vision_provider") or "").strip().lower()
-        if prov in {"openai", "gemini"}:
+        if prov in {"openai", "gemini", "openrouter"}:
             vision_out = vision_suggest_catalog_image_alt(
                 settings,
                 image_bytes=raw,
@@ -282,7 +282,7 @@ def _draft_optimize_product_image_impl(
                     "id": "alt",
                     "label": "AI alt text (vision)",
                     "status": "skipped",
-                    "detail": "Set Vision to OpenAI or Gemini in Settings to auto-generate alt.",
+                    "detail": "Set Vision to OpenAI, Gemini, or OpenRouter in Settings to auto-generate alt.",
                 }
             )
     else:

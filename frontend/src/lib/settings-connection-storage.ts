@@ -60,13 +60,13 @@ function allProviderKeys(values: Record<string, string>): Record<string, string>
 export function fingerprintAiGeneration(values: Record<string, string>): string {
   return stableFingerprint({
     ...allProviderKeys(values),
-    ai_generation_provider: (values.ai_generation_provider || "openai").trim().toLowerCase(),
+    ai_generation_provider: (values.ai_generation_provider || "openrouter").trim().toLowerCase(),
     ai_generation_model: (values.ai_generation_model || "").trim()
   });
 }
 
 export function fingerprintAiSidekick(values: Record<string, string>): string {
-  const gen = (values.ai_generation_provider || "openai").trim().toLowerCase();
+  const gen = (values.ai_generation_provider || "openrouter").trim().toLowerCase();
   const sp = (values.ai_sidekick_provider || "").trim().toLowerCase();
   const sidekick = sp || gen;
   return stableFingerprint({
@@ -80,7 +80,7 @@ export function fingerprintAiSidekick(values: Record<string, string>): string {
 export function fingerprintAiReview(values: Record<string, string>): string {
   return stableFingerprint({
     ...allProviderKeys(values),
-    ai_review_provider: (values.ai_review_provider || "openai").trim().toLowerCase(),
+    ai_review_provider: (values.ai_review_provider || "openrouter").trim().toLowerCase(),
     ai_review_model: (values.ai_review_model || "").trim()
   });
 }
@@ -88,13 +88,13 @@ export function fingerprintAiReview(values: Record<string, string>): string {
 export function fingerprintAiImage(values: Record<string, string>): string {
   return stableFingerprint({
     ...allProviderKeys(values),
-    ai_image_provider: (values.ai_image_provider || "openai").trim().toLowerCase(),
+    ai_image_provider: (values.ai_image_provider || "openrouter").trim().toLowerCase(),
     ai_image_model: (values.ai_image_model || "").trim()
   });
 }
 
 export function fingerprintAiVision(values: Record<string, string>): string {
-  const gen = (values.ai_generation_provider || "openai").trim().toLowerCase();
+  const gen = (values.ai_generation_provider || "openrouter").trim().toLowerCase();
   const vp = (values.ai_vision_provider || "").trim().toLowerCase();
   const vision = vp || gen;
   return stableFingerprint({

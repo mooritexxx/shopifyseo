@@ -31,6 +31,15 @@ function getSettingsTab(name: RegExp | string) {
   return within(tablist).getByRole("tab", { name });
 }
 
+function mockModelsPostJson() {
+  mockedPostJson.mockImplementation(async (path) => {
+    if (path === "/api/settings/openrouter-models") {
+      return { models: ["z-ai/glm-4.5-air:free", "openai/gpt-4.1-mini", "google/gemini-2.0-flash-001"] };
+    }
+    return { message: "Settings saved", result: undefined };
+  });
+}
+
 describe("SettingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -78,21 +87,7 @@ describe("SettingsPage", () => {
       ga4_api_activation_url: "",
       sync_scope_ready: DEFAULT_SYNC_SCOPE_READY
     });
-    mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash", "gemini-2.5-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6", "claude-sonnet-4-20250514"] };
-      }
-      if (path === "/api/settings/openrouter-models") {
-        return { models: ["z-ai/glm-4.5-air:free", "openai/gpt-4.1-mini"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
-      }
-      return { message: "Settings saved", result: undefined };
-    });
+    mockModelsPostJson();
 
     renderWithProviders(<SettingsPage />);
 
@@ -119,6 +114,7 @@ describe("SettingsPage", () => {
     expect(payload).toMatchObject({
       shopify_shop: "new-shop.myshopify.com",
       ai_timeout_seconds: "60",
+      ai_generation_provider: "openrouter",
       ai_generation_model: "gpt-5-mini",
       google_client_id: ""
     });
@@ -167,17 +163,8 @@ describe("SettingsPage", () => {
       sync_scope_ready: DEFAULT_SYNC_SCOPE_READY
     });
     mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash", "gemini-2.5-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6", "claude-sonnet-4-20250514"] };
-      }
       if (path === "/api/settings/openrouter-models") {
         return { models: ["z-ai/glm-4.5-air:free", "openai/gpt-4.1-mini"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
       }
       return { message: "AI connection successful", result: { ok: true } };
     });
@@ -197,9 +184,9 @@ describe("SettingsPage", () => {
         expect.anything(),
         expect.objectContaining({
           target: "generation",
-          ai_generation_provider: "openai",
+          ai_generation_provider: "openrouter",
           ai_generation_model: "gpt-5-mini",
-          ai_review_provider: "openai",
+          ai_review_provider: "openrouter",
           ai_review_model: "gpt-5.4"
         })
       );
@@ -220,7 +207,7 @@ describe("SettingsPage", () => {
         openai_api_key: "",
         gemini_api_key: "x",
         anthropic_api_key: "",
-        openrouter_api_key: "",
+        openrouter_api_key: "sk-or-test",
         ollama_api_key: "",
         ollama_base_url: "http://localhost:11434",
         ai_generation_provider: "openai",
@@ -249,17 +236,8 @@ describe("SettingsPage", () => {
       sync_scope_ready: DEFAULT_SYNC_SCOPE_READY
     });
     mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash", "gemini-3.1-flash-image-preview"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6"] };
-      }
       if (path === "/api/settings/openrouter-models") {
-        return { models: ["z-ai/glm-4.5-air:free"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
+        return { models: ["z-ai/glm-4.5-air:free", "google/gemini-2.5-flash-image"] };
       }
       if (path === "/api/settings/image-model-test") {
         return {
@@ -267,7 +245,12 @@ describe("SettingsPage", () => {
           result: {
             mime_type: "image/png",
             image_base64: "iVBORw0KGgo=",
-            _meta: { target: "image", provider: "gemini", model: "gemini-3.1-flash-image-preview", bytes: 10 }
+            _meta: {
+              target: "image",
+              provider: "openrouter",
+              model: "google/gemini-2.5-flash-image",
+              bytes: 10
+            }
           }
         };
       }
@@ -288,7 +271,7 @@ describe("SettingsPage", () => {
         "/api/settings/image-model-test",
         expect.anything(),
         expect.objectContaining({
-          ai_image_provider: "gemini",
+          ai_image_provider: "openrouter",
           ai_image_model: "gemini-3.1-flash-image-preview"
         })
       );
@@ -310,7 +293,7 @@ describe("SettingsPage", () => {
         openai_api_key: "sk-test",
         gemini_api_key: "",
         anthropic_api_key: "",
-        openrouter_api_key: "",
+        openrouter_api_key: "sk-or-test",
         ollama_api_key: "",
         ollama_base_url: "http://localhost:11434",
         ai_generation_provider: "openai",
@@ -339,17 +322,8 @@ describe("SettingsPage", () => {
       sync_scope_ready: DEFAULT_SYNC_SCOPE_READY
     });
     mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6"] };
-      }
       if (path === "/api/settings/openrouter-models") {
         return { models: ["z-ai/glm-4.5-air:free"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
       }
       if (path === "/api/settings/vision-model-test") {
         return {
@@ -357,7 +331,7 @@ describe("SettingsPage", () => {
           result: {
             ok: true,
             suggested_alt: "Solid blue",
-            _meta: { target: "vision", provider: "openai", model: "gpt-4.1-mini" }
+            _meta: { target: "vision", provider: "openrouter", model: "google/gemini-2.0-flash-001" }
           }
         };
       }
@@ -378,7 +352,7 @@ describe("SettingsPage", () => {
         "/api/settings/vision-model-test",
         expect.anything(),
         expect.objectContaining({
-          ai_generation_provider: "openai",
+          ai_generation_provider: "openrouter",
           ai_generation_model: "gpt-4.1-mini"
         })
       );
@@ -386,7 +360,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("Solid blue")).toBeInTheDocument();
   });
 
-  it("updates model dropdowns when providers change", async () => {
+  it("lists only OpenRouter as the generation provider", async () => {
     mockedGetJson.mockResolvedValue({
       values: {
         shopify_shop: "",
@@ -428,21 +402,7 @@ describe("SettingsPage", () => {
       ga4_api_activation_url: "",
       sync_scope_ready: DEFAULT_SYNC_SCOPE_READY
     });
-    mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash", "gemini-2.5-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6", "claude-sonnet-4-20250514"] };
-      }
-      if (path === "/api/settings/openrouter-models") {
-        return { models: ["z-ai/glm-4.5-air:free", "openai/gpt-4.1-mini"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["gemma3:4b", "llama3.2:latest"] };
-      }
-      return { message: "ok", result: undefined };
-    });
+    mockModelsPostJson();
 
     renderWithProviders(<SettingsPage />);
     const user = userEvent.setup();
@@ -453,20 +413,9 @@ describe("SettingsPage", () => {
     });
 
     const comboboxes = screen.getAllByRole("combobox");
-    fireEvent.click(comboboxes[0]);
-    fireEvent.click(await screen.findByRole("option", { name: "anthropic" }));
-
-    await waitFor(() => {
-      expect(screen.getAllByRole("combobox")[1]).toHaveTextContent("claude-opus-4-6");
-    });
-
-    fireEvent.click(screen.getAllByRole("combobox")[4]);
-    fireEvent.click(await screen.findByRole("option", { name: "ollama" }));
-
-    await waitFor(() => {
-      expect(screen.getAllByRole("combobox")[4]).toHaveTextContent("ollama");
-      expect(screen.getAllByRole("combobox")[5].textContent?.trim().length).toBeGreaterThan(0);
-    });
+    await user.click(comboboxes[0]);
+    expect(await screen.findByRole("option", { name: "openrouter" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "openai" })).toBeNull();
   });
 
   const defaultSettingsApiPayload = {
@@ -521,21 +470,7 @@ describe("SettingsPage", () => {
 
   it("opens Data sources tab when the URL contains ?tab=data-sources", async () => {
     mockedGetJson.mockResolvedValue(defaultSettingsApiPayload);
-    mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6"] };
-      }
-      if (path === "/api/settings/openrouter-models") {
-        return { models: ["z-ai/glm-4.5-air:free"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
-      }
-      return { message: "ok", result: undefined };
-    });
+    mockModelsPostJson();
 
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
@@ -553,21 +488,7 @@ describe("SettingsPage", () => {
 
   it("shows show/hide controls for secret fields on Data sources", async () => {
     mockedGetJson.mockResolvedValue(defaultSettingsApiPayload);
-    mockedPostJson.mockImplementation(async (path) => {
-      if (path === "/api/settings/gemini-models") {
-        return { models: ["gemini-2.0-flash"] };
-      }
-      if (path === "/api/settings/anthropic-models") {
-        return { models: ["claude-opus-4-6"] };
-      }
-      if (path === "/api/settings/openrouter-models") {
-        return { models: ["z-ai/glm-4.5-air:free"] };
-      }
-      if (path === "/api/settings/ollama-models") {
-        return { models: ["llama3.2:latest"] };
-      }
-      return { message: "ok", result: undefined };
-    });
+    mockModelsPostJson();
 
     renderWithProviders(<SettingsPage />);
     const user = userEvent.setup();

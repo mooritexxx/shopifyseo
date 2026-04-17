@@ -4,7 +4,6 @@ import queue
 import sqlite3
 import threading
 import time
-import traceback
 import uuid
 from collections import deque
 
@@ -131,7 +130,8 @@ AI_JOB_QUEUES: dict[str, queue.Queue] = {}  # job_id -> event queue for SSE cons
 
 def record_last_error(exc: Exception | str) -> None:
     if isinstance(exc, Exception):
-        SYNC_STATE["last_error"] = f"{exc}\n\n{traceback.format_exc()}"
+        SYNC_STATE["last_error"] = str(exc)
+        logger.error("Dashboard sync failed: %s", exc, exc_info=exc)
     else:
         SYNC_STATE["last_error"] = str(exc)
 

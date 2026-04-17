@@ -5,6 +5,8 @@ import {
   Box,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ClipboardCopy,
   Clock3,
   Database,
   FileText,
@@ -24,7 +26,7 @@ import {
 } from "lucide-react";
 import { SidekickProvider } from "../sidekick/sidekick-context";
 import { FlowButton } from "../ui/flow-button";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import type { PropsWithChildren } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -179,6 +181,28 @@ function syncSelectionSummary(selectedScopes: string[]) {
     .join(" · ");
 }
 
+/** Legacy payloads concatenated Python tracebacks after the user-facing line. */
+function splitSyncError(raw: string): { summary: string; details: string | null } {
+  const idx = raw.indexOf("\n\nTraceback");
+  if (idx !== -1) {
+    return { summary: raw.slice(0, idx).trim(), details: raw.slice(idx + 2).trim() };
+  }
+  return { summary: raw.trim(), details: null };
+}
+
+function syncErrorSuggestsSettings(err: string): boolean {
+  const e = err.toLowerCase();
+  return (
+    e.includes("search console") ||
+    e.includes("ga4") ||
+    e.includes("gsc") ||
+    e.includes("pagespeed") ||
+    e.includes("page speed") ||
+    e.includes("url inspection") ||
+    (e.includes("google") && (e.includes("oauth") || e.includes("not connected")))
+  );
+}
+
 const items: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/products", label: "Products", icon: Box },
@@ -225,6 +249,8 @@ export function AppShell({ children }: PropsWithChildren) {
   });
   const [message, setMessage] = useState<string | null>(null);
   const [syncSummaryDismissed, setSyncSummaryDismissed] = useState(false);
+  const [syncErrorTechnicalOpen, setSyncErrorTechnicalOpen] = useState(false);
+  const [syncErrorCopied, setSyncErrorCopied] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({
@@ -303,9 +329,12 @@ export function AppShell({ children }: PropsWithChildren) {
         : syncStatus?.stage === "error"
           ? "Sync failed"
           : "Ready to sync";
+  const rawSyncError = (syncStatus?.last_error || "").trim();
+  const syncErrorParts = useMemo(() => splitSyncError(rawSyncError), [rawSyncError]);
+  const showSyncErrorPanel = !syncRunning && Boolean(rawSyncError);
   const progressDetail = syncRunning
     ? syncStatus?.current || activeStageLabel
-    : message || syncStatus?.last_error || "Select services and run a sync.";
+    : message || (showSyncErrorPanel ? "" : "Select services and run a sync.");
   const metricChips = syncMetricChips(syncStatus);
   const shopifyEntityScope =
     syncStatus?.active_scope === "shopify" ||
@@ -360,6 +389,11 @@ export function AppShell({ children }: PropsWithChildren) {
     const intervalId = window.setInterval(() => setElapsedNow(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
   }, [syncRunning, syncStartedAt]);
+
+  useEffect(() => {
+    setSyncErrorTechnicalOpen(false);
+    setSyncErrorCopied(false);
+  }, [rawSyncError]);
 
   const prevSyncRunningRef = useRef(false);
   useEffect(() => {
@@ -518,9 +552,62 @@ export function AppShell({ children }: PropsWithChildren) {
                   ) : null}
                 </div>
                 {/* Hide while running: backend `current` is per-item noise ("Index status: product:…", GSC, PageSpeed). Progress bar + counts are enough. */}
-                {progressDetail &&
-                !syncRunning &&
-                !shopifyEntityScope ? (
+                {showSyncErrorPanel ? (
+                  <div className="mt-3 rounded-2xl border border-[#5c2833] bg-[#2a141a]/70 p-3">
+                    <p className="text-xs uppercase tracking-[0.18em] text-[#f0b7c1]">Sync failed</p>
+                    <p className="mt-2 break-words text-sm leading-snug text-white/85">{syncErrorParts.summary}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 border border-white/15 bg-white/10 px-3 text-xs text-white hover:bg-white/15"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(rawSyncError).then(() => {
+                            setSyncErrorCopied(true);
+                            window.setTimeout(() => setSyncErrorCopied(false), 2000);
+                          });
+                        }}
+                      >
+                        <ClipboardCopy size={14} className="mr-1.5 shrink-0 opacity-80" />
+                        {syncErrorCopied ? "Copied" : "Copy error"}
+                      </Button>
+                      {syncErrorSuggestsSettings(rawSyncError) ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="h-8 border border-white/15 bg-white/10 px-0 hover:bg-white/15"
+                          asChild
+                        >
+                          <NavLink to="/settings" className="inline-flex items-center px-3 text-xs text-white">
+                            <Settings2 size={14} className="mr-1.5 shrink-0 opacity-80" />
+                            Open Settings
+                          </NavLink>
+                        </Button>
+                      ) : null}
+                    </div>
+                    {syncErrorParts.details ? (
+                      <div className="mt-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-auto w-full justify-between rounded-xl px-2 py-2 text-left text-xs text-white/65 hover:bg-white/10 hover:text-white/85"
+                          onClick={() => setSyncErrorTechnicalOpen((o) => !o)}
+                        >
+                          <span className="uppercase tracking-[0.14em]">Technical details</span>
+                          <ChevronDown size={16} className={cn("shrink-0 transition-transform", syncErrorTechnicalOpen ? "rotate-180" : "")} />
+                        </Button>
+                        {syncErrorTechnicalOpen ? (
+                          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/35 p-2.5 font-mono text-[10px] leading-relaxed text-white/70">
+                            {syncErrorParts.details}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {progressDetail && !syncRunning && !shopifyEntityScope ? (
                   <p className="mt-3 text-sm text-white/75">{progressDetail}</p>
                 ) : null}
                 {pagespeedPhaseSummary ? <p className="mt-2 text-xs uppercase tracking-[0.14em] text-white/45">{pagespeedPhaseSummary}</p> : null}

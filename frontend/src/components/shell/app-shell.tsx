@@ -4,20 +4,21 @@ import {
   BookOpen,
   Box,
   Check,
-  CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardCopy,
   Clock3,
   Database,
   FileText,
   FlaskConical,
+  HelpCircle,
   Image as ImageIcon,
   Key,
   Layers3,
   LayoutDashboard,
   Lightbulb,
   LoaderCircle,
-  RefreshCw,
   Rss,
   Settings2,
   Sparkles,
@@ -35,15 +36,19 @@ import { z } from "zod";
 import { Button } from "../ui/button";
 import { Progress } from "../ui/progress";
 import { ToggleSwitch } from "../ui/toggle-switch";
-import { cn } from "../../lib/utils";
+import { readStoredOverviewGscPeriod } from "../../lib/gsc-period";
+import { cn, formatRelativeTimestamp } from "../../lib/utils";
 import { getJson, postJson } from "../../lib/api";
-import { settingsSchema, statusSchema } from "../../types/api";
+import { settingsSchema, statusSchema, summarySchema } from "../../types/api";
 
 type NavItem = {
   to: string;
   label: string;
   icon: LucideIcon;
   disabled?: boolean;
+  group: string;
+  badge?: string;
+  countKey?: "products" | "collections" | "pages" | "blogs";
 };
 
 type SyncStatusPayload = z.infer<typeof statusSchema>;
@@ -204,20 +209,33 @@ function syncErrorSuggestsSettings(err: string): boolean {
 }
 
 const items: NavItem[] = [
-  { to: "/", label: "Overview", icon: LayoutDashboard },
-  { to: "/products", label: "Products", icon: Box },
-  { to: "/collections", label: "Collections", icon: Layers3 },
-  { to: "/pages", label: "Pages", icon: BookOpen },
-  { to: "/blogs", label: "Blogs", icon: Rss },
-  { to: "/articles", label: "Articles", icon: FileText },
-  { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb },
-  { to: "/keywords", label: "Keyword Research", icon: Key },
-  { to: "/image-seo", label: "Image Optimization", icon: ImageIcon },
-  { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical },
-  { to: "/embeddings", label: "Embeddings", icon: Database },
-  { to: "/api-usage", label: "API Usage", icon: Activity },
-  { to: "/settings", label: "Settings", icon: Settings2 }
+  { to: "/", label: "Overview", icon: LayoutDashboard, group: "Workspace" },
+  { to: "/products", label: "Products", icon: Box, group: "Catalog", countKey: "products" },
+  { to: "/collections", label: "Collections", icon: Layers3, group: "Catalog", countKey: "collections" },
+  { to: "/pages", label: "Pages", icon: BookOpen, group: "Catalog", countKey: "pages" },
+  { to: "/blogs", label: "Blogs", icon: Rss, group: "Catalog", countKey: "blogs" },
+  { to: "/articles", label: "Articles", icon: FileText, group: "Content" },
+  { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Content", badge: "NEW" },
+  { to: "/keywords", label: "Keyword Research", icon: Key, group: "Research" },
+  { to: "/image-seo", label: "Image Optimization", icon: ImageIcon, group: "Research" },
+  { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical, group: "Research" },
+  { to: "/embeddings", label: "Embeddings", icon: Database, group: "System" },
+  { to: "/api-usage", label: "API Usage", icon: Activity, group: "System" },
+  { to: "/settings", label: "Settings", icon: Settings2, group: "System" }
 ];
+
+function lastSyncShort(lastAt: string | null | undefined) {
+  if (!lastAt?.trim()) return "Never synced";
+  const full = formatRelativeTimestamp(lastAt);
+  return full.split(" · ")[0] ?? full;
+}
+
+function shopInitials(name: string, shop: string) {
+  const base = (name || shop || "S").trim();
+  const parts = base.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase().slice(0, 2);
+  return base.slice(0, 2).toUpperCase() || "S";
+}
 
 export function AppShell({ children }: PropsWithChildren) {
   const [selectedScopes, setSelectedScopes] = useState<Array<(typeof syncServices)[number]["value"]>>(
@@ -252,11 +270,25 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncErrorTechnicalOpen, setSyncErrorTechnicalOpen] = useState(false);
   const [syncErrorCopied, setSyncErrorCopied] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("seo-sidebar-rail") === "1";
+  });
   const queryClient = useQueryClient();
+  const overviewGscPeriod = readStoredOverviewGscPeriod();
   const settingsQuery = useQuery({
     queryKey: ["settings"],
     queryFn: () => getJson("/api/settings", settingsSchema),
     staleTime: 30_000
+  });
+  const summaryQuery = useQuery({
+    queryKey: ["summary", overviewGscPeriod, "all"],
+    queryFn: () =>
+      getJson(
+        `/api/summary?gsc_period=${overviewGscPeriod}&gsc_segment=${encodeURIComponent("all")}`,
+        summarySchema
+      ),
+    staleTime: 60_000
   });
   const syncStatusQuery = useQuery({
     queryKey: ["sync-status"],
@@ -266,6 +298,21 @@ export function AppShell({ children }: PropsWithChildren) {
   });
   const syncStatus = syncStatusQuery.data;
   const syncScopeReady = settingsQuery.data?.sync_scope_ready;
+  const summary = summaryQuery.data;
+  const navGroups = useMemo(() => {
+    const m = new Map<string, NavItem[]>();
+    for (const it of items) {
+      if (!m.has(it.group)) m.set(it.group, []);
+      m.get(it.group)!.push(it);
+    }
+    return Array.from(m.entries());
+  }, []);
+  const shopBlock = useMemo(() => {
+    const v = settingsQuery.data?.values;
+    const name = (v?.store_name || "").trim() || "Shopify SEO";
+    const domain = (v?.store_custom_domain || v?.shopify_shop || "").trim() || "Local dashboard";
+    return { name, domain, initials: shopInitials(v?.store_name || "", v?.shopify_shop || "") };
+  }, [settingsQuery.data?.values]);
 
   function scopeServiceReady(value: (typeof syncServices)[number]["value"]): boolean {
     if (!syncScopeReady) return true;
@@ -357,6 +404,9 @@ export function AppShell({ children }: PropsWithChildren) {
     : null;
   const pagespeedErrorDetails = syncStatus?.pagespeed_error_details || [];
 
+  const hideTopSyncPanel = syncRunning;
+  const syncAccent = "oklch(0.62 0.18 262)";
+
   useEffect(() => {
     window.localStorage.setItem("seo-sync-services", JSON.stringify(selectedScopes));
   }, [selectedScopes]);
@@ -383,6 +433,28 @@ export function AppShell({ children }: PropsWithChildren) {
       setSyncSummaryDismissed(false);
     }
   }, [syncRunning]);
+
+  useEffect(() => {
+    window.localStorage.setItem("seo-sidebar-rail", sidebarCollapsed ? "1" : "0");
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const clearRail = () => {
+      if (mq.matches) setSidebarCollapsed(false);
+    };
+    clearRail();
+    mq.addEventListener("change", clearRail);
+    return () => mq.removeEventListener("change", clearRail);
+  }, []);
+
+  useEffect(() => {
+    if (syncRunning) setSidebarCollapsed(false);
+  }, [syncRunning]);
+
+  useEffect(() => {
+    if (sidebarCollapsed) setSettingsOpen(false);
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     if (!syncRunning || !syncStartedAt) return undefined;
@@ -415,86 +487,210 @@ export function AppShell({ children }: PropsWithChildren) {
   return (
     <SidekickProvider>
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)] text-ink">
-      <div className="mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-4 lg:px-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="w-full rounded-[30px] border border-white/70 bg-[#0d172b] p-5 text-white shadow-panel lg:z-10 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:self-start lg:sticky lg:top-4">
-          <div className="space-y-4">
-            <div id="app-sync-panel" className="scroll-mt-24 rounded-[24px] border border-white/10 bg-white/5 p-4">
-              <p className="text-xs uppercase tracking-[0.22em] text-white/55">Sync</p>
-              <div className="mt-3 grid gap-3">
-                <p className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">
-                  {syncSelectionSummary(selectedScopes)}
-                </p>
-                <div className="grid grid-cols-[1fr_auto] gap-2">
-                  <FlowButton
-                    onClick={() => startSyncMutation.mutate()}
-                    disabled={
-                      syncRunning ||
-                      startSyncMutation.isPending ||
-                      !selectedScopes.length ||
-                      selectedScopes.some((s) => !scopeServiceReady(s))
-                    }
-                    loading={syncRunning || startSyncMutation.isPending}
-                    text={syncStatus?.running ? "Syncing" : "Sync"}
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="border border-white/15 bg-white/10 px-4 text-white hover:bg-white/15"
-                    onClick={() => setSettingsOpen((open) => !open)}
-                    disabled={syncRunning}
-                  >
-                    <Settings2 size={16} />
-                  </Button>
-                </div>
-                {settingsOpen ? (
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-white/45">Sync settings</p>
-                    <div className="mt-3 grid gap-2">
-                      {syncServices.map((service) => {
-                        const checked = selectedScopes.includes(service.value);
-                        const canUse = scopeServiceReady(service.value);
-                        return (
-                          <Button
-                            key={service.value}
-                            type="button"
-                            variant="ghost"
-                            title={!canUse ? SYNC_SCOPE_READY_HELP[service.value] : undefined}
-                            className={cn(
-                              "flex h-auto items-center justify-between rounded-2xl border px-3 py-2 text-sm transition",
-                              checked ? "border-[#7ea2ff] bg-[#2147b8]/45 text-white hover:bg-[#2147b8]/50" : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
-                              syncRunning ? "cursor-not-allowed opacity-60" : "",
-                              !canUse ? "cursor-not-allowed opacity-45" : ""
-                            )}
-                            onClick={() => {
-                              if (syncRunning || !canUse) return;
-                              setSelectedScopes((current) =>
-                                checked ? current.filter((value) => value !== service.value) : [...current, service.value]
-                              );
-                            }}
-                            disabled={syncRunning || !canUse}
-                          >
-                            <span>{service.label}</span>
-                            <span className={cn("flex h-5 w-5 items-center justify-center rounded-full border", checked ? "border-[#9bd9ff] bg-white/15" : "border-white/20")}>
-                              {checked ? <Check size={12} /> : null}
-                            </span>
-                          </Button>
-                        );
-                      })}
-                      <ToggleSwitch
-                        id="seo-sync-force-refresh"
-                        className="mt-2"
-                        label="Force Refresh"
-                        checked={forceRefresh}
-                        onCheckedChange={setForceRefresh}
-                        disabled={syncRunning}
-                      />
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+      <div
+        className={cn(
+          "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-4 lg:px-6",
+          sidebarCollapsed ? "lg:grid-cols-[72px_minmax(0,1fr)]" : "lg:grid-cols-[260px_minmax(0,1fr)]"
+        )}
+      >
+        <aside
+          className={cn(
+            "flex w-full flex-col gap-3 rounded-[24px] border border-white/70 bg-[#0d172b] text-white shadow-[0_20px_60px_-30px_rgba(13,23,43,0.55)] transition-[padding,gap] duration-200 ease-out",
+            "max-lg:rounded-[30px] max-lg:p-5",
+            sidebarCollapsed ? "lg:gap-2 lg:p-2.5 lg:py-3" : "lg:p-4",
+            "lg:z-10 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:sticky lg:top-4 lg:overflow-x-hidden lg:overflow-y-hidden"
+          )}
+        >
+          {/* Shop header — V1 refined dark */}
+          <div
+            className={cn(
+              "flex shrink-0 items-center gap-2.5",
+              sidebarCollapsed ? "lg:flex-col lg:justify-center lg:gap-2" : "border-b border-white/[0.08] pb-3",
+              !sidebarCollapsed && "max-lg:border-b max-lg:pb-3"
+            )}
+          >
+            <div
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[10px] text-[15px] font-bold text-white shadow-lg"
+              style={{
+                background: `linear-gradient(135deg, ${syncAccent}, oklch(0.55 0.18 220))`,
+                boxShadow: `0 6px 18px -6px color-mix(in oklab, ${syncAccent} 55%, transparent)`
+              }}
+            >
+              {shopBlock.initials}
             </div>
+            {!sidebarCollapsed ? (
+              <>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-semibold leading-tight">{shopBlock.name}</div>
+                  <div className="truncate text-[11px] text-white/50">{shopBlock.domain}</div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="Narrow sidebar"
+                  aria-label="Narrow sidebar"
+                  onClick={() => setSidebarCollapsed(true)}
+                  className="hidden h-7 w-7 shrink-0 rounded-lg border-0 bg-white/[0.06] text-white/70 hover:bg-white/[0.1] hover:text-white lg:inline-flex"
+                >
+                  <ChevronLeft size={16} strokeWidth={2} />
+                </Button>
+              </>
+            ) : null}
+          </div>
 
-            {showSyncCard ? (
+          {sidebarCollapsed ? (
+            <button
+              type="button"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+              onClick={() => setSidebarCollapsed(false)}
+              className="hidden h-7 w-full shrink-0 items-center justify-center rounded-lg border-0 bg-white/[0.06] text-white/70 hover:bg-white/[0.1] hover:text-white lg:flex"
+            >
+              <ChevronRight size={14} strokeWidth={2} />
+            </button>
+          ) : null}
+
+          {!hideTopSyncPanel && !sidebarCollapsed ? (
+            <div id="app-sync-panel" className="scroll-mt-24 shrink-0 rounded-[14px] border border-white/[0.08] bg-white/[0.035] p-3">
+              <div className="mb-2.5 flex items-center gap-2">
+                <div className="h-2 w-2 shrink-0 rounded-full bg-emerald-400/90" />
+                <div className="flex-1 text-xs font-medium text-white/85">Ready to sync</div>
+                <span className="font-mono text-[10px] tabular-nums text-white/45">
+                  {lastSyncShort(summary?.last_dashboard_sync_at)}
+                </span>
+              </div>
+              <div className="mb-2.5 flex gap-1">
+                {syncServices.map((s) => (
+                  <div key={s.value} className="h-0.5 flex-1 rounded-sm bg-white/10" />
+                ))}
+              </div>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <FlowButton
+                  onClick={() => startSyncMutation.mutate()}
+                  disabled={
+                    syncRunning ||
+                    startSyncMutation.isPending ||
+                    !selectedScopes.length ||
+                    selectedScopes.some((s) => !scopeServiceReady(s))
+                  }
+                  loading={syncRunning || startSyncMutation.isPending}
+                  text={
+                    syncStatus?.running
+                      ? "Syncing"
+                      : `Run sync · ${selectedScopes.length} service${selectedScopes.length === 1 ? "" : "s"}`
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="border border-white/15 bg-white/10 px-3 text-white hover:bg-white/15"
+                  onClick={() => setSettingsOpen((open) => !open)}
+                  disabled={syncRunning}
+                  title="Sync services & options"
+                >
+                  <Settings2 size={16} />
+                </Button>
+              </div>
+              {settingsOpen ? (
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-xs uppercase tracking-[0.18em] text-white/45">Sync settings</p>
+                  <p className="mt-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/60">
+                    {syncSelectionSummary(selectedScopes)}
+                  </p>
+                  <div className="mt-3 grid gap-2">
+                    {syncServices.map((service) => {
+                      const checked = selectedScopes.includes(service.value);
+                      const canUse = scopeServiceReady(service.value);
+                      return (
+                        <Button
+                          key={service.value}
+                          type="button"
+                          variant="ghost"
+                          title={!canUse ? SYNC_SCOPE_READY_HELP[service.value] : undefined}
+                          className={cn(
+                            "flex h-auto items-center justify-between rounded-2xl border px-3 py-2 text-sm transition",
+                            checked
+                              ? "border-[oklch(0.62_0.18_262/0.55)] bg-[oklch(0.62_0.18_262/0.18)] text-white hover:bg-[oklch(0.62_0.18_262/0.22)]"
+                              : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
+                            syncRunning ? "cursor-not-allowed opacity-60" : "",
+                            !canUse ? "cursor-not-allowed opacity-45" : ""
+                          )}
+                          onClick={() => {
+                            if (syncRunning || !canUse) return;
+                            setSelectedScopes((current) =>
+                              checked ? current.filter((value) => value !== service.value) : [...current, service.value]
+                            );
+                          }}
+                          disabled={syncRunning || !canUse}
+                        >
+                          <span>{service.label}</span>
+                          <span
+                            className={cn(
+                              "flex h-5 w-5 items-center justify-center rounded-full border",
+                              checked ? "border-white/30 bg-white/15" : "border-white/20"
+                            )}
+                          >
+                            {checked ? <Check size={12} /> : null}
+                          </span>
+                        </Button>
+                      );
+                    })}
+                    <ToggleSwitch
+                      id="seo-sync-force-refresh"
+                      className="mt-2"
+                      label="Force Refresh"
+                      checked={forceRefresh}
+                      onCheckedChange={setForceRefresh}
+                      disabled={syncRunning}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {!hideTopSyncPanel && sidebarCollapsed ? (
+            <div className="relative hidden shrink-0 lg:block">
+              <Button
+                type="button"
+                variant="ghost"
+                title={
+                  hasSyncCard && !syncRunning
+                    ? "Expand sidebar to view sync status"
+                    : "Run sync (expand sidebar for options)"
+                }
+                aria-label="Run sync"
+                onClick={() => {
+                  if (hasSyncCard && !syncRunning) {
+                    setSidebarCollapsed(false);
+                    return;
+                  }
+                  startSyncMutation.mutate();
+                }}
+                disabled={
+                  startSyncMutation.isPending ||
+                  !selectedScopes.length ||
+                  selectedScopes.some((s) => !scopeServiceReady(s))
+                }
+                className={cn(
+                  "h-10 w-full rounded-xl border-0 text-white shadow-md",
+                  startSyncMutation.isPending ? "bg-white/10" : "bg-[oklch(0.62_0.18_262)] hover:opacity-95"
+                )}
+              >
+                {startSyncMutation.isPending ? (
+                  <LoaderCircle className="animate-spin" size={16} />
+                ) : (
+                  <Sparkles size={16} />
+                )}
+              </Button>
+              {hasSyncCard && !syncRunning ? (
+                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_0_2px_#0d172b]" />
+              ) : null}
+            </div>
+          ) : null}
+
+            {!sidebarCollapsed && showSyncCard ? (
               <div className="rounded-[24px] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.09)_0%,rgba(255,255,255,0.05)_100%)] p-4">
                 {syncStatus?.running ? (
                   <div className="mb-4 flex justify-center">
@@ -542,7 +738,7 @@ export function AppShell({ children }: PropsWithChildren) {
                   <Progress
                     value={syncPercent}
                     className="h-3 rounded-full bg-white/10"
-                    indicatorClassName="rounded-full bg-[linear-gradient(90deg,#4f8cff_0%,#66e6c3_100%)]"
+                    indicatorClassName="rounded-full bg-[linear-gradient(90deg,oklch(0.62_0.18_262)_0%,oklch(0.78_0.12_195)_100%)]"
                   />
                   {/* Only show progressCountLabel if it's not redundant with the detailed list below (for Shopify syncs) */}
                   {!shopifyEntityScope ? (
@@ -684,38 +880,150 @@ export function AppShell({ children }: PropsWithChildren) {
                 {syncStatus?.cancel_requested ? <p className="mt-3 text-xs uppercase tracking-[0.16em] text-[#ffcf9f]">Stopping sync...</p> : null}
               </div>
             ) : null}
+
+          <div className="mt-1 flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-[120px]">
+            <nav className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+              <div className={cn("space-y-1", sidebarCollapsed ? "lg:space-y-0" : "")}>
+                {navGroups.map(([group, groupItems], gi) => (
+                  <div key={group}>
+                    {!sidebarCollapsed ? (
+                      <div className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.22em] text-white/35">
+                        {group}
+                      </div>
+                    ) : (
+                      <div
+                        className={cn(
+                          "mx-1 my-2 hidden h-px bg-white/[0.08] lg:block",
+                          gi === 0 && "lg:hidden"
+                        )}
+                      />
+                    )}
+                    <div className="space-y-0.5">
+                      {groupItems.map((item) => {
+                        const Icon = item.icon;
+                        const count =
+                          item.countKey && summary?.counts ? summary.counts[item.countKey] : undefined;
+                        if (item.disabled) {
+                          return (
+                            <span
+                              key={item.to}
+                              className={cn(
+                                "flex items-center gap-2.5 rounded-[10px] py-2.5 text-sm text-white/45",
+                                sidebarCollapsed ? "justify-center px-0 lg:px-0" : "px-3"
+                              )}
+                            >
+                              <Icon size={16} />
+                              {!sidebarCollapsed ? item.label : null}
+                              {!sidebarCollapsed ? (
+                                <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]">
+                                  Later
+                                </span>
+                              ) : null}
+                            </span>
+                          );
+                        }
+                        return (
+                          <NavLink
+                            key={item.to}
+                            to={item.to}
+                            end={item.to === "/"}
+                            title={sidebarCollapsed ? item.label : undefined}
+                            className={({ isActive }) =>
+                              cn(
+                                "relative flex items-center rounded-[10px] text-[13px] transition-colors duration-150",
+                                sidebarCollapsed
+                                  ? "justify-center px-0 py-2 lg:py-2.5"
+                                  : "gap-2.5 px-3 py-2.5 text-left",
+                                isActive ? "font-medium text-white" : "font-normal text-white/65 hover:text-white"
+                              )
+                            }
+                          >
+                            {({ isActive }) => (
+                              <>
+                                {isActive && !sidebarCollapsed ? (
+                                  <>
+                                    <span
+                                      className="pointer-events-none absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-full"
+                                      style={{ background: syncAccent }}
+                                    />
+                                    <span
+                                      className="pointer-events-none absolute inset-0 rounded-[10px] bg-gradient-to-r to-transparent"
+                                      style={{
+                                        background: `linear-gradient(90deg, color-mix(in oklab, ${syncAccent} 22%, transparent) 0%, transparent 100%)`
+                                      }}
+                                    />
+                                  </>
+                                ) : null}
+                                {isActive && sidebarCollapsed ? (
+                                  <span
+                                    className="pointer-events-none absolute inset-0.5 rounded-[10px]"
+                                    style={{ background: `color-mix(in oklab, ${syncAccent} 33%, transparent)` }}
+                                  />
+                                ) : null}
+                                <Icon
+                                  size={16}
+                                  className="relative z-[1] shrink-0"
+                                  style={{ color: isActive ? syncAccent : undefined }}
+                                  strokeWidth={isActive ? 2.25 : 2}
+                                />
+                                {!sidebarCollapsed ? (
+                                  <>
+                                    <span className="relative z-[1] min-w-0 flex-1 truncate">{item.label}</span>
+                                    {item.badge ? (
+                                      <span
+                                        className="relative z-[1] shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-white"
+                                        style={{ background: syncAccent }}
+                                      >
+                                        {item.badge}
+                                      </span>
+                                    ) : null}
+                                    {count !== undefined && !item.badge ? (
+                                      <span className="relative z-[1] shrink-0 font-mono text-[11px] tabular-nums text-white/40">
+                                        {count}
+                                      </span>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                              </>
+                            )}
+                          </NavLink>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </nav>
           </div>
 
-          <nav className="mt-6 grid gap-2">
-            {items.map((item) => {
-              const Icon = item.icon;
-              if (item.disabled) {
-                return (
-                  <span key={item.to} className="flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-white/45">
-                    <Icon size={16} />
-                    {item.label}
-                    <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em]">Later</span>
-                  </span>
-                );
-              }
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === "/"}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition",
-                      isActive ? "bg-white text-ink" : "text-white/80 hover:bg-white/10"
-                    )
-                  }
-                >
-                  <Icon size={16} />
-                  {item.label}
+          {!sidebarCollapsed ? (
+            <div className="mt-2 flex shrink-0 items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.04] p-2.5">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.12] text-xs font-semibold text-white">
+                {(shopBlock.initials[0] || "?").toUpperCase()}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-white/90">{shopBlock.name}</div>
+                <div className="truncate text-[10px] text-white/45">
+                  {lastSyncShort(summary?.last_dashboard_sync_at)}
+                </div>
+              </div>
+              <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-white/50 hover:bg-white/10 hover:text-white" asChild title="Settings">
+                <NavLink to="/settings">
+                  <HelpCircle size={15} strokeWidth={2} />
                 </NavLink>
-              );
-            })}
-          </nav>
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-1 hidden shrink-0 flex-col items-center gap-2 lg:flex">
+              <NavLink
+                to="/settings"
+                title="Settings"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.12] text-xs font-semibold text-white hover:bg-white/[0.18]"
+              >
+                {(shopBlock.initials[0] || "?").toUpperCase()}
+              </NavLink>
+            </div>
+          )}
         </aside>
         <main className="min-w-0">{children}</main>
       </div>

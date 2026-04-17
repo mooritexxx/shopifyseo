@@ -109,12 +109,14 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
   ai_generation_provider: {
     label: "Generation Provider",
     hint: "LLM vendor used for first-pass article and content generation.",
-    detail: "Changing provider resets the generation model to a sensible default for that vendor. Ensure the matching API key is set on the Integrations tab."
+    detail:
+      "Set the matching API key on the Integrations tab. Changing to OpenRouter picks the first model from the list when available; other vendors use the model id you enter."
   },
   ai_generation_model: {
     label: "Generation Model",
-    hint: "Model id for drafts. List refreshes when the provider key is valid (where supported).",
-    detail: "If your saved model is not in the list, it is still shown so you do not lose the value. Pick a listed model after rotating keys."
+    hint: "Model id for drafts. OpenRouter loads a list when the OpenRouter key is set.",
+    detail:
+      "For OpenRouter, pick from the list (or your saved id is kept if it is missing from the list). For other vendors, type the exact model id from that provider’s documentation."
   },
   ai_sidekick_provider: {
     label: "Sidekick Provider",
@@ -148,13 +150,14 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
   },
   ai_vision_provider: {
     label: "Vision Provider",
-    hint: "Optional. Multimodal model for alt text and image description; “Same as generation” inherits.",
-    detail: "Pick “Same as generation” to use your generation provider and model. Choosing another provider clears the vision model until you select one."
+    hint: "Multimodal vendor for alt text and image descriptions.",
+    detail:
+      "If you have never saved a vision override, the control shows your generation provider until you change it. Saving writes an explicit provider and model."
   },
   ai_vision_model: {
     label: "Vision Model",
-    hint: "Model for vision/alt-caption when a specific vision provider is set.",
-    detail: "When inheriting generation, the effective model matches your generation model. Override only when you need a different multimodal model."
+    hint: "Vision-capable model id for the selected provider.",
+    detail: "For OpenRouter, pick from the list when your key loads models; otherwise enter the model id from that vendor’s documentation."
   },
   ai_timeout_seconds: {
     label: "Request Timeout (Seconds)",

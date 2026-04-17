@@ -98,19 +98,9 @@ export function SettingsPage() {
     if (!query.data) return;
     const raw = query.data.values;
     const next = { ...raw } as Record<string, string>;
-    const coerceProvider = (key: string, allowEmpty: boolean) => {
-      const v = (next[key] ?? "").trim();
-      if (allowEmpty && v === "") return;
-      if (v && v.toLowerCase() !== "openrouter") next[key] = "openrouter";
-    };
-    coerceProvider("ai_generation_provider", false);
     if (!(next.ai_generation_provider || "").trim()) next.ai_generation_provider = "openrouter";
-    coerceProvider("ai_sidekick_provider", true);
-    coerceProvider("ai_review_provider", false);
     if (!(next.ai_review_provider || "").trim()) next.ai_review_provider = "openrouter";
-    coerceProvider("ai_image_provider", false);
     if (!(next.ai_image_provider || "").trim()) next.ai_image_provider = "openrouter";
-    coerceProvider("ai_vision_provider", true);
     setValues(next);
   }, [query.data]);
 

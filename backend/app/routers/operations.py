@@ -82,7 +82,10 @@ def settings_ai_test(payload: SettingsAiTestPayload):
 @router.post("/settings/image-model-test", response_model=SuccessResponse[ActionMessagePayload])
 def settings_image_model_test(payload: SettingsUpdatePayload):
     try:
-        result = test_image_model(payload.model_dump())
+        base = get_settings_data().get("values") or {}
+        incoming = payload.model_dump(exclude_unset=True)
+        merged = {**base, **incoming}
+        result = test_image_model(merged)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     return success_response({"message": "Sample image generated successfully", "result": result})
@@ -91,7 +94,10 @@ def settings_image_model_test(payload: SettingsUpdatePayload):
 @router.post("/settings/vision-model-test", response_model=SuccessResponse[ActionMessagePayload])
 def settings_vision_model_test(payload: SettingsUpdatePayload):
     try:
-        result = test_vision_model(payload.model_dump())
+        base = get_settings_data().get("values") or {}
+        incoming = payload.model_dump(exclude_unset=True)
+        merged = {**base, **incoming}
+        result = test_vision_model(merged)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     return success_response({"message": "Vision model test succeeded", "result": result})

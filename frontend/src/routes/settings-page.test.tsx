@@ -114,7 +114,7 @@ describe("SettingsPage", () => {
     expect(payload).toMatchObject({
       shopify_shop: "new-shop.myshopify.com",
       ai_timeout_seconds: "60",
-      ai_generation_provider: "openrouter",
+      ai_generation_provider: "openai",
       ai_generation_model: "gpt-5-mini",
       google_client_id: ""
     });
@@ -184,9 +184,9 @@ describe("SettingsPage", () => {
         expect.anything(),
         expect.objectContaining({
           target: "generation",
-          ai_generation_provider: "openrouter",
+          ai_generation_provider: "openai",
           ai_generation_model: "gpt-5-mini",
-          ai_review_provider: "openrouter",
+          ai_review_provider: "openai",
           ai_review_model: "gpt-5.4"
         })
       );
@@ -271,7 +271,7 @@ describe("SettingsPage", () => {
         "/api/settings/image-model-test",
         expect.anything(),
         expect.objectContaining({
-          ai_image_provider: "openrouter",
+          ai_image_provider: "gemini",
           ai_image_model: "gemini-3.1-flash-image-preview"
         })
       );
@@ -352,7 +352,7 @@ describe("SettingsPage", () => {
         "/api/settings/vision-model-test",
         expect.anything(),
         expect.objectContaining({
-          ai_generation_provider: "openrouter",
+          ai_generation_provider: "openai",
           ai_generation_model: "gpt-4.1-mini"
         })
       );
@@ -360,7 +360,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("Solid blue")).toBeInTheDocument();
   });
 
-  it("lists only OpenRouter as the generation provider", async () => {
+  it("lists all AI vendors as generation provider options", async () => {
     mockedGetJson.mockResolvedValue({
       values: {
         shopify_shop: "",
@@ -414,8 +414,9 @@ describe("SettingsPage", () => {
 
     const comboboxes = screen.getAllByRole("combobox");
     await user.click(comboboxes[0]);
-    expect(await screen.findByRole("option", { name: "openrouter" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "openai" })).toBeNull();
+    expect(await screen.findByRole("option", { name: "OpenRouter" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "OpenAI" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Gemini" })).toBeInTheDocument();
   });
 
   const defaultSettingsApiPayload = {

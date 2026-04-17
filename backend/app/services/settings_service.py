@@ -19,6 +19,21 @@ from shopifyseo.dashboard_http import request_json
 logger = logging.getLogger(__name__)
 
 
+def _normalize_settings_override(overrides: dict[str, Any] | None) -> dict[str, str] | None:
+    """Coerce API payload values to str so ai_settings override lookups behave consistently."""
+    if not overrides:
+        return None
+    out: dict[str, str] = {}
+    for k, v in overrides.items():
+        if v is None:
+            out[k] = ""
+        elif isinstance(v, str):
+            out[k] = v
+        else:
+            out[k] = str(v)
+    return out
+
+
 def _shopify_runtime_ready(conn: sqlite3.Connection) -> bool:
     """True when Admin API credentials and shop hostname are available (DB or env)."""
     shop, _ = runtime_setting(conn, "SHOPIFY_SHOP", "shopify_shop")
@@ -144,7 +159,7 @@ def save_settings(payload: dict[str, str]) -> str:
 def test_ai_connection(settings_override: dict[str, str] | None = None, target: str = "generation") -> dict[str, Any]:
     conn = open_db_connection()
     try:
-        return dai.test_connection(conn, settings_override=settings_override, target=target)
+        return dai.test_connection(conn, settings_override=_normalize_settings_override(settings_override), target=target)
     finally:
         conn.close()
 
@@ -152,7 +167,7 @@ def test_ai_connection(settings_override: dict[str, str] | None = None, target: 
 def test_image_model(settings_override: dict[str, str] | None = None) -> dict[str, Any]:
     conn = open_db_connection()
     try:
-        return dai.test_image_model(conn, settings_override=settings_override)
+        return dai.test_image_model(conn, settings_override=_normalize_settings_override(settings_override))
     finally:
         conn.close()
 
@@ -160,7 +175,7 @@ def test_image_model(settings_override: dict[str, str] | None = None) -> dict[st
 def test_vision_model(settings_override: dict[str, str] | None = None) -> dict[str, Any]:
     conn = open_db_connection()
     try:
-        return dai.test_vision_model(conn, settings_override=settings_override)
+        return dai.test_vision_model(conn, settings_override=_normalize_settings_override(settings_override))
     finally:
         conn.close()
 

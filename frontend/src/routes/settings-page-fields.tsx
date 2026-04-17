@@ -32,7 +32,7 @@ export const settingsTabs = [
   {
     id: "integrations",
     label: "Integrations",
-    description: "OpenRouter for AI; DataForSEO for keyword research (optional)."
+    description: "AI provider keys and optional DataForSEO for keyword research."
   },
   {
     id: "ai-models",
@@ -53,7 +53,16 @@ export const settingsTabs = [
 
 export type SettingsTabId = (typeof settingsTabs)[number]["id"];
 
-export const providerOptions = ["openrouter"] as const;
+/** Matches backend `shopifyseo/dashboard_ai_engine_parts` supported vendors. */
+export const providerOptions = ["openai", "gemini", "anthropic", "openrouter", "ollama"] as const;
+
+export const providerOptionLabel: Record<(typeof providerOptions)[number], string> = {
+  openai: "OpenAI",
+  gemini: "Gemini",
+  anthropic: "Anthropic",
+  openrouter: "OpenRouter",
+  ollama: "Ollama"
+};
 
 export const staticModelOptionsByProvider: Record<string, string[]> = {
   openrouter: ["z-ai/glm-4.5-air:free"]
@@ -86,6 +95,23 @@ export function isNumericDefault(raw: string | undefined, defaultNum: number): b
 function sortModelOptions(options: string[]) {
   return [...options].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
+
+export function isOpenRouterProvider(provider: string): boolean {
+  return (provider || "").trim().toLowerCase() === "openrouter";
+}
+
+function openRouterModelList(openRouterModels: string[], currentValue: string): string[] {
+  const base =
+    openRouterModels.length > 0 ? openRouterModels : staticModelOptionsByProvider.openrouter || [];
+  const sortedBase = sortModelOptions(base);
+  if (currentValue && !sortedBase.includes(currentValue)) {
+    return sortModelOptions([currentValue, ...sortedBase]);
+  }
+  return sortedBase;
+}
+
+const modelInputClassName =
+  "w-full rounded-2xl border border-line bg-white px-4 py-3 font-medium text-ink outline-none placeholder:text-slate-400";
 
 export type RenderSettingsTabSectionsProps = {
   tabKey: SettingsTabId;
@@ -147,9 +173,17 @@ export function renderSettingsTabSections({
   const tabSections = {
     integrations: [
       {
-        title: "OpenRouter",
-        description: "Single API key; select models per task on the AI Models tab.",
-        fields: ["openrouter_api_key"] as const
+        title: "AI provider keys",
+        description:
+          "Enter keys for each vendor you use on the AI Models tab. Model lists load from OpenRouter when that key is set; other vendors use the model id you enter.",
+        fields: [
+          "openai_api_key",
+          "gemini_api_key",
+          "anthropic_api_key",
+          "openrouter_api_key",
+          "ollama_base_url",
+          "ollama_api_key"
+        ] as const
       },
       {
         title: "DataForSEO",
@@ -181,7 +215,7 @@ export function renderSettingsTabSections({
       },
       {
         title: "Vision (alt captions)",
-        description: "Multimodal descriptions for alt text. Choose “Same as generation” or override.",
+        description: "Multimodal descriptions for alt text. Choose a provider and model.",
         fields: ["ai_vision_provider", "ai_vision_model"] as const
       }
     ],
@@ -243,14 +277,12 @@ export function renderSettingsTabSections({
   const shopifyLive =
     connectionStore.shopify?.status === "live" && connectionStore.shopify.fingerprint === shopifyFp;
 
-  function modelOptionsFor(_provider: string, currentValue: string) {
-    const base =
-      openRouterModels.length > 0 ? openRouterModels : staticModelOptionsByProvider.openrouter || [];
-    const sortedBase = sortModelOptions(base);
-    if (currentValue && !sortedBase.includes(currentValue)) {
-      return sortModelOptions([currentValue, ...sortedBase]);
+  function pickModelOnProviderChange(nextProvider: string, currentModel: string): string {
+    if (isOpenRouterProvider(nextProvider)) {
+      const opts = openRouterModelList(openRouterModels, "");
+      return opts[0] || currentModel || "";
     }
-    return sortedBase;
+    return currentModel || "";
   }
 
   return tabSections[tabKey].map((section) => (
@@ -262,7 +294,7 @@ export function renderSettingsTabSections({
         </div>
         {(() => {
           const t = section.title;
-          if (t === "OpenRouter") {
+          if (t === "AI provider keys") {
             return (
               <div className="flex flex-wrap items-center justify-end gap-3">
                 {query.ai_configured ? (
@@ -700,63 +732,58 @@ export function renderSettingsTabSections({
                     : key === "ai_image_provider"
                       ? values.ai_image_provider || "openrouter"
                       : key === "ai_vision_provider"
-                        ? (values.ai_vision_provider ?? "") === ""
-                          ? "__inherit__"
-                          : values.ai_vision_provider || values.ai_generation_provider || "openrouter"
+                        ? (values.ai_vision_provider ?? "").trim() || generationProvider
                         : values[key] || "openrouter"
                 }
                 onValueChange={(nextProvider) =>
                   setValues((current) => {
                     if (key === "ai_generation_provider") {
-                      const nextModelOptions = modelOptionsFor(nextProvider, "");
                       return {
                         ...current,
                         ai_generation_provider: nextProvider,
-                        ai_generation_model: nextModelOptions[0] || current.ai_generation_model || ""
+                        ai_generation_model: pickModelOnProviderChange(
+                          nextProvider,
+                          current.ai_generation_model || ""
+                        )
                       };
                     }
                     if (key === "ai_sidekick_provider") {
-                      const nextModelOptions = modelOptionsFor(nextProvider, "");
                       return {
                         ...current,
                         ai_sidekick_provider: nextProvider,
-                        ai_sidekick_model: nextModelOptions[0] || current.ai_sidekick_model || ""
+                        ai_sidekick_model: pickModelOnProviderChange(
+                          nextProvider,
+                          current.ai_sidekick_model || ""
+                        )
                       };
                     }
                     if (key === "ai_image_provider") {
-                      const nextModelOptions = modelOptionsFor(nextProvider, "");
                       return {
                         ...current,
                         ai_image_provider: nextProvider,
-                        ai_image_model: nextModelOptions[0] || current.ai_image_model || ""
+                        ai_image_model: pickModelOnProviderChange(nextProvider, current.ai_image_model || "")
                       };
                     }
                     if (key === "ai_vision_provider") {
                       const genProv = current.ai_generation_provider || "openrouter";
-                      const effectiveProvider = nextProvider === "__inherit__" ? "" : nextProvider;
-                      if (!effectiveProvider.trim()) {
-                        return {
-                          ...current,
-                          ai_vision_provider: "",
-                          ai_vision_model: ""
-                        };
-                      }
-                      const nextModelOptions = modelOptionsFor(effectiveProvider, "");
+                      const effectiveProvider = nextProvider;
                       const nextVisionModel =
                         effectiveProvider === genProv
-                          ? current.ai_generation_model || nextModelOptions[0] || ""
-                          : nextModelOptions[0] || "";
+                          ? current.ai_generation_model ||
+                            (isOpenRouterProvider(effectiveProvider)
+                              ? openRouterModelList(openRouterModels, "")[0] || ""
+                              : "")
+                          : pickModelOnProviderChange(effectiveProvider, current.ai_vision_model || "");
                       return {
                         ...current,
                         ai_vision_provider: effectiveProvider,
                         ai_vision_model: nextVisionModel
                       };
                     }
-                    const nextModelOptions = modelOptionsFor(nextProvider, "");
                     return {
                       ...current,
                       ai_review_provider: nextProvider,
-                      ai_review_model: nextModelOptions[0] || current.ai_review_model || ""
+                      ai_review_model: pickModelOnProviderChange(nextProvider, current.ai_review_model || "")
                     };
                   })
                 }
@@ -765,119 +792,206 @@ export function renderSettingsTabSections({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {key === "ai_vision_provider" ? <SelectItem value="__inherit__">Same as generation</SelectItem> : null}
                   {providerOptions.map((option) => (
                     <SelectItem key={option} value={option}>
-                      {option}
+                      {providerOptionLabel[option]}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             ) : key === "ai_generation_model" ? (
-              <Select
-                value={values[key] || undefined}
-                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
-              >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
-                  <SelectValue placeholder="Select model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptionsFor(generationProvider, values[key] || "").map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              isOpenRouterProvider(generationProvider) ? (
+                <Select
+                  value={values[key] || undefined}
+                  onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+                >
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openRouterModelList(openRouterModels, values[key] || "").map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={fieldId}
+                  type="text"
+                  autoComplete="off"
+                  aria-describedby={describeHint}
+                  className={modelInputClassName}
+                  placeholder="Model id from the provider’s docs"
+                  value={values[key] || ""}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [key]: event.target.value }))
+                  }
+                />
+              )
             ) : key === "ai_sidekick_model" ? (
-              <Select
-                value={
-                  (values.ai_sidekick_model ||
-                    (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
-                    "") || undefined
-                }
-                onValueChange={(next) =>
-                  setValues((current) => ({
-                    ...current,
-                    ai_sidekick_provider:
-                      current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openrouter",
-                    ai_sidekick_model: next
-                  }))
-                }
-              >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
-                  <SelectValue placeholder="Select model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptionsFor(
-                    sidekickProvider,
-                    values.ai_sidekick_model ||
+              isOpenRouterProvider(sidekickProvider) ? (
+                <Select
+                  value={
+                    (values.ai_sidekick_model ||
                       (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
-                      ""
-                  ).map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                      "") || undefined
+                  }
+                  onValueChange={(next) =>
+                    setValues((current) => ({
+                      ...current,
+                      ai_sidekick_provider:
+                        current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openrouter",
+                      ai_sidekick_model: next
+                    }))
+                  }
+                >
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openRouterModelList(
+                      openRouterModels,
+                      values.ai_sidekick_model ||
+                        (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
+                        ""
+                    ).map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={fieldId}
+                  type="text"
+                  autoComplete="off"
+                  aria-describedby={describeHint}
+                  className={modelInputClassName}
+                  placeholder="Model id from the provider’s docs"
+                  value={
+                    values.ai_sidekick_model ||
+                    (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
+                    ""
+                  }
+                  onChange={(event) =>
+                    setValues((current) => ({
+                      ...current,
+                      ai_sidekick_provider:
+                        current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openrouter",
+                      ai_sidekick_model: event.target.value
+                    }))
+                  }
+                />
+              )
             ) : key === "ai_review_model" ? (
-              <Select
-                value={values[key] || undefined}
-                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
-              >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
-                  <SelectValue placeholder="Select model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptionsFor(reviewProvider, values[key] || "").map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              isOpenRouterProvider(reviewProvider) ? (
+                <Select
+                  value={values[key] || undefined}
+                  onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+                >
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openRouterModelList(openRouterModels, values[key] || "").map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={fieldId}
+                  type="text"
+                  autoComplete="off"
+                  aria-describedby={describeHint}
+                  className={modelInputClassName}
+                  placeholder="Model id from the provider’s docs"
+                  value={values[key] || ""}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [key]: event.target.value }))
+                  }
+                />
+              )
             ) : key === "ai_image_model" ? (
-              <Select
-                value={values[key] || undefined}
-                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
-              >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
-                  <SelectValue placeholder="Select model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptionsFor(imageProvider, values[key] || "").map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              isOpenRouterProvider(imageProvider) ? (
+                <Select
+                  value={values[key] || undefined}
+                  onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+                >
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openRouterModelList(openRouterModels, values[key] || "").map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={fieldId}
+                  type="text"
+                  autoComplete="off"
+                  aria-describedby={describeHint}
+                  className={modelInputClassName}
+                  placeholder="Model id from the provider’s docs"
+                  value={values[key] || ""}
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, [key]: event.target.value }))
+                  }
+                />
+              )
             ) : key === "ai_vision_model" ? (
-              <Select
-                value={
-                  (values.ai_vision_model ||
-                    ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
-                    "") || undefined
-                }
-                onValueChange={(next) => setValues((current) => ({ ...current, ai_vision_model: next }))}
-              >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
-                  <SelectValue placeholder="Select model" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptionsFor(
-                    visionProvider,
-                    values.ai_vision_model ||
+              isOpenRouterProvider(visionProvider) ? (
+                <Select
+                  value={
+                    (values.ai_vision_model ||
                       ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
-                      ""
-                  ).map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                      "") || undefined
+                  }
+                  onValueChange={(next) => setValues((current) => ({ ...current, ai_vision_model: next }))}
+                >
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {openRouterModelList(
+                      openRouterModels,
+                      values.ai_vision_model ||
+                        ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
+                        ""
+                    ).map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={fieldId}
+                  type="text"
+                  autoComplete="off"
+                  aria-describedby={describeHint}
+                  className={modelInputClassName}
+                  placeholder="Model id from the provider’s docs"
+                  value={
+                    values.ai_vision_model ||
+                    ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
+                    ""
+                  }
+                  onChange={(event) =>
+                    setValues((current) => ({ ...current, ai_vision_model: event.target.value }))
+                  }
+                />
+              )
             ) : key === "search_console_site" && (query.available_gsc_sites?.length ?? 0) > 0 ? (
               <Select
                 value={values[key] || undefined}

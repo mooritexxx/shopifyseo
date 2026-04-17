@@ -60,6 +60,7 @@ class GscPropertyBreakdownsPayload(BaseModel):
 
 class SettingsValuesPayload(BaseModel):
     store_name: str = ""
+    store_description: str = ""
     primary_market_country: str = ""
     dashboard_timezone: str = ""
     store_custom_domain: str = ""
@@ -175,6 +176,16 @@ class ShopifyTestPayload(BaseModel):
     shopify_client_id: str = ""
     shopify_client_secret: str = ""
     shopify_api_version: str = ""
+
+
+class ShopifyShopInfoPayload(BaseModel):
+    """Live shop info pulled from the Shopify Admin API (for settings prefill hints)."""
+
+    available: bool = False
+    shop_name: str = ""
+    shop_description: str = ""
+    shop_domain: str = ""
+    error: str = ""
 
 
 class OllamaModelsRequestPayload(BaseModel):

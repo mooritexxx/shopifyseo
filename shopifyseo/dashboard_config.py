@@ -7,6 +7,7 @@ from . import dashboard_google as dg
 ORIGINAL_ENV = dict(os.environ)
 RUNTIME_SETTING_KEYS = (
     "store_name",
+    "store_description",
     "primary_market_country",
     "dashboard_timezone",
     "store_custom_domain",

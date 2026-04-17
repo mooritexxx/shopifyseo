@@ -15,6 +15,7 @@ from backend.app.schemas.operations import (
     OllamaModelsRequestPayload,
     SettingsAiTestPayload,
     GoogleAdsTestPayload,
+    ShopifyShopInfoPayload,
     ShopifyTestPayload,
     SettingsPayload,
     SettingsUpdatePayload,
@@ -26,6 +27,7 @@ from backend.app.services.dashboard_service import (
     get_ollama_models,
     get_openrouter_models,
     get_settings_data,
+    get_shopify_shop_info,
     refresh_google_summary,
     save_google_selection,
     save_settings,
@@ -103,6 +105,11 @@ def settings_google_ads_test(payload: GoogleAdsTestPayload):
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     return success_response({"message": "Google Ads API connection OK", "result": result})
+
+
+@router.get("/settings/shopify-shop-info", response_model=SuccessResponse[ShopifyShopInfoPayload])
+def settings_shopify_shop_info():
+    return success_response(get_shopify_shop_info())
 
 
 @router.post("/settings/shopify-test", response_model=SuccessResponse[ActionMessagePayload])

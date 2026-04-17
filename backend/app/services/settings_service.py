@@ -200,6 +200,39 @@ def test_shopify_admin_connection(overrides: dict[str, str] | None = None) -> di
     return probe_shopify_admin_with_credentials(shop, cid, csec, ver)
 
 
+def get_shopify_shop_info() -> dict[str, Any]:
+    """Fetch live shop name + description from Shopify using saved credentials.
+
+    Used by the Settings UI to show Shopify values as hints/prefill alongside the
+    stored `store_name` / `store_description` override fields. Returns an error
+    payload instead of raising so the UI can degrade gracefully.
+    """
+    from shopifyseo.shopify_admin import probe_shopify_admin_with_credentials
+
+    conn = open_db_connection()
+    try:
+        if not _shopify_runtime_ready(conn):
+            return {"available": False, "shop_name": "", "shop_description": "", "shop_domain": "", "error": "Shopify not configured"}
+        shop, _ = runtime_setting(conn, "SHOPIFY_SHOP", "shopify_shop")
+        cid, _ = runtime_setting(conn, "SHOPIFY_CLIENT_ID", "shopify_client_id")
+        csec, _ = runtime_setting(conn, "SHOPIFY_CLIENT_SECRET", "shopify_client_secret")
+        ver, _ = runtime_setting(conn, "SHOPIFY_API_VERSION", "shopify_api_version")
+    finally:
+        conn.close()
+    try:
+        result = probe_shopify_admin_with_credentials(shop, cid, csec, ver)
+    except Exception as exc:
+        logger.warning("Failed to fetch Shopify shop info", exc_info=True)
+        return {"available": False, "shop_name": "", "shop_description": "", "shop_domain": "", "error": str(exc)}
+    return {
+        "available": True,
+        "shop_name": (result.get("shop_name") or "").strip(),
+        "shop_description": (result.get("shop_description") or "").strip(),
+        "shop_domain": (result.get("shop_domain") or "").strip(),
+        "error": "",
+    }
+
+
 def get_ollama_models(ollama_base_url: str = "", ollama_api_key: str = "") -> dict[str, Any]:
     base_url = (ollama_base_url or "").strip() or DEFAULT_OLLAMA_BASE_URL
     api_key = (ollama_api_key or "").strip()

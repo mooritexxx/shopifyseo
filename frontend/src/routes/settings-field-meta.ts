@@ -23,6 +23,7 @@ export type SettingsFieldKey =
   | "ai_timeout_seconds"
   | "ai_max_retries"
   | "store_name"
+  | "store_description"
   | "primary_market_country"
   | "dashboard_timezone"
   | "shopify_shop"
@@ -168,8 +169,13 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
   },
   store_name: {
     label: "Store Name",
-    hint: "Display name used in AI and reporting context.",
-    detail: "Can match your public brand name. Used to ground prompts and labels, not as the Shopify API hostname."
+    hint: "Display name used in AI and reporting context. Leave blank to use the name set in Shopify.",
+    detail: "Can match your public brand name. Used to ground prompts and labels, not as the Shopify API hostname. When this field is blank the app falls back to your Shopify shop name."
+  },
+  store_description: {
+    label: "Store Description",
+    hint: "Short brand/positioning summary used to ground AI prompts. Leave blank to use the description set in Shopify.",
+    detail: "Shown in prompt context so generated copy stays on-brand. When blank, the app falls back to the description configured in Shopify (Admin → Settings → Store details → Brand)."
   },
   primary_market_country: {
     label: "Primary Market (Country)",

@@ -23,7 +23,7 @@ import {
   persistConnectionStore,
   type ConnectionStatusStore
 } from "../lib/settings-connection-storage";
-import { actionSchema, settingsSchema } from "../types/api";
+import { actionSchema, settingsSchema, shopifyShopInfoSchema } from "../types/api";
 import { renderSettingsTabSections, settingsTabs, type SettingsTabId } from "./settings-page-fields";
 
 const modelsSchema = z.object({
@@ -78,11 +78,21 @@ export function SettingsPage() {
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
   const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [shopifyDetail, setShopifyDetail] = useState("");
+  const [gscCacheStatus, setGscCacheStatus] = useState<"idle" | "refreshing" | "ok" | "error">("idle");
+  const [gscCacheDetail, setGscCacheDetail] = useState("");
+  const [ga4CacheStatus, setGa4CacheStatus] = useState<"idle" | "refreshing" | "ok" | "error">("idle");
+  const [ga4CacheDetail, setGa4CacheDetail] = useState("");
   const [connectionStore, setConnectionStore] = useState<ConnectionStatusStore>(() => loadConnectionStore());
   const valuesRef = useRef<Record<string, string>>({});
   const query = useQuery({
     queryKey: ["settings"],
     queryFn: () => getJson("/api/settings", settingsSchema)
+  });
+  const shopifyShopInfoQuery = useQuery({
+    queryKey: ["settings", "shopify-shop-info"],
+    queryFn: () => getJson("/api/settings/shopify-shop-info", shopifyShopInfoSchema),
+    enabled: query.data?.sync_scope_ready?.shopify === true,
+    staleTime: 60_000
   });
   const [values, setValues] = useState<Record<string, string>>({});
   const [imageTestElapsedMs, setImageTestElapsedMs] = useState(0);
@@ -252,6 +262,38 @@ export function SettingsPage() {
     } catch (e) {
       setGoogleAdsStatus("error");
       setGoogleAdsDetail((e as Error).message);
+    }
+  }
+
+  async function refreshGscCache() {
+    setGscCacheStatus("refreshing");
+    setGscCacheDetail("");
+    try {
+      const res = await postJson("/api/google-signals/refresh", actionSchema, {
+        message: "",
+        result: { scope: "search_console_summary" }
+      });
+      setGscCacheStatus("ok");
+      setGscCacheDetail(res.message);
+    } catch (e) {
+      setGscCacheStatus("error");
+      setGscCacheDetail((e as Error).message);
+    }
+  }
+
+  async function refreshGa4Cache() {
+    setGa4CacheStatus("refreshing");
+    setGa4CacheDetail("");
+    try {
+      const res = await postJson("/api/google-signals/refresh", actionSchema, {
+        message: "",
+        result: { scope: "ga4_summary" }
+      });
+      setGa4CacheStatus("ok");
+      setGa4CacheDetail(res.message);
+    } catch (e) {
+      setGa4CacheStatus("error");
+      setGa4CacheDetail((e as Error).message);
     }
   }
 
@@ -436,7 +478,14 @@ export function SettingsPage() {
     shopifyStatus,
     shopifyDetail,
     validateShopify,
-    connectionStore
+    gscCacheStatus,
+    gscCacheDetail,
+    refreshGscCache,
+    ga4CacheStatus,
+    ga4CacheDetail,
+    refreshGa4Cache,
+    connectionStore,
+    shopifyShopInfo: shopifyShopInfoQuery.data ?? null
   };
 
   return (

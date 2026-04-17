@@ -124,7 +124,7 @@ def probe_shopify_admin_with_credentials(
     token = (payload.get("access_token") or "").strip()
     if not token:
         raise RuntimeError("Shopify returned no access token.")
-    gql = "query { shop { name } }"
+    gql = "query { shop { name description } }"
     graphql_url = f"https://{shop_domain}/admin/api/{ver}/graphql.json"
     try:
         raw = request_json(
@@ -139,11 +139,17 @@ def probe_shopify_admin_with_credentials(
     if raw.get("errors"):
         raise RuntimeError(f"Shopify GraphQL errors: {raw.get('errors')}")
     shop_name = ""
+    shop_description = ""
     data = raw.get("data") or {}
     shop_node = data.get("shop") or {}
     if isinstance(shop_node, dict):
         shop_name = (shop_node.get("name") or "").strip()
-    return {"shop_name": shop_name, "shop_domain": shop_domain}
+        shop_description = (shop_node.get("description") or "").strip()
+    return {
+        "shop_name": shop_name,
+        "shop_description": shop_description,
+        "shop_domain": shop_domain,
+    }
 
 
 def _wait_media_image_cdn_url(

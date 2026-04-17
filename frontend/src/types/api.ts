@@ -808,6 +808,7 @@ export const googleSignalsSchema = z.object({
 export const settingsSchema = z.object({
   values: z.object({
     store_name: z.string().default(""),
+    store_description: z.string().default(""),
     primary_market_country: z.string().default(""),
     dashboard_timezone: z.string().default(""),
     store_custom_domain: z.string().default(""),
@@ -1043,8 +1044,19 @@ export type ProductImageSeoOptimizeResult = z.infer<typeof productImageSeoOptimi
 export const storeInfoSchema = z.object({
   store_url: z.string().default(""),
   store_name: z.string().default(""),
+  store_description: z.string().default(""),
   primary_market_country: z.string().default(""),
   dashboard_timezone: z.string().default(""),
 });
 
 export type StoreInfo = z.infer<typeof storeInfoSchema>;
+
+export const shopifyShopInfoSchema = z.object({
+  available: z.boolean().default(false),
+  shop_name: z.string().default(""),
+  shop_description: z.string().default(""),
+  shop_domain: z.string().default(""),
+  error: z.string().default(""),
+});
+
+export type ShopifyShopInfo = z.infer<typeof shopifyShopInfoSchema>;

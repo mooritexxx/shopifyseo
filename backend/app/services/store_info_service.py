@@ -14,11 +14,13 @@ def get_store_info() -> dict[str, str]:
             shop = (dg.get_service_setting(conn, "shopify_shop") or "").strip()
             if shop:
                 store_name = shop.removesuffix(".myshopify.com")
+        store_description = (dg.get_service_setting(conn, "store_description") or "").strip()
         primary_market_country = (dg.get_service_setting(conn, "primary_market_country") or "").strip()
         dashboard_timezone = (dg.get_service_setting(conn, "dashboard_timezone") or "").strip()
         return {
             "store_url": store_url,
             "store_name": store_name,
+            "store_description": store_description,
             "primary_market_country": primary_market_country,
             "dashboard_timezone": dashboard_timezone,
         }

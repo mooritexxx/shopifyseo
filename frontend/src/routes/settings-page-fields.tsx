@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -23,7 +24,7 @@ import {
   fingerprintShopify,
   type ConnectionStatusStore
 } from "../lib/settings-connection-storage";
-import type { SettingsPayload } from "../types/api";
+import type { SettingsPayload, ShopifyShopInfo } from "../types/api";
 import { SettingsFieldShell } from "./settings-field-shell";
 import { isSettingsSecretField, metaForSettingsField, settingsFieldHintId } from "./settings-field-meta";
 
@@ -112,7 +113,14 @@ export type RenderSettingsTabSectionsProps = {
   shopifyStatus: "idle" | "checking" | "ok" | "error";
   shopifyDetail: string;
   validateShopify: () => void | Promise<void>;
+  gscCacheStatus: "idle" | "refreshing" | "ok" | "error";
+  gscCacheDetail: string;
+  refreshGscCache: () => void | Promise<void>;
+  ga4CacheStatus: "idle" | "refreshing" | "ok" | "error";
+  ga4CacheDetail: string;
+  refreshGa4Cache: () => void | Promise<void>;
   connectionStore: ConnectionStatusStore;
+  shopifyShopInfo: ShopifyShopInfo | null;
 };
 
 export function renderSettingsTabSections({
@@ -137,7 +145,14 @@ export function renderSettingsTabSections({
   shopifyStatus,
   shopifyDetail,
   validateShopify,
-  connectionStore
+  gscCacheStatus,
+  gscCacheDetail,
+  refreshGscCache,
+  ga4CacheStatus,
+  ga4CacheDetail,
+  refreshGa4Cache,
+  connectionStore,
+  shopifyShopInfo
 }: RenderSettingsTabSectionsProps) {
   const tabSections = {
     integrations: [
@@ -190,8 +205,8 @@ export function renderSettingsTabSections({
     "data-sources": [
       {
         title: "Store Identity",
-        description: "Name, primary market, and timezone—used in prompts, research, and scheduling context.",
-        fields: ["store_name", "primary_market_country", "dashboard_timezone"] as const
+        description: "Name, description, primary market, and timezone—used in prompts, research, and scheduling context. Name and description auto-pull from Shopify when left blank.",
+        fields: ["store_name", "store_description", "primary_market_country", "dashboard_timezone"] as const
       },
       {
         title: "Shopify",
@@ -199,9 +214,20 @@ export function renderSettingsTabSections({
         fields: ["shopify_shop", "store_custom_domain", "shopify_api_version", "shopify_client_id", "shopify_client_secret"] as const
       },
       {
-        title: "Google",
-        description: "OAuth client and Search Console / GA4 properties after you connect Google.",
-        fields: ["google_client_id", "google_client_secret", "search_console_site", "ga4_property_id"] as const
+        title: "Google OAuth",
+        description:
+          "Client ID and secret for the shared Google OAuth client that Search Console and GA4 both use.",
+        fields: ["google_client_id", "google_client_secret"] as const
+      },
+      {
+        title: "Google Search Console",
+        description: "Pick the Search Console property used for site-level SEO rollups.",
+        fields: ["search_console_site"] as const
+      },
+      {
+        title: "Google Analytics 4",
+        description: "Pick the GA4 property used for site-wide sessions and landing-page views.",
+        fields: ["ga4_property_id"] as const
       },
       {
         title: "Google Ads",
@@ -444,7 +470,7 @@ export function renderSettingsTabSections({
               </div>
             );
           }
-          if (t === "Google") {
+          if (t === "Google OAuth") {
             const configured = query.google_configured;
             const connected = query.google_connected;
             const statusLabel =
@@ -468,22 +494,85 @@ export function renderSettingsTabSections({
                     {connected ? "Reconnect Google" : "Connect Google"}
                   </a>
                 ) : null}
-                <a href="/app/google-signals" className="text-sm font-medium text-ocean underline-offset-2 hover:underline">
-                  Google Signals dashboard
-                </a>
+              </div>
+            );
+          }
+          if (t === "Google Search Console") {
+            const connected = query.google_configured && query.google_connected;
+            const hasProperty = !!(values.search_console_site || "").trim();
+            const statusLabel = !connected
+              ? "Google not connected"
+              : hasProperty
+                ? "Ready"
+                : "Property not selected";
+            const badgeTone: "success" | "warning" | "neutral" = !connected
+              ? "warning"
+              : hasProperty
+                ? "success"
+                : "neutral";
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <SettingsConnectionBadge label={statusLabel} tone={badgeTone} />
+                <Button
+                  variant="secondary"
+                  onClick={() => void refreshGscCache()}
+                  disabled={!connected || !hasProperty || gscCacheStatus === "refreshing"}
+                >
+                  {gscCacheStatus === "refreshing" ? "Refreshing…" : "Refresh cache"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Google Analytics 4") {
+            const connected = query.google_configured && query.google_connected;
+            const hasProperty = !!(values.ga4_property_id || "").trim();
+            const statusLabel = !connected
+              ? "Google not connected"
+              : hasProperty
+                ? "Ready"
+                : "Property not selected";
+            const badgeTone: "success" | "warning" | "neutral" = !connected
+              ? "warning"
+              : hasProperty
+                ? "success"
+                : "neutral";
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <SettingsConnectionBadge label={statusLabel} tone={badgeTone} />
+                <Button
+                  variant="secondary"
+                  onClick={() => void refreshGa4Cache()}
+                  disabled={!connected || !hasProperty || ga4CacheStatus === "refreshing"}
+                >
+                  {ga4CacheStatus === "refreshing" ? "Refreshing…" : "Refresh cache"}
+                </Button>
               </div>
             );
           }
           return null;
         })()}
       </div>
-      {section.title === "Google" && !query.google_configured && query.google_connected ? (
+      {section.title === "Google OAuth" && !query.google_configured && query.google_connected ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
           A previous Google token exists but the Client ID and Client Secret are missing. Enter them below and <strong>Save settings</strong>, then click <strong>Reconnect Google</strong> to restore the connection.
         </div>
-      ) : section.title === "Google" && !query.google_configured && !query.google_connected ? (
+      ) : section.title === "Google OAuth" && !query.google_configured && !query.google_connected ? (
         <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-700">
           Enter your Google Client ID and Client Secret below, then <strong>Save settings</strong> to enable the Connect Google button.
+        </div>
+      ) : null}
+      {section.title === "Google Search Console" && gscCacheStatus !== "idle" && gscCacheStatus !== "refreshing" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${gscCacheStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {gscCacheDetail}
+        </div>
+      ) : null}
+      {section.title === "Google Analytics 4" && ga4CacheStatus !== "idle" && ga4CacheStatus !== "refreshing" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${ga4CacheStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {ga4CacheDetail}
         </div>
       ) : null}
       {section.title === "DataForSEO" && dfsStatus !== "idle" && dfsStatus !== "checking" ? (
@@ -847,6 +936,82 @@ export function renderSettingsTabSections({
                   ))}
                 </SelectContent>
               </Select>
+            ) : key === "store_name" || key === "store_description" ? (
+              (() => {
+                const shopifyValue =
+                  key === "store_name"
+                    ? (shopifyShopInfo?.shop_name ?? "").trim()
+                    : (shopifyShopInfo?.shop_description ?? "").trim();
+                const currentValue = values[key] ?? "";
+                const hasShopifyValue = !!(shopifyShopInfo?.available && shopifyValue);
+                const matchesShopify = hasShopifyValue && currentValue.trim() === shopifyValue;
+                const placeholder = hasShopifyValue
+                  ? `Shopify: ${shopifyValue.length > 80 ? `${shopifyValue.slice(0, 80)}…` : shopifyValue}`
+                  : key === "store_description"
+                    ? "Short brand or positioning summary"
+                    : "Your store display name";
+                const control = key === "store_description" ? (
+                  <Textarea
+                    id={fieldId}
+                    rows={3}
+                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    placeholder={placeholder}
+                    aria-describedby={describeHint}
+                    value={currentValue}
+                    onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                ) : (
+                  <Input
+                    id={fieldId}
+                    type="text"
+                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    placeholder={placeholder}
+                    aria-describedby={describeHint}
+                    value={currentValue}
+                    onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                );
+                return (
+                  <>
+                    {control}
+                    {hasShopifyValue ? (
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        {currentValue.trim() === "" ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-[#f7f9fc] px-2.5 py-0.5 font-medium text-slate-600">
+                            Using Shopify value
+                          </span>
+                        ) : matchesShopify ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-[#f7f9fc] px-2.5 py-0.5 font-medium text-slate-600">
+                            Matches Shopify
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-[#ffe2c5] bg-[#fff7ee] px-2.5 py-0.5 font-medium text-[#8f5a20]">
+                            Overriding Shopify
+                          </span>
+                        )}
+                        {!matchesShopify ? (
+                          <button
+                            type="button"
+                            className="font-medium text-ocean underline-offset-2 hover:underline"
+                            onClick={() => setValues((current) => ({ ...current, [key]: shopifyValue }))}
+                          >
+                            Use Shopify value
+                          </button>
+                        ) : null}
+                        {currentValue.trim() !== "" ? (
+                          <button
+                            type="button"
+                            className="font-medium text-slate-500 underline-offset-2 hover:underline"
+                            onClick={() => setValues((current) => ({ ...current, [key]: "" }))}
+                          >
+                            Clear override
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()
             ) : key === "google_ads_customer_id" && (query.available_google_ads_customers?.length ?? 0) > 0 ? (
               <Select
                 value={values[key] || undefined}

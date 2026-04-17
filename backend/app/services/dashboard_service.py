@@ -49,6 +49,7 @@ from backend.app.services.google_signals_service import (
 from backend.app.services.settings_service import (
     filter_normalized_scopes_for_readiness,
     get_settings_data,
+    get_shopify_shop_info,
     get_sync_scope_readiness,
     save_settings,
     test_ai_connection,

@@ -676,6 +676,8 @@ export const statusSchema = z.object({
   active_scope: z.string().optional().default(""),
   active_model: z.string().optional().default(""),
   stage_started_at: z.number().optional().default(0),
+  eta_segment_started_at: z.number().optional().default(0),
+  eta_seconds: z.number().int().nullable().optional(),
   step_index: z.number().optional().default(0),
   step_total: z.number().optional().default(0),
   total: z.number().optional().default(0),

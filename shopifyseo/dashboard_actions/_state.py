@@ -45,6 +45,8 @@ SYNC_STATE = {
     "scope": "",
     "started_at": 0,
     "finished_at": 0,
+    "stage_started_at": 0,
+    "eta_segment_started_at": 0,
     "force_refresh": False,
     "stage": "idle",
     "stage_label": "",

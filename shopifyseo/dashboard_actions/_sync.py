@@ -44,6 +44,7 @@ from ._state import (
     clear_last_error,
     record_last_error,
 )
+from .sync_eta import record_scope_eta_segment
 
 # ---------------------------------------------------------------------------
 # Sync state helpers
@@ -60,6 +61,8 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "force_refresh": False,
             "started_at": started_at,
             "finished_at": 0,
+            "stage_started_at": started_at,
+            "eta_segment_started_at": started_at,
             "stage": "starting",
             "stage_label": "Preparing sync",
             "active_scope": "",
@@ -117,6 +120,8 @@ def _set_sync_stage(
     step_total: int = 0,
     current: str | None = None,
 ) -> None:
+    prev_stage = SYNC_STATE.get("stage")
+    prev_scope = SYNC_STATE.get("active_scope")
     SYNC_STATE["stage"] = stage
     SYNC_STATE["stage_label"] = label
     SYNC_STATE["active_scope"] = active_scope
@@ -124,6 +129,9 @@ def _set_sync_stage(
     SYNC_STATE["step_total"] = step_total
     if current is not None:
         SYNC_STATE["current"] = current
+    chain_images = prev_stage in ("syncing_shopify", "syncing_products") and stage == "syncing_product_images"
+    if not chain_images and (stage != prev_stage or (active_scope or "") != (prev_scope or "")):
+        SYNC_STATE["stage_started_at"] = int(time.time())
 
 
 def _recompute_shopify_scoped_progress() -> None:
@@ -735,6 +743,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
 
     for index, selected_scope in enumerate(selected_scopes, start=1):
         _raise_if_sync_cancelled()
+        SYNC_STATE["eta_segment_started_at"] = int(time.time())
         if selected_scope == "shopify":
             _set_sync_stage(
                 stage="syncing_shopify",
@@ -757,6 +766,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             ic = _warm_product_image_cache_safe(db_path)
             if ic is not None:
                 result["shopify"]["product_image_cache"] = ic
+            record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -767,6 +777,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Loading Search Console summary",
             )
             result["gsc"] = bulk_refresh_search_console(db_path, force_refresh=force_refresh)
+            record_scope_eta_segment(db_path, SYNC_STATE, "gsc")
         elif selected_scope == "ga4":
             _set_sync_stage(
                 stage="refreshing_ga4",
@@ -777,6 +788,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Refreshing GA4 summary and per-URL metrics",
             )
             result["ga4"] = refresh_ga4_summary(db_path, force_refresh=force_refresh)
+            record_scope_eta_segment(db_path, SYNC_STATE, "ga4")
         elif selected_scope == "index":
             _set_sync_stage(
                 stage="refreshing_index",
@@ -787,6 +799,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Inspecting URL index status",
             )
             result["index"] = bulk_refresh_index_status(db_path, force_refresh=force_refresh)
+            record_scope_eta_segment(db_path, SYNC_STATE, "index")
         elif selected_scope == "pagespeed":
             _set_sync_stage(
                 stage="refreshing_pagespeed",
@@ -797,6 +810,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Collecting PageSpeed results",
             )
             result["pagespeed"] = bulk_refresh_pagespeed(db_path, force_refresh=force_refresh)
+            record_scope_eta_segment(db_path, SYNC_STATE, "pagespeed")
         elif selected_scope == "structured":
             _set_sync_stage(
                 stage="updating_structured_seo",
@@ -806,12 +820,16 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 step_total=total_steps,
                 current="Refreshing structured SEO records",
             )
+            SYNC_STATE["total"] = 1
+            SYNC_STATE["done"] = 0
             conn = _db_connect_for_actions(db_path)
             try:
                 refresh_structured_seo_data(conn)
             finally:
                 conn.close()
+            SYNC_STATE["done"] = 1
             result["structured"] = {"updated": True}
+            record_scope_eta_segment(db_path, SYNC_STATE, "structured")
     return result
 
 
@@ -824,6 +842,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
         try:
             _raise_if_sync_cancelled()
             if normalized_scope == "products":
+                SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
                     stage="syncing_products",
                     label="Syncing products from Shopify",
@@ -842,7 +861,9 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 ic = _warm_product_image_cache_safe(db_path)
                 if ic is not None:
                     result["products"]["product_image_cache"] = ic
+                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
             elif normalized_scope == "collections":
+                SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
                     stage="syncing_collections",
                     label="Syncing collections from Shopify",
@@ -858,7 +879,9 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     SYNC_STATE.__setitem__("done", done),
                     SYNC_STATE.__setitem__("total", total),
                 ))}
+                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
             elif normalized_scope == "pages":
+                SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
                     stage="syncing_pages",
                     label="Syncing pages from Shopify",
@@ -874,7 +897,9 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     SYNC_STATE.__setitem__("done", done),
                     SYNC_STATE.__setitem__("total", total),
                 ))}
+                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
             elif normalized_scope == "blogs":
+                SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
                     stage="syncing_blogs",
                     label="Syncing blogs from Shopify",
@@ -899,6 +924,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 br = result.get("blogs") or {}
                 SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
                 SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_synced") or 0)
+                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
             else:
                 result = _run_selected_sync_steps(db_path, normalized_selected_scopes, force_refresh=force_refresh)
             _raise_if_sync_cancelled()

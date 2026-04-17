@@ -98,6 +98,18 @@ function formatElapsedTime(milliseconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Formats remaining ETA from server-provided whole seconds (sync drawer). */
+function formatEtaCountdown(totalSeconds: number) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(s / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
 function titleCaseLabel(value: string) {
   return value
     .split(/[_-]/g)
@@ -471,7 +483,10 @@ export function AppShell({ children }: PropsWithChildren) {
             title: activeStageLabel,
             subtitle: runningHeroSubtitle,
             elapsed: elapsedLabel || "00:00",
-            eta: "--:--"
+            eta:
+              typeof syncStatus?.eta_seconds === "number" && syncStatus.eta_seconds >= 0
+                ? formatEtaCountdown(syncStatus.eta_seconds)
+                : "--:--"
           }
         : undefined,
     doneHero:

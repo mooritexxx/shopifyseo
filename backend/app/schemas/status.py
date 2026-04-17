@@ -12,6 +12,9 @@ class SyncStatusPayload(BaseModel):
     force_refresh: bool = False
     started_at: int = 0
     finished_at: int = 0
+    stage_started_at: int = 0
+    eta_segment_started_at: int = 0
+    eta_seconds: int | None = None
     stage: str = "idle"
     stage_label: str = ""
     active_scope: str = ""

@@ -14,12 +14,14 @@ Setup takes about 15 minutes.
 
 - **SEO Dashboard** — GSC clicks/impressions, GA4 sessions, PageSpeed scores, and indexing status in one view with period-over-period comparisons
 - **Catalog Audit** — Identifies thin content, missing meta titles/descriptions, and incomplete SEO across every product, collection, page, and blog post
-- **AI Optimization** — Regenerate SEO titles, meta descriptions, and body copy using your choice of AI provider (OpenAI, Anthropic, Gemini, Ollama, OpenRouter)
+- **AI Optimization** — Regenerate SEO titles, meta descriptions, and body copy via OpenRouter (choose models per task in Settings)
 - **Sidekick** — Contextual AI chat on every product/collection/page detail view for real-time advice
 - **Keyword Clustering** — Groups your GSC queries into intent clusters and maps them to catalog pages
 - **Keyword Research** — Seed keyword expansion, competitor discovery, and gap analysis via DataForSEO (optional)
 - **Article Ideas & Generation** — AI-driven blog ideation based on SEO gaps, with full draft-to-publish pipeline
-- **Image SEO** — Bulk alt text generation and filename optimization for product images
+- **Image optimization** — Catalog image workflow: vision-assisted alt text, SEO-friendly filenames, optional **WebP** conversion for smaller files, and **normalized dimensions** (square canvas / consistent sizing) before replacing media in Shopify
+- **Embeddings** — Background vector indexes for products, pages, keywords, clusters, competitor pages, and more—powers similarity and gap-style analysis (when Gemini embedding API is configured)
+- **Google Ads lab** — Experimental keyword workflows against your connected Google Ads account (optional)
 - **Everything local** — SQLite database, no SaaS, no usage fees beyond your own API keys
 
 ---

@@ -14,6 +14,7 @@ def test_summary_contract():
     payload = response.json()
     assert payload["ok"] is True
     assert "counts" in payload["data"]
+    assert "last_dashboard_sync_at" in payload["data"]
     assert "metrics" in payload["data"]
     assert "gsc_site" in payload["data"]
     assert "ai_learning" not in payload["data"]
@@ -233,6 +234,14 @@ def test_collections_and_pages_contract():
         assert "has_dimensional" in it["gsc_segment_flags"]
 
 
+def test_settings_shopify_test_errors_without_credentials():
+    response = client.post("/api/settings/shopify-test", json={})
+    assert response.status_code == 500
+    body = response.json()
+    assert body.get("ok") is False
+    assert "error" in body or "detail" in body
+
+
 def test_operations_contract():
     settings_response = client.get("/api/settings")
     google_response = client.get("/api/google-signals")
@@ -240,9 +249,14 @@ def test_operations_contract():
     assert google_response.status_code == 200
     assert settings_response.json()["ok"] is True
     assert google_response.json()["ok"] is True
-    vals = settings_response.json()["data"]["values"]
+    data = settings_response.json()["data"]
+    vals = data["values"]
     assert "dataforseo_api_login" in vals
     assert isinstance(vals["dataforseo_api_login"], str)
+    sr = data["sync_scope_ready"]
+    for key in ("shopify", "gsc", "ga4", "index", "pagespeed", "structured"):
+        assert key in sr
+        assert isinstance(sr[key], bool)
     gsig = google_response.json()["data"]
     assert "gsc_property_breakdowns" in gsig
     bd = gsig["gsc_property_breakdowns"]

@@ -9,9 +9,23 @@ import {
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
+import { SettingsConnectionBadge } from "../components/settings/settings-connection-badge";
+import { SettingsSecretInput } from "../components/settings/settings-secret-input";
+import { isProviderKeyReady } from "../lib/ai-provider-readiness";
+import {
+  fingerprintAiGeneration,
+  fingerprintAiImage,
+  fingerprintAiReview,
+  fingerprintAiSidekick,
+  fingerprintAiVision,
+  fingerprintDataforseo,
+  fingerprintGoogleAds,
+  fingerprintShopify,
+  type ConnectionStatusStore
+} from "../lib/settings-connection-storage";
 import type { SettingsPayload } from "../types/api";
 import { SettingsFieldShell } from "./settings-field-shell";
-import { metaForSettingsField, settingsFieldHintId } from "./settings-field-meta";
+import { isSettingsSecretField, metaForSettingsField, settingsFieldHintId } from "./settings-field-meta";
 
 export const settingsTabs = [
   {
@@ -52,6 +66,15 @@ export const staticModelOptionsByProvider: Record<string, string[]> = {
 export const DEFAULT_AI_TIMEOUT_SECONDS = 120;
 export const DEFAULT_AI_MAX_RETRIES = 2;
 
+function settingsTextPlaceholder(key: string): string | undefined {
+  if (key === "store_custom_domain") return "e.g. yourstore.com";
+  if (key === "ga4_property_id") return "Enter property ID or enable the API below for auto-discovery";
+  if (key === "google_ads_customer_id") return "Save developer token and refresh, or enter numeric customer ID";
+  if (key === "google_ads_login_customer_id") return "Optional: MCC / manager ID when customer is a client account";
+  if (key === "search_console_site") return "Connect Google above to auto-discover sites";
+  return undefined;
+}
+
 export function displayNumericSetting(raw: string | undefined, defaultNum: number): string {
   const t = (raw ?? "").trim();
   return t === "" ? String(defaultNum) : t;
@@ -86,6 +109,10 @@ export type RenderSettingsTabSectionsProps = {
   googleAdsStatus: "idle" | "checking" | "ok" | "error";
   googleAdsDetail: string;
   validateGoogleAds: () => void | Promise<void>;
+  shopifyStatus: "idle" | "checking" | "ok" | "error";
+  shopifyDetail: string;
+  validateShopify: () => void | Promise<void>;
+  connectionStore: ConnectionStatusStore;
 };
 
 export function renderSettingsTabSections({
@@ -106,7 +133,11 @@ export function renderSettingsTabSections({
   validateDataforseo,
   googleAdsStatus,
   googleAdsDetail,
-  validateGoogleAds
+  validateGoogleAds,
+  shopifyStatus,
+  shopifyDetail,
+  validateShopify,
+  connectionStore
 }: RenderSettingsTabSectionsProps) {
   const tabSections = {
     integrations: [
@@ -186,6 +217,16 @@ export function renderSettingsTabSections({
   const imageProvider = values.ai_image_provider || "openai";
   const visionProvider = values.ai_vision_provider || generationProvider || "openai";
 
+  const dfsFp = fingerprintDataforseo(values);
+  const dfsLive =
+    connectionStore.dataforseo?.status === "live" && connectionStore.dataforseo.fingerprint === dfsFp;
+  const googleAdsFp = fingerprintGoogleAds(values);
+  const googleAdsLive =
+    connectionStore.googleAds?.status === "live" && connectionStore.googleAds.fingerprint === googleAdsFp;
+  const shopifyFp = fingerprintShopify(values);
+  const shopifyLive =
+    connectionStore.shopify?.status === "live" && connectionStore.shopify.fingerprint === shopifyFp;
+
   function modelOptionsFor(provider: string, currentValue: string) {
     const base =
       provider === "ollama"
@@ -219,80 +260,222 @@ export function renderSettingsTabSections({
           <h3 className="text-lg font-semibold text-ink">{section.title}</h3>
           <p className="mt-1 text-sm text-slate-500">{section.description}</p>
         </div>
-        {section.title === "Generation" ? (
-          <Button variant="secondary" onClick={() => openTestModal("generation")} disabled={aiTestBusy}>
-            Test generation
-          </Button>
-        ) : null}
-        {section.title === "Sidekick" ? (
-          <Button variant="secondary" onClick={() => openTestModal("sidekick")} disabled={aiTestBusy}>
-            Test Sidekick
-          </Button>
-        ) : null}
-        {section.title === "Review QA" ? (
-          <Button variant="secondary" onClick={() => openTestModal("review")} disabled={aiTestBusy}>
-            Test review
-          </Button>
-        ) : null}
-        {section.title === "Image generation" ? (
-          <Button variant="secondary" onClick={() => openImageTestModal()} disabled={aiTestBusy}>
-            Test model
-          </Button>
-        ) : null}
-        {section.title === "Vision (alt captions)" ? (
-          <Button variant="secondary" onClick={() => openVisionTestModal()} disabled={aiTestBusy}>
-            Test vision
-          </Button>
-        ) : null}
-        {section.title === "DataForSEO" ? (
-          <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
-            {dfsStatus === "checking" ? "Checking…" : "Validate access"}
-          </Button>
-        ) : null}
-        {section.title === "Google Ads" ? (
-          <Button variant="secondary" onClick={() => void validateGoogleAds()} disabled={googleAdsStatus === "checking"}>
-            {googleAdsStatus === "checking" ? "Testing…" : "Test connection"}
-          </Button>
-        ) : null}
-        {section.title === "Google" ? (() => {
-          const configured = query.google_configured;
-          const connected = query.google_connected;
-          const statusLabel =
-            configured && connected
-              ? "Connected"
-              : configured && !connected
-                ? "Not connected"
-                : !configured && connected
-                  ? "Credentials missing"
-                  : "Not configured";
-          const statusOk = configured && connected;
-          const statusWarn = !configured && connected;
-          const statusColor = statusOk
-            ? "border-green-200 bg-green-50 text-green-700"
-            : statusWarn
-              ? "border-red-200 bg-red-50 text-red-600"
-              : "border-amber-200 bg-amber-50 text-amber-700";
-          const dotColor = statusOk ? "bg-green-500" : statusWarn ? "bg-red-500" : "bg-amber-500";
-          return (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${statusColor}`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
-                {statusLabel}
-              </span>
-              {query.auth_url ? (
-                <a
-                  href={query.auth_url}
-                  className="inline-flex items-center gap-2 rounded-xl bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-ocean/90"
+        {(() => {
+          const t = section.title;
+          if (t === "Provider Credentials") {
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {query.ai_configured ? (
+                  <SettingsConnectionBadge label="Ready" tone="neutral" />
+                ) : (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                )}
+              </div>
+            );
+          }
+          if (t === "Generation") {
+            const ready = isProviderKeyReady(generationProvider, values);
+            const live =
+              connectionStore.ai?.generation?.status === "live" &&
+              connectionStore.ai.generation.fingerprint === fingerprintAiGeneration(values);
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!ready ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : live ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => openTestModal("generation")} disabled={aiTestBusy}>
+                  Test generation
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Sidekick") {
+            const ready = isProviderKeyReady(sidekickProvider, values);
+            const live =
+              connectionStore.ai?.sidekick?.status === "live" &&
+              connectionStore.ai.sidekick.fingerprint === fingerprintAiSidekick(values);
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!ready ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : live ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => openTestModal("sidekick")} disabled={aiTestBusy}>
+                  Test Sidekick
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Review QA") {
+            const ready = isProviderKeyReady(reviewProvider, values);
+            const live =
+              connectionStore.ai?.review?.status === "live" &&
+              connectionStore.ai.review.fingerprint === fingerprintAiReview(values);
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!ready ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : live ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => openTestModal("review")} disabled={aiTestBusy}>
+                  Test review
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Image generation") {
+            const ready = isProviderKeyReady(imageProvider, values);
+            const live =
+              connectionStore.ai?.image?.status === "live" &&
+              connectionStore.ai.image.fingerprint === fingerprintAiImage(values);
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!ready ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : live ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => openImageTestModal()} disabled={aiTestBusy}>
+                  Test model
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Vision (alt captions)") {
+            const ready = isProviderKeyReady(visionProvider, values);
+            const live =
+              connectionStore.ai?.vision?.status === "live" &&
+              connectionStore.ai.vision.fingerprint === fingerprintAiVision(values);
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!ready ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : live ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => openVisionTestModal()} disabled={aiTestBusy}>
+                  Test vision
+                </Button>
+              </div>
+            );
+          }
+          if (t === "DataForSEO") {
+            const hasCreds = !!(values.dataforseo_api_login?.trim() && values.dataforseo_api_password?.trim());
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!hasCreds ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : dfsLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
+                  {dfsStatus === "checking" ? "Checking…" : "Validate access"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Google Ads") {
+            const hasToken = !!(values.google_ads_developer_token || "").trim();
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!hasToken ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : googleAdsLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button
+                  variant="secondary"
+                  onClick={() => void validateGoogleAds()}
+                  disabled={googleAdsStatus === "checking"}
                 >
-                  {connected ? "Reconnect Google" : "Connect Google"}
+                  {googleAdsStatus === "checking" ? "Testing…" : "Test connection"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Shopify") {
+            const credsOnFile = query.sync_scope_ready.shopify;
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!credsOnFile ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : shopifyLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => void validateShopify()} disabled={shopifyStatus === "checking"}>
+                  {shopifyStatus === "checking" ? "Testing…" : "Test connection"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Store Identity") {
+            const complete = !!(
+              values.store_name?.trim() &&
+              values.primary_market_country?.trim() &&
+              values.dashboard_timezone?.trim()
+            );
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {complete ? (
+                  <SettingsConnectionBadge label="Complete" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Incomplete" tone="neutral" />
+                )}
+              </div>
+            );
+          }
+          if (t === "Google") {
+            const configured = query.google_configured;
+            const connected = query.google_connected;
+            const statusLabel =
+              configured && connected
+                ? "Live"
+                : configured && !connected
+                  ? "Not connected"
+                  : !configured && connected
+                    ? "Credentials missing"
+                    : "Not configured";
+            const badgeTone: "success" | "warning" | "danger" =
+              configured && connected ? "success" : !configured && connected ? "danger" : "warning";
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <SettingsConnectionBadge label={statusLabel} tone={badgeTone} />
+                {query.auth_url ? (
+                  <a
+                    href={query.auth_url}
+                    className="inline-flex items-center gap-2 rounded-xl bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-ocean/90"
+                  >
+                    {connected ? "Reconnect Google" : "Connect Google"}
+                  </a>
+                ) : null}
+                <a href="/app/google-signals" className="text-sm font-medium text-ocean underline-offset-2 hover:underline">
+                  Google Signals dashboard
                 </a>
-              ) : null}
-              <a href="/app/google-signals" className="text-sm font-medium text-ocean underline-offset-2 hover:underline">
-                Google Signals dashboard
-              </a>
-            </div>
-          );
-        })() : null}
+              </div>
+            );
+          }
+          return null;
+        })()}
       </div>
       {section.title === "Google" && !query.google_configured && query.google_connected ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
@@ -315,6 +498,13 @@ export function renderSettingsTabSections({
           className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${googleAdsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
         >
           {googleAdsDetail}
+        </div>
+      ) : null}
+      {section.title === "Shopify" && shopifyStatus !== "idle" && shopifyStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${shopifyStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {shopifyDetail}
         </div>
       ) : null}
       <div className="grid gap-5 xl:grid-cols-2">
@@ -675,27 +865,25 @@ export function renderSettingsTabSections({
               </Select>
             ) : (
               <>
-                <Input
-                  id={fieldId}
-                  type={key === "dataforseo_api_password" || key === "google_ads_developer_token" ? "password" : "text"}
-                  className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
-                  placeholder={
-                    key === "store_custom_domain"
-                      ? "e.g. yourstore.com"
-                      : key === "ga4_property_id"
-                        ? "Enter property ID or enable the API below for auto-discovery"
-                        : key === "google_ads_customer_id"
-                          ? "Save developer token and refresh, or enter numeric customer ID"
-                          : key === "google_ads_login_customer_id"
-                            ? "Optional: MCC / manager ID when customer is a client account"
-                            : key === "search_console_site"
-                            ? "Connect Google above to auto-discover sites"
-                            : undefined
-                  }
-                  aria-describedby={describeHint}
-                  value={values[key] || ""}
-                  onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
-                />
+                {isSettingsSecretField(key) ? (
+                  <SettingsSecretInput
+                    id={fieldId}
+                    placeholder={settingsTextPlaceholder(key)}
+                    ariaDescribedBy={describeHint}
+                    value={values[key] || ""}
+                    onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                ) : (
+                  <Input
+                    id={fieldId}
+                    type="text"
+                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    placeholder={settingsTextPlaceholder(key)}
+                    aria-describedby={describeHint}
+                    value={values[key] || ""}
+                    onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                )}
                 {key === "ga4_property_id" && query.ga4_api_activation_url ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     <p className="font-medium">The GA4 Admin API needs to be enabled in your Google Cloud project for auto-discovery.</p>

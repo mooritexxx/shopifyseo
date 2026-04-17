@@ -39,3 +39,19 @@ Equivalent: `rm -rf dist node_modules/.vite && npm run build`
 This is part of the **Live testing** workflow above. Backend: restart if Python changed; `--reload` often suffices if the process was already started with it.
 
 Hard refresh (⌘⇧R) if assets look cached.
+
+## Git — commit and push before handoff
+
+When you change code, **finish the loop**: rebuild the SPA if anything under `frontend/` changed (`cd frontend && npm run build`), restart or rely on `--reload` for Python changes as in the table above, then **commit and push** so the remote matches local:
+
+```bash
+git add -A
+git commit -m "Short imperative description of the change"
+git push
+```
+
+Do not end a coding task with only local edits; the maintainer expects the branch pushed.
+
+## Human contributors
+
+For fork/PR workflow, issue etiquette, and optional pre-commit hooks, see [CONTRIBUTING.md](CONTRIBUTING.md).

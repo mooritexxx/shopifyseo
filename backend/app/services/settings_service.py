@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any
 
 import shopifyseo.dashboard_ai as dai
@@ -16,6 +17,47 @@ from shopifyseo.dashboard_config import RUNTIME_SETTING_KEYS, _ENV_MAPPING, appl
 from shopifyseo.dashboard_http import request_json
 
 logger = logging.getLogger(__name__)
+
+
+def _shopify_runtime_ready(conn: sqlite3.Connection) -> bool:
+    """True when Admin API credentials and shop hostname are available (DB or env)."""
+    shop, _ = runtime_setting(conn, "SHOPIFY_SHOP", "shopify_shop")
+    cid, _ = runtime_setting(conn, "SHOPIFY_CLIENT_ID", "shopify_client_id")
+    csec, _ = runtime_setting(conn, "SHOPIFY_CLIENT_SECRET", "shopify_client_secret")
+    return bool(shop.strip() and cid.strip() and csec.strip())
+
+
+def get_sync_scope_readiness(conn: sqlite3.Connection) -> dict[str, bool]:
+    """Which sync pipeline steps can run given current credentials and OAuth state."""
+    shopify_ok = _shopify_runtime_ready(conn)
+    google_ok = dg.google_configured() and bool(dg.get_service_token(conn, "search_console"))
+    return {
+        "shopify": shopify_ok,
+        "gsc": google_ok,
+        "ga4": google_ok,
+        "index": google_ok,
+        "pagespeed": google_ok,
+        "structured": shopify_ok,
+    }
+
+
+_GRANULAR_SHOPIFY_SCOPES = frozenset({"products", "collections", "pages", "blogs"})
+_PIPELINE_SCOPES = frozenset({"shopify", "gsc", "ga4", "index", "pagespeed", "structured"})
+
+
+def filter_normalized_scopes_for_readiness(normalized_scopes: list[str], readiness: dict[str, bool]) -> list[str]:
+    """Drop sync steps the app cannot run yet (missing Shopify or Google OAuth)."""
+    out: list[str] = []
+    for s in normalized_scopes:
+        if s in _GRANULAR_SHOPIFY_SCOPES:
+            if readiness.get("shopify"):
+                out.append(s)
+        elif s in _PIPELINE_SCOPES:
+            if readiness.get(s, False):
+                out.append(s)
+        else:
+            out.append(s)
+    return out
 
 
 def get_settings_data() -> dict[str, Any]:
@@ -48,6 +90,7 @@ def get_settings_data() -> dict[str, Any]:
                     available_google_ads_customers = dg.list_google_ads_accessible_customers(conn)
                 except Exception:
                     logger.warning("Failed to list Google Ads customers", exc_info=True)
+        sync_scope_ready = get_sync_scope_readiness(conn)
         return {
             "values": values,
             "google_configured": configured,
@@ -58,6 +101,7 @@ def get_settings_data() -> dict[str, Any]:
             "available_ga4_properties": available_ga4_properties,
             "available_google_ads_customers": available_google_ads_customers,
             "ga4_api_activation_url": ga4_api_activation_url,
+            "sync_scope_ready": sync_scope_ready,
         }
     finally:
         conn.close()
@@ -131,6 +175,29 @@ def test_google_ads_connection(override_token: str | None = None) -> dict[str, A
         return dg.test_google_ads_api(conn, dev_tok)
     finally:
         conn.close()
+
+
+def test_shopify_admin_connection(overrides: dict[str, str] | None = None) -> dict[str, Any]:
+    from shopifyseo.shopify_admin import probe_shopify_admin_with_credentials
+
+    o = {k: (v if isinstance(v, str) else "") for k, v in (overrides or {}).items()}
+    conn = open_db_connection()
+    try:
+        shop = (o.get("shopify_shop") or "").strip()
+        cid = (o.get("shopify_client_id") or "").strip()
+        csec = (o.get("shopify_client_secret") or "").strip()
+        ver = (o.get("shopify_api_version") or "").strip()
+        if not shop:
+            shop, _ = runtime_setting(conn, "SHOPIFY_SHOP", "shopify_shop")
+        if not cid:
+            cid, _ = runtime_setting(conn, "SHOPIFY_CLIENT_ID", "shopify_client_id")
+        if not csec:
+            csec, _ = runtime_setting(conn, "SHOPIFY_CLIENT_SECRET", "shopify_client_secret")
+        if not ver:
+            ver, _ = runtime_setting(conn, "SHOPIFY_API_VERSION", "shopify_api_version")
+    finally:
+        conn.close()
+    return probe_shopify_admin_with_credentials(shop, cid, csec, ver)
 
 
 def get_ollama_models(ollama_base_url: str = "", ollama_api_key: str = "") -> dict[str, Any]:

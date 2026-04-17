@@ -130,6 +130,15 @@ class GoogleAdsCustomerPayload(BaseModel):
     resource_name: str = ""
 
 
+class SyncScopeReadyPayload(BaseModel):
+    shopify: bool
+    gsc: bool
+    ga4: bool
+    index: bool
+    pagespeed: bool
+    structured: bool
+
+
 class SettingsPayload(BaseModel):
     values: SettingsValuesPayload
     google_configured: bool
@@ -140,6 +149,7 @@ class SettingsPayload(BaseModel):
     available_ga4_properties: list[Ga4PropertyPayload] = Field(default_factory=list)
     available_google_ads_customers: list[GoogleAdsCustomerPayload] = Field(default_factory=list)
     ga4_api_activation_url: str = ""
+    sync_scope_ready: SyncScopeReadyPayload
 
 
 class SettingsUpdatePayload(SettingsValuesPayload):
@@ -154,6 +164,17 @@ class GoogleAdsTestPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     google_ads_developer_token: str = ""
+
+
+class ShopifyTestPayload(BaseModel):
+    """Optional overrides for Shopify Admin probe; missing fields fall back to DB / env via runtime_setting."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    shopify_shop: str = ""
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
+    shopify_api_version: str = ""
 
 
 class OllamaModelsRequestPayload(BaseModel):

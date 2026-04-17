@@ -1,5 +1,7 @@
 # ShopifySEO
 
+[![CI](https://github.com/mooritexxx/shopifyseo/actions/workflows/ci.yml/badge.svg)](https://github.com/mooritexxx/shopifyseo/actions/workflows/ci.yml)
+
 A self-hosted SEO platform for Shopify store operators. It pulls your catalog, Google Search Console, GA4, PageSpeed, and indexing data into a local SQLite database and provides AI-powered SEO recommendations, keyword clustering, and blog article generation — all running on your own machine with no data leaving your environment.
 
 > **Screenshots coming soon.** Setup takes about 15 minutes.
@@ -196,7 +198,7 @@ For a deeper technical reference see [TECHNICAL_DOC.md](TECHNICAL_DOC.md).
 
 ## Contributing
 
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on pull requests, code style, and testing requirements.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and PR expectations. High-level layout is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 

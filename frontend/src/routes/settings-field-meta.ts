@@ -44,6 +44,25 @@ export type SettingsFieldMetaEntry = {
   detail?: string;
 };
 
+/** API keys, tokens, and passwords — masked by default with a show/hide control in Settings. */
+const SETTINGS_SECRET_FIELD_KEYS_ARR = [
+  "openai_api_key",
+  "gemini_api_key",
+  "anthropic_api_key",
+  "openrouter_api_key",
+  "ollama_api_key",
+  "dataforseo_api_password",
+  "shopify_client_secret",
+  "google_client_secret",
+  "google_ads_developer_token"
+] as const satisfies readonly SettingsFieldKey[];
+
+export const SETTINGS_SECRET_FIELD_KEYS: readonly SettingsFieldKey[] = SETTINGS_SECRET_FIELD_KEYS_ARR;
+
+export function isSettingsSecretField(key: string): key is SettingsFieldKey {
+  return (SETTINGS_SECRET_FIELD_KEYS_ARR as readonly string[]).includes(key);
+}
+
 export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntry> = {
   openai_api_key: {
     label: "OpenAI API Key",

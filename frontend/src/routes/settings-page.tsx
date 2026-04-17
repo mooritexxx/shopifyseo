@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { z } from "zod";
 
 import { Button } from "../components/ui/button";
@@ -9,6 +10,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { Toast } from "../components/ui/toast";
 import { detectToastVariant } from "../lib/toast-utils";
 import { getJson, postJson } from "../lib/api";
+import {
+  fingerprintAiGeneration,
+  fingerprintAiImage,
+  fingerprintAiReview,
+  fingerprintAiSidekick,
+  fingerprintAiVision,
+  fingerprintDataforseo,
+  fingerprintGoogleAds,
+  fingerprintShopify,
+  loadConnectionStore,
+  persistConnectionStore,
+  type ConnectionStatusStore
+} from "../lib/settings-connection-storage";
 import { actionSchema, settingsSchema } from "../types/api";
 import { renderSettingsTabSections, settingsTabs, type SettingsTabId } from "./settings-page-fields";
 
@@ -46,8 +60,12 @@ function formatTestElapsed(ms: number): string {
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [toast, setToast] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("integrations");
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(() => {
+    const tab = searchParams.get("tab");
+    return tab && settingsTabs.some((t) => t.id === tab) ? (tab as SettingsTabId) : "integrations";
+  });
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testTarget, setTestTarget] = useState<"generation" | "review" | "sidekick" | "image" | "vision">("generation");
   const [geminiModels, setGeminiModels] = useState<string[]>([]);
@@ -58,6 +76,10 @@ export function SettingsPage() {
   const [dfsDetail, setDfsDetail] = useState("");
   const [googleAdsStatus, setGoogleAdsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
+  const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
+  const [shopifyDetail, setShopifyDetail] = useState("");
+  const [connectionStore, setConnectionStore] = useState<ConnectionStatusStore>(() => loadConnectionStore());
+  const valuesRef = useRef<Record<string, string>>({});
   const query = useQuery({
     queryKey: ["settings"],
     queryFn: () => getJson("/api/settings", settingsSchema)
@@ -71,6 +93,21 @@ export function SettingsPage() {
     }
   }, [query.data]);
 
+  useEffect(() => {
+    valuesRef.current = values;
+  }, [values]);
+
+  useEffect(() => {
+    persistConnectionStore(connectionStore);
+  }, [connectionStore]);
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab && settingsTabs.some((t) => t.id === tab)) {
+      setActiveTab(tab as SettingsTabId);
+    }
+  }, [searchParams]);
+
   const saveMutation = useMutation({
     mutationFn: () => postJson("/api/settings", actionSchema, values),
     onSuccess: (result) => {
@@ -81,18 +118,64 @@ export function SettingsPage() {
   });
   const testMutation = useMutation({
     mutationFn: (target: "generation" | "review" | "sidekick") =>
-      postJson("/api/settings/ai-test", actionSchema, { ...values, target }),
-    onSuccess: () => setTestModalOpen(true),
+      postJson("/api/settings/ai-test", actionSchema, { ...valuesRef.current, target }),
+    onSuccess: (_data, target) => {
+      setTestModalOpen(true);
+      const v = valuesRef.current;
+      const flow =
+        target === "generation" ? "generation" : target === "sidekick" ? "sidekick" : "review";
+      const fp =
+        target === "generation"
+          ? fingerprintAiGeneration(v)
+          : target === "sidekick"
+            ? fingerprintAiSidekick(v)
+            : fingerprintAiReview(v);
+      setConnectionStore((prev) => ({
+        ...prev,
+        ai: {
+          ...prev.ai,
+          [flow]: { status: "live", fingerprint: fp, validatedAt: new Date().toISOString() }
+        }
+      }));
+    },
     onError: () => setTestModalOpen(true)
   });
   const imageTestMutation = useMutation({
-    mutationFn: () => postJson("/api/settings/image-model-test", actionSchema, values),
-    onSuccess: () => setTestModalOpen(true),
+    mutationFn: () => postJson("/api/settings/image-model-test", actionSchema, valuesRef.current),
+    onSuccess: () => {
+      setTestModalOpen(true);
+      const v = valuesRef.current;
+      setConnectionStore((prev) => ({
+        ...prev,
+        ai: {
+          ...prev.ai,
+          image: {
+            status: "live",
+            fingerprint: fingerprintAiImage(v),
+            validatedAt: new Date().toISOString()
+          }
+        }
+      }));
+    },
     onError: () => setTestModalOpen(true)
   });
   const visionTestMutation = useMutation({
-    mutationFn: () => postJson("/api/settings/vision-model-test", actionSchema, values),
-    onSuccess: () => setTestModalOpen(true),
+    mutationFn: () => postJson("/api/settings/vision-model-test", actionSchema, valuesRef.current),
+    onSuccess: () => {
+      setTestModalOpen(true);
+      const v = valuesRef.current;
+      setConnectionStore((prev) => ({
+        ...prev,
+        ai: {
+          ...prev.ai,
+          vision: {
+            status: "live",
+            fingerprint: fingerprintAiVision(v),
+            validatedAt: new Date().toISOString()
+          }
+        }
+      }));
+    },
     onError: () => setTestModalOpen(true)
   });
 
@@ -119,10 +202,24 @@ export function SettingsPage() {
     setDfsStatus("checking");
     setDfsDetail("");
     try {
-      const res = await fetch("/api/keywords/target/validate-dataforseo", { method: "POST" });
+      const res = await fetch("/api/keywords/target/validate-dataforseo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataforseo_api_login: valuesRef.current.dataforseo_api_login || "",
+          dataforseo_api_password: valuesRef.current.dataforseo_api_password || ""
+        })
+      });
       const json = (await res.json()) as { ok: boolean; detail: string };
       setDfsStatus(json.ok ? "ok" : "error");
       setDfsDetail(json.detail || "");
+      if (json.ok) {
+        const fp = fingerprintDataforseo(valuesRef.current);
+        setConnectionStore((prev) => ({
+          ...prev,
+          dataforseo: { status: "live", fingerprint: fp, validatedAt: new Date().toISOString() }
+        }));
+      }
     } catch {
       setDfsStatus("error");
       setDfsDetail("Network error — could not reach the server.");
@@ -143,10 +240,44 @@ export function SettingsPage() {
           ? `${res.message} (${count} accessible customer${count === 1 ? "" : "s"}).`
           : res.message
       );
+      setConnectionStore((prev) => ({
+        ...prev,
+        googleAds: {
+          status: "live",
+          fingerprint: fingerprintGoogleAds(valuesRef.current),
+          validatedAt: new Date().toISOString()
+        }
+      }));
       void queryClient.invalidateQueries({ queryKey: ["settings"] });
     } catch (e) {
       setGoogleAdsStatus("error");
       setGoogleAdsDetail((e as Error).message);
+    }
+  }
+
+  async function validateShopify() {
+    setShopifyStatus("checking");
+    setShopifyDetail("");
+    try {
+      const res = await postJson("/api/settings/shopify-test", actionSchema, {
+        shopify_shop: valuesRef.current.shopify_shop || "",
+        shopify_client_id: valuesRef.current.shopify_client_id || "",
+        shopify_client_secret: valuesRef.current.shopify_client_secret || "",
+        shopify_api_version: valuesRef.current.shopify_api_version || ""
+      });
+      setShopifyStatus("ok");
+      setShopifyDetail(res.message);
+      setConnectionStore((prev) => ({
+        ...prev,
+        shopify: {
+          status: "live",
+          fingerprint: fingerprintShopify(valuesRef.current),
+          validatedAt: new Date().toISOString()
+        }
+      }));
+    } catch (e) {
+      setShopifyStatus("error");
+      setShopifyDetail((e as Error).message);
     }
   }
 
@@ -301,7 +432,11 @@ export function SettingsPage() {
     validateDataforseo,
     googleAdsStatus,
     googleAdsDetail,
-    validateGoogleAds
+    validateGoogleAds,
+    shopifyStatus,
+    shopifyDetail,
+    validateShopify,
+    connectionStore
   };
 
   return (
@@ -310,7 +445,11 @@ export function SettingsPage() {
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Settings</p>
         <h2 className="mt-2 text-4xl font-bold text-ink">Platform configuration</h2>
-        <p className="mt-2 text-sm text-slate-500">Shopify, Google, and AI runtime settings backed by the local service settings store.</p>
+        <p className="mt-2 text-sm text-slate-500">
+          Credentials and options are stored in the local service settings database on this machine. For normal setup you can
+          configure everything here — no <code className="rounded bg-slate-100 px-1 font-mono text-xs">.env</code> file is
+          required. Advanced deployments (Docker, CI) can still inject the same keys via environment variables.
+        </p>
       </div>
       <Card>
         <div className="mb-6 flex flex-wrap gap-3 text-sm text-slate-600">

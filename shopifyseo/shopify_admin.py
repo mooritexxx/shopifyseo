@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import sys
 import time
+from typing import Any
 
 import requests
 
@@ -86,6 +89,61 @@ def graphql_request(query: str, variables: dict | None = None) -> dict:
     if data.get("errors"):
         raise SystemExit(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
     return data
+
+
+def probe_shopify_admin_with_credentials(
+    shop: str,
+    client_id: str,
+    client_secret: str,
+    api_version: str = "",
+) -> dict[str, Any]:
+    """Client-credentials token + minimal GraphQL ``shop { name }``. Does not read process env."""
+    shop_domain = normalize_shop_domain(shop)
+    cid = (client_id or "").strip()
+    csec = (client_secret or "").strip()
+    if not shop_domain or not cid or not csec:
+        raise ValueError("Shopify shop, Client ID, and Client Secret are required.")
+    ver = (api_version or "").strip() or DEFAULT_API_VERSION
+    token_url = f"https://{shop_domain}/admin/oauth/access_token"
+    try:
+        payload = request_json(
+            token_url,
+            method="POST",
+            form={
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": csec,
+            },
+            timeout=30,
+        )
+    except HttpRequestError as exc:
+        detail = f"Shopify OAuth token request failed: {exc}"
+        if exc.status:
+            detail = f"{detail} (HTTP {exc.status})"
+        raise RuntimeError(detail) from exc
+    token = (payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Shopify returned no access token.")
+    gql = "query { shop { name } }"
+    graphql_url = f"https://{shop_domain}/admin/api/{ver}/graphql.json"
+    try:
+        raw = request_json(
+            graphql_url,
+            method="POST",
+            headers={"X-Shopify-Access-Token": token, "Content-Type": "application/json"},
+            payload={"query": gql},
+            timeout=30,
+        )
+    except HttpRequestError as exc:
+        raise RuntimeError(f"Shopify GraphQL failed: {exc}") from exc
+    if raw.get("errors"):
+        raise RuntimeError(f"Shopify GraphQL errors: {raw.get('errors')}")
+    shop_name = ""
+    data = raw.get("data") or {}
+    shop_node = data.get("shop") or {}
+    if isinstance(shop_node, dict):
+        shop_name = (shop_node.get("name") or "").strip()
+    return {"shop_name": shop_name, "shop_domain": shop_domain}
 
 
 def _wait_media_image_cdn_url(

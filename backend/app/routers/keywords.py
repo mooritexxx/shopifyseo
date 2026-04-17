@@ -4,9 +4,9 @@ import queue
 import sqlite3
 import threading
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from backend.app.db import open_db_connection
 from backend.app.services.keyword_research import (
@@ -495,13 +495,28 @@ def research_target_keywords():
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+class DataforseoValidatePayload(BaseModel):
+    """Optional credentials from the Settings form (before save). When empty, values come from the DB."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    dataforseo_api_login: str = ""
+    dataforseo_api_password: str = ""
+
+
 @router.post("/target/validate-dataforseo", response_model=dict)
-def validate_dataforseo_credentials():
+def validate_dataforseo_credentials(payload: DataforseoValidatePayload | None = Body(default=None)):
     """Quick DataForSEO Labs pre-flight using primary market locale."""
     conn = open_db_connection()
     try:
-        login = (get_service_setting(conn, "dataforseo_api_login") or "").strip()
-        password = (get_service_setting(conn, "dataforseo_api_password") or "").strip()
+        login = (payload.dataforseo_api_login if payload else "") or ""
+        password = (payload.dataforseo_api_password if payload else "") or ""
+        login = login.strip()
+        password = password.strip()
+        if not login:
+            login = (get_service_setting(conn, "dataforseo_api_login") or "").strip()
+        if not password:
+            password = (get_service_setting(conn, "dataforseo_api_password") or "").strip()
         if not login or not password:
             return {
                 "ok": False,

@@ -182,6 +182,10 @@ class DashboardSummary(BaseModel):
     counts: CountSummary
     metrics: OverviewMetrics
     recent_runs: list[SyncRunSummary]
+    last_dashboard_sync_at: str | None = Field(
+        default=None,
+        description="Unix timestamp string when a dashboard sync last completed successfully (service_settings).",
+    )
     gsc_site: GscSiteOverview
     ga4_site: Ga4SiteOverview
     indexing_rollup: IndexingRollup

@@ -208,6 +208,8 @@ export const summarySchema = z.object({
     blog_articles_synced: z.number().nullable().optional(),
     error_message: z.string().nullable().optional()
   })),
+  /** Unix timestamp string set when a dashboard (sidebar) sync completes successfully */
+  last_dashboard_sync_at: z.string().nullish(),
   gsc_site: gscSiteOverviewSchema,
   ga4_site: ga4SiteOverviewSchema,
   indexing_rollup: indexingRollupSchema,
@@ -857,7 +859,15 @@ export const settingsSchema = z.object({
     descriptive_name: z.string().default(""),
     resource_name: z.string().default("")
   })).default([]),
-  ga4_api_activation_url: z.string().default("")
+  ga4_api_activation_url: z.string().default(""),
+  sync_scope_ready: z.object({
+    shopify: z.boolean(),
+    gsc: z.boolean(),
+    ga4: z.boolean(),
+    index: z.boolean(),
+    pagespeed: z.boolean(),
+    structured: z.boolean()
+  })
 });
 
 export const messageSchema = z.object({

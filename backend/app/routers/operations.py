@@ -15,6 +15,7 @@ from backend.app.schemas.operations import (
     OllamaModelsRequestPayload,
     SettingsAiTestPayload,
     GoogleAdsTestPayload,
+    ShopifyTestPayload,
     SettingsPayload,
     SettingsUpdatePayload,
 )
@@ -30,6 +31,7 @@ from backend.app.services.dashboard_service import (
     save_settings,
     test_ai_connection,
     test_google_ads_connection,
+    test_shopify_admin_connection,
     test_image_model,
     test_vision_model,
 )
@@ -101,6 +103,23 @@ def settings_google_ads_test(payload: GoogleAdsTestPayload):
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     return success_response({"message": "Google Ads API connection OK", "result": result})
+
+
+@router.post("/settings/shopify-test", response_model=SuccessResponse[ActionMessagePayload])
+def settings_shopify_test(payload: ShopifyTestPayload):
+    try:
+        result = test_shopify_admin_connection(payload.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    name = (result.get("shop_name") or "").strip()
+    domain = (result.get("shop_domain") or "").strip()
+    label = f"{name} ({domain})" if name else domain
+    return success_response(
+        {
+            "message": f"Shopify Admin API OK — {label}" if label else "Shopify Admin API OK",
+            "result": result,
+        }
+    )
 
 
 @router.post("/settings/ollama-models", response_model=SuccessResponse[OllamaModelsPayload])

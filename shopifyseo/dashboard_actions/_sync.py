@@ -942,6 +942,11 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
             )
             SYNC_STATE["finished_at"] = int(time.time())
             SYNC_STATE["last_result"] = result
+            conn = _db_connect_for_actions(db_path)
+            try:
+                dg.set_service_setting(conn, "last_dashboard_sync_finished_at", str(int(time.time())))
+            finally:
+                conn.close()
             return result
         except Exception as exc:
             if str(exc) == "Sync cancelled by user":

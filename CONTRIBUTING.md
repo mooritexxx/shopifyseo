@@ -1,57 +1,54 @@
-# Contributing to Shopify Agentic SEO
+# Contributing to ShopifySEO
 
-Thanks for your interest in contributing! This guide covers the dev setup, conventions, and PR workflow.
+Thanks for your interest in contributing. This guide covers development setup, conventions, and the pull-request workflow.
 
 ## Prerequisites
 
 - **Python 3.10+** (3.12 recommended)
 - **Node.js 18+** (20 recommended) with npm
-- A Shopify store with an Admin API access token (for catalog sync)
-- Optional: Google OAuth credentials (for Search Console / GA4), DataForSEO credentials (for keyword and competitor research), and at least one LLM API key
+- A Shopify store and custom app credentials for catalog sync (client credentials flow)
+- Optional: Google OAuth credentials (Search Console / GA4), DataForSEO credentials, and at least one LLM API key
 
-## Development Setup
+## Development setup
 
 ```bash
-# Clone the repo
-git clone https://github.com/<your-org>/shopify-agentic-seo.git
-cd shopify-agentic-seo
+git clone https://github.com/mooritexxx/shopifyseo.git
+cd shopifyseo
 
-# Python deps (virtual env recommended)
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/activate
 pip install -e ".[dev]"
+pip install -r backend/requirements.txt
 
-# Frontend deps
 cd frontend && npm ci && cd ..
 
-# Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env if you use environment-based config; most settings can also be set in the app Settings UI.
 ```
 
-## Running Locally
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the backend, `shopifyseo` package, and frontend fit together.
 
-The FastAPI backend serves the built SPA from `frontend/dist` on port 8000.
+## Running locally
+
+The FastAPI app serves the **production-built** SPA from `frontend/dist` on port **8000** (this is what maintainers use for manual testing).
 
 ```bash
-# Build the frontend
-cd frontend && npm run build && cd ..
-
-# Start the backend
-PYTHONPATH=. uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+make build-frontend
+make run-backend
 ```
 
-Then open **http://127.0.0.1:8000/app/** (hard-refresh with Cmd+Shift+R after rebuilds).
+Open **http://127.0.0.1:8000/app/** (hard-refresh with Cmd+Shift+R after frontend rebuilds).
 
-## Code Style
+Convenience: `./start_app.sh` builds the frontend and starts the backend.
+
+For day-to-day UI work you can run `cd frontend && npm run dev` **and** the backend in two terminals, but always verify with a production build before merging, because that is what ships.
+
+## Code style
 
 | Area | Tool | Config |
 |------|------|--------|
-| Python formatting & linting | [ruff](https://docs.astral.sh/ruff/) | `pyproject.toml` |
+| Python formatting and linting | [ruff](https://docs.astral.sh/ruff/) | `pyproject.toml` |
 | Python types | [mypy](https://mypy-lang.org/) | `pyproject.toml` |
-| TypeScript types | `tsc --noEmit` | `tsconfig.app.json` |
-| Frontend formatting | Prettier (via editor) | defaults |
-
-Run linters before committing:
+| TypeScript | `tsc --noEmit` | `tsconfig.app.json` |
 
 ```bash
 ruff check . --fix
@@ -59,38 +56,45 @@ ruff format .
 cd frontend && npx tsc --noEmit
 ```
 
+Optional: [pre-commit](https://pre-commit.com/) using `.pre-commit-config.yaml`.
+
 ## Testing
 
 ```bash
-# Python tests
-python -m pytest
+make test-api
+# or
+PYTHONPATH=. python -m pytest tests/test_api.py -q
 
-# Frontend tests
 cd frontend && npm test
 ```
 
-## Branch Naming
+CI runs a **minimal** API smoke test and frontend typecheck (see `.github/workflows/ci.yml`). The full `tests/` tree may include additional modules; run targeted files while larger suites are being stabilized.
 
-Use descriptive branch names with a prefix:
+## Branch naming
 
 - `feat/short-description` — new features
 - `fix/short-description` — bug fixes
-- `refactor/short-description` — code improvements
+- `refactor/short-description` — internal improvements
 - `docs/short-description` — documentation only
 
-## Pull Request Process
+## Pull request process
 
-1. Create a feature branch from `main`
-2. Make your changes with clear, focused commits
-3. Ensure all tests pass and linters are clean
-4. Open a PR with a description of **what** changed and **why**
-5. Link any related issues
+1. Branch from `main`.
+2. Keep changes focused; avoid unrelated refactors in the same PR.
+3. Run tests and linters that apply to your change.
+4. Describe **what** changed and **why** in the PR body (the template prompts for this).
+5. Link related issues when applicable.
 
-## Architecture Notes
+## Community
 
-- **`shopifyseo/`** — core Python package (business logic, AI engine, Shopify sync, Google integrations)
-- **`backend/`** — FastAPI routers, schemas, and service layer
-- **`frontend/`** — React 19 + TypeScript SPA (Vite, Tailwind, Radix UI)
-- **SQLite** — single-file database for catalog, settings, and cache
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — expected behavior in issues and PRs.
+- [SECURITY.md](SECURITY.md) — how to report vulnerabilities privately.
 
-See `TECHNICAL_DOC.md` for detailed architecture documentation.
+## Architecture notes
+
+- **`shopifyseo/`** — core Python package (AI engine, Shopify sync, Google integrations, research).
+- **`backend/`** — FastAPI routers, schemas, and service layer.
+- **`frontend/`** — React + TypeScript SPA (Vite, Tailwind, Radix UI).
+- **SQLite** — local database for catalog, settings, and caches.
+
+See also `TECHNICAL_DOC.md` when present for deeper detail.

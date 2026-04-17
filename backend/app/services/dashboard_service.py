@@ -47,17 +47,21 @@ from backend.app.services.google_signals_service import (
     refresh_google_summary,
 )
 from backend.app.services.settings_service import (
+    filter_normalized_scopes_for_readiness,
     get_settings_data,
+    get_sync_scope_readiness,
     save_settings,
     test_ai_connection,
     test_image_model,
     test_vision_model,
     test_google_ads_connection,
+    test_shopify_admin_connection,
     get_ollama_models,
     get_anthropic_models,
     get_gemini_models,
     get_openrouter_models,
 )
+from shopifyseo.dashboard_actions._sync import _normalize_sync_scopes
 from shopifyseo.dashboard_store import DB_PATH
 from shopifyseo.sidekick import run_sidekick_turn
 
@@ -248,10 +252,13 @@ def get_dashboard_summary(
     gsc_pages: list[dict[str, Any]] = []
     gsc_performance_period: dict[str, str] = {"start_date": "", "end_date": ""}
     gsc_performance_error = ""
+    last_dashboard_sync_at: str | None = None
     conn = open_db_connection()
     try:
         counts = dq.fetch_counts(conn)
         recent_runs = [dict(row) for row in dq.fetch_recent_runs(conn)]
+        last_sync_raw = (dg.get_service_setting(conn, "last_dashboard_sync_finished_at") or "").strip()
+        last_dashboard_sync_at = last_sync_raw or None
         overview = dq.fetch_overview_metrics(conn)
         articles_missing_meta = dq.count_blog_articles_missing_meta(conn)
         facts = dq.fetch_seo_facts(conn)
@@ -327,6 +334,7 @@ def get_dashboard_summary(
         "counts": counts,
         "metrics": metrics,
         "recent_runs": recent_runs,
+        "last_dashboard_sync_at": last_dashboard_sync_at,
         "gsc_site": gsc_site,
         "ga4_site": ga4_site,
         "indexing_rollup": indexing_rollup,
@@ -387,7 +395,22 @@ def get_ai_status(job_id: str = "") -> dict[str, Any]:
 def start_sync(scope: str, selected_scopes: list[str] | None = None, force_refresh: bool = False) -> tuple[bool, str, dict[str, Any]]:
     if SYNC_STATE["running"]:
         return False, "Sync already running", dict(SYNC_STATE)
-    started = start_sync_background(DB_PATH, scope, selected_scopes, force_refresh=force_refresh)
+    conn = open_db_connection()
+    try:
+        readiness = get_sync_scope_readiness(conn)
+    finally:
+        conn.close()
+    _, norm_selected = _normalize_sync_scopes(scope, selected_scopes)
+    filtered = filter_normalized_scopes_for_readiness(norm_selected, readiness)
+    if not filtered:
+        return (
+            False,
+            "No sync steps are ready. Configure Shopify (Settings → Data sources), then connect Google "
+            "and complete OAuth in Google Signals for Search Console, GA4, indexing, and PageSpeed.",
+            dict(SYNC_STATE),
+        )
+    new_scope, new_selected = _normalize_sync_scopes("custom", filtered)
+    started = start_sync_background(DB_PATH, new_scope, new_selected, force_refresh=force_refresh)
     if started:
         clear_last_error()
         return True, "Sync started", dict(SYNC_STATE)

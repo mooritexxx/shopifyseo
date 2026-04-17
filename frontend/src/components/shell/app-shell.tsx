@@ -36,7 +36,7 @@ import { Progress } from "../ui/progress";
 import { ToggleSwitch } from "../ui/toggle-switch";
 import { cn } from "../../lib/utils";
 import { getJson, postJson } from "../../lib/api";
-import { statusSchema } from "../../types/api";
+import { settingsSchema, statusSchema } from "../../types/api";
 
 type NavItem = {
   to: string;
@@ -66,6 +66,15 @@ const syncServices = [
   { value: "pagespeed", label: "PageSpeed" },
   { value: "structured", label: "Structured SEO" }
 ] as const;
+
+const SYNC_SCOPE_READY_HELP: Record<(typeof syncServices)[number]["value"], string> = {
+  shopify: "Add your Shopify shop and Admin API credentials under Settings → Data sources, then save.",
+  gsc: "Configure Google OAuth in Settings and connect your account on Google Signals.",
+  ga4: "Connect Google OAuth (same as Search Console) before syncing GA4.",
+  index: "URL Inspection needs a connected Google account with Search Console access.",
+  pagespeed: "PageSpeed Insights sync uses your Google OAuth session.",
+  structured: "Configure Shopify first — structured SEO runs against your synced catalog."
+};
 
 const syncStageLabels: Record<string, string> = {
   idle: "Idle",
@@ -220,6 +229,11 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncSummaryDismissed, setSyncSummaryDismissed] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const queryClient = useQueryClient();
+  const settingsQuery = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => getJson("/api/settings", settingsSchema),
+    staleTime: 30_000
+  });
   const syncStatusQuery = useQuery({
     queryKey: ["sync-status"],
     queryFn: () => getJson("/api/sync-status", statusSchema),
@@ -227,6 +241,12 @@ export function AppShell({ children }: PropsWithChildren) {
     refetchInterval: (query) => (query.state.data?.running ? 250 : false)
   });
   const syncStatus = syncStatusQuery.data;
+  const syncScopeReady = settingsQuery.data?.sync_scope_ready;
+
+  function scopeServiceReady(value: (typeof syncServices)[number]["value"]): boolean {
+    if (!syncScopeReady) return true;
+    return Boolean(syncScopeReady[value]);
+  }
   const syncRunning = Boolean(syncStatus?.running);
   const startSyncMutation = useMutation({
     mutationFn: () =>
@@ -314,6 +334,18 @@ export function AppShell({ children }: PropsWithChildren) {
     window.localStorage.setItem("seo-sync-services", JSON.stringify(selectedScopes));
   }, [selectedScopes]);
 
+  const syncReadyKey = syncScopeReady ? JSON.stringify(syncScopeReady) : "";
+  useEffect(() => {
+    if (!syncScopeReady) return;
+    setSelectedScopes((prev) => {
+      const next = prev.filter((s) => syncScopeReady[s as keyof typeof syncScopeReady]);
+      if (next.length === prev.length) return prev;
+      if (next.length) return next;
+      const fallback = syncServices.map((item) => item.value).filter((s) => syncScopeReady[s as keyof typeof syncScopeReady]);
+      return fallback.length ? fallback : [];
+    });
+  }, [syncReadyKey]);
+
   useEffect(() => {
     window.localStorage.setItem("seo-sync-force-refresh", String(forceRefresh));
   }, [forceRefresh]);
@@ -339,8 +371,13 @@ export function AppShell({ children }: PropsWithChildren) {
     if (!wasRunning || running) return;
     const stage = syncStatus?.stage || "";
     if (stage !== "complete" && stage !== "cancelled" && stage !== "error") return;
-    if (!shopifyCatalogScopesTouched(syncStatus)) return;
-    void queryClient.invalidateQueries({ queryKey: ["image-seo-product-images"] });
+    if (stage === "complete") {
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    }
+    if (shopifyCatalogScopesTouched(syncStatus)) {
+      void queryClient.invalidateQueries({ queryKey: ["image-seo-product-images"] });
+    }
   }, [syncStatus, queryClient]);
 
   return (
@@ -349,7 +386,7 @@ export function AppShell({ children }: PropsWithChildren) {
       <div className="mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-4 lg:px-6 lg:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="w-full rounded-[30px] border border-white/70 bg-[#0d172b] p-5 text-white shadow-panel lg:z-10 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:self-start lg:sticky lg:top-4">
           <div className="space-y-4">
-            <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+            <div id="app-sync-panel" className="scroll-mt-24 rounded-[24px] border border-white/10 bg-white/5 p-4">
               <p className="text-xs uppercase tracking-[0.22em] text-white/55">Sync</p>
               <div className="mt-3 grid gap-3">
                 <p className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">
@@ -358,7 +395,12 @@ export function AppShell({ children }: PropsWithChildren) {
                 <div className="grid grid-cols-[1fr_auto] gap-2">
                   <FlowButton
                     onClick={() => startSyncMutation.mutate()}
-                    disabled={syncRunning || startSyncMutation.isPending || !selectedScopes.length}
+                    disabled={
+                      syncRunning ||
+                      startSyncMutation.isPending ||
+                      !selectedScopes.length ||
+                      selectedScopes.some((s) => !scopeServiceReady(s))
+                    }
                     loading={syncRunning || startSyncMutation.isPending}
                     text={syncStatus?.running ? "Syncing" : "Sync"}
                   />
@@ -378,23 +420,26 @@ export function AppShell({ children }: PropsWithChildren) {
                     <div className="mt-3 grid gap-2">
                       {syncServices.map((service) => {
                         const checked = selectedScopes.includes(service.value);
+                        const canUse = scopeServiceReady(service.value);
                         return (
                           <Button
                             key={service.value}
                             type="button"
                             variant="ghost"
+                            title={!canUse ? SYNC_SCOPE_READY_HELP[service.value] : undefined}
                             className={cn(
                               "flex h-auto items-center justify-between rounded-2xl border px-3 py-2 text-sm transition",
                               checked ? "border-[#7ea2ff] bg-[#2147b8]/45 text-white hover:bg-[#2147b8]/50" : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
-                              syncRunning ? "cursor-not-allowed opacity-60" : ""
+                              syncRunning ? "cursor-not-allowed opacity-60" : "",
+                              !canUse ? "cursor-not-allowed opacity-45" : ""
                             )}
                             onClick={() => {
-                              if (syncRunning) return;
+                              if (syncRunning || !canUse) return;
                               setSelectedScopes((current) =>
                                 checked ? current.filter((value) => value !== service.value) : [...current, service.value]
                               );
                             }}
-                            disabled={syncRunning}
+                            disabled={syncRunning || !canUse}
                           >
                             <span>{service.label}</span>
                             <span className={cn("flex h-5 w-5 items-center justify-center rounded-full border", checked ? "border-[#9bd9ff] bg-white/15" : "border-white/20")}>

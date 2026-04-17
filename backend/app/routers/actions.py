@@ -19,6 +19,8 @@ router = APIRouter(prefix="/api", tags=["actions"])
 def sync_start(payload: SyncStartPayload):
     ok, message, state = start_sync(payload.scope, payload.selected_scopes or None, payload.force_refresh)
     if not ok:
+        if message.startswith("No sync steps are ready"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
     return success_response(state)
 

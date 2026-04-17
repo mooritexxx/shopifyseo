@@ -21,6 +21,7 @@ import {
 import { summarySchema } from "../types/api";
 
 import { GscPerformanceSection } from "../components/gsc/gsc-performance-section";
+import { OverviewOnboarding, overviewShowsOnboarding } from "../components/overview/overview-onboarding";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -348,6 +349,10 @@ export function OverviewPage() {
         {(error as Error)?.message || "Could not load overview."}
       </div>
     );
+  }
+
+  if (overviewShowsOnboarding(data)) {
+    return <OverviewOnboarding data={data} />;
   }
 
   const impressions = data.metrics.gsc_impressions;

@@ -18,7 +18,7 @@ def _redirect_uri(request: Request) -> str:
 @router.get("/auth/google/start", name="google_auth_start")
 def google_auth_start(request: Request):
     if not dg.google_configured():
-        return RedirectResponse(url="/app/google-signals?message=Google+OAuth+is+not+configured", status_code=303)
+        return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+OAuth+is+not+configured", status_code=303)
     dg.GOOGLE_REDIRECT_URI = _redirect_uri(request)
     dg.new_oauth_state()
     auth_url = (
@@ -41,16 +41,16 @@ def google_auth_start(request: Request):
 @router.get("/auth/google/callback", name="google_auth_callback")
 def google_auth_callback(request: Request, state: str = "", code: str = ""):
     if state != dg.GOOGLE_AUTH_STATE["value"]:
-        return RedirectResponse(url="/app/google-signals?message=Google+OAuth+state+mismatch", status_code=303)
+        return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+OAuth+state+mismatch", status_code=303)
     if not code:
-        return RedirectResponse(url="/app/google-signals?message=Missing+Google+OAuth+code", status_code=303)
+        return RedirectResponse(url="/app/settings?tab=data-sources&message=Missing+Google+OAuth+code", status_code=303)
     dg.GOOGLE_REDIRECT_URI = _redirect_uri(request)
     conn = open_db_connection()
     try:
         payload = dg.google_exchange_code(code)
         dg.set_service_token(conn, "search_console", payload)
-        return RedirectResponse(url="/app/google-signals?message=Google+Search+Console+connected", status_code=303)
+        return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+Search+Console+connected", status_code=303)
     except Exception as exc:
-        return RedirectResponse(url=f"/app/google-signals?message=Google+OAuth+failed:+{quote(str(exc))}", status_code=303)
+        return RedirectResponse(url=f"/app/settings?tab=data-sources&message=Google+OAuth+failed:+{quote(str(exc))}", status_code=303)
     finally:
         conn.close()

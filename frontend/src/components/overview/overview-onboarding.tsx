@@ -177,7 +177,7 @@ export function OverviewOnboarding({ data }: { data: Summary }) {
           <StepRow
             step={3}
             label="Google Search & Analytics"
-            description="Connect Google Signals for Search Console and GA4 site-level charts (optional)."
+            description="Connect Google OAuth in Settings → Data sources for Search Console and GA4 site-level charts (optional)."
             status={step3}
           />
           <StepRow
@@ -190,8 +190,8 @@ export function OverviewOnboarding({ data }: { data: Summary }) {
         {!googleConnected ? (
           <p className="mt-4 text-sm text-slate-600">
             Optional next:{" "}
-            <Link className="font-semibold text-[#5746d9] hover:underline" to="/google-signals">
-              Open Google Signals
+            <Link className="font-semibold text-[#5746d9] hover:underline" to={SETTINGS_DATA_SOURCES_HREF}>
+              Open Settings → Data sources
             </Link>
           </p>
         ) : null}
@@ -242,10 +242,10 @@ export function OverviewOnboarding({ data }: { data: Summary }) {
               </li>
               <li>
                 Click <strong>Save settings</strong>, then use{" "}
-                <Link className="font-semibold text-[#5746d9] hover:underline" to="/google-signals">
-                  Google Signals
+                <Link className="font-semibold text-[#5746d9] hover:underline" to={SETTINGS_DATA_SOURCES_HREF}>
+                  Connect Google
                 </Link>{" "}
-                to connect your Google account if you want Search Console and GA4. Run <span className="font-medium">Sync</span> in the
+                in Settings → Data sources if you want Search Console and GA4. Run <span className="font-medium">Sync</span> in the
                 sidebar to import your catalog.
               </li>
             </ol>

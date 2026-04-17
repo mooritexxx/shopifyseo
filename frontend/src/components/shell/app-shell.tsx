@@ -18,7 +18,6 @@ import {
   RefreshCw,
   Rss,
   Settings2,
-  Signal,
   Sparkles,
   Square,
   X
@@ -69,7 +68,7 @@ const syncServices = [
 
 const SYNC_SCOPE_READY_HELP: Record<(typeof syncServices)[number]["value"], string> = {
   shopify: "Add your Shopify shop and Admin API credentials under Settings → Data sources, then save.",
-  gsc: "Configure Google OAuth in Settings and connect your account on Google Signals.",
+  gsc: "Configure Google OAuth in Settings → Data sources, then pick a Search Console property.",
   ga4: "Connect Google OAuth (same as Search Console) before syncing GA4.",
   index: "URL Inspection needs a connected Google account with Search Console access.",
   pagespeed: "PageSpeed Insights sync uses your Google OAuth session.",
@@ -190,7 +189,6 @@ const items: NavItem[] = [
   { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb },
   { to: "/keywords", label: "Keyword Research", icon: Key },
   { to: "/image-seo", label: "Image Optimization", icon: ImageIcon },
-  { to: "/google-signals", label: "Google Signals", icon: Signal },
   { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical },
   { to: "/embeddings", label: "Embeddings", icon: Database },
   { to: "/api-usage", label: "API Usage", icon: Activity },

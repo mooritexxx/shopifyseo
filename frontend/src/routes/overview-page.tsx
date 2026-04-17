@@ -382,7 +382,7 @@ export function OverviewPage() {
             <p className="text-sm text-slate-600">
               {gsc.available && siteCur
                 ? `${siteCur.start_date} → ${siteCur.end_date} · timezone ${gsc.timezone} · data through ${gsc.anchor_date}`
-                : "Connect Google and pick a property on Google Signals to load site-level GSC."}
+                : "Connect Google and pick a Search Console property in Settings → Data sources to load site-level GSC."}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -437,9 +437,9 @@ export function OverviewPage() {
             <p className="mt-2 text-sm text-slate-600">{gsc.error || "Connect Google Search Console to see property rollups."}</p>
             <Link
               className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#5746d9] hover:underline"
-              to="/google-signals"
+              to="/settings?tab=data-sources"
             >
-              Open Google Signals
+              Open Search Console settings
               <ArrowRight size={14} />
             </Link>
           </Card>
@@ -538,16 +538,15 @@ export function OverviewPage() {
                         {data.gsc_property_breakdowns.period_mode
                           ? ` · ${data.gsc_property_breakdowns.period_mode.replace(/_/g, " ")}`
                           : ""}
-                        . Highest-impression bucket per dimension from Tier A cache — same data as Google Signals,
-                        no extra API call on load.
+                        . Highest-impression bucket per dimension from the Tier A GSC cache — no extra API call on load.
                       </p>
                     </div>
                   </div>
                   <Link
                     className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-[#e8e4f8] bg-[#faf8ff] px-3 py-2 text-xs font-semibold text-[#5746d9] transition hover:border-[#d4ccf0] hover:bg-[#f4f2ff]"
-                    to="/google-signals"
+                    to="/settings?tab=data-sources"
                   >
-                    Open Google Signals
+                    Search Console settings
                     <ArrowRight size={14} aria-hidden />
                   </Link>
                 </div>
@@ -792,7 +791,7 @@ export function OverviewPage() {
             <p className="text-sm text-slate-600">
               {ga4.available && ga4Cur
                 ? `${ga4Cur.start_date} → ${ga4Cur.end_date} · timezone ${ga4.timezone} · reporting date ${ga4.anchor_date}`
-                : "Configure a GA4 property on Google Signals to load site-wide sessions and views."}
+                : "Configure a GA4 property in Settings → Data sources to load site-wide sessions and views."}
             </p>
             <p className="mt-1 text-xs text-slate-500">
               {gscOverviewPeriod === "rolling_30d"
@@ -813,9 +812,9 @@ export function OverviewPage() {
             </p>
             <Link
               className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#0891b2] hover:underline"
-              to="/google-signals"
+              to="/settings?tab=data-sources"
             >
-              Open Google Signals
+              Open GA4 settings
               <ArrowRight size={14} />
             </Link>
           </Card>

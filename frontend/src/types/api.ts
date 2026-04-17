@@ -116,7 +116,7 @@ export const overviewGoalsSchema = z.object({
   ga4_daily_views: z.number().nullable()
 });
 
-/** Tier A property breakdowns (same shape as Google Signals); summary reads cache only. */
+/** Tier A property breakdowns from the GSC cache; summary reads cache only. */
 const summaryGscBreakdownCacheSchema = z.object({
   label: z.string(),
   kind: z.string(),
@@ -737,74 +737,6 @@ export const statusSchema = z.object({
   })).optional().default([])
 });
 
-const cacheStatusSchema = z.object({
-  label: z.string(),
-  kind: z.string(),
-  text: z.string(),
-  meta: z.record(z.any()).nullable().optional()
-});
-
-const gscPropertyBreakdownSliceSchema = z.object({
-  rows: z.array(z.object({
-    keys: z.array(z.string()).default([]),
-    clicks: z.union([z.number(), z.string()]).optional().default(0),
-    impressions: z.union([z.number(), z.string()]).optional().default(0),
-    ctr: z.number().optional().default(0),
-    position: z.number().optional().default(0)
-  })),
-  error: z.string(),
-  cache: cacheStatusSchema,
-  top_bucket_impressions_pct_vs_prior: z.number().nullable().optional()
-});
-
-export const googleSignalsSchema = z.object({
-  configured: z.boolean(),
-  connected: z.boolean(),
-  auth_url: z.string().nullable().optional(),
-  selected_site: z.string(),
-  available_sites: z.array(z.string()),
-  ga4_property_id: z.string(),
-  summary_period: z.object({
-    start_date: z.string(),
-    end_date: z.string()
-  }),
-  gsc_pages: z.array(z.object({
-    keys: z.array(z.string()).default([]),
-    clicks: z.union([z.number(), z.string()]).optional().default(0),
-    impressions: z.union([z.number(), z.string()]).optional().default(0),
-    ctr: z.number().optional().default(0),
-    position: z.number().optional().default(0)
-  })),
-  gsc_queries: z.array(z.object({
-    keys: z.array(z.string()).default([]),
-    clicks: z.union([z.number(), z.string()]).optional().default(0),
-    impressions: z.union([z.number(), z.string()]).optional().default(0),
-    ctr: z.number().optional().default(0),
-    position: z.number().optional().default(0)
-  })),
-  ga4_rows: z.array(z.object({
-    dimensionValues: z.array(z.object({ value: z.string().default("") })).default([]),
-    metricValues: z.array(z.object({ value: z.string().default("") })).default([])
-  })),
-  gsc_cache: cacheStatusSchema,
-  ga4_cache: cacheStatusSchema,
-  gsc_property_breakdowns: z.object({
-    available: z.boolean(),
-    period_mode: z.string(),
-    anchor_date: z.string(),
-    window: z.object({
-      start_date: z.string(),
-      end_date: z.string()
-    }),
-    country: gscPropertyBreakdownSliceSchema,
-    device: gscPropertyBreakdownSliceSchema,
-    searchAppearance: gscPropertyBreakdownSliceSchema,
-    errors: z.array(z.record(z.any())),
-    error: z.string()
-  }),
-  error: z.string()
-});
-
 export const settingsSchema = z.object({
   values: z.object({
     store_name: z.string().default(""),
@@ -914,7 +846,6 @@ export type ProductListItem = z.infer<typeof productListItemSchema>;
 export type StatusPayload = z.infer<typeof statusSchema>;
 export type ContentList = z.infer<typeof contentListSchema>;
 export type ContentDetail = z.infer<typeof contentDetailSchema>;
-export type GoogleSignalsPayload = z.infer<typeof googleSignalsSchema>;
 export type SettingsPayload = z.infer<typeof settingsSchema>;
 
 export const embeddingTypeStatusSchema = z.object({

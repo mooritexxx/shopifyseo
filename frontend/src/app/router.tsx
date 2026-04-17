@@ -9,7 +9,6 @@ const ProductsPage = lazy(() => import("../routes/products-page").then((module) 
 const ProductDetailPage = lazy(() => import("../routes/product-detail-page").then((module) => ({ default: module.ProductDetailPage })));
 const ContentListPage = lazy(() => import("../routes/content-list-page").then((module) => ({ default: module.ContentListPage })));
 const ContentDetailPage = lazy(() => import("../routes/content-detail-page").then((module) => ({ default: module.ContentDetailPage })));
-const GoogleSignalsPage = lazy(() => import("../routes/google-signals-page").then((module) => ({ default: module.GoogleSignalsPage })));
 const SettingsPage = lazy(() => import("../routes/settings-page").then((module) => ({ default: module.SettingsPage })));
 const BlogsPage = lazy(() => import("../routes/blogs-page").then((module) => ({ default: module.BlogsPage })));
 const BlogArticlesPage = lazy(() => import("../routes/blog-articles-page").then((module) => ({ default: module.BlogArticlesPage })));
@@ -112,10 +111,6 @@ export const router = createBrowserRouter(
     {
       path: "/article-ideas/:ideaId",
       element: shell(<IdeaDetailPage />)
-    },
-    {
-      path: "/google-signals",
-      element: shell(<GoogleSignalsPage />)
     },
     {
       path: "/google-ads-lab",

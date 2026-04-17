@@ -39,6 +39,7 @@ import {
   SYNC_SCOPE_READY_HELP,
   syncSelectionSummary,
   syncServices,
+  syncSortScopesInPipelineOrder,
   type SyncServiceValue
 } from "./sync/constants";
 import { activeServiceKey, derivePipelineRows } from "./sync/pipeline-derive";
@@ -190,7 +191,7 @@ export function AppShell({ children }: PropsWithChildren) {
         }
         const allowed = new Set(syncServices.map((item) => item.value));
         const normalized = parsed.filter((item) => allowed.has(item));
-        return normalized.length ? normalized : syncServices.map((item) => item.value);
+        return normalized.length ? syncSortScopesInPipelineOrder(normalized) : syncServices.map((item) => item.value);
       } catch {
         return syncServices.map((item) => item.value);
       }
@@ -264,12 +265,14 @@ export function AppShell({ children }: PropsWithChildren) {
   }
   const syncRunning = Boolean(syncStatus?.running);
   const startSyncMutation = useMutation({
-    mutationFn: () =>
-      postJson("/api/sync", statusSchema, {
-        scope: selectedScopes.length === syncServices.length ? "all" : "custom",
-        selected_scopes: selectedScopes,
+    mutationFn: () => {
+      const scopesInPipelineOrder = syncSortScopesInPipelineOrder(selectedScopes);
+      return postJson("/api/sync", statusSchema, {
+        scope: scopesInPipelineOrder.length === syncServices.length ? "all" : "custom",
+        selected_scopes: scopesInPipelineOrder,
         force_refresh: forceRefresh
-      }),
+      });
+    },
     onMutate: () => {
       clearEventLog();
       userDrawerDismissedRef.current = false;
@@ -534,7 +537,10 @@ export function AppShell({ children }: PropsWithChildren) {
     selectedScopes,
     onToggleScope: (v: SyncServiceValue) => {
       if (syncRunning) return;
-      setSelectedScopes((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+      setSelectedScopes((cur) => {
+        const raw = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
+        return syncSortScopesInPipelineOrder(raw);
+      });
     },
     scopeServiceReady,
     scopeHelp: (v: SyncServiceValue) => SYNC_SCOPE_READY_HELP[v],
@@ -556,15 +562,28 @@ export function AppShell({ children }: PropsWithChildren) {
     window.localStorage.setItem("seo-sync-services", JSON.stringify(selectedScopes));
   }, [selectedScopes]);
 
+  /** One-time: legacy sessions may have stored scopes in click order. */
+  useEffect(() => {
+    setSelectedScopes((prev) => {
+      const sorted = syncSortScopesInPipelineOrder(prev);
+      if (sorted.length === prev.length && sorted.every((v, i) => v === prev[i])) return prev;
+      return sorted;
+    });
+  }, []);
+
   const syncReadyKey = syncScopeReady ? JSON.stringify(syncScopeReady) : "";
   useEffect(() => {
     if (!syncScopeReady) return;
     setSelectedScopes((prev) => {
       const next = prev.filter((s) => syncScopeReady[s as keyof typeof syncScopeReady]);
-      if (next.length === prev.length) return prev;
-      if (next.length) return next;
+      const ordered = syncSortScopesInPipelineOrder(next);
+      if (ordered.length) {
+        if (ordered.length === prev.length && ordered.every((v, i) => v === prev[i])) return prev;
+        return ordered;
+      }
       const fallback = syncServices.map((item) => item.value).filter((s) => syncScopeReady[s as keyof typeof syncScopeReady]);
-      return fallback.length ? fallback : [];
+      const fbOrdered = fallback.length ? syncSortScopesInPipelineOrder(fallback) : [];
+      return fbOrdered;
     });
   }, [syncReadyKey]);
 

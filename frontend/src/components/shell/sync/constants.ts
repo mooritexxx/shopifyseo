@@ -9,6 +9,15 @@ export const syncServices = [
 
 export type SyncServiceValue = (typeof syncServices)[number]["value"];
 
+/**
+ * Canonical sidebar order (must match backend `SYNC_PIPELINE_ORDER`).
+ * Use for React state so selection order never reflects click order.
+ */
+export function syncSortScopesInPipelineOrder(values: readonly string[]): SyncServiceValue[] {
+  const picked = new Set(values);
+  return syncServices.map((s) => s.value).filter((v) => picked.has(v)) as SyncServiceValue[];
+}
+
 export const SYNC_SCOPE_READY_HELP: Record<SyncServiceValue, string> = {
   shopify: "Add your Shopify shop and Admin API credentials under Settings → Data sources, then save.",
   gsc: "Configure Google OAuth in Settings → Data sources, then pick a Search Console property.",
@@ -29,9 +38,10 @@ export const SYNC_PIPELINE_SUBTITLE: Record<SyncServiceValue, string> = {
 };
 
 export function syncSelectionSummary(selectedScopes: string[]) {
-  if (!selectedScopes.length) return "No services selected";
-  if (selectedScopes.length === syncServices.length) return "All services";
-  return selectedScopes
+  const ordered = syncSortScopesInPipelineOrder(selectedScopes);
+  if (!ordered.length) return "No services selected";
+  if (ordered.length === syncServices.length) return "All services";
+  return ordered
     .map((value) => syncServices.find((item) => item.value === value)?.label || value)
     .join(" · ");
 }

@@ -46,6 +46,9 @@ from ._state import (
 )
 from .sync_eta import record_scope_eta_segment
 
+# Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
+SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
+
 # ---------------------------------------------------------------------------
 # Sync state helpers
 # ---------------------------------------------------------------------------
@@ -194,27 +197,27 @@ def _image_cache_summary_suffix(cache: dict[str, int] | None) -> str:
 
 
 def _normalize_sync_scopes(scope: str, selected_scopes: list[str] | None = None) -> tuple[str, list[str]]:
-    pipeline_order = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
+    pipeline_order = SYNC_PIPELINE_ORDER
     if selected_scopes:
-        seen = set()
-        normalized: list[str] = []
+        selected_set: set[str] = set()
         for item in selected_scopes:
             token = str(item or "").strip().lower()
-            if token in pipeline_order and token not in seen:
-                seen.add(token)
-                normalized.append(token)
+            if token in pipeline_order:
+                selected_set.add(token)
+        # Always follow sidebar order, never the order the user toggled services in the UI.
+        normalized = [s for s in pipeline_order if s in selected_set]
         return ("all" if normalized == pipeline_order else "custom"), normalized
     if scope in pipeline_order:
         return scope, [scope]
     if scope in {"products", "collections", "pages", "blogs"}:
         return scope, [scope]
-    return "all", pipeline_order
+    return "all", list(pipeline_order)
 
 
 def _sync_label(scope: str, selected_scopes: list[str]) -> str:
     if scope in {"products", "collections", "pages", "blogs"}:
         return scope
-    pipeline_order = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
+    pipeline_order = SYNC_PIPELINE_ORDER
     if selected_scopes == pipeline_order:
         return "all"
     if selected_scopes:

@@ -124,3 +124,12 @@ def test_not_running_no_eta(running, expect_none):
         assert eta is None
     else:
         assert eta is not None
+
+
+def test_normalize_sync_scopes_follows_pipeline_order_not_ui_toggle_order():
+    from shopifyseo.dashboard_actions._sync import SYNC_PIPELINE_ORDER, _normalize_sync_scopes
+
+    scope, scopes = _normalize_sync_scopes("custom", ["structured", "shopify", "pagespeed", "gsc"])
+    assert scope == "custom"
+    assert scopes == ["shopify", "gsc", "pagespeed", "structured"]
+    assert scopes == [s for s in SYNC_PIPELINE_ORDER if s in set(scopes)]

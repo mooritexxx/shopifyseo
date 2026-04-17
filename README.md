@@ -142,7 +142,7 @@ For image generation (blog article cover images), a separate image model can be 
 
 ### DataForSEO (optional)
 
-Enables keyword research, competitor discovery, and SERP analysis. Set `DATAFORSEO_API_LOGIN` and `DATAFORSEO_API_PASSWORD` in your `.env` (see `.env.example`). Without them, keyword research is unavailable but everything else works.
+Enables keyword research, competitor discovery, and SERP analysis. Enter **API login** and **password** on **Settings → Integrations** (or set `DATAFORSEO_API_LOGIN` and `DATAFORSEO_API_PASSWORD` in `.env`). Use **Validate access** to confirm credentials. Without DataForSEO, keyword research is unavailable but everything else works.
 
 ---
 

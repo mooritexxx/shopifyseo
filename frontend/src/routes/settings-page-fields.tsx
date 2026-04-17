@@ -19,6 +19,7 @@ import {
   fingerprintAiReview,
   fingerprintAiSidekick,
   fingerprintAiVision,
+  fingerprintDataforseo,
   fingerprintGoogleAds,
   fingerprintShopify,
   type ConnectionStatusStore
@@ -31,7 +32,7 @@ export const settingsTabs = [
   {
     id: "integrations",
     label: "Integrations",
-    description: "OpenRouter API key for all AI features (routing to models you enable on openrouter.ai)."
+    description: "OpenRouter for AI; DataForSEO for keyword research (optional)."
   },
   {
     id: "ai-models",
@@ -96,6 +97,9 @@ export type RenderSettingsTabSectionsProps = {
   openImageTestModal: () => void;
   openVisionTestModal: () => void;
   aiTestBusy: boolean;
+  dfsStatus: "idle" | "checking" | "ok" | "error";
+  dfsDetail: string;
+  validateDataforseo: () => void | Promise<void>;
   googleAdsStatus: "idle" | "checking" | "ok" | "error";
   googleAdsDetail: string;
   validateGoogleAds: () => void | Promise<void>;
@@ -122,6 +126,9 @@ export function renderSettingsTabSections({
   openImageTestModal,
   openVisionTestModal,
   aiTestBusy,
+  dfsStatus,
+  dfsDetail,
+  validateDataforseo,
   googleAdsStatus,
   googleAdsDetail,
   validateGoogleAds,
@@ -143,6 +150,12 @@ export function renderSettingsTabSections({
         title: "OpenRouter",
         description: "Single API key; select models per task on the AI Models tab.",
         fields: ["openrouter_api_key"] as const
+      },
+      {
+        title: "DataForSEO",
+        description:
+          "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
+        fields: ["dataforseo_api_login", "dataforseo_api_password"] as const
       }
     ],
     "ai-models": [
@@ -220,6 +233,9 @@ export function renderSettingsTabSections({
   const imageProvider = values.ai_image_provider || "openrouter";
   const visionProvider = values.ai_vision_provider || generationProvider || "openrouter";
 
+  const dfsFp = fingerprintDataforseo(values);
+  const dfsLive =
+    connectionStore.dataforseo?.status === "live" && connectionStore.dataforseo.fingerprint === dfsFp;
   const googleAdsFp = fingerprintGoogleAds(values);
   const googleAdsLive =
     connectionStore.googleAds?.status === "live" && connectionStore.googleAds.fingerprint === googleAdsFp;
@@ -254,6 +270,23 @@ export function renderSettingsTabSections({
                 ) : (
                   <SettingsConnectionBadge label="Not configured" tone="warning" />
                 )}
+              </div>
+            );
+          }
+          if (t === "DataForSEO") {
+            const hasCreds = !!(values.dataforseo_api_login?.trim() && values.dataforseo_api_password?.trim());
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!hasCreds ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : dfsLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
+                  {dfsStatus === "checking" ? "Checking…" : "Validate access"}
+                </Button>
               </div>
             );
           }
@@ -514,6 +547,13 @@ export function renderSettingsTabSections({
           className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${ga4CacheStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
         >
           {ga4CacheDetail}
+        </div>
+      ) : null}
+      {section.title === "DataForSEO" && dfsStatus !== "idle" && dfsStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${dfsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {dfsDetail}
         </div>
       ) : null}
       {section.title === "Google Ads" && googleAdsStatus !== "idle" && googleAdsStatus !== "checking" ? (

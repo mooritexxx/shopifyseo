@@ -16,6 +16,7 @@ import {
   fingerprintAiReview,
   fingerprintAiSidekick,
   fingerprintAiVision,
+  fingerprintDataforseo,
   fingerprintGoogleAds,
   fingerprintShopify,
   loadConnectionStore,
@@ -68,6 +69,8 @@ export function SettingsPage() {
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [testTarget, setTestTarget] = useState<"generation" | "review" | "sidekick" | "image" | "vision">("generation");
   const [openRouterModels, setOpenRouterModels] = useState<string[]>([]);
+  const [dfsStatus, setDfsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
+  const [dfsDetail, setDfsDetail] = useState("");
   const [googleAdsStatus, setGoogleAdsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
   const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
@@ -215,6 +218,34 @@ export function SettingsPage() {
       setImageTestElapsedMs(Math.floor(performance.now() - t0));
     };
   }, [testModalOpen, testTarget, imageTestMutation.isPending]);
+
+  async function validateDataforseo() {
+    setDfsStatus("checking");
+    setDfsDetail("");
+    try {
+      const res = await fetch("/api/keywords/target/validate-dataforseo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataforseo_api_login: valuesRef.current.dataforseo_api_login || "",
+          dataforseo_api_password: valuesRef.current.dataforseo_api_password || ""
+        })
+      });
+      const json = (await res.json()) as { ok: boolean; detail: string };
+      setDfsStatus(json.ok ? "ok" : "error");
+      setDfsDetail(json.detail || "");
+      if (json.ok) {
+        const fp = fingerprintDataforseo(valuesRef.current);
+        setConnectionStore((prev) => ({
+          ...prev,
+          dataforseo: { status: "live", fingerprint: fp, validatedAt: new Date().toISOString() }
+        }));
+      }
+    } catch {
+      setDfsStatus("error");
+      setDfsDetail("Network error — could not reach the server.");
+    }
+  }
 
   async function validateGoogleAds() {
     setGoogleAdsStatus("checking");
@@ -402,6 +433,9 @@ export function SettingsPage() {
     openImageTestModal,
     openVisionTestModal,
     aiTestBusy,
+    dfsStatus,
+    dfsDetail,
+    validateDataforseo,
     googleAdsStatus,
     googleAdsDetail,
     validateGoogleAds,

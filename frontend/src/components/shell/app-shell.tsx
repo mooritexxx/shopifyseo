@@ -4,11 +4,8 @@ import {
   BookOpen,
   Box,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ClipboardCopy,
-  Clock3,
   Database,
   FileText,
   FlaskConical,
@@ -19,14 +16,12 @@ import {
   LayoutDashboard,
   Lightbulb,
   LoaderCircle,
+  RefreshCw,
   Rss,
   Settings2,
-  Sparkles,
-  Square,
   X
 } from "lucide-react";
 import { SidekickProvider } from "../sidekick/sidekick-context";
-import { FlowButton } from "../ui/flow-button";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import type { PropsWithChildren } from "react";
@@ -34,12 +29,21 @@ import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "../ui/button";
-import { Progress } from "../ui/progress";
-import { ToggleSwitch } from "../ui/toggle-switch";
 import { readStoredOverviewGscPeriod } from "../../lib/gsc-period";
 import { cn, formatRelativeTimestamp } from "../../lib/utils";
 import { getJson, postJson } from "../../lib/api";
 import { settingsSchema, statusSchema, summarySchema } from "../../types/api";
+import { SyncDrawer, type SyncDrawerMode } from "./sync/sync-drawer";
+import { SyncPill } from "./sync/sync-pill";
+import {
+  SYNC_PIPELINE_SUBTITLE,
+  SYNC_SCOPE_READY_HELP,
+  syncSelectionSummary,
+  syncServices,
+  type SyncServiceValue
+} from "./sync/constants";
+import { activeServiceKey, derivePipelineRows } from "./sync/pipeline-derive";
+import { useSyncEventLog } from "./sync/use-sync-event-log";
 
 type NavItem = {
   to: string;
@@ -63,24 +67,6 @@ function shopifyCatalogScopesTouched(status: SyncStatusPayload | undefined): boo
   const s = (status.scope || "").toLowerCase();
   return s === "all" || ["products", "collections", "pages", "blogs"].includes(s);
 }
-
-const syncServices = [
-  { value: "shopify", label: "Shopify" },
-  { value: "gsc", label: "Search Console" },
-  { value: "ga4", label: "GA4" },
-  { value: "index", label: "Index status" },
-  { value: "pagespeed", label: "PageSpeed" },
-  { value: "structured", label: "Structured SEO" }
-] as const;
-
-const SYNC_SCOPE_READY_HELP: Record<(typeof syncServices)[number]["value"], string> = {
-  shopify: "Add your Shopify shop and Admin API credentials under Settings → Data sources, then save.",
-  gsc: "Configure Google OAuth in Settings → Data sources, then pick a Search Console property.",
-  ga4: "Connect Google OAuth (same as Search Console) before syncing GA4.",
-  index: "URL Inspection needs a connected Google account with Search Console access.",
-  pagespeed: "PageSpeed Insights sync uses your Google OAuth session.",
-  structured: "Configure Shopify first — structured SEO runs against your synced catalog."
-};
 
 const syncStageLabels: Record<string, string> = {
   idle: "Idle",
@@ -120,70 +106,10 @@ function titleCaseLabel(value: string) {
     .join(" ");
 }
 
-function serviceStatus(activeScopes: string[], activeScope: string, running: boolean, stepIndex: number, service: string) {
-  const serviceIndex = activeScopes.indexOf(service);
-  if (serviceIndex === -1) return "idle" as const;
-  if (!running) return "complete" as const;
-  if (service === activeScope) return "running" as const;
-  if (serviceIndex < Math.max(stepIndex - 1, 0)) return "complete" as const;
-  return "queued" as const;
-}
-
-function syncMetricChips(syncStatus: z.infer<typeof statusSchema> | undefined) {
-  if (!syncStatus) return [];
-  switch (syncStatus.active_scope) {
-    case "shopify":
-    case "products":
-    case "collections":
-    case "pages":
-      return [];
-    case "blogs":
-      return [];
-    case "gsc":
-      return [
-        `${syncStatus.gsc_refreshed || 0} refreshed`,
-        `${syncStatus.gsc_skipped || 0} skipped`,
-        `${syncStatus.gsc_errors || 0} errors`
-      ];
-    case "ga4":
-      return [`${syncStatus.ga4_rows || 0} rows cached`, `${syncStatus.ga4_errors || 0} errors`];
-    case "index":
-      return [
-        `${syncStatus.index_refreshed || 0} refreshed`,
-        `${syncStatus.index_skipped || 0} skipped (indexed)`,
-        `${syncStatus.index_errors || 0} errors`
-      ];
-    case "pagespeed":
-      return [
-        `${syncStatus.pagespeed_refreshed || 0} refreshed`,
-        `${syncStatus.pagespeed_skipped_recent || 0} recent skips`,
-        `${syncStatus.pagespeed_rate_limited || 0} rate limited`,
-        `${syncStatus.pagespeed_errors || 0} errors`
-      ];
-    default:
-      return [];
-  }
-}
-
 function syncStageLabel(stage?: string, scope?: string) {
   if (stage && syncStageLabels[stage]) return syncStageLabels[stage];
   if (!scope) return "Sync status";
   return scope === "custom" ? "Custom sync" : "Sync status";
-}
-
-function pagespeedPhaseLabel(phase?: string) {
-  if (phase === "scanning") return "Scanning catalog";
-  if (phase === "queueing") return "Running PageSpeed queue";
-  if (phase === "complete") return "PageSpeed queue complete";
-  return "PageSpeed sync";
-}
-
-function syncSelectionSummary(selectedScopes: string[]) {
-  if (!selectedScopes.length) return "No services selected";
-  if (selectedScopes.length === syncServices.length) return "All services";
-  return selectedScopes
-    .map((value) => syncServices.find((item) => item.value === value)?.label || value)
-    .join(" · ");
 }
 
 /** Legacy payloads concatenated Python tracebacks after the user-facing line. */
@@ -238,7 +164,7 @@ function shopInitials(name: string, shop: string) {
 }
 
 export function AppShell({ children }: PropsWithChildren) {
-  const [selectedScopes, setSelectedScopes] = useState<Array<(typeof syncServices)[number]["value"]>>(
+  const [selectedScopes, setSelectedScopes] = useState<SyncServiceValue[]>(
     () => {
       if (typeof window === "undefined") {
         return syncServices.map((item) => item.value);
@@ -260,7 +186,6 @@ export function AppShell({ children }: PropsWithChildren) {
       }
     }
   );
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [forceRefresh, setForceRefresh] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("seo-sync-force-refresh") === "true";
@@ -270,6 +195,10 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncErrorTechnicalOpen, setSyncErrorTechnicalOpen] = useState(false);
   const [syncErrorCopied, setSyncErrorCopied] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
+  const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
+  const userDrawerDismissedRef = useRef(false);
+  const errStreamPushRef = useRef("");
+  const prevSyncRunningForDrawerRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("seo-sidebar-rail") === "1";
@@ -297,6 +226,11 @@ export function AppShell({ children }: PropsWithChildren) {
     refetchInterval: (query) => (query.state.data?.running ? 250 : false)
   });
   const syncStatus = syncStatusQuery.data;
+  const { lines: eventLogLines, pushLine, clear: clearEventLog } = useSyncEventLog(
+    syncStatus?.current,
+    syncStatus?.active_scope || "",
+    Boolean(syncStatus?.running)
+  );
   const syncScopeReady = settingsQuery.data?.sync_scope_ready;
   const summary = summaryQuery.data;
   const navGroups = useMemo(() => {
@@ -314,7 +248,7 @@ export function AppShell({ children }: PropsWithChildren) {
     return { name, domain, initials: shopInitials(v?.store_name || "", v?.shopify_shop || "") };
   }, [settingsQuery.data?.values]);
 
-  function scopeServiceReady(value: (typeof syncServices)[number]["value"]): boolean {
+  function scopeServiceReady(value: SyncServiceValue): boolean {
     if (!syncScopeReady) return true;
     return Boolean(syncScopeReady[value]);
   }
@@ -326,8 +260,11 @@ export function AppShell({ children }: PropsWithChildren) {
         selected_scopes: selectedScopes,
         force_refresh: forceRefresh
       }),
+    onMutate: () => {
+      clearEventLog();
+      userDrawerDismissedRef.current = false;
+    },
     onSuccess: (state) => {
-      setSettingsOpen(false);
       setMessage("Sync started");
       queryClient.setQueryData(["sync-status"], state);
       void syncStatusQuery.refetch();
@@ -344,7 +281,6 @@ export function AppShell({ children }: PropsWithChildren) {
     onError: (error) => setMessage((error as Error).message)
   });
   const hasSyncCard = Boolean(syncStatus?.running || syncStatus?.last_error || syncStatus?.last_result || message);
-  const showSyncCard = hasSyncCard && (syncRunning || !syncSummaryDismissed);
   const activeStageLabel = syncStatus?.stage_label || syncStageLabel(syncStatus?.stage, syncStatus?.scope);
   const activeSelectedScopes = (syncStatus?.selected_scopes?.length ? syncStatus.selected_scopes : selectedScopes) as string[];
   const effectiveActiveScope = syncStatus?.active_scope || "";
@@ -365,47 +301,243 @@ export function AppShell({ children }: PropsWithChildren) {
   const progressTotal = isPagespeedActive && pagespeedPhase === "queueing" ? pagespeedQueueTotal : syncStatus?.total || 0;
   const progressDone = isPagespeedActive && pagespeedPhase === "queueing" ? pagespeedQueueCompleted : syncStatus?.done || 0;
   const syncPercent = progressTotal ? Math.max(0, Math.min(100, Math.round((progressDone / progressTotal) * 100))) : 0;
-  const progressHeadline = syncRunning
-    ? isPagespeedActive && pagespeedPhase
-      ? pagespeedPhaseLabel(pagespeedPhase)
-      : `${syncPercent}% complete`
-    : syncStatus?.stage === "complete"
-      ? "Sync complete"
-      : syncStatus?.stage === "cancelled"
-        ? "Sync cancelled"
-        : syncStatus?.stage === "error"
-          ? "Sync failed"
-          : "Ready to sync";
   const rawSyncError = (syncStatus?.last_error || "").trim();
   const syncErrorParts = useMemo(() => splitSyncError(rawSyncError), [rawSyncError]);
   const showSyncErrorPanel = !syncRunning && Boolean(rawSyncError);
-  const progressDetail = syncRunning
-    ? syncStatus?.current || activeStageLabel
-    : message || (showSyncErrorPanel ? "" : "Select services and run a sync.");
-  const metricChips = syncMetricChips(syncStatus);
-  const shopifyEntityScope =
-    syncStatus?.active_scope === "shopify" ||
-    syncStatus?.active_scope === "products" ||
-    syncStatus?.active_scope === "collections" ||
-    syncStatus?.active_scope === "pages" ||
-    syncStatus?.active_scope === "blogs" ||
-    syncStatus?.stage === "syncing_product_images";
-  const progressCountLabel = isPagespeedActive && pagespeedPhase === "scanning"
-    ? `${pagespeedScanned} / ${pagespeedScanTotal || progressTotal} URLs scanned`
-    : isPagespeedActive && pagespeedPhase === "queueing"
-      ? `${pagespeedQueueCompleted} / ${pagespeedQueueTotal} queued URLs finished`
-      : shopifyEntityScope
-        ? `Products ${syncStatus?.products_synced || 0}/${syncStatus?.products_total || 0} · Collections ${syncStatus?.collections_synced || 0}/${syncStatus?.collections_total || 0} · Pages ${syncStatus?.pages_synced || 0}/${syncStatus?.pages_total || 0} · Blogs ${syncStatus?.blogs_synced || 0}/${syncStatus?.blogs_total || 0} · Blog articles ${syncStatus?.blog_articles_synced || 0}/${syncStatus?.blog_articles_total || 0} · Images ${syncStatus?.images_synced || 0}/${syncStatus?.images_total || 0}`
-      : progressTotal
-        ? `${progressDone} / ${progressTotal} items processed`
-        : "Waiting for first sync update";
-  const pagespeedPhaseSummary = isPagespeedActive && pagespeedPhase === "scanning"
-    ? `${pagespeedScanned} scanned, ${syncStatus?.pagespeed_skipped_recent || 0} recent skips, ${pagespeedQueueTotal || 0} queued so far`
-    : null;
   const pagespeedErrorDetails = syncStatus?.pagespeed_error_details || [];
 
-  const hideTopSyncPanel = syncRunning;
   const syncAccent = "oklch(0.62 0.18 262)";
+
+  const drawerMode: SyncDrawerMode = useMemo(() => {
+    if (syncRunning) return "running";
+    if (showSyncErrorPanel) return "error";
+    if (!syncSummaryDismissed && (syncStatus?.stage === "complete" || syncStatus?.stage === "cancelled")) return "done";
+    return "idle";
+  }, [syncRunning, showSyncErrorPanel, syncSummaryDismissed, syncStatus?.stage]);
+
+  const orderedScopes = useMemo(() => {
+    const picked = activeSelectedScopes.filter(Boolean);
+    return syncServices.map((s) => s.value).filter((v) => picked.includes(v)) as SyncServiceValue[];
+  }, [activeSelectedScopes]);
+
+  const pipelineRows = useMemo(() => {
+    const order = (orderedScopes.length ? orderedScopes : selectedScopes) as SyncServiceValue[];
+    return derivePipelineRows({
+      orderedScopes: order,
+      syncStatus,
+      running: syncRunning,
+      hasError: showSyncErrorPanel,
+      syncPercent,
+      activeScope: effectiveActiveScope,
+      stepIndex: activeStepIndex
+    });
+  }, [
+    orderedScopes,
+    selectedScopes,
+    syncStatus,
+    syncRunning,
+    showSyncErrorPanel,
+    syncPercent,
+    effectiveActiveScope,
+    activeStepIndex
+  ]);
+
+  const pipelineFraction = useMemo(() => {
+    const n = Math.max(orderedScopes.length || selectedScopes.length, 1);
+    if (syncRunning) {
+      const ai = pipelineRows.findIndex((r) => r.status === "active");
+      return `${ai >= 0 ? ai + 1 : Math.min(Math.max(activeStepIndex, 1), n)}/${n}`;
+    }
+    if (showSyncErrorPanel) {
+      const fi = pipelineRows.findIndex((r) => r.status === "failed");
+      return `${fi >= 0 ? fi + 1 : 1}/${n}`;
+    }
+    if (syncStatus?.stage === "complete" || syncStatus?.stage === "cancelled") return `${n}/${n}`;
+    return `0/${n}`;
+  }, [
+    orderedScopes.length,
+    selectedScopes.length,
+    syncRunning,
+    showSyncErrorPanel,
+    syncStatus?.stage,
+    pipelineRows,
+    activeStepIndex
+  ]);
+
+  const changeCards = useMemo(() => {
+    const c = summary?.counts;
+    if (!c) {
+      return [
+        { label: "Products", total: 0 },
+        { label: "Collections", total: 0 },
+        { label: "Pages", total: 0 },
+        { label: "Blogs", total: 0 }
+      ];
+    }
+    return [
+      { label: "Products", total: c.products },
+      { label: "Collections", total: c.collections },
+      { label: "Pages", total: c.pages },
+      { label: "Blogs", total: c.blogs }
+    ];
+  }, [summary?.counts]);
+
+  const activePipelineKey = activeServiceKey(effectiveActiveScope);
+  const runningHeroSubtitle =
+    activePipelineKey && SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+      ? SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+      : activeStageLabel;
+
+  const canRunSync =
+    !syncRunning &&
+    !startSyncMutation.isPending &&
+    selectedScopes.length > 0 &&
+    !selectedScopes.some((s) => !scopeServiceReady(s));
+
+  const closeDrawerOnly = () => {
+    userDrawerDismissedRef.current = true;
+    setSyncDrawerOpen(false);
+  };
+
+  const closeDrawer = () => {
+    closeDrawerOnly();
+    if (syncStatus?.stage === "complete" || syncStatus?.stage === "cancelled") {
+      setSyncSummaryDismissed(true);
+      setMessage(null);
+    }
+  };
+
+  const pillTitle = syncRunning
+    ? "Syncing…"
+    : showSyncErrorPanel
+      ? "Sync failed"
+      : drawerMode === "done"
+        ? "Up to date"
+        : "Ready to sync";
+
+  const stepHintTotal = Math.max(activeStepTotal || orderedScopes.length || selectedScopes.length, 1);
+  const pillSubtitle = syncRunning
+    ? `${activeSelectedScopes.length} services · live`
+    : showSyncErrorPanel
+      ? `Step ${Math.max(activeStepIndex, 1)} of ${stepHintTotal}`
+      : lastSyncShort(summary?.last_dashboard_sync_at);
+
+  const [mqLg, setMqLg] = useState(true);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const fn = () => setMqLg(mq.matches);
+    fn();
+    mq.addEventListener("change", fn);
+    return () => mq.removeEventListener("change", fn);
+  }, []);
+
+  const drawerProps = {
+    accent: syncAccent,
+    mode: drawerMode,
+    onClose: closeDrawer,
+    headerKicker:
+      drawerMode === "running"
+        ? "Syncing your store"
+        : drawerMode === "done"
+          ? syncStatus?.stage === "cancelled"
+            ? "Sync cancelled"
+            : "Sync complete"
+          : drawerMode === "error"
+            ? "Sync stopped"
+            : "Sync ready",
+    headerBadge:
+      drawerMode === "running" ? "Running" : drawerMode === "done" ? "Done" : drawerMode === "error" ? "Failed" : "Idle",
+    headerBadgeClass:
+      drawerMode === "running"
+        ? "bg-[color-mix(in_oklab,oklch(0.62_0.18_262)_20%,transparent)] text-[oklch(0.62_0.18_262)]"
+        : drawerMode === "done"
+          ? "bg-[rgba(145,239,187,0.12)] text-[#91efbb]"
+          : drawerMode === "error"
+            ? "bg-[rgba(234,96,117,0.16)] text-[#ea6075]"
+            : "bg-white/[0.06] text-white/40",
+    headerDotColor:
+      drawerMode === "running"
+        ? syncAccent
+        : drawerMode === "done"
+          ? "#91efbb"
+          : drawerMode === "error"
+            ? "#ea6075"
+            : "rgba(255,255,255,0.35)",
+    headerDotPulse: drawerMode === "running",
+    runningHero:
+      drawerMode === "running"
+        ? {
+            pct: syncPercent,
+            title: activeStageLabel,
+            subtitle: runningHeroSubtitle,
+            elapsed: elapsedLabel || "00:00",
+            eta: "--:--"
+          }
+        : undefined,
+    doneHero:
+      drawerMode === "done"
+        ? {
+            title: syncStatus?.stage === "cancelled" ? "Sync cancelled" : "All services up to date",
+            subtitle: `${Math.max(orderedScopes.length, activeSelectedScopes.length)} services finished`,
+            finishedIn: `${(elapsedMs / 1000).toFixed(1)}s`,
+            relative: syncFinishedAt ? formatRelativeTimestamp(syncFinishedAt) : "—"
+          }
+        : undefined,
+    errorHero:
+      drawerMode === "error"
+        ? {
+            title: syncErrorParts.summary || "Sync failed",
+            subtitle: "Fix the issue and retry, or open Settings.",
+            codeLine: `step ${Math.max(activeStepIndex, 1)}/${Math.max(activeStepTotal || stepHintTotal, 1)}`
+          }
+        : undefined,
+    idleHero:
+      drawerMode === "idle"
+        ? {
+            lastRunLine: `${lastSyncShort(summary?.last_dashboard_sync_at)} · ${selectedScopes.length} service${selectedScopes.length === 1 ? "" : "s"} configured`,
+            serviceCount: selectedScopes.length
+          }
+        : undefined,
+    pipelineRows,
+    pipelineFraction,
+    showEventStream: syncRunning || showSyncErrorPanel,
+    eventLines: eventLogLines,
+    showChangesGrid: drawerMode === "done",
+    changeCards,
+    pagespeedErrorDetails,
+    rawSyncError,
+    errorSummary: syncErrorParts.summary || "",
+    errorDetails: syncErrorParts.details,
+    syncErrorTechnicalOpen,
+    setSyncErrorTechnicalOpen,
+    syncErrorCopied,
+    onCopyError: () => {
+      void navigator.clipboard.writeText(rawSyncError).then(() => {
+        setSyncErrorCopied(true);
+        window.setTimeout(() => setSyncErrorCopied(false), 2000);
+      });
+    },
+    errorSuggestsSettings: syncErrorSuggestsSettings(rawSyncError),
+    selectedScopes,
+    onToggleScope: (v: SyncServiceValue) => {
+      if (syncRunning) return;
+      setSelectedScopes((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+    },
+    scopeServiceReady,
+    scopeHelp: (v: SyncServiceValue) => SYNC_SCOPE_READY_HELP[v],
+    forceRefresh,
+    onForceRefresh: setForceRefresh,
+    syncRunning,
+    onRunSync: () => startSyncMutation.mutate(),
+    canRunSync,
+    runPending: startSyncMutation.isPending,
+    onStopSync: () => stopSyncMutation.mutate(),
+    stopPending: stopSyncMutation.isPending,
+    onRunBackground: closeDrawerOnly,
+    onRunAgain: () => startSyncMutation.mutate(),
+    onRetrySync: () => startSyncMutation.mutate(),
+    cancelRequested: Boolean(syncStatus?.cancel_requested)
+  };
 
   useEffect(() => {
     window.localStorage.setItem("seo-sync-services", JSON.stringify(selectedScopes));
@@ -429,10 +561,52 @@ export function AppShell({ children }: PropsWithChildren) {
 
   useEffect(() => {
     if (syncRunning) {
-      setSettingsOpen(false);
       setSyncSummaryDismissed(false);
     }
   }, [syncRunning]);
+
+  useEffect(() => {
+    if (syncRunning) {
+      userDrawerDismissedRef.current = false;
+      setSyncDrawerOpen(true);
+    }
+  }, [syncRunning]);
+
+  useEffect(() => {
+    const was = prevSyncRunningForDrawerRef.current;
+    prevSyncRunningForDrawerRef.current = syncRunning;
+    if (was && !syncRunning) {
+      userDrawerDismissedRef.current = false;
+      setSyncDrawerOpen(true);
+    }
+  }, [syncRunning]);
+
+  useEffect(() => {
+    if (!syncRunning && rawSyncError && !syncSummaryDismissed && !userDrawerDismissedRef.current) {
+      setSyncDrawerOpen(true);
+    }
+  }, [rawSyncError, syncRunning, syncSummaryDismissed]);
+
+  useEffect(() => {
+    if (
+      !syncRunning &&
+      !syncSummaryDismissed &&
+      (syncStatus?.stage === "complete" || syncStatus?.stage === "cancelled") &&
+      !userDrawerDismissedRef.current
+    ) {
+      setSyncDrawerOpen(true);
+    }
+  }, [syncRunning, syncSummaryDismissed, syncStatus?.stage]);
+
+  useEffect(() => {
+    if (!syncRunning && rawSyncError && rawSyncError !== errStreamPushRef.current) {
+      errStreamPushRef.current = rawSyncError;
+      pushLine("error", splitSyncError(rawSyncError).summary.slice(0, 200));
+    }
+    if (syncRunning) {
+      errStreamPushRef.current = "";
+    }
+  }, [syncRunning, rawSyncError, pushLine]);
 
   useEffect(() => {
     window.localStorage.setItem("seo-sidebar-rail", sidebarCollapsed ? "1" : "0");
@@ -451,10 +625,6 @@ export function AppShell({ children }: PropsWithChildren) {
   useEffect(() => {
     if (syncRunning) setSidebarCollapsed(false);
   }, [syncRunning]);
-
-  useEffect(() => {
-    if (sidebarCollapsed) setSettingsOpen(false);
-  }, [sidebarCollapsed]);
 
   useEffect(() => {
     if (!syncRunning || !syncStartedAt) return undefined;
@@ -489,8 +659,14 @@ export function AppShell({ children }: PropsWithChildren) {
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)] text-ink">
       <div
         className={cn(
-          "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-4 lg:px-6",
-          sidebarCollapsed ? "lg:grid-cols-[72px_minmax(0,1fr)]" : "lg:grid-cols-[260px_minmax(0,1fr)]"
+          "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-0 lg:px-0 lg:py-0",
+          syncDrawerOpen
+            ? sidebarCollapsed
+              ? "lg:grid-cols-[72px_380px_minmax(0,1fr)]"
+              : "lg:grid-cols-[260px_380px_minmax(0,1fr)]"
+            : sidebarCollapsed
+              ? "lg:grid-cols-[72px_minmax(0,1fr)]"
+              : "lg:grid-cols-[260px_minmax(0,1fr)]"
         )}
       >
         <aside
@@ -498,7 +674,7 @@ export function AppShell({ children }: PropsWithChildren) {
             "flex w-full flex-col gap-3 rounded-[24px] border border-white/70 bg-[#0d172b] text-white shadow-[0_20px_60px_-30px_rgba(13,23,43,0.55)] transition-[padding,gap] duration-200 ease-out",
             "max-lg:rounded-[30px] max-lg:p-5",
             sidebarCollapsed ? "lg:gap-2 lg:p-2.5 lg:py-3" : "lg:p-4",
-            "lg:z-10 lg:max-h-[calc(100vh-2rem)] lg:self-start lg:sticky lg:top-4 lg:overflow-x-hidden lg:overflow-y-hidden"
+            "lg:z-10 lg:max-h-none lg:h-[100dvh] lg:min-h-0 lg:rounded-none lg:border-0 lg:border-r lg:border-r-white/[0.1] lg:shadow-none lg:self-start lg:sticky lg:top-0 lg:overflow-x-hidden lg:overflow-y-hidden"
           )}
         >
           {/* Shop header — V1 refined dark */}
@@ -551,335 +727,50 @@ export function AppShell({ children }: PropsWithChildren) {
             </button>
           ) : null}
 
-          {!hideTopSyncPanel && !sidebarCollapsed ? (
-            <div id="app-sync-panel" className="scroll-mt-24 shrink-0 rounded-[14px] border border-white/[0.08] bg-white/[0.035] p-3">
-              <div className="mb-2.5 flex items-center gap-2">
-                <div className="h-2 w-2 shrink-0 rounded-full bg-emerald-400/90" />
-                <div className="flex-1 text-xs font-medium text-white/85">Ready to sync</div>
-                <span className="font-mono text-[10px] tabular-nums text-white/45">
-                  {lastSyncShort(summary?.last_dashboard_sync_at)}
-                </span>
-              </div>
-              <div className="mb-2.5 flex gap-1">
-                {syncServices.map((s) => (
-                  <div key={s.value} className="h-0.5 flex-1 rounded-sm bg-white/10" />
-                ))}
-              </div>
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <FlowButton
-                  onClick={() => startSyncMutation.mutate()}
-                  disabled={
-                    syncRunning ||
-                    startSyncMutation.isPending ||
-                    !selectedScopes.length ||
-                    selectedScopes.some((s) => !scopeServiceReady(s))
-                  }
-                  loading={syncRunning || startSyncMutation.isPending}
-                  text={
-                    syncStatus?.running
-                      ? "Syncing"
-                      : `Run sync · ${selectedScopes.length} service${selectedScopes.length === 1 ? "" : "s"}`
-                  }
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="border border-white/15 bg-white/10 px-3 text-white hover:bg-white/15"
-                  onClick={() => setSettingsOpen((open) => !open)}
-                  disabled={syncRunning}
-                  title="Sync services & options"
-                >
-                  <Settings2 size={16} />
-                </Button>
-              </div>
-              {settingsOpen ? (
-                <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
-                  <p className="text-xs uppercase tracking-[0.18em] text-white/45">Sync settings</p>
-                  <p className="mt-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/60">
-                    {syncSelectionSummary(selectedScopes)}
-                  </p>
-                  <div className="mt-3 grid gap-2">
-                    {syncServices.map((service) => {
-                      const checked = selectedScopes.includes(service.value);
-                      const canUse = scopeServiceReady(service.value);
-                      return (
-                        <Button
-                          key={service.value}
-                          type="button"
-                          variant="ghost"
-                          title={!canUse ? SYNC_SCOPE_READY_HELP[service.value] : undefined}
-                          className={cn(
-                            "flex h-auto items-center justify-between rounded-2xl border px-3 py-2 text-sm transition",
-                            checked
-                              ? "border-[oklch(0.62_0.18_262/0.55)] bg-[oklch(0.62_0.18_262/0.18)] text-white hover:bg-[oklch(0.62_0.18_262/0.22)]"
-                              : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
-                            syncRunning ? "cursor-not-allowed opacity-60" : "",
-                            !canUse ? "cursor-not-allowed opacity-45" : ""
-                          )}
-                          onClick={() => {
-                            if (syncRunning || !canUse) return;
-                            setSelectedScopes((current) =>
-                              checked ? current.filter((value) => value !== service.value) : [...current, service.value]
-                            );
-                          }}
-                          disabled={syncRunning || !canUse}
-                        >
-                          <span>{service.label}</span>
-                          <span
-                            className={cn(
-                              "flex h-5 w-5 items-center justify-center rounded-full border",
-                              checked ? "border-white/30 bg-white/15" : "border-white/20"
-                            )}
-                          >
-                            {checked ? <Check size={12} /> : null}
-                          </span>
-                        </Button>
-                      );
-                    })}
-                    <ToggleSwitch
-                      id="seo-sync-force-refresh"
-                      className="mt-2"
-                      label="Force Refresh"
-                      checked={forceRefresh}
-                      onCheckedChange={setForceRefresh}
-                      disabled={syncRunning}
-                    />
-                  </div>
-                </div>
-              ) : null}
+          {!sidebarCollapsed ? (
+            <div id="app-sync-panel" className="scroll-mt-24 shrink-0">
+              <SyncPill
+                drawerOpen={syncDrawerOpen}
+                onToggle={() => {
+                  userDrawerDismissedRef.current = false;
+                  setSyncDrawerOpen((o) => !o);
+                }}
+                running={syncRunning}
+                hasError={showSyncErrorPanel}
+                doneVisible={drawerMode === "done"}
+                accent={syncAccent}
+                title={pillTitle}
+                subtitle={pillSubtitle}
+              />
             </div>
           ) : null}
 
-          {!hideTopSyncPanel && sidebarCollapsed ? (
+          {sidebarCollapsed ? (
             <div className="relative hidden shrink-0 lg:block">
-              <Button
+              <button
                 type="button"
-                variant="ghost"
-                title={
-                  hasSyncCard && !syncRunning
-                    ? "Expand sidebar to view sync status"
-                    : "Run sync (expand sidebar for options)"
-                }
-                aria-label="Run sync"
+                title="Open sync panel"
+                aria-label="Open sync panel"
                 onClick={() => {
-                  if (hasSyncCard && !syncRunning) {
-                    setSidebarCollapsed(false);
-                    return;
-                  }
-                  startSyncMutation.mutate();
+                  userDrawerDismissedRef.current = false;
+                  setSyncDrawerOpen(true);
                 }}
-                disabled={
-                  startSyncMutation.isPending ||
-                  !selectedScopes.length ||
-                  selectedScopes.some((s) => !scopeServiceReady(s))
-                }
                 className={cn(
-                  "h-10 w-full rounded-xl border-0 text-white shadow-md",
-                  startSyncMutation.isPending ? "bg-white/10" : "bg-[oklch(0.62_0.18_262)] hover:opacity-95"
+                  "flex h-10 w-full items-center justify-center rounded-xl border-0 text-white shadow-md",
+                  syncRunning ? "bg-white/[0.05]" : showSyncErrorPanel ? "bg-[rgba(234,96,117,0.18)] text-[#ea6075]" : "bg-[oklch(0.62_0.18_262)] hover:opacity-95"
                 )}
               >
-                {startSyncMutation.isPending ? (
+                {syncRunning ? (
                   <LoaderCircle className="animate-spin" size={16} />
                 ) : (
-                  <Sparkles size={16} />
+                  <RefreshCw size={16} strokeWidth={2.25} />
                 )}
-              </Button>
+              </button>
               {hasSyncCard && !syncRunning ? (
                 <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_0_2px_#0d172b]" />
               ) : null}
             </div>
           ) : null}
-
-            {!sidebarCollapsed && showSyncCard ? (
-              <div className="rounded-[24px] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.09)_0%,rgba(255,255,255,0.05)_100%)] p-4">
-                {syncStatus?.running ? (
-                  <div className="mb-4 flex justify-center">
-                    <Button variant="secondary" className="bg-white/12 px-6 py-3 text-base text-white hover:bg-white/18" onClick={() => stopSyncMutation.mutate()} disabled={stopSyncMutation.isPending}>
-                      <Square className="mr-2" size={18} />
-                      Stop
-                    </Button>
-                  </div>
-                ) : null}
-                <div className="mt-4 grid gap-2 rounded-2xl border border-white/10 bg-[#111b31]/70 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-white">
-                      <Sparkles size={15} className={syncRunning ? "shrink-0 text-[#ffb36b]" : "shrink-0 text-white/60"} />
-                      <span className="truncate">
-                        {activeStepTotal && syncRunning
-                          ? `${syncPercent}% complete`
-                          : progressHeadline}
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5 text-xs text-white/60">
-                      {elapsedLabel ? (
-                        <span className="inline-flex items-center gap-1 tabular-nums">
-                          <Clock3 size={12} className="shrink-0" />
-                          {elapsedLabel}
-                        </span>
-                      ) : null}
-                      {!syncRunning ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0 rounded-lg text-white/55 hover:bg-white/10 hover:text-white"
-                          aria-label="Hide sync summary"
-                          title="Hide sync summary"
-                          onClick={() => {
-                            setSyncSummaryDismissed(true);
-                            setMessage(null);
-                          }}
-                        >
-                          <X size={16} strokeWidth={2.25} />
-                        </Button>
-                      ) : null}
-                    </div>
-                  </div>
-                  <Progress
-                    value={syncPercent}
-                    className="h-3 rounded-full bg-white/10"
-                    indicatorClassName="rounded-full bg-[linear-gradient(90deg,oklch(0.62_0.18_262)_0%,oklch(0.78_0.12_195)_100%)]"
-                  />
-                  {/* Only show progressCountLabel if it's not redundant with the detailed list below (for Shopify syncs) */}
-                  {!shopifyEntityScope ? (
-                    <div className="flex items-center justify-between gap-3 text-xs uppercase tracking-[0.16em] text-white/45">
-                      <span>{progressCountLabel}</span>
-                    </div>
-                  ) : null}
-                </div>
-                {/* Hide while running: backend `current` is per-item noise ("Index status: product:…", GSC, PageSpeed). Progress bar + counts are enough. */}
-                {showSyncErrorPanel ? (
-                  <div className="mt-3 rounded-2xl border border-[#5c2833] bg-[#2a141a]/70 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[#f0b7c1]">Sync failed</p>
-                    <p className="mt-2 break-words text-sm leading-snug text-white/85">{syncErrorParts.summary}</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="h-8 border border-white/15 bg-white/10 px-3 text-xs text-white hover:bg-white/15"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(rawSyncError).then(() => {
-                            setSyncErrorCopied(true);
-                            window.setTimeout(() => setSyncErrorCopied(false), 2000);
-                          });
-                        }}
-                      >
-                        <ClipboardCopy size={14} className="mr-1.5 shrink-0 opacity-80" />
-                        {syncErrorCopied ? "Copied" : "Copy error"}
-                      </Button>
-                      {syncErrorSuggestsSettings(rawSyncError) ? (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          className="h-8 border border-white/15 bg-white/10 px-0 hover:bg-white/15"
-                          asChild
-                        >
-                          <NavLink to="/settings" className="inline-flex items-center px-3 text-xs text-white">
-                            <Settings2 size={14} className="mr-1.5 shrink-0 opacity-80" />
-                            Open Settings
-                          </NavLink>
-                        </Button>
-                      ) : null}
-                    </div>
-                    {syncErrorParts.details ? (
-                      <div className="mt-2">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-auto w-full justify-between rounded-xl px-2 py-2 text-left text-xs text-white/65 hover:bg-white/10 hover:text-white/85"
-                          onClick={() => setSyncErrorTechnicalOpen((o) => !o)}
-                        >
-                          <span className="uppercase tracking-[0.14em]">Technical details</span>
-                          <ChevronDown size={16} className={cn("shrink-0 transition-transform", syncErrorTechnicalOpen ? "rotate-180" : "")} />
-                        </Button>
-                        {syncErrorTechnicalOpen ? (
-                          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-black/35 p-2.5 font-mono text-[10px] leading-relaxed text-white/70">
-                            {syncErrorParts.details}
-                          </pre>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {progressDetail && !syncRunning && !shopifyEntityScope ? (
-                  <p className="mt-3 text-sm text-white/75">{progressDetail}</p>
-                ) : null}
-                {pagespeedPhaseSummary ? <p className="mt-2 text-xs uppercase tracking-[0.14em] text-white/45">{pagespeedPhaseSummary}</p> : null}
-                {metricChips.length ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {metricChips.map((chip) => (
-                      <span key={chip} className="rounded-full border border-white/12 bg-white/8 px-2.5 py-1 text-[11px] uppercase tracking-[0.16em] text-white/68">
-                        {chip}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {(shopifyEntityScope ||
-                  (!syncRunning &&
-                    (syncStatus?.products_total ||
-                      syncStatus?.collections_total ||
-                      syncStatus?.pages_total ||
-                      syncStatus?.blogs_total ||
-                      syncStatus?.images_total))) ? (
-                  <div className="mt-3 space-y-2 text-xs">
-                    {[
-                      { label: "Products", synced: syncStatus?.products_synced || 0, total: syncStatus?.products_total || 0 },
-                      { label: "Collections", synced: syncStatus?.collections_synced || 0, total: syncStatus?.collections_total || 0 },
-                      { label: "Pages", synced: syncStatus?.pages_synced || 0, total: syncStatus?.pages_total || 0 },
-                      { label: "Blogs", synced: syncStatus?.blogs_synced || 0, total: syncStatus?.blogs_total || 0 },
-                      { label: "Blog articles", synced: syncStatus?.blog_articles_synced || 0, total: syncStatus?.blog_articles_total || 0 },
-                      { label: "Images", synced: syncStatus?.images_synced || 0, total: syncStatus?.images_total || 0 },
-                    ].map(({ label, synced, total }) => {
-                      return (
-                        <div key={label} className="flex items-center justify-between gap-3">
-                          <span className="text-[10px] uppercase tracking-[0.16em] text-white/50">{label}</span>
-                          <span className="font-semibold text-white">{synced} / {total}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                {pagespeedErrorDetails.length > 0 ? (
-                  <div className="mt-3 rounded-2xl border border-[#5c2833] bg-[#2a141a]/70 p-3">
-                    <p className="text-xs uppercase tracking-[0.18em] text-[#f0b7c1]">Recent PageSpeed Errors</p>
-                    <div className="mt-2 grid gap-2">
-                      {pagespeedErrorDetails.slice(-3).reverse().map((item) => (
-                        <div key={`${item.object_type}:${item.handle}:${item.url}`} className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-[0.16em] text-[#f0b7c1]">{item.object_type}:{item.handle}</p>
-                          <p className="mt-1 break-all text-xs text-white/70">{item.error}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <div className="mt-4 grid gap-2">
-                  {syncServices.map((service) => {
-                    const state = serviceStatus(activeSelectedScopes, effectiveActiveScope, syncRunning, activeStepIndex, service.value);
-                    return (
-                      <div key={service.value} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-sm">
-                        <span className="text-white/80">{service.label}</span>
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-[0.18em]",
-                            state === "running" ? "bg-[#2147b8]/45 text-[#b7cdff]" : "",
-                            state === "complete" ? "bg-[#173728] text-[#91efbb]" : "",
-                            state === "queued" ? "bg-white/10 text-white/60" : "",
-                            state === "idle" ? "bg-white/5 text-white/35" : ""
-                          )}
-                        >
-                          {state === "running" ? <LoaderCircle size={10} className="animate-spin" /> : null}
-                          {state === "complete" ? <Check size={10} /> : null}
-                          {state === "running" ? "Running" : state === "complete" ? "Done" : state === "queued" ? "Queued" : "Off"}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {syncStatus?.cancel_requested ? <p className="mt-3 text-xs uppercase tracking-[0.16em] text-[#ffcf9f]">Stopping sync...</p> : null}
-              </div>
-            ) : null}
 
           <div className="mt-1 flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-[120px]">
             <nav className="min-h-0 flex-1 overflow-y-auto pr-0.5">
@@ -1025,8 +916,26 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
           )}
         </aside>
-        <main className="min-w-0">{children}</main>
+        {syncDrawerOpen && mqLg ? (
+          <div className="hidden h-[100dvh] min-h-0 lg:flex lg:w-[380px] lg:shrink-0 lg:self-start lg:sticky lg:top-0 lg:overflow-hidden">
+            <SyncDrawer {...drawerProps} />
+          </div>
+        ) : null}
+        <main className="min-w-0 max-lg:min-h-0 lg:min-h-screen lg:p-6">{children}</main>
       </div>
+      {syncDrawerOpen && !mqLg ? (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/45 lg:hidden"
+            aria-label="Close sync panel"
+            onClick={closeDrawerOnly}
+          />
+          <div className="fixed right-4 top-4 z-50 max-h-[calc(100vh-2rem)] w-[min(380px,calc(100vw-2rem))] overflow-hidden lg:hidden">
+            <SyncDrawer {...drawerProps} />
+          </div>
+        </>
+      ) : null}
     </div>
     </SidekickProvider>
   );

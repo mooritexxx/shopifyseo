@@ -92,11 +92,11 @@ Event lines use `text/event-stream` (`data: {json}` or named `event:` lines as i
 
 ### 4.2 Settings stored in SQLite (`service_settings`)
 
-Keys loaded/saved through Settings UI and [`shopifyseo/dashboard_config.py`](shopifyseo/dashboard_config.py) **`RUNTIME_SETTING_KEYS`** (values can also be supplied via environment; see `_ENV_MAPPING` for the subset that is mirrored from DB into `os.environ` on startup via `apply_runtime_settings`):
+Keys loaded/saved through Settings UI and [`shopifyseo/dashboard_config.py`](shopifyseo/dashboard_config.py) **`RUNTIME_SETTING_KEYS`**. For keys in `_ENV_MAPPING`, non-empty SQLite values take precedence over process environment for both the API payload and `apply_runtime_settings` (which mirrors those DB values into `os.environ` for libraries that read env):
 
 `shopify_shop`, `shopify_api_version`, `shopify_client_id`, `shopify_client_secret`, `dataforseo_api_login`, `dataforseo_api_password`, `moz_api_token`, `google_client_id`, `google_client_secret`, `search_console_site`, `ga4_property_id`, `openai_api_key`, `gemini_api_key`, `anthropic_api_key`, `openrouter_api_key`, `ollama_api_key`, `ollama_base_url`, `ai_generation_provider`, `ai_generation_model`, `ai_sidekick_provider`, `ai_sidekick_model`, `ai_review_provider`, `ai_review_model`, `ai_image_provider`, `ai_image_model`, `ai_vision_provider`, `ai_vision_model`, `ai_prompt_profile`, `ai_prompt_version`, `ai_max_retries`.
 
-[`backend/app/services/settings_service.py`](backend/app/services/settings_service.py) merges **env vs DB** provenance when building the payload for `GET /api/settings`.
+[`backend/app/services/settings_service.py`](backend/app/services/settings_service.py) resolves each mapped field with **DB first**, then startup environment, when building the payload for `GET /api/settings`.
 
 ### 4.3 Environment variables (operational and goals)
 

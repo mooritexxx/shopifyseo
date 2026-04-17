@@ -190,7 +190,8 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
   shopify_shop: {
     label: "Shopify Shop",
     hint: "Admin API hostname: your-store.myshopify.com (not the public custom domain).",
-    detail: "Custom domains go in Custom domain below. The shop field must remain the .myshopify.com domain for Admin API authentication."
+    detail:
+      "How to find it (fastest): open your Shopify admin and look at the browser URL — it is https://admin.shopify.com/store/<name>, and your shop hostname is <name>.myshopify.com.\n\nAlternative: Shopify admin → Settings → Domains. The row marked as the Shopify-assigned domain (ends in .myshopify.com) is what goes here — not your public/primary custom domain.\n\nCustom domains go in the Custom Domain field below. This field must stay as the .myshopify.com domain for Admin API authentication to work."
   },
   store_custom_domain: {
     label: "Custom Domain (Public URL)",
@@ -217,7 +218,7 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
     label: "Google Client ID",
     hint: "OAuth 2.0 Client ID for Search Console and GA4 APIs.",
     detail:
-      "Create an OAuth client (Web application) in Google Cloud Console. Add the redirect URI this app shows in docs or deployment notes, then Save settings and use Connect Google."
+      "Create an OAuth client of type Web application in Google Cloud Console. Add the exact redirect URI your server uses (for example http://127.0.0.1:8000/auth/google/callback when running uvicorn on 127.0.0.1:8000). Save these fields in Settings, then use Connect Google — saved values are the source of truth for this app."
   },
   google_client_secret: {
     label: "Google Client Secret",

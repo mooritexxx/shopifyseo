@@ -6,6 +6,7 @@ from fastapi.responses import RedirectResponse
 import shopifyseo.dashboard_google as dg
 
 from backend.app.db import open_db_connection
+from shopifyseo.dashboard_config import apply_runtime_settings
 
 
 router = APIRouter(tags=["auth"])
@@ -17,6 +18,11 @@ def _redirect_uri(request: Request) -> str:
 
 @router.get("/auth/google/start", name="google_auth_start")
 def google_auth_start(request: Request):
+    conn = open_db_connection()
+    try:
+        apply_runtime_settings(conn)
+    finally:
+        conn.close()
     if not dg.google_configured():
         return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+OAuth+is+not+configured", status_code=303)
     dg.GOOGLE_REDIRECT_URI = _redirect_uri(request)
@@ -47,6 +53,7 @@ def google_auth_callback(request: Request, state: str = "", code: str = ""):
     dg.GOOGLE_REDIRECT_URI = _redirect_uri(request)
     conn = open_db_connection()
     try:
+        apply_runtime_settings(conn)
         payload = dg.google_exchange_code(code)
         dg.set_service_token(conn, "search_console", payload)
         return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+Search+Console+connected", status_code=303)

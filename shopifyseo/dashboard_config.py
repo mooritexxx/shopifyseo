@@ -79,12 +79,17 @@ _ENV_MAPPING = {
 
 
 def apply_runtime_settings(conn: sqlite3.Connection) -> None:
+    """Mirror mapped credentials from SQLite into ``os.environ`` and refresh Google globals.
+
+    Non-empty values saved in Settings win over process environment so operators are not required
+    to use ``.env`` for Shopify, Google OAuth, AI keys, etc. Empty values in the DB do not clear
+    ``os.environ`` (so optional operator-only env overrides remain possible when a field was never
+    filled in the UI).
+    """
     for setting_key, env_key in _ENV_MAPPING.items():
-        if not os.getenv(env_key):
-            value = dg.get_service_setting(conn, setting_key)
-            if value:
-                os.environ[env_key] = value
-    # AI timeout defaults in code when unset; persisted value synced via _ENV_MAPPING above
+        value = (dg.get_service_setting(conn, setting_key) or "").strip()
+        if value:
+            os.environ[env_key] = value
     dg.GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     dg.GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
 
@@ -98,10 +103,11 @@ def mask_secret(value: str, keep: int = 4) -> str:
 
 
 def runtime_setting(conn: sqlite3.Connection, env_key: str, setting_key: str) -> tuple[str, str]:
+    """Resolve a setting: values saved in Settings (SQLite) take precedence over startup ``os.environ``."""
+    db_value = (dg.get_service_setting(conn, setting_key) or "").strip()
+    if db_value:
+        return db_value, "db"
     env_value = ORIGINAL_ENV.get(env_key, "").strip()
     if env_value:
         return env_value, "env"
-    db_value = dg.get_service_setting(conn, setting_key)
-    if db_value:
-        return db_value, "db"
     return "", "unset"

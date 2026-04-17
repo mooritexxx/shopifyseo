@@ -171,3 +171,32 @@ textarea {
   color: #94a3b8;
   pointer-events: none;
 }
+
+/* Sync drawer — event stream mono (V1 design) */
+.sync-event-stream-mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes syncDrawerSweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes syncDrawerBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.sync-drawer-sweep {
+  animation: syncDrawerSweep 1.4s linear infinite;
+}

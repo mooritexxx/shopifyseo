@@ -860,14 +860,39 @@ export const settingsSchema = z.object({
     resource_name: z.string().default("")
   })).default([]),
   ga4_api_activation_url: z.string().default(""),
-  sync_scope_ready: z.object({
-    shopify: z.boolean(),
-    gsc: z.boolean(),
-    ga4: z.boolean(),
-    index: z.boolean(),
-    pagespeed: z.boolean(),
-    structured: z.boolean()
-  })
+  /** Present on current API; older backends may omit — default so the Settings UI still parses. */
+  sync_scope_ready: z
+    .union([
+      z.object({
+        shopify: z.boolean(),
+        gsc: z.boolean(),
+        ga4: z.boolean(),
+        index: z.boolean(),
+        pagespeed: z.boolean(),
+        structured: z.boolean()
+      }),
+      z.null(),
+      z.undefined()
+    ])
+    .transform((v) =>
+      v && typeof v === "object" && typeof (v as { shopify?: unknown }).shopify === "boolean"
+        ? (v as {
+            shopify: boolean;
+            gsc: boolean;
+            ga4: boolean;
+            index: boolean;
+            pagespeed: boolean;
+            structured: boolean;
+          })
+        : {
+            shopify: false,
+            gsc: false,
+            ga4: false,
+            index: false,
+            pagespeed: false,
+            structured: false
+          }
+    )
 });
 
 export const messageSchema = z.object({

@@ -9,7 +9,6 @@ import {
   Database,
   FileText,
   FlaskConical,
-  HelpCircle,
   Image as ImageIcon,
   Key,
   Layers3,
@@ -158,8 +157,7 @@ const items: NavItem[] = [
   { to: "/image-seo", label: "Image Optimization", icon: ImageIcon, group: "Research" },
   { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical, group: "Research" },
   { to: "/embeddings", label: "Embeddings", icon: Database, group: "System" },
-  { to: "/api-usage", label: "API Usage", icon: Activity, group: "System" },
-  { to: "/settings", label: "Settings", icon: Settings2, group: "System" }
+  { to: "/api-usage", label: "API Usage", icon: Activity, group: "System" }
 ];
 
 function lastSyncShort(lastAt: string | null | undefined) {
@@ -915,7 +913,7 @@ export function AppShell({ children }: PropsWithChildren) {
               </div>
               <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-white/50 hover:bg-white/10 hover:text-white" asChild title="Settings">
                 <NavLink to="/settings">
-                  <HelpCircle size={15} strokeWidth={2} />
+                  <Settings2 size={15} strokeWidth={2} />
                 </NavLink>
               </Button>
             </div>

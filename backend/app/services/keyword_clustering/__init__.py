@@ -1,0 +1,40 @@
+"""keyword_clustering package — re-exports all public symbols for backward compatibility.
+
+Internal layout:
+  _helpers.py    — pure utility functions (no DB or AI deps)
+  _gaps.py       — SEO gap computation and cluster coverage enrichment
+  _storage.py    — cluster DB read/write (load_clusters, migration)
+  _context.py    — cluster context lookup for LLM prompts
+  _generation.py — AI-driven cluster generation and page-matching
+  _crud.py       — CRUD operations (get_match_options, update/get cluster)
+"""
+
+from ._crud import get_cluster_detail, get_match_options, update_cluster_match
+from ._gaps import compute_seo_gaps, enrich_clusters_with_coverage
+from ._generation import generate_clusters
+from ._helpers import (
+    _build_clustering_prompt,
+    _check_keyword_coverage,
+    _compute_cluster_stats,
+    _keyword_coverage_detail,
+)
+from ._context import _get_matched_cluster_keywords, _load_cluster_context
+from ._storage import load_clusters
+
+__all__ = [
+    # Public API
+    "generate_clusters",
+    "load_clusters",
+    "enrich_clusters_with_coverage",
+    "compute_seo_gaps",
+    "get_match_options",
+    "update_cluster_match",
+    "get_cluster_detail",
+    # Semi-public (used by other services)
+    "_get_matched_cluster_keywords",
+    "_load_cluster_context",
+    "_build_clustering_prompt",
+    "_check_keyword_coverage",
+    "_compute_cluster_stats",
+    "_keyword_coverage_detail",
+]

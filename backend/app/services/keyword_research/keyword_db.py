@@ -1,0 +1,514 @@
+"""Keyword and competitor DB sync operations, plus keyword CRUD."""
+
+import json
+import logging
+import sqlite3
+import time
+from datetime import datetime, timezone
+
+from shopifyseo.dashboard_google import get_service_setting, set_service_setting
+
+from .competitor_blocklist import norm_competitor_domain
+from .keyword_utils import classify_ranking_status, match_gsc_queries
+
+logger = logging.getLogger(__name__)
+
+TARGET_KEY = "target_keywords"
+
+
+def load_target_keywords(conn: sqlite3.Connection) -> dict:
+    raw = get_service_setting(conn, TARGET_KEY, "{}")
+    if not isinstance(raw, str):
+        raw = "{}"
+    raw = raw.strip()
+    if not raw:
+        raw = "{}"
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.warning("Invalid JSON in %s; using empty target list", TARGET_KEY)
+        data = {}
+    if not isinstance(data, dict):
+        return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+    items = data.get("items")
+    if not items:
+        return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+    if not isinstance(items, list):
+        logger.warning("%s.items is not a list (got %s)", TARGET_KEY, type(items).__name__)
+        return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+    clean = [x for x in items if isinstance(x, dict)]
+    if len(clean) != len(items):
+        logger.warning(
+            "Dropped %s non-dict rows from %s",
+            len(items) - len(clean),
+            TARGET_KEY,
+        )
+    if not clean:
+        return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+    return {**data, "items": clean, "total": len(clean)}
+
+
+def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: str) -> dict:
+    data = load_target_keywords(conn)
+    found = False
+    for item in data["items"]:
+        if item["keyword"].lower() == keyword.lower():
+            item["status"] = new_status
+            found = True
+            break
+    if not found:
+        raise ValueError(f"Keyword not found: {keyword}")
+    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    conn.execute(
+        "UPDATE keyword_metrics SET status = ?, updated_at = ? WHERE LOWER(keyword) = LOWER(?)",
+        (new_status, int(time.time()), keyword),
+    )
+    conn.commit()
+    return {"keyword": keyword, "status": new_status}
+
+
+def bulk_update_status(conn: sqlite3.Connection, keywords: list[str], new_status: str) -> int:
+    data = load_target_keywords(conn)
+    keyword_set = {kw.lower() for kw in keywords}
+    updated = 0
+    for item in data["items"]:
+        if item["keyword"].lower() in keyword_set:
+            item["status"] = new_status
+            updated += 1
+    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    now = int(time.time())
+    for kw in keywords:
+        conn.execute(
+            "UPDATE keyword_metrics SET status = ?, updated_at = ? WHERE LOWER(keyword) = LOWER(?)",
+            (new_status, now, kw),
+        )
+    conn.commit()
+    return updated
+
+
+def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
+    """UPSERT all keyword metrics from the JSON blob into the keyword_metrics table.
+
+    Returns the number of rows synced.
+    """
+    data = load_target_keywords(conn)
+    items = data.get("items", [])
+    now = int(time.time())
+    for item in items:
+        intent_raw = item.get("intent_raw") or {}
+        seed_keywords = item.get("seed_keywords") or []
+        serp_raw = item.get("serp_features")
+        serp_json = item.get("serp_features_json")
+        if not serp_json and isinstance(serp_raw, dict):
+            serp_json = json.dumps(serp_raw)
+        conn.execute(
+            """
+            INSERT INTO keyword_metrics (
+                keyword, volume, difficulty, traffic_potential, cpc,
+                intent, content_type_label, intent_raw, parent_topic,
+                opportunity, seed_keywords, ranking_status,
+                gsc_position, gsc_clicks, gsc_impressions, status, updated_at,
+                global_volume, parent_volume, clicks, cps,
+                serp_features, word_count, first_seen, serp_last_update,
+                source_endpoint, competitor_domain, competitor_position,
+                competitor_url, competitor_position_kind,
+                is_local, content_format_hint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(keyword) DO UPDATE SET
+                volume = excluded.volume,
+                difficulty = excluded.difficulty,
+                traffic_potential = excluded.traffic_potential,
+                cpc = excluded.cpc,
+                intent = excluded.intent,
+                content_type_label = excluded.content_type_label,
+                intent_raw = excluded.intent_raw,
+                parent_topic = excluded.parent_topic,
+                opportunity = excluded.opportunity,
+                seed_keywords = excluded.seed_keywords,
+                ranking_status = excluded.ranking_status,
+                gsc_position = excluded.gsc_position,
+                gsc_clicks = excluded.gsc_clicks,
+                gsc_impressions = excluded.gsc_impressions,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                global_volume = COALESCE(excluded.global_volume, keyword_metrics.global_volume),
+                parent_volume = COALESCE(excluded.parent_volume, keyword_metrics.parent_volume),
+                clicks = COALESCE(excluded.clicks, keyword_metrics.clicks),
+                cps = COALESCE(excluded.cps, keyword_metrics.cps),
+                serp_features = COALESCE(excluded.serp_features, keyword_metrics.serp_features),
+                word_count = COALESCE(excluded.word_count, keyword_metrics.word_count),
+                first_seen = COALESCE(excluded.first_seen, keyword_metrics.first_seen),
+                serp_last_update = COALESCE(excluded.serp_last_update, keyword_metrics.serp_last_update),
+                source_endpoint = COALESCE(excluded.source_endpoint, keyword_metrics.source_endpoint),
+                competitor_domain = COALESCE(excluded.competitor_domain, keyword_metrics.competitor_domain),
+                competitor_position = COALESCE(excluded.competitor_position, keyword_metrics.competitor_position),
+                competitor_url = COALESCE(excluded.competitor_url, keyword_metrics.competitor_url),
+                competitor_position_kind = COALESCE(excluded.competitor_position_kind, keyword_metrics.competitor_position_kind),
+                is_local = COALESCE(excluded.is_local, keyword_metrics.is_local),
+                content_format_hint = COALESCE(excluded.content_format_hint, keyword_metrics.content_format_hint)
+            """,
+            (
+                item.get("keyword", ""),
+                item.get("volume"),
+                item.get("difficulty"),
+                item.get("traffic_potential"),
+                item.get("cpc"),
+                item.get("intent"),
+                item.get("content_type"),
+                json.dumps(intent_raw),
+                item.get("parent_topic"),
+                item.get("opportunity"),
+                json.dumps(seed_keywords if isinstance(seed_keywords, list) else list(seed_keywords)),
+                item.get("ranking_status", "not_ranking"),
+                item.get("gsc_position"),
+                item.get("gsc_clicks"),
+                item.get("gsc_impressions"),
+                item.get("status", "new"),
+                now,
+                item.get("global_volume"),
+                item.get("parent_volume"),
+                item.get("clicks"),
+                item.get("cps"),
+                serp_json,
+                item.get("word_count"),
+                item.get("first_seen"),
+                item.get("serp_last_update"),
+                item.get("source_endpoint"),
+                item.get("competitor_domain"),
+                item.get("competitor_position"),
+                item.get("competitor_url"),
+                item.get("competitor_position_kind"),
+                item.get("is_local", 0),
+                item.get("content_format_hint", ""),
+            ),
+        )
+    conn.commit()
+    return len(items)
+
+
+def sync_keyword_page_map(conn: sqlite3.Connection) -> int:
+    """Populate keyword_page_map from gsc_query_rows, preserving per-page data."""
+    now = int(time.time())
+    rows = conn.execute(
+        """
+        SELECT query, object_type, object_handle,
+               SUM(clicks) as clicks, SUM(impressions) as impressions,
+               AVG(position) as position
+        FROM gsc_query_rows
+        WHERE object_handle IS NOT NULL AND object_handle != ''
+        GROUP BY query, object_type, object_handle
+        """
+    ).fetchall()
+    count = 0
+    for query, obj_type, obj_handle, clicks, impressions, position in rows:
+        conn.execute(
+            """
+            INSERT INTO keyword_page_map
+                (keyword, object_type, object_handle, source,
+                 gsc_clicks, gsc_impressions, gsc_position, updated_at)
+            VALUES (?, ?, ?, 'gsc', ?, ?, ?, ?)
+            ON CONFLICT(keyword, object_type, object_handle) DO UPDATE SET
+                gsc_clicks = excluded.gsc_clicks,
+                gsc_impressions = excluded.gsc_impressions,
+                gsc_position = excluded.gsc_position,
+                updated_at = excluded.updated_at
+            """,
+            (query, obj_type, obj_handle, int(clicks or 0), int(impressions or 0), position, now),
+        )
+        count += 1
+    conn.commit()
+    return count
+
+
+def sync_competitor_keyword_gaps(conn: sqlite3.Connection) -> int:
+    """Build competitor gap records for keywords where they rank and we don't (or rank poorly)."""
+    now = int(time.time())
+    rows = conn.execute(
+        """
+        SELECT keyword, competitor_domain, competitor_position,
+               competitor_url, ranking_status, gsc_position,
+               volume, difficulty, traffic_potential
+        FROM keyword_metrics
+        WHERE competitor_domain IS NOT NULL AND competitor_domain != ''
+          AND (ranking_status != 'ranking' OR gsc_position > 20)
+        """
+    ).fetchall()
+    count = 0
+    for kw, comp_domain, comp_pos, comp_url, rank_status, gsc_pos, vol, diff, tp in rows:
+        gap_type = "they_rank_we_dont" if rank_status == "not_ranking" else "they_rank_better"
+        conn.execute(
+            """
+            INSERT INTO competitor_keyword_gaps
+                (keyword, competitor_domain, competitor_position, competitor_url,
+                 our_ranking_status, our_gsc_position, volume, difficulty,
+                 traffic_potential, gap_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(keyword, competitor_domain) DO UPDATE SET
+                competitor_position = excluded.competitor_position,
+                competitor_url = excluded.competitor_url,
+                our_ranking_status = excluded.our_ranking_status,
+                our_gsc_position = excluded.our_gsc_position,
+                volume = excluded.volume,
+                difficulty = excluded.difficulty,
+                traffic_potential = excluded.traffic_potential,
+                gap_type = excluded.gap_type,
+                updated_at = excluded.updated_at
+            """,
+            (kw, comp_domain, comp_pos, comp_url, rank_status, gsc_pos, vol, diff, tp, gap_type, now),
+        )
+        count += 1
+    conn.commit()
+    return count
+
+
+def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], manual_domains: list[str] | None = None) -> int:
+    """UPSERT competitor profile rows from competitor discovery (e.g. Labs competitors_domain). `manual_domains` = domains user had before this run (is_manual=1)."""
+    now = int(time.time())
+    manual = {norm_competitor_domain(d) for d in (manual_domains or []) if d}
+    count = 0
+    for p in profiles:
+        domain = (p.get("competitor_domain") or p.get("domain", "")).strip().lower()
+        if not domain:
+            continue
+        conn.execute(
+            """
+            INSERT INTO competitor_profiles
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(domain) DO UPDATE SET
+                keywords_common = excluded.keywords_common,
+                keywords_they_have = excluded.keywords_they_have,
+                keywords_we_have = excluded.keywords_we_have,
+                share = excluded.share,
+                traffic = excluded.traffic,
+                is_manual = MAX(competitor_profiles.is_manual, excluded.is_manual),
+                updated_at = excluded.updated_at
+            """,
+            (
+                domain,
+                p.get("keywords_common", 0),
+                p.get("keywords_competitor", 0),
+                p.get("keywords_target", 0),
+                p.get("share", 0.0),
+                p.get("traffic", 0),
+                1 if domain in manual else 0,
+                now,
+            ),
+        )
+        count += 1
+    conn.commit()
+    return count
+
+
+def update_competitor_profile_from_organic_keywords(
+    conn: sqlite3.Connection, domain: str, items: list[dict]
+) -> None:
+    """Set traffic + keyword sample size from Site Explorer organic-keywords (manual competitors often missing from organic-competitors)."""
+    if not items:
+        return
+    domain = norm_competitor_domain(domain)
+    n_kw = len(items)
+    traffic = 0
+    for it in items:
+        tp = it.get("traffic_potential")
+        if tp is not None:
+            try:
+                traffic += int(tp)
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                traffic += int(it.get("volume") or 0)
+            except (TypeError, ValueError):
+                pass
+    now = int(time.time())
+    cur = conn.execute(
+        """
+        UPDATE competitor_profiles SET
+            keywords_they_have = ?,
+            traffic = ?,
+            updated_at = ?
+        WHERE domain = ?
+        """,
+        (n_kw, traffic, now, domain),
+    )
+    if cur.rowcount == 0:
+        conn.execute(
+            """
+            INSERT INTO competitor_profiles
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
+            VALUES (?, 0, ?, 0, 0, ?, 1, ?)
+            """,
+            (domain, n_kw, traffic, now),
+        )
+    conn.commit()
+
+
+def update_competitor_profile_organic_sample_count(
+    conn: sqlite3.Connection, domain: str, items: list[dict]
+) -> None:
+    """Set ``keywords_they_have`` from organic-keyword API row count only. Does not change ``traffic``."""
+    if not items:
+        return
+    domain = norm_competitor_domain(domain)
+    n_kw = len(items)
+    now = int(time.time())
+    cur = conn.execute(
+        """
+        UPDATE competitor_profiles SET
+            keywords_they_have = ?,
+            updated_at = ?
+        WHERE domain = ?
+        """,
+        (n_kw, now, domain),
+    )
+    if cur.rowcount == 0:
+        conn.execute(
+            """
+            INSERT INTO competitor_profiles
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
+            VALUES (?, 0, ?, 0, 0, 0, 1, ?)
+            """,
+            (domain, n_kw, now),
+        )
+    conn.commit()
+
+
+def apply_competitor_traffic_from_provider_batch(
+    conn: sqlite3.Connection, traffic_by_domain: dict[str, int]
+) -> None:
+    """Set ``traffic`` from provider-supplied domain-level estimates (e.g. DataForSEO bulk organic ETV)."""
+    if not traffic_by_domain:
+        return
+    now = int(time.time())
+    for raw_dom, traffic in traffic_by_domain.items():
+        domain = norm_competitor_domain(str(raw_dom))
+        if not domain:
+            continue
+        try:
+            tval = int(traffic)
+        except (TypeError, ValueError):
+            tval = 0
+        tval = max(0, tval)
+        cur = conn.execute(
+            """
+            UPDATE competitor_profiles SET traffic = ?, updated_at = ?
+            WHERE domain = ?
+            """,
+            (tval, now, domain),
+        )
+        if cur.rowcount == 0:
+            conn.execute(
+                """
+                INSERT INTO competitor_profiles
+                    (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
+                VALUES (?, 0, 0, 0, 0, ?, 0, ?)
+                """,
+                (domain, tval, now),
+            )
+    conn.commit()
+
+
+def sync_competitor_top_pages(conn: sqlite3.Connection, domain: str, pages: list[dict]) -> int:
+    """UPSERT top-page rows for a single competitor domain."""
+    now = int(time.time())
+    domain = domain.strip().lower()
+    count = 0
+    for p in pages:
+        page_url = p.get("url", "").strip()
+        if not page_url:
+            continue
+        conn.execute(
+            """
+            INSERT INTO competitor_top_pages
+                (competitor_domain, url, top_keyword, top_keyword_volume, top_keyword_position,
+                 total_keywords, estimated_traffic, traffic_value, page_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(competitor_domain, url) DO UPDATE SET
+                top_keyword = excluded.top_keyword,
+                top_keyword_volume = excluded.top_keyword_volume,
+                top_keyword_position = excluded.top_keyword_position,
+                total_keywords = excluded.total_keywords,
+                estimated_traffic = excluded.estimated_traffic,
+                traffic_value = excluded.traffic_value,
+                page_type = excluded.page_type,
+                updated_at = excluded.updated_at
+            """,
+            (
+                domain,
+                page_url,
+                p.get("top_keyword", ""),
+                p.get("top_keyword_volume", 0),
+                p.get("top_keyword_best_position", 0),
+                p.get("keywords", 0),
+                p.get("sum_traffic", 0),
+                p.get("value", 0),
+                p.get("page_type", ""),
+                now,
+            ),
+        )
+        count += 1
+    conn.commit()
+    return count
+
+
+def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
+    """Enrich target keywords with GSC ranking data."""
+    data = load_target_keywords(conn)
+    items = data.get("items", [])
+    if not items:
+        return data
+
+    rows = conn.execute("""
+        SELECT
+            LOWER(query) as query,
+            MIN(position) as best_position,
+            SUM(clicks) as total_clicks,
+            SUM(impressions) as total_impressions
+        FROM gsc_query_rows
+        GROUP BY LOWER(query)
+    """).fetchall()
+
+    gsc_data: dict[str, dict] = {}
+    for row in rows:
+        gsc_data[row[0]] = {
+            "position": row[1],
+            "clicks": row[2],
+            "impressions": row[3],
+        }
+
+    for item in items:
+        match = match_gsc_queries(item["keyword"], gsc_data)
+        if match:
+            item["gsc_position"] = round(match["position"], 1)
+            item["gsc_clicks"] = match["clicks"]
+            item["gsc_impressions"] = match["impressions"]
+            item["ranking_status"] = classify_ranking_status(match["position"])
+        else:
+            item["gsc_position"] = None
+            item["gsc_clicks"] = None
+            item["gsc_impressions"] = None
+            item["ranking_status"] = "not_ranking"
+
+    data["gsc_crossref_at"] = datetime.now(timezone.utc).isoformat()
+    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    try:
+        sync_keyword_metrics_to_db(conn)
+    except Exception:
+        logger.exception("Failed to sync keyword metrics to DB after GSC crossref (non-fatal)")
+    try:
+        sync_keyword_page_map(conn)
+    except Exception:
+        logger.exception("Failed to sync keyword_page_map after GSC crossref (non-fatal)")
+    try:
+        sync_competitor_keyword_gaps(conn)
+    except Exception:
+        logger.exception("Failed to sync competitor_keyword_gaps after GSC crossref (non-fatal)")
+    try:
+        from shopifyseo.embedding_store import sync_embeddings
+        sync_embeddings(conn, object_type="keyword")
+        sync_embeddings(conn, object_type="competitor_page")
+    except Exception:
+        logger.warning("Keyword/competitor embedding sync failed (non-fatal)", exc_info=True)
+    return data

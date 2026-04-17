@@ -1,0 +1,979 @@
+"""Article ideas — gap analysis inputs and CRUD helpers.
+
+Extracted from dashboard_queries.py to keep that module focused on
+catalog and overview queries.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Article Ideas — gap analysis + CRUD
+# ---------------------------------------------------------------------------
+
+
+def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Gather all datapoints needed to generate article ideas.
+
+    Returns a dict with:
+    - cluster_gaps: blog/buying-guide clusters with no existing article, enriched with
+      top-5 keyword metrics (volume, KD, CPC, intent, ranking_status, gsc_position,
+      content_format_hint, serp_features) plus cluster-level dominant_serp_features,
+      content_format_hints, avg_cps when those columns exist
+    - competitor_gaps: informational competitor gaps not already covered by cluster keywords
+    - competitor_gaps_dedupe_skipped: count of competitor-gap rows omitted as duplicates of cluster keywords
+    - collection_gaps: collections with high GSC impressions but no supporting article
+    - informational_query_gaps: GSC queries with informational intent landing on non-article pages
+    - existing_article_titles: titles already covered (to avoid duplicates)
+    - top_collections: top collections by GSC impressions (for context)
+    """
+    cluster_stat_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()
+    }
+    cluster_stats_sql = (
+        ", c.dominant_serp_features, c.content_format_hints, c.avg_cps"
+        if "dominant_serp_features" in cluster_stat_cols
+        else ", NULL AS dominant_serp_features, NULL AS content_format_hints, NULL AS avg_cps"
+    )
+
+    # 1. Blog/buying-guide clusters with no matching article.
+    #    Only surface content_type values that map to blog posts.
+    cluster_rows = conn.execute(
+        f"""
+        SELECT c.id, c.name, c.primary_keyword, c.content_brief,
+               c.total_volume, c.avg_difficulty, c.avg_opportunity,
+               c.content_type, c.match_type, c.match_handle, c.match_title
+               {cluster_stats_sql}
+        FROM clusters c
+        WHERE c.content_type IN ('blog_post', 'buying_guide')
+          AND NOT EXISTS (
+            SELECT 1 FROM blog_articles ba
+            WHERE (
+                LOWER(ba.title) LIKE '%' || LOWER(c.primary_keyword) || '%'
+                OR LOWER(ba.seo_title) LIKE '%' || LOWER(c.primary_keyword) || '%'
+                OR LOWER(ba.body) LIKE '%' || LOWER(c.primary_keyword) || '%'
+            )
+        )
+        ORDER BY c.total_volume DESC, c.avg_opportunity DESC
+        LIMIT 12
+        """
+    ).fetchall()
+
+    # For each cluster, fetch top 5 keywords by opportunity from keyword_metrics.
+    # Fall back to cluster_keywords-only rows if keyword_metrics has no data yet.
+    cluster_gaps: list[dict[str, Any]] = []
+    for r in cluster_rows:
+        cluster_id = r[0]
+        kw_rows = conn.execute(
+            """
+            SELECT ck.keyword,
+                   COALESCE(km.volume, 0)               AS volume,
+                   COALESCE(km.difficulty, 0)            AS difficulty,
+                   COALESCE(km.cpc, 0.0)                 AS cpc,
+                   COALESCE(km.intent, 'informational')  AS intent,
+                   COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
+                   km.gsc_position,
+                   COALESCE(km.opportunity, 0.0)         AS opportunity,
+                   km.clicks,
+                   km.cps,
+                   km.content_format_hint,
+                   km.serp_features,
+                   km.word_count,
+                   km.first_seen,
+                   COALESCE(km.traffic_potential, 0)     AS traffic_potential,
+                   COALESCE(km.global_volume, 0)         AS global_volume
+            FROM cluster_keywords ck
+            LEFT JOIN keyword_metrics km ON LOWER(km.keyword) = LOWER(ck.keyword)
+            WHERE ck.cluster_id = ?
+            ORDER BY km.opportunity DESC NULLS LAST
+            LIMIT 5
+            """,
+            (cluster_id,),
+        ).fetchall()
+
+        top_keywords = [
+            {
+                "keyword": kw[0],
+                "volume": int(kw[1] or 0),
+                "difficulty": int(kw[2] or 0),
+                "cpc": round(float(kw[3] or 0), 2),
+                "intent": kw[4],
+                "ranking_status": kw[5],
+                "gsc_position": round(float(kw[6]), 1) if kw[6] is not None else None,
+                "clicks": round(float(kw[8] or 0), 1) if kw[8] is not None else None,
+                "cps": round(float(kw[9] or 0), 2) if kw[9] is not None else None,
+                "content_format_hint": kw[10] or "",
+                "serp_features_compact": kw[11][:80] if kw[11] else "",
+                "word_count": int(kw[12]) if kw[12] is not None else None,
+                "first_seen": kw[13] or None,
+                "traffic_potential": int(kw[14] or 0),
+                "global_volume": int(kw[15] or 0),
+            }
+            for kw in kw_rows
+        ]
+
+        # Flag if any keyword is a quick-win or striking-distance opportunity
+        has_ranking_opportunity = any(
+            kw["ranking_status"] in ("quick_win", "striking_distance")
+            for kw in top_keywords
+        )
+
+        dsf = (r[11] or "").strip()
+        cfh = (r[12] or "").strip()
+        ac_raw = r[13]
+        avg_cps_cluster = round(float(ac_raw), 2) if ac_raw is not None else 0.0
+
+        cluster_gaps.append(
+            {
+                "id": r[0],
+                "name": r[1],
+                "primary_keyword": r[2],
+                "content_brief": r[3],
+                "total_volume": r[4] or 0,
+                "avg_difficulty": round(float(r[5] or 0), 1),
+                "avg_opportunity": round(float(r[6] or 0), 1),
+                "content_type": r[7],
+                "match_type": r[8],
+                "match_handle": r[9],
+                "match_title": r[10],
+                "dominant_serp_features": dsf,
+                "content_format_hints": cfh,
+                "avg_cps": avg_cps_cluster,
+                "top_keywords": top_keywords,
+                "has_ranking_opportunity": has_ranking_opportunity,
+            }
+        )
+
+    # Enrich cluster_gaps with keyword coverage against the suggested match content.
+    from backend.app.services.keyword_clustering import _check_keyword_coverage
+    import re as _re
+    for cg in cluster_gaps:
+        all_kw_rows = conn.execute(
+            "SELECT keyword FROM cluster_keywords WHERE cluster_id = ?",
+            (cg["id"],),
+        ).fetchall()
+        all_kws = [kr[0] for kr in all_kw_rows]
+        match_content = ""
+        mt, mh = cg.get("match_type"), cg.get("match_handle")
+        if mt == "collection" and mh:
+            mc_row = conn.execute(
+                "SELECT seo_title, seo_description, description_html FROM collections WHERE handle = ?",
+                (mh,),
+            ).fetchone()
+            if mc_row:
+                match_content = " ".join(mc_row[i] or "" for i in range(3))
+        elif mt == "page" and mh:
+            mc_row = conn.execute(
+                "SELECT seo_title, seo_description, body FROM pages WHERE handle = ?",
+                (mh,),
+            ).fetchone()
+            if mc_row:
+                match_content = " ".join(mc_row[i] or "" for i in range(3))
+        elif mt == "blog_article" and mh and "/" in mh:
+            parts = mh.split("/", 1)
+            mc_row = conn.execute(
+                "SELECT seo_title, seo_description, body FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+                (parts[0], parts[1]),
+            ).fetchone()
+            if mc_row:
+                match_content = " ".join(mc_row[i] or "" for i in range(3))
+        found, total = _check_keyword_coverage(all_kws, match_content) if all_kws else (0, 0)
+        cg["coverage_found"] = found
+        cg["coverage_total"] = total
+        cg["coverage_ratio"] = f"{found}/{total}" if total else "0/0"
+
+    # Enrich cluster_gaps with keyword_page_map: find the best-ranking existing page
+    # for each cluster's primary keyword.
+    _kpm_cols = {row[1] for row in conn.execute("PRAGMA table_info(keyword_page_map)").fetchall()}
+    if _kpm_cols:
+        for cg in cluster_gaps:
+            try:
+                kpm_row = conn.execute(
+                    """
+                    SELECT object_type, object_handle, COALESCE(gsc_position, 999) AS pos
+                    FROM keyword_page_map
+                    WHERE LOWER(keyword) = LOWER(?)
+                    ORDER BY pos ASC
+                    LIMIT 1
+                    """,
+                    (cg["primary_keyword"],),
+                ).fetchone()
+                if kpm_row:
+                    cg["existing_page"] = {
+                        "object_type": kpm_row[0],
+                        "object_handle": kpm_row[1],
+                        "gsc_position": round(float(kpm_row[2]), 1) if kpm_row[2] < 900 else None,
+                    }
+                else:
+                    cg["existing_page"] = None
+            except Exception:
+                cg["existing_page"] = None
+    else:
+        for cg in cluster_gaps:
+            cg["existing_page"] = None
+
+    # 2. Collections with impressions > 200 but no supporting article
+    coll_col_names = {
+        row[1] for row in conn.execute("PRAGMA table_info(collections)").fetchall()
+    }
+    ga4_col = ", COALESCE(col.ga4_sessions, 0) AS ga4_sessions" if "ga4_sessions" in coll_col_names else ", 0 AS ga4_sessions"
+    collection_gaps = conn.execute(
+        f"""
+        SELECT col.handle, col.title,
+               COALESCE(col.gsc_impressions, 0) AS gsc_impressions,
+               COALESCE(col.gsc_clicks, 0)      AS gsc_clicks,
+               COALESCE(col.gsc_position, 0.0)  AS gsc_position
+               {ga4_col}
+        FROM collections col
+        WHERE COALESCE(col.gsc_impressions, 0) > 200
+        AND NOT EXISTS (
+            SELECT 1 FROM blog_articles ba
+            WHERE LOWER(ba.title) LIKE '%' || LOWER(col.title) || '%'
+               OR LOWER(ba.body)  LIKE '%' || col.handle || '%'
+        )
+        ORDER BY col.gsc_impressions DESC
+        LIMIT 8
+        """
+    ).fetchall()
+
+    # 3. Top informational GSC queries landing on non-article pages
+    from shopifyseo.market_context import get_primary_country_code, country_display_name
+    _mkt_country_lower = country_display_name(get_primary_country_code(conn)).lower()
+    informational_query_gaps = conn.execute(
+        """
+        SELECT qr.query,
+               SUM(qr.impressions) AS total_impressions,
+               SUM(qr.clicks)      AS total_clicks,
+               AVG(qr.position)    AS avg_position,
+               qr.object_type
+        FROM gsc_query_rows qr
+        WHERE qr.object_type IN ('product', 'collection', 'page')
+          AND (
+               qr.query LIKE 'how%'
+            OR qr.query LIKE 'best%'
+            OR qr.query LIKE 'top%'
+            OR qr.query LIKE 'what%'
+            OR qr.query LIKE 'why%'
+            OR qr.query LIKE 'guide%'
+            OR qr.query LIKE 'review%'
+            OR qr.query LIKE '%vs%'
+            OR qr.query LIKE '%difference%'
+            OR qr.query LIKE '%' || ? || '%'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM blog_articles ba
+              WHERE LOWER(ba.title) LIKE '%' || LOWER(TRIM(qr.query)) || '%'
+                 OR LOWER(ba.seo_title) LIKE '%' || LOWER(TRIM(qr.query)) || '%'
+          )
+        GROUP BY qr.query
+        ORDER BY total_impressions DESC
+        LIMIT 15
+        """,
+        (_mkt_country_lower,),
+    ).fetchall()
+
+    # 4. Existing article titles — to avoid suggesting duplicates
+    existing_articles = conn.execute(
+        """
+        SELECT title, seo_title, blog_handle
+        FROM blog_articles
+        WHERE title IS NOT NULL AND TRIM(title) != ''
+        ORDER BY published_at DESC NULLS LAST
+        LIMIT 30
+        """
+    ).fetchall()
+
+    # 5. Top collections for context (used to suggest internal link opportunities)
+    top_collections = conn.execute(
+        """
+        SELECT handle, title,
+               COALESCE(gsc_impressions, 0) AS gsc_impressions,
+               COALESCE(gsc_clicks, 0)      AS gsc_clicks
+        FROM collections
+        ORDER BY gsc_impressions DESC
+        LIMIT 10
+        """
+    ).fetchall()
+
+    # 6. Competitor keyword gaps — omit keywords already covered by cluster gaps (dedupe noise)
+    cluster_kw_norm: set[str] = set()
+    for cg in cluster_gaps:
+        pk = (cg.get("primary_keyword") or "").strip().lower()
+        if pk:
+            cluster_kw_norm.add(pk)
+        for tk in cg.get("top_keywords") or []:
+            k = (tk.get("keyword") or "").strip().lower()
+            if k:
+                cluster_kw_norm.add(k)
+
+    competitor_gaps_dedupe_skipped = 0
+    competitor_gaps: list[dict[str, Any]] = []
+    try:
+        _ckg_cols = {row[1] for row in conn.execute("PRAGMA table_info(competitor_keyword_gaps)").fetchall()}
+        _ckg_pos_col = "ckg.competitor_position" if "competitor_position" in _ckg_cols else "NULL AS competitor_position"
+        _ckg_url_col = "ckg.competitor_url" if "competitor_url" in _ckg_cols else "NULL AS competitor_url"
+        competitor_gap_rows = conn.execute(
+            f"""
+            SELECT ckg.keyword, ckg.competitor_domain, ckg.volume,
+                   ckg.difficulty, ckg.traffic_potential, ckg.gap_type,
+                   km.content_format_hint, km.intent,
+                   {_ckg_pos_col}, {_ckg_url_col}
+            FROM competitor_keyword_gaps ckg
+            LEFT JOIN keyword_metrics km ON LOWER(ckg.keyword) = LOWER(km.keyword)
+            WHERE COALESCE(km.intent, 'informational') = 'informational'
+              AND ckg.volume > 50
+            ORDER BY ckg.volume DESC
+            LIMIT 40
+            """
+        ).fetchall()
+        raw_competitor = [
+            {
+                "keyword": r[0],
+                "competitor_domain": r[1],
+                "volume": int(r[2] or 0),
+                "difficulty": int(r[3] or 0),
+                "traffic_potential": int(r[4] or 0),
+                "gap_type": r[5],
+                "content_format_hint": r[6] or "",
+                "intent": r[7] or "informational",
+                "competitor_position": r[8],
+                "competitor_url": r[9] or "",
+            }
+            for r in competitor_gap_rows
+        ]
+        for row in raw_competitor:
+            kn = (row["keyword"] or "").strip().lower()
+            if kn in cluster_kw_norm:
+                competitor_gaps_dedupe_skipped += 1
+                continue
+            competitor_gaps.append(row)
+            if len(competitor_gaps) >= 10:
+                break
+    except Exception:
+        competitor_gaps = []
+
+    # 7. Top competitor pages driving traffic (content landscape)
+    try:
+        _ctp_cols = {row[1] for row in conn.execute("PRAGMA table_info(competitor_top_pages)").fetchall()}
+        _ctp_tv_col = "traffic_value" if "traffic_value" in _ctp_cols else "0 AS traffic_value"
+        winning_content_rows = conn.execute(
+            f"""
+            SELECT competitor_domain, url, top_keyword, top_keyword_volume,
+                   estimated_traffic, {_ctp_tv_col}, page_type
+            FROM competitor_top_pages
+            WHERE estimated_traffic > 0
+            ORDER BY estimated_traffic DESC
+            LIMIT 15
+            """
+        ).fetchall()
+        competitor_winning_content = [
+            {
+                "competitor": r[0],
+                "url_path": r[1].split("/", 3)[-1] if "/" in r[1] else r[1],
+                "keyword": r[2],
+                "volume": int(r[3] or 0),
+                "traffic": int(r[4] or 0),
+                "traffic_value": int(r[5] or 0),
+                "page_type": r[6] or "",
+            }
+            for r in winning_content_rows
+        ]
+    except Exception:
+        competitor_winning_content = []
+
+    # 8. Vendor context: top brands by product count
+    try:
+        vendor_rows = conn.execute(
+            """
+            SELECT vendor, COUNT(*) AS product_count
+            FROM products
+            WHERE vendor IS NOT NULL AND TRIM(vendor) != ''
+            GROUP BY vendor
+            ORDER BY product_count DESC
+            LIMIT 8
+            """
+        ).fetchall()
+        vendor_context = [{"vendor": r[0], "product_count": int(r[1])} for r in vendor_rows]
+    except Exception:
+        vendor_context = []
+
+    # 9. Top organic articles (by GSC clicks) — signals proven content categories
+    try:
+        top_article_rows = conn.execute(
+            """
+            SELECT title, blog_handle,
+                   COALESCE(gsc_clicks, 0)      AS gsc_clicks,
+                   COALESCE(gsc_impressions, 0) AS gsc_impressions
+            FROM blog_articles
+            WHERE gsc_clicks > 0 AND title IS NOT NULL
+            ORDER BY gsc_clicks DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        top_organic_articles = [
+            {
+                "title": r[0],
+                "blog_handle": r[1],
+                "gsc_clicks": int(r[2]),
+                "gsc_impressions": int(r[3]),
+            }
+            for r in top_article_rows
+        ]
+    except Exception:
+        top_organic_articles = []
+
+    # 10. Geo/device signals from GSC dimensional rows
+    try:
+        country_rows = conn.execute(
+            """
+            SELECT dimension_value, SUM(impressions) AS total_impressions
+            FROM gsc_query_dimension_rows
+            WHERE dimension_kind = 'country'
+            GROUP BY dimension_value
+            ORDER BY total_impressions DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        top_countries = [
+            {"country": r[0], "impressions": int(r[1] or 0)} for r in country_rows
+        ]
+        device_rows = conn.execute(
+            """
+            SELECT dimension_value, SUM(impressions) AS total_impressions
+            FROM gsc_query_dimension_rows
+            WHERE dimension_kind = 'device'
+            GROUP BY dimension_value
+            ORDER BY total_impressions DESC
+            """
+        ).fetchall()
+        device_split = [
+            {"device": r[0], "impressions": int(r[1] or 0)} for r in device_rows
+        ]
+    except Exception:
+        top_countries = []
+        device_split = []
+
+    # 11. Rejected ideas — avoid reprising dismissed topics
+    try:
+        rejected_rows = conn.execute(
+            """
+            SELECT suggested_title, primary_keyword
+            FROM article_ideas
+            WHERE status = 'rejected'
+            ORDER BY created_at DESC
+            LIMIT 20
+            """
+        ).fetchall()
+        rejected_ideas = [
+            {"title": r[0], "primary_keyword": r[1] or ""}
+            for r in rejected_rows
+        ]
+    except Exception:
+        rejected_ideas = []
+
+    # 12. Queued ideas — avoid suggesting keywords already in any active stage of the pipeline
+    try:
+        queued_rows = conn.execute(
+            """
+            SELECT primary_keyword
+            FROM article_ideas
+            WHERE status IN ('idea', 'approved', 'drafting', 'published')
+              AND primary_keyword != ''
+            ORDER BY created_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+        queued_keywords = [r[0] for r in queued_rows]
+    except Exception:
+        queued_keywords = []
+
+    return {
+        "cluster_gaps": cluster_gaps,
+        "competitor_gaps": competitor_gaps,
+        "competitor_gaps_dedupe_skipped": competitor_gaps_dedupe_skipped,
+        "competitor_winning_content": competitor_winning_content,
+        "collection_gaps": [
+            {
+                "handle": r[0],
+                "title": r[1],
+                "gsc_impressions": int(r[2]),
+                "gsc_clicks": int(r[3]),
+                "gsc_position": round(float(r[4] or 0), 1),
+                "ga4_sessions": int(r[5] or 0),
+            }
+            for r in collection_gaps
+        ],
+        "informational_query_gaps": [
+            {
+                "query": r[0],
+                "total_impressions": int(r[1] or 0),
+                "total_clicks": int(r[2] or 0),
+                "avg_position": round(float(r[3] or 0), 1),
+                "object_type": r[4],
+            }
+            for r in informational_query_gaps
+        ],
+        "existing_article_titles": [
+            {"title": r[0], "seo_title": r[1], "blog_handle": r[2]}
+            for r in existing_articles
+        ],
+        "top_collections": [
+            {"handle": r[0], "title": r[1], "gsc_impressions": int(r[2]), "gsc_clicks": int(r[3])}
+            for r in top_collections
+        ],
+        "vendor_context": vendor_context,
+        "top_organic_articles": top_organic_articles,
+        "top_countries": top_countries,
+        "device_split": device_split,
+        "rejected_ideas": rejected_ideas,
+        "queued_keywords": queued_keywords,
+    }
+
+
+def _linked_keywords_json_for_db(value: Any) -> str:
+    """Serialize linked keyword rows for SQLite (list or JSON string from AI pipeline)."""
+    if value is None or value == "":
+        return "[]"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) -> list[int]:
+    """Persist a list of article idea dicts and return their new IDs."""
+    now = int(time.time())
+    ids = []
+    for idea in ideas:
+        supporting = json.dumps(idea.get("supporting_keywords") or [], ensure_ascii=False)
+        cur = conn.execute(
+            """
+            INSERT INTO article_ideas
+                (suggested_title, brief, primary_keyword, supporting_keywords,
+                 search_intent, linked_cluster_id, linked_cluster_name,
+                 linked_collection_handle, linked_collection_title,
+                 gap_reason, status, created_at,
+                 content_format, estimated_monthly_traffic, source_type,
+                 total_volume, avg_difficulty, opportunity_score,
+                 dominant_serp_features, content_format_hints, linked_keywords_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                idea.get("suggested_title", ""),
+                idea.get("brief", ""),
+                idea.get("primary_keyword", ""),
+                supporting,
+                idea.get("search_intent", "informational"),
+                idea.get("linked_cluster_id"),
+                idea.get("linked_cluster_name", ""),
+                idea.get("linked_collection_handle", ""),
+                idea.get("linked_collection_title", ""),
+                idea.get("gap_reason", ""),
+                now,
+                idea.get("content_format", ""),
+                int(idea.get("estimated_monthly_traffic") or 0),
+                idea.get("source_type", "cluster_gap"),
+                int(idea.get("total_volume") or 0),
+                round(float(idea.get("avg_difficulty") or 0.0), 1),
+                round(float(idea.get("opportunity_score") or 0.0), 1),
+                idea.get("dominant_serp_features", ""),
+                idea.get("content_format_hints", ""),
+                _linked_keywords_json_for_db(idea.get("linked_keywords_json")),
+            ),
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    return ids
+
+
+def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return all stored article ideas with aggregate article/GSC metrics, newest first."""
+    _AGG_SQL = """
+        SELECT ai.id, ai.suggested_title, ai.brief, ai.primary_keyword,
+               ai.supporting_keywords,
+               ai.search_intent, ai.linked_cluster_id, ai.linked_cluster_name,
+               ai.linked_collection_handle, ai.linked_collection_title,
+               ai.gap_reason, ai.status, ai.created_at,
+               COALESCE(ai.content_format, '')              AS content_format,
+               COALESCE(ai.estimated_monthly_traffic, 0)   AS estimated_monthly_traffic,
+               COALESCE(ai.source_type, 'cluster_gap')     AS source_type,
+               COALESCE(ai.total_volume, 0)                AS total_volume,
+               COALESCE(ai.avg_difficulty, 0.0)            AS avg_difficulty,
+               COALESCE(ai.opportunity_score, 0.0)         AS opportunity_score,
+               COALESCE(ai.dominant_serp_features, '')     AS dominant_serp_features,
+               COALESCE(ai.content_format_hints, '')       AS content_format_hints,
+               COALESCE(ai.linked_keywords_json, '[]')     AS linked_keywords_json,
+               COALESCE(ai.linked_article_handle, '')      AS linked_article_handle,
+               COALESCE(ai.linked_blog_handle, '')         AS linked_blog_handle,
+               COALESCE(ai.shopify_article_id, '')         AS shopify_article_id,
+               COUNT(ia.id)                                AS article_count,
+               SUM(COALESCE(ba.gsc_clicks, 0))            AS agg_gsc_clicks,
+               SUM(COALESCE(ba.gsc_impressions, 0))       AS agg_gsc_impressions
+        FROM article_ideas ai
+        LEFT JOIN idea_articles ia ON ia.idea_id = ai.id
+        LEFT JOIN blog_articles ba
+               ON ba.handle      = ia.article_handle
+              AND ba.blog_handle = ia.blog_handle
+        GROUP BY ai.id
+        ORDER BY ai.created_at DESC, ai.id DESC
+    """
+    _FALLBACK_SQL = """
+        SELECT ai.id, ai.suggested_title, ai.brief, ai.primary_keyword,
+               ai.supporting_keywords,
+               ai.search_intent, ai.linked_cluster_id, ai.linked_cluster_name,
+               ai.linked_collection_handle, ai.linked_collection_title,
+               ai.gap_reason, ai.status, ai.created_at,
+               COALESCE(ai.content_format, '')              AS content_format,
+               COALESCE(ai.estimated_monthly_traffic, 0)   AS estimated_monthly_traffic,
+               COALESCE(ai.source_type, 'cluster_gap')     AS source_type,
+               COALESCE(ai.total_volume, 0)                AS total_volume,
+               COALESCE(ai.avg_difficulty, 0.0)            AS avg_difficulty,
+               COALESCE(ai.opportunity_score, 0.0)         AS opportunity_score,
+               COALESCE(ai.dominant_serp_features, '')     AS dominant_serp_features,
+               COALESCE(ai.content_format_hints, '')       AS content_format_hints,
+               COALESCE(ai.linked_keywords_json, '[]')     AS linked_keywords_json,
+               COALESCE(ai.linked_article_handle, '')      AS linked_article_handle,
+               COALESCE(ai.linked_blog_handle, '')         AS linked_blog_handle,
+               COALESCE(ai.shopify_article_id, '')         AS shopify_article_id,
+               0  AS article_count,
+               0  AS agg_gsc_clicks,
+               0  AS agg_gsc_impressions
+        FROM article_ideas ai
+        ORDER BY ai.created_at DESC, ai.id DESC
+    """
+    try:
+        rows = conn.execute(_AGG_SQL).fetchall()
+    except Exception:
+        rows = conn.execute(_FALLBACK_SQL).fetchall()
+    result = []
+    for r in rows:
+        try:
+            keywords = json.loads(r[4] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            keywords = []
+        raw_lkj = r[21] or "[]"
+        try:
+            linked_kw_rows = json.loads(raw_lkj) if isinstance(raw_lkj, str) else raw_lkj
+        except (json.JSONDecodeError, TypeError):
+            linked_kw_rows = []
+        if not isinstance(linked_kw_rows, list):
+            linked_kw_rows = []
+        result.append(
+            {
+                "id": r[0],
+                "suggested_title": r[1],
+                "brief": r[2],
+                "primary_keyword": r[3] or "",
+                "supporting_keywords": keywords,
+                "search_intent": r[5] or "informational",
+                "linked_cluster_id": r[6],
+                "linked_cluster_name": r[7] or "",
+                "linked_collection_handle": r[8] or "",
+                "linked_collection_title": r[9] or "",
+                "gap_reason": r[10] or "",
+                "status": r[11] or "idea",
+                "created_at": r[12],
+                "content_format": r[13] or "",
+                "estimated_monthly_traffic": int(r[14] or 0),
+                "source_type": r[15] or "cluster_gap",
+                "total_volume": int(r[16] or 0),
+                "avg_difficulty": round(float(r[17] or 0.0), 1),
+                "opportunity_score": round(float(r[18] or 0.0), 1),
+                "dominant_serp_features": r[19] or "",
+                "content_format_hints": r[20] or "",
+                "linked_keywords_json": linked_kw_rows,
+                "linked_article_handle": r[22] or "",
+                "linked_blog_handle": r[23] or "",
+                "shopify_article_id": r[24] or "",
+                "article_count": int(r[25] or 0),
+                "agg_gsc_clicks": int(r[26] or 0),
+                "agg_gsc_impressions": int(r[27] or 0),
+            }
+        )
+    return result
+
+
+def delete_article_idea(conn: sqlite3.Connection, idea_id: int) -> bool:
+    """Delete an article idea by ID. Returns True if a row was deleted."""
+    cur = conn.execute("DELETE FROM article_ideas WHERE id = ?", (idea_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: str) -> bool:
+    """Update the status of an article idea. Returns True if a row was updated."""
+    cur = conn.execute(
+        "UPDATE article_ideas SET status = ? WHERE id = ?",
+        (status, idea_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def link_idea_to_article(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    article_handle: str,
+    blog_handle: str,
+    shopify_article_id: str,
+    angle_label: str = "",
+) -> bool:
+    """Link an article idea to a Shopify article via the idea_articles junction table."""
+    import time as _time
+    conn.execute(
+        """INSERT OR IGNORE INTO idea_articles
+           (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, int(_time.time())),
+    )
+    # Legacy columns: keep first article for backward compat; move lifecycle to drafting when linked
+    conn.execute(
+        """UPDATE article_ideas
+           SET linked_article_handle = CASE WHEN linked_article_handle = '' THEN ? ELSE linked_article_handle END,
+               linked_blog_handle = CASE WHEN linked_blog_handle = '' THEN ? ELSE linked_blog_handle END,
+               shopify_article_id = CASE WHEN shopify_article_id = '' THEN ? ELSE shopify_article_id END,
+               status = 'drafting'
+           WHERE id = ?""",
+        (article_handle, blog_handle, shopify_article_id, idea_id),
+    )
+    conn.commit()
+    return True
+
+
+def save_article_target_keywords(
+    conn: sqlite3.Connection,
+    blog_handle: str,
+    article_handle: str,
+    primary_keyword: str,
+    supporting_keywords: list[str],
+) -> None:
+    """Copy idea keywords into article_target_keywords at draft time."""
+    if primary_keyword:
+        conn.execute(
+            """INSERT OR IGNORE INTO article_target_keywords
+               (blog_handle, article_handle, keyword, is_primary, source)
+               VALUES (?, ?, ?, 1, 'idea')""",
+            (blog_handle, article_handle, primary_keyword.strip().lower()),
+        )
+    for kw in supporting_keywords:
+        kw_clean = kw.strip().lower() if isinstance(kw, str) else ""
+        if kw_clean and kw_clean != primary_keyword.strip().lower():
+            conn.execute(
+                """INSERT OR IGNORE INTO article_target_keywords
+                   (blog_handle, article_handle, keyword, is_primary, source)
+                   VALUES (?, ?, ?, 0, 'idea')""",
+                (blog_handle, article_handle, kw_clean),
+            )
+    conn.commit()
+
+
+def fetch_idea_articles(conn: sqlite3.Connection, idea_id: int) -> list[dict[str, Any]]:
+    """Return all articles linked to an idea, with GSC performance from blog_articles."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT ia.id, ia.blog_handle, ia.article_handle, ia.shopify_article_id,
+                   ia.angle_label, ia.created_at,
+                   ba.title AS article_title,
+                   ba.is_published,
+                   COALESCE(ba.gsc_clicks, 0) AS gsc_clicks,
+                   COALESCE(ba.gsc_impressions, 0) AS gsc_impressions,
+                   ba.gsc_position
+            FROM idea_articles ia
+            LEFT JOIN blog_articles ba
+                   ON ba.handle = ia.article_handle AND ba.blog_handle = ia.blog_handle
+            WHERE ia.idea_id = ?
+            ORDER BY ia.created_at DESC
+            """,
+            (idea_id,),
+        ).fetchall()
+    except Exception:
+        return []
+    result = []
+    for r in rows:
+        result.append({
+            "id": r[0],
+            "blog_handle": r[1],
+            "article_handle": r[2],
+            "shopify_article_id": r[3] or "",
+            "angle_label": r[4] or "",
+            "created_at": r[5],
+            "article_title": r[6] or "",
+            "is_published": bool(r[7]) if r[7] is not None else False,
+            "gsc_clicks": int(r[8] or 0),
+            "gsc_impressions": int(r[9] or 0),
+            "gsc_position": round(float(r[10]), 1) if r[10] is not None else None,
+        })
+    return result
+
+
+def bulk_update_idea_status(conn: sqlite3.Connection, idea_ids: list[int], status: str) -> int:
+    """Update status for multiple ideas at once. Returns number of rows updated."""
+    if not idea_ids:
+        return 0
+    placeholders = ",".join("?" for _ in idea_ids)
+    cur = conn.execute(
+        f"UPDATE article_ideas SET status = ? WHERE id IN ({placeholders})",
+        [status] + idea_ids,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def compute_keyword_coverage(
+    conn: sqlite3.Connection,
+    blog_handle: str,
+    article_handle: str,
+) -> dict[str, Any]:
+    """Cross-reference article_target_keywords with gsc_query_rows to produce a coverage report."""
+    targets = conn.execute(
+        "SELECT keyword, is_primary FROM article_target_keywords WHERE blog_handle = ? AND article_handle = ?",
+        (blog_handle, article_handle),
+    ).fetchall()
+    target_map: dict[str, bool] = {}
+    for row in targets:
+        target_map[row[0].strip().lower()] = bool(row[1])
+
+    obj_handle = f"{blog_handle}/{article_handle}"
+    gsc_rows = conn.execute(
+        """SELECT query, COALESCE(clicks, 0), COALESCE(impressions, 0), position
+           FROM gsc_query_rows
+           WHERE object_type = 'blog_article' AND object_handle = ?""",
+        (obj_handle,),
+    ).fetchall()
+
+    gsc_map: dict[str, dict] = {}
+    for r in gsc_rows:
+        gsc_map[r[0].strip().lower()] = {
+            "query": r[0],
+            "clicks": int(r[1]),
+            "impressions": int(r[2]),
+            "position": round(float(r[3]), 1) if r[3] is not None else None,
+        }
+
+    target_keywords = []
+    for kw, is_primary in target_map.items():
+        match = _fuzzy_gsc_match(kw, gsc_map)
+        if match:
+            target_keywords.append({
+                "keyword": kw,
+                "is_primary": is_primary,
+                "gsc_clicks": match["clicks"],
+                "gsc_impressions": match["impressions"],
+                "gsc_position": match["position"],
+                "status": "ranking",
+            })
+        else:
+            target_keywords.append({
+                "keyword": kw,
+                "is_primary": is_primary,
+                "gsc_clicks": 0,
+                "gsc_impressions": 0,
+                "gsc_position": None,
+                "status": "not_ranking",
+            })
+
+    matched_queries = set()
+    for kw in target_map:
+        for gq in gsc_map:
+            if kw in gq or gq in kw:
+                matched_queries.add(gq)
+
+    discovered = []
+    for gq, data in gsc_map.items():
+        if gq not in matched_queries:
+            discovered.append({
+                "query": data["query"],
+                "clicks": data["clicks"],
+                "impressions": data["impressions"],
+                "position": data["position"],
+            })
+    discovered.sort(key=lambda x: x["impressions"], reverse=True)
+
+    ranking_count = sum(1 for t in target_keywords if t["status"] == "ranking")
+    total_targets = len(target_keywords)
+    gap_count = total_targets - ranking_count
+    coverage_pct = round(ranking_count / total_targets * 100, 1) if total_targets else 0.0
+
+    return {
+        "target_keywords": target_keywords,
+        "discovered_keywords": discovered,
+        "summary": {
+            "total_targets": total_targets,
+            "ranking_count": ranking_count,
+            "gap_count": gap_count,
+            "discovered_count": len(discovered),
+            "coverage_pct": coverage_pct,
+        },
+    }
+
+
+def _fuzzy_gsc_match(keyword: str, gsc_map: dict[str, dict]) -> dict | None:
+    """Find the best matching GSC query for a target keyword."""
+    kw_lower = keyword.strip().lower()
+    if kw_lower in gsc_map:
+        return gsc_map[kw_lower]
+    for gq, data in gsc_map.items():
+        if kw_lower in gq or gq in kw_lower:
+            return data
+    return None
+
+
+def compute_idea_performance(conn: sqlite3.Connection, idea_id: int) -> dict[str, Any]:
+    """Roll up performance across all articles linked to an idea."""
+    articles = fetch_idea_articles(conn, idea_id)
+
+    total_clicks = 0
+    total_impressions = 0
+    positions = []
+    published_count = 0
+
+    all_target_kws: dict[str, bool] = {}
+    all_ranking_kws: set[str] = set()
+
+    for art in articles:
+        total_clicks += art.get("gsc_clicks", 0)
+        total_impressions += art.get("gsc_impressions", 0)
+        if art.get("gsc_position") is not None:
+            positions.append(art["gsc_position"])
+        if art.get("is_published"):
+            published_count += 1
+
+        try:
+            coverage = compute_keyword_coverage(
+                conn, art["blog_handle"], art["article_handle"]
+            )
+            for tk in coverage.get("target_keywords", []):
+                kw = tk["keyword"]
+                if kw not in all_target_kws:
+                    all_target_kws[kw] = tk.get("is_primary", False)
+                if tk["status"] == "ranking":
+                    all_ranking_kws.add(kw)
+        except Exception:
+            pass
+
+    total_targets = len(all_target_kws)
+    ranking_across = len(all_ranking_kws)
+    gap_count = total_targets - ranking_across
+    coverage_pct = round(ranking_across / total_targets * 100, 1) if total_targets else 0.0
+
+    return {
+        "articles": articles,
+        "aggregate": {
+            "total_clicks": total_clicks,
+            "total_impressions": total_impressions,
+            "avg_position": round(sum(positions) / len(positions), 1) if positions else None,
+            "article_count": len(articles),
+            "published_count": published_count,
+        },
+        "keyword_coverage": {
+            "total_targets": total_targets,
+            "ranking_count": ranking_across,
+            "gap_count": gap_count,
+            "discovered_count": 0,
+            "coverage_pct": coverage_pct,
+        },
+    }

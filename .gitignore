@@ -1,0 +1,107 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.venv/
+venv/
+ENV/
+env/
+.ENV
+.env
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Agent / tooling configs (local-only)
+.claude/
+.minimax/
+
+# Coverage / lint caches
+htmlcov/
+.eslintcache
+
+# Generated content (store-specific)
+drafts/
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+frontend/.vitest/
+*.local
+
+# Database
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.sqlite3.corrupt-*
+*.db
+*.sqlite
+shopify_image_cache/
+
+# Syncthing conflict files
+*.sync-conflict-*
+
+# Office documents (may contain sensitive info)
+*.docx
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

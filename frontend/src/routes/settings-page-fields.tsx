@@ -1,0 +1,728 @@
+import type { Dispatch, SetStateAction } from "react";
+
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
+import type { SettingsPayload } from "../types/api";
+import { SettingsFieldShell } from "./settings-field-shell";
+import { metaForSettingsField, settingsFieldHintId } from "./settings-field-meta";
+
+export const settingsTabs = [
+  {
+    id: "integrations",
+    label: "Integrations",
+    description: "Provider keys, DataForSEO, and connections that power AI and keyword research."
+  },
+  {
+    id: "ai-models",
+    label: "AI Models",
+    description: "Providers and models for generation, Sidekick, review, images, and vision."
+  },
+  {
+    id: "runtime",
+    label: "Runtime",
+    description: "Timeouts and retries for AI HTTP calls."
+  },
+  {
+    id: "data-sources",
+    label: "Data Sources",
+    description: "Shop identity, Shopify Admin API, and Google Search Console / GA4."
+  }
+] as const;
+
+export type SettingsTabId = (typeof settingsTabs)[number]["id"];
+
+export const providerOptions = ["openai", "gemini", "anthropic", "openrouter", "ollama"] as const;
+
+export const staticModelOptionsByProvider: Record<string, string[]> = {
+  openai: ["gpt-5-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-4.1-mini"],
+  gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+  anthropic: ["claude-opus-4-6", "claude-3-7-sonnet-latest", "claude-sonnet-4-20250514", "claude-3-5-sonnet-latest"],
+  openrouter: ["z-ai/glm-4.5-air:free"],
+  ollama: ["kimi-k2.5:cloud", "llama3.1", "llama3.1:8b", "qwen2.5", "qwen2.5:14b", "mistral", "deepseek-r1:8b"]
+};
+
+/** Mirrors `shopifyseo/dashboard_ai_engine_parts/config.py` (DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_RETRIES). */
+export const DEFAULT_AI_TIMEOUT_SECONDS = 120;
+export const DEFAULT_AI_MAX_RETRIES = 2;
+
+export function displayNumericSetting(raw: string | undefined, defaultNum: number): string {
+  const t = (raw ?? "").trim();
+  return t === "" ? String(defaultNum) : t;
+}
+
+export function isNumericDefault(raw: string | undefined, defaultNum: number): boolean {
+  const t = (raw ?? "").trim();
+  if (t === "") return true;
+  return t === String(defaultNum);
+}
+
+function sortModelOptions(options: string[]) {
+  return [...options].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+export type RenderSettingsTabSectionsProps = {
+  tabKey: SettingsTabId;
+  values: Record<string, string>;
+  setValues: Dispatch<SetStateAction<Record<string, string>>>;
+  query: SettingsPayload;
+  ollamaModels: string[];
+  geminiModels: string[];
+  anthropicModels: string[];
+  openRouterModels: string[];
+  openTestModal: (target: "generation" | "review" | "sidekick") => void;
+  openImageTestModal: () => void;
+  openVisionTestModal: () => void;
+  aiTestBusy: boolean;
+  dfsStatus: "idle" | "checking" | "ok" | "error";
+  dfsDetail: string;
+  validateDataforseo: () => void | Promise<void>;
+  googleAdsStatus: "idle" | "checking" | "ok" | "error";
+  googleAdsDetail: string;
+  validateGoogleAds: () => void | Promise<void>;
+};
+
+export function renderSettingsTabSections({
+  tabKey,
+  values,
+  setValues,
+  query,
+  ollamaModels,
+  geminiModels,
+  anthropicModels,
+  openRouterModels,
+  openTestModal,
+  openImageTestModal,
+  openVisionTestModal,
+  aiTestBusy,
+  dfsStatus,
+  dfsDetail,
+  validateDataforseo,
+  googleAdsStatus,
+  googleAdsDetail,
+  validateGoogleAds
+}: RenderSettingsTabSectionsProps) {
+  const tabSections = {
+    integrations: [
+      {
+        title: "Provider Credentials",
+        description: "API keys and base URL for each vendor. Only keys for providers you use need to be set.",
+        fields: ["openai_api_key", "gemini_api_key", "anthropic_api_key", "openrouter_api_key", "ollama_api_key", "ollama_base_url"] as const
+      },
+      {
+        title: "DataForSEO",
+        description:
+          "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
+        fields: ["dataforseo_api_login", "dataforseo_api_password"] as const
+      }
+    ],
+    "ai-models": [
+      {
+        title: "Generation",
+        description: "First-pass drafts and main content generation.",
+        fields: ["ai_generation_provider", "ai_generation_model"] as const
+      },
+      {
+        title: "Sidekick",
+        description: "In-app chat on product, collection, and page details. Leave blank to inherit Generation.",
+        fields: ["ai_sidekick_provider", "ai_sidekick_model"] as const
+      },
+      {
+        title: "Review QA",
+        description: "Second-pass review and improvement on generated content.",
+        fields: ["ai_review_provider", "ai_review_model"] as const
+      },
+      {
+        title: "Image generation",
+        description: "Featured and inline blog images.",
+        fields: ["ai_image_provider", "ai_image_model"] as const
+      },
+      {
+        title: "Vision (alt captions)",
+        description: "Multimodal descriptions for alt text. Choose “Same as generation” or override.",
+        fields: ["ai_vision_provider", "ai_vision_model"] as const
+      }
+    ],
+    runtime: [
+      {
+        title: "Execution Limits",
+        description: "Optional overrides; empty fields use defaults (see hints). Server validates range on save.",
+        fields: ["ai_timeout_seconds", "ai_max_retries"] as const
+      }
+    ],
+    "data-sources": [
+      {
+        title: "Store Identity",
+        description: "Name, primary market, and timezone—used in prompts, research, and scheduling context.",
+        fields: ["store_name", "primary_market_country", "dashboard_timezone"] as const
+      },
+      {
+        title: "Shopify",
+        description: "Shop hostname (.myshopify.com), public domain, API version, and custom app OAuth credentials.",
+        fields: ["shopify_shop", "store_custom_domain", "shopify_api_version", "shopify_client_id", "shopify_client_secret"] as const
+      },
+      {
+        title: "Google",
+        description: "OAuth client and Search Console / GA4 properties after you connect Google.",
+        fields: ["google_client_id", "google_client_secret", "search_console_site", "ga4_property_id"] as const
+      },
+      {
+        title: "Google Ads",
+        description: "Developer token and the Ads account to use. Save the token first so customer accounts can load.",
+        fields: ["google_ads_developer_token", "google_ads_customer_id", "google_ads_login_customer_id"] as const
+      }
+    ]
+  } as const;
+
+  const generationProvider = values.ai_generation_provider || "openai";
+  const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openai";
+  const reviewProvider = values.ai_review_provider || "openai";
+  const imageProvider = values.ai_image_provider || "openai";
+  const visionProvider = values.ai_vision_provider || generationProvider || "openai";
+
+  function modelOptionsFor(provider: string, currentValue: string) {
+    const base =
+      provider === "ollama"
+        ? ollamaModels.length
+          ? ollamaModels
+          : staticModelOptionsByProvider.ollama
+        : provider === "gemini"
+          ? geminiModels.length
+            ? geminiModels
+            : staticModelOptionsByProvider.gemini
+          : provider === "anthropic"
+            ? anthropicModels.length
+              ? anthropicModels
+              : staticModelOptionsByProvider.anthropic
+            : provider === "openrouter"
+              ? openRouterModels.length
+                ? openRouterModels
+                : staticModelOptionsByProvider.openrouter
+              : staticModelOptionsByProvider[provider] || [];
+    const sortedBase = sortModelOptions(base);
+    if (currentValue && !sortedBase.includes(currentValue)) {
+      return sortModelOptions([currentValue, ...sortedBase]);
+    }
+    return sortedBase;
+  }
+
+  return tabSections[tabKey].map((section) => (
+    <div key={section.title} className="rounded-[24px] border border-line/80 bg-white p-5">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 max-w-2xl">
+          <h3 className="text-lg font-semibold text-ink">{section.title}</h3>
+          <p className="mt-1 text-sm text-slate-500">{section.description}</p>
+        </div>
+        {section.title === "Generation" ? (
+          <Button variant="secondary" onClick={() => openTestModal("generation")} disabled={aiTestBusy}>
+            Test generation
+          </Button>
+        ) : null}
+        {section.title === "Sidekick" ? (
+          <Button variant="secondary" onClick={() => openTestModal("sidekick")} disabled={aiTestBusy}>
+            Test Sidekick
+          </Button>
+        ) : null}
+        {section.title === "Review QA" ? (
+          <Button variant="secondary" onClick={() => openTestModal("review")} disabled={aiTestBusy}>
+            Test review
+          </Button>
+        ) : null}
+        {section.title === "Image generation" ? (
+          <Button variant="secondary" onClick={() => openImageTestModal()} disabled={aiTestBusy}>
+            Test model
+          </Button>
+        ) : null}
+        {section.title === "Vision (alt captions)" ? (
+          <Button variant="secondary" onClick={() => openVisionTestModal()} disabled={aiTestBusy}>
+            Test vision
+          </Button>
+        ) : null}
+        {section.title === "DataForSEO" ? (
+          <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
+            {dfsStatus === "checking" ? "Checking…" : "Validate access"}
+          </Button>
+        ) : null}
+        {section.title === "Google Ads" ? (
+          <Button variant="secondary" onClick={() => void validateGoogleAds()} disabled={googleAdsStatus === "checking"}>
+            {googleAdsStatus === "checking" ? "Testing…" : "Test connection"}
+          </Button>
+        ) : null}
+        {section.title === "Google" ? (() => {
+          const configured = query.google_configured;
+          const connected = query.google_connected;
+          const statusLabel =
+            configured && connected
+              ? "Connected"
+              : configured && !connected
+                ? "Not connected"
+                : !configured && connected
+                  ? "Credentials missing"
+                  : "Not configured";
+          const statusOk = configured && connected;
+          const statusWarn = !configured && connected;
+          const statusColor = statusOk
+            ? "border-green-200 bg-green-50 text-green-700"
+            : statusWarn
+              ? "border-red-200 bg-red-50 text-red-600"
+              : "border-amber-200 bg-amber-50 text-amber-700";
+          const dotColor = statusOk ? "bg-green-500" : statusWarn ? "bg-red-500" : "bg-amber-500";
+          return (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${statusColor}`}>
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotColor}`} />
+                {statusLabel}
+              </span>
+              {query.auth_url ? (
+                <a
+                  href={query.auth_url}
+                  className="inline-flex items-center gap-2 rounded-xl bg-ocean px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-ocean/90"
+                >
+                  {connected ? "Reconnect Google" : "Connect Google"}
+                </a>
+              ) : null}
+              <a href="/app/google-signals" className="text-sm font-medium text-ocean underline-offset-2 hover:underline">
+                Google Signals dashboard
+              </a>
+            </div>
+          );
+        })() : null}
+      </div>
+      {section.title === "Google" && !query.google_configured && query.google_connected ? (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600">
+          A previous Google token exists but the Client ID and Client Secret are missing. Enter them below and <strong>Save settings</strong>, then click <strong>Reconnect Google</strong> to restore the connection.
+        </div>
+      ) : section.title === "Google" && !query.google_configured && !query.google_connected ? (
+        <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-700">
+          Enter your Google Client ID and Client Secret below, then <strong>Save settings</strong> to enable the Connect Google button.
+        </div>
+      ) : null}
+      {section.title === "DataForSEO" && dfsStatus !== "idle" && dfsStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${dfsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {dfsDetail}
+        </div>
+      ) : null}
+      {section.title === "Google Ads" && googleAdsStatus !== "idle" && googleAdsStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${googleAdsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {googleAdsDetail}
+        </div>
+      ) : null}
+      <div className="grid gap-5 xl:grid-cols-2">
+        {section.fields.map((key) => {
+          const meta = metaForSettingsField(key);
+          const fieldId = `setting-${key}`;
+          const hintId = settingsFieldHintId(fieldId);
+          const describeHint = meta.hint ? hintId : undefined;
+
+          const control =
+            key === "ai_timeout_seconds" || key === "ai_max_retries" ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    id={fieldId}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    aria-describedby={describeHint}
+                    className="min-w-[7rem] max-w-[12rem] rounded-2xl border border-line bg-white px-4 py-3 font-medium tabular-nums text-ink outline-none"
+                    value={displayNumericSetting(
+                      values[key],
+                      key === "ai_timeout_seconds" ? DEFAULT_AI_TIMEOUT_SECONDS : DEFAULT_AI_MAX_RETRIES
+                    )}
+                    onChange={(event) => {
+                      const digitsOnly = event.target.value.replace(/\D/g, "");
+                      setValues((current) => ({ ...current, [key]: digitsOnly }));
+                    }}
+                  />
+                  {isNumericDefault(
+                    values[key],
+                    key === "ai_timeout_seconds" ? DEFAULT_AI_TIMEOUT_SECONDS : DEFAULT_AI_MAX_RETRIES
+                  ) ? (
+                    <span className="text-xs font-medium text-slate-500">(default)</span>
+                  ) : null}
+                </div>
+              </>
+            ) : key === "primary_market_country" ? (
+              <Select
+                value={values[key] || "CA"}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select country" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[
+                    { code: "CA", name: "Canada" },
+                    { code: "US", name: "United States" },
+                    { code: "GB", name: "United Kingdom" },
+                    { code: "AU", name: "Australia" },
+                    { code: "NZ", name: "New Zealand" },
+                    { code: "IE", name: "Ireland" },
+                    { code: "ZA", name: "South Africa" },
+                    { code: "IN", name: "India" },
+                    { code: "SG", name: "Singapore" },
+                    { code: "AE", name: "United Arab Emirates" },
+                    { code: "DE", name: "Germany" },
+                    { code: "FR", name: "France" },
+                    { code: "IT", name: "Italy" },
+                    { code: "ES", name: "Spain" },
+                    { code: "NL", name: "Netherlands" },
+                    { code: "SE", name: "Sweden" },
+                    { code: "NO", name: "Norway" },
+                    { code: "DK", name: "Denmark" },
+                    { code: "FI", name: "Finland" },
+                    { code: "JP", name: "Japan" },
+                    { code: "BR", name: "Brazil" },
+                    { code: "MX", name: "Mexico" }
+                  ].map((c) => (
+                    <SelectItem key={c.code} value={c.code}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "dashboard_timezone" ? (
+              (() => {
+                const timezones: string[] = (() => {
+                  try {
+                    return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone");
+                  } catch {
+                    return [
+                      "America/Vancouver",
+                      "America/Edmonton",
+                      "America/Toronto",
+                      "America/New_York",
+                      "America/Chicago",
+                      "America/Denver",
+                      "America/Los_Angeles",
+                      "Europe/London",
+                      "Europe/Berlin",
+                      "Europe/Paris",
+                      "Australia/Sydney",
+                      "Australia/Melbourne",
+                      "Pacific/Auckland",
+                      "Asia/Tokyo",
+                      "Asia/Singapore",
+                      "Asia/Dubai"
+                    ];
+                  }
+                })();
+                return (
+                  <Select
+                    value={values[key] || "America/Vancouver"}
+                    onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+                  >
+                    <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                      <SelectValue placeholder="Select timezone" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {timezones.map((tz) => (
+                        <SelectItem key={tz} value={tz}>
+                          {tz.replace(/_/g, " ")}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                );
+              })()
+            ) : key === "ai_generation_provider" ||
+              key === "ai_review_provider" ||
+              key === "ai_sidekick_provider" ||
+              key === "ai_image_provider" ||
+              key === "ai_vision_provider" ? (
+              <Select
+                value={
+                  key === "ai_sidekick_provider"
+                    ? values.ai_sidekick_provider || values.ai_generation_provider || "openai"
+                    : key === "ai_image_provider"
+                      ? values.ai_image_provider || "openai"
+                      : key === "ai_vision_provider"
+                        ? (values.ai_vision_provider ?? "") === ""
+                          ? "__inherit__"
+                          : values.ai_vision_provider || values.ai_generation_provider || "openai"
+                        : values[key] || "openai"
+                }
+                onValueChange={(nextProvider) =>
+                  setValues((current) => {
+                    if (key === "ai_generation_provider") {
+                      const nextModelOptions = modelOptionsFor(nextProvider, "");
+                      return {
+                        ...current,
+                        ai_generation_provider: nextProvider,
+                        ai_generation_model: nextModelOptions[0] || current.ai_generation_model || ""
+                      };
+                    }
+                    if (key === "ai_sidekick_provider") {
+                      const nextModelOptions = modelOptionsFor(nextProvider, "");
+                      return {
+                        ...current,
+                        ai_sidekick_provider: nextProvider,
+                        ai_sidekick_model: nextModelOptions[0] || current.ai_sidekick_model || ""
+                      };
+                    }
+                    if (key === "ai_image_provider") {
+                      const nextModelOptions = modelOptionsFor(nextProvider, "");
+                      return {
+                        ...current,
+                        ai_image_provider: nextProvider,
+                        ai_image_model: nextModelOptions[0] || current.ai_image_model || ""
+                      };
+                    }
+                    if (key === "ai_vision_provider") {
+                      const genProv = current.ai_generation_provider || "openai";
+                      const effectiveProvider = nextProvider === "__inherit__" ? "" : nextProvider;
+                      if (!effectiveProvider.trim()) {
+                        return {
+                          ...current,
+                          ai_vision_provider: "",
+                          ai_vision_model: ""
+                        };
+                      }
+                      const nextModelOptions = modelOptionsFor(effectiveProvider, "");
+                      const nextVisionModel =
+                        effectiveProvider === genProv
+                          ? current.ai_generation_model || nextModelOptions[0] || ""
+                          : nextModelOptions[0] || "";
+                      return {
+                        ...current,
+                        ai_vision_provider: effectiveProvider,
+                        ai_vision_model: nextVisionModel
+                      };
+                    }
+                    const nextModelOptions = modelOptionsFor(nextProvider, "");
+                    return {
+                      ...current,
+                      ai_review_provider: nextProvider,
+                      ai_review_model: nextModelOptions[0] || current.ai_review_model || ""
+                    };
+                  })
+                }
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {key === "ai_vision_provider" ? <SelectItem value="__inherit__">Same as generation</SelectItem> : null}
+                  {providerOptions.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ai_generation_model" ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptionsFor(generationProvider, values[key] || "").map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ai_sidekick_model" ? (
+              <Select
+                value={
+                  (values.ai_sidekick_model ||
+                    (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
+                    "") || undefined
+                }
+                onValueChange={(next) =>
+                  setValues((current) => ({
+                    ...current,
+                    ai_sidekick_provider:
+                      current.ai_sidekick_provider?.trim() || current.ai_generation_provider || "openai",
+                    ai_sidekick_model: next
+                  }))
+                }
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptionsFor(
+                    sidekickProvider,
+                    values.ai_sidekick_model ||
+                      (!values.ai_sidekick_provider?.trim() ? values.ai_generation_model : "") ||
+                      ""
+                  ).map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ai_review_model" ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptionsFor(reviewProvider, values[key] || "").map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ai_image_model" ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptionsFor(imageProvider, values[key] || "").map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ai_vision_model" ? (
+              <Select
+                value={
+                  (values.ai_vision_model ||
+                    ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
+                    "") || undefined
+                }
+                onValueChange={(next) => setValues((current) => ({ ...current, ai_vision_model: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptionsFor(
+                    visionProvider,
+                    values.ai_vision_model ||
+                      ((values.ai_vision_provider ?? "") === "" ? values.ai_generation_model : "") ||
+                      ""
+                  ).map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "search_console_site" && (query.available_gsc_sites?.length ?? 0) > 0 ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select a Search Console property" />
+                </SelectTrigger>
+                <SelectContent>
+                  {query.available_gsc_sites!.map((site) => (
+                    <SelectItem key={site} value={site}>
+                      {site}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "ga4_property_id" && (query.available_ga4_properties?.length ?? 0) > 0 ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select a GA4 property" />
+                </SelectTrigger>
+                <SelectContent>
+                  {query.available_ga4_properties!.map((prop) => (
+                    <SelectItem key={prop.property_id} value={prop.property_id}>
+                      {prop.display_name} ({prop.property_id}){prop.account_name ? ` · ${prop.account_name}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : key === "google_ads_customer_id" && (query.available_google_ads_customers?.length ?? 0) > 0 ? (
+              <Select
+                value={values[key] || undefined}
+                onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
+              >
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectValue placeholder="Select a Google Ads account" />
+                </SelectTrigger>
+                <SelectContent>
+                  {query.available_google_ads_customers!.map((c) => (
+                    <SelectItem key={c.customer_id} value={c.customer_id}>
+                      {c.descriptive_name ? `${c.descriptive_name} (${c.customer_id})` : c.customer_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <>
+                <Input
+                  id={fieldId}
+                  type={key === "dataforseo_api_password" || key === "google_ads_developer_token" ? "password" : "text"}
+                  className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                  placeholder={
+                    key === "store_custom_domain"
+                      ? "e.g. yourstore.com"
+                      : key === "ga4_property_id"
+                        ? "Enter property ID or enable the API below for auto-discovery"
+                        : key === "google_ads_customer_id"
+                          ? "Save developer token and refresh, or enter numeric customer ID"
+                          : key === "google_ads_login_customer_id"
+                            ? "Optional: MCC / manager ID when customer is a client account"
+                            : key === "search_console_site"
+                            ? "Connect Google above to auto-discover sites"
+                            : undefined
+                  }
+                  aria-describedby={describeHint}
+                  value={values[key] || ""}
+                  onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                />
+                {key === "ga4_property_id" && query.ga4_api_activation_url ? (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <p className="font-medium">The GA4 Admin API needs to be enabled in your Google Cloud project for auto-discovery.</p>
+                    <a
+                      href={query.ga4_api_activation_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700"
+                    >
+                      Enable GA4 Admin API
+                      <span aria-hidden>↗</span>
+                    </a>
+                    <p className="mt-2 text-xs text-amber-600">After enabling, refresh this page and the field above will become a dropdown of your GA4 properties.</p>
+                  </div>
+                ) : null}
+              </>
+            );
+
+          return (
+            <div key={key} className="min-w-0">
+              <SettingsFieldShell fieldId={fieldId} label={meta.label} hint={meta.hint} detail={meta.detail}>
+                {control}
+              </SettingsFieldShell>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ));
+}

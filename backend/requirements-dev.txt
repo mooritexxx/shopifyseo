@@ -1,0 +1,13 @@
+# Development dependencies
+# Install with: pip install -r requirements-dev.txt
+
+# Include production dependencies
+-r requirements.txt
+
+# Testing
+pytest>=8.0.0
+
+# Code quality (optional but recommended)
+# ruff>=0.1.0
+# mypy>=1.0.0
+# black>=24.0.0

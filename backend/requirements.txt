@@ -1,0 +1,10 @@
+# Production dependencies - pinned versions for reproducibility
+fastapi==0.123.5
+uvicorn==0.38.0
+pydantic==2.12.5
+starlette==0.50.0
+httpx==0.28.1
+anyio==4.12.0
+pillow==11.1.0
+requests>=2.31.0
+numpy>=1.24.0

@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* shadcn/ui CSS variable system — mapped to brand design tokens           */
+    /* Values are HSL components (no hsl() wrapper) so Tailwind can compose  */
+    /* them with opacity modifiers, e.g. bg-primary/80                       */
+    --background:           216 43% 97%;   /* mist  #f4f7fb */
+    --foreground:           224 24%  9%;   /* ink   #10131a */
+
+    --card:                   0  0% 100%;
+    --card-foreground:       224 24%  9%;
+
+    --popover:                0  0% 100%;
+    --popover-foreground:    224 24%  9%;
+
+    --primary:              220 85% 50%;   /* ocean #155eef */
+    --primary-foreground:     0  0% 100%;
+
+    --secondary:            216 43% 97%;   /* mist  #f4f7fb */
+    --secondary-foreground: 224 24%  9%;
+
+    --muted:                216 30% 94%;
+    --muted-foreground:     216 14% 48%;
+
+    --accent:                16 100% 62%;  /* ember #ff6b3d */
+    --accent-foreground:      0  0% 100%;
+
+    --destructive:            5 86% 56%;
+    --destructive-foreground: 0  0% 100%;
+
+    --border:               216 32% 89%;   /* line  #d9e1ec */
+    --input:                216 32% 89%;
+    --ring:                 220 85% 50%;   /* ocean */
+
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+:root {
+  color: #10131a;
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.88), transparent 26%),
+    radial-gradient(circle at top right, rgba(21, 94, 239, 0.10), transparent 20%),
+    linear-gradient(180deg, #f6f8fc 0%, #ebf0f7 100%);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.rendered-body-content {
+  color: #475569;
+  font-size: 1rem;
+  line-height: 1.9;
+}
+
+.rendered-body-content > :first-child {
+  margin-top: 0;
+}
+
+.rendered-body-content > :last-child {
+  margin-bottom: 0;
+}
+
+.rendered-body-content p,
+.rendered-body-content ul,
+.rendered-body-content ol,
+.rendered-body-content h1,
+.rendered-body-content h2,
+.rendered-body-content h3,
+.rendered-body-content h4,
+.rendered-body-content h5,
+.rendered-body-content h6 {
+  margin: 0 0 1.1rem;
+}
+
+.rendered-body-content h1,
+.rendered-body-content h2,
+.rendered-body-content h3 {
+  color: #10131a;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.rendered-body-content h1 {
+  font-size: 1.9rem;
+}
+
+.rendered-body-content h2 {
+  font-size: 1.45rem;
+}
+
+.rendered-body-content h3 {
+  font-size: 1.2rem;
+}
+
+.rendered-body-content strong {
+  color: #334155;
+  font-weight: 700;
+}
+
+.rendered-body-content ul,
+.rendered-body-content ol {
+  padding-left: 1.6rem;
+}
+
+.rendered-body-content ul {
+  list-style: disc;
+}
+
+.rendered-body-content ol {
+  list-style: decimal;
+}
+
+.rendered-body-content li {
+  margin: 0.45rem 0;
+  padding-left: 0.25rem;
+}
+
+.rendered-body-content a {
+  color: #155eef;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.16em;
+  font-weight: 500;
+}
+
+.rendered-body-content a:hover {
+  color: #0f4fe0;
+}
+
+/* TipTap rich body editor (WYSIWYG — still saves HTML for Shopify) */
+.ProseMirror {
+  outline: none;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: #94a3b8;
+  pointer-events: none;
+}

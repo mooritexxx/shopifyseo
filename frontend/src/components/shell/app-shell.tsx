@@ -17,7 +17,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Rss,
-  Settings2,
+  Settings,
   X
 } from "lucide-react";
 import { SidekickProvider } from "../sidekick/sidekick-context";
@@ -153,10 +153,10 @@ const items: NavItem[] = [
   { to: "/products", label: "Products", icon: Box, group: "Catalog", countKey: "products" },
   { to: "/collections", label: "Collections", icon: Layers3, group: "Catalog", countKey: "collections" },
   { to: "/pages", label: "Pages", icon: BookOpen, group: "Catalog", countKey: "pages" },
+  { to: "/articles", label: "Articles", icon: FileText, group: "Catalog" },
   { to: "/blogs", label: "Blogs", icon: Rss, group: "Catalog", countKey: "blogs" },
-  { to: "/articles", label: "Articles", icon: FileText, group: "Content" },
-  { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Content", badge: "NEW" },
   { to: "/keywords", label: "Keyword Research", icon: Key, group: "Research" },
+  { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Research", badge: "NEW" },
   { to: "/image-seo", label: "Image Optimization", icon: ImageIcon, group: "Research" },
   { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical, group: "Research" },
   { to: "/embeddings", label: "Embeddings", icon: Database, group: "System" },
@@ -969,7 +969,7 @@ export function AppShell({ children }: PropsWithChildren) {
               </div>
               <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-white/50 hover:bg-white/10 hover:text-white" asChild title="Settings">
                 <NavLink to="/settings">
-                  <Settings2 size={15} strokeWidth={2} />
+                  <Settings size={15} strokeWidth={2} />
                 </NavLink>
               </Button>
             </div>

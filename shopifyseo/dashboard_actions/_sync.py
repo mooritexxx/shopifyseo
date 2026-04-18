@@ -98,9 +98,13 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "gsc_refreshed": 0,
             "gsc_skipped": 0,
             "gsc_errors": 0,
+            "gsc_eligible_total": 0,
+            "gsc_precheck_skipped": 0,
             "gsc_summary_pages": 0,
             "gsc_summary_queries": 0,
             "ga4_rows": 0,
+            "ga4_refreshed": 0,
+            "ga4_precheck_skipped": 0,
             "ga4_url_errors": 0,
             "ga4_errors": 0,
             "index_refreshed": 0,
@@ -397,6 +401,8 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         "skipped_fresh": 0,
         "summary_pages": 0,
         "summary_queries": 0,
+        "eligible": 0,
+        "queue_total": 0,
     }
     try:
         touched_targets: list[tuple[str, str]] = []
@@ -410,9 +416,25 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         if site_url:
             dg.refresh_gsc_property_breakdowns_for_site(conn, site_url)
 
-        targets = _all_object_targets(conn)
-        SYNC_STATE["total"] = len(targets)
-        SYNC_STATE["done"] = 0
+        all_targets = _all_object_targets(conn)
+        summary["eligible"] = len(all_targets)
+        SYNC_STATE["gsc_eligible_total"] = len(all_targets)
+        if force_refresh:
+            queue = list(all_targets)
+            precheck_skipped = 0
+        else:
+            queue = [
+                (kind, handle, url)
+                for kind, handle, url in all_targets
+                if dg.gsc_url_detail_needs_refresh(conn, url, site_url=site_url, gsc_period="mtd")
+            ]
+            precheck_skipped = max(len(all_targets) - len(queue), 0)
+        summary["skipped_fresh"] = precheck_skipped
+        summary["queue_total"] = len(queue)
+        SYNC_STATE["gsc_precheck_skipped"] = precheck_skipped
+        SYNC_STATE["gsc_skipped"] = precheck_skipped
+        SYNC_STATE["total"] = max(len(queue), 1)
+        SYNC_STATE["done"] = 0 if queue else 1
         access_token = dg.get_google_access_token(conn)
         rate_limiter = _PerMinuteRateLimiter(GSC_SYNC_RATE_LIMIT_PER_MINUTE)
         progress_lock = threading.Lock()
@@ -421,10 +443,6 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
             _raise_if_sync_cancelled()
             worker_conn = _db_connect_for_actions(db_path)
             try:
-                cached = dg.get_search_console_url_detail(worker_conn, url, refresh=False, object_type=kind, object_handle=handle, site_url_override=site_url)
-                cache_meta = cached.get("_cache") or {}
-                if not force_refresh and cache_meta.get("exists") and not cache_meta.get("stale"):
-                    return "skipped"
                 rate_limiter.acquire(_raise_if_sync_cancelled)
                 _raise_if_sync_cancelled()
                 dg.get_search_console_url_detail(
@@ -444,28 +462,25 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         with ThreadPoolExecutor(max_workers=GSC_SYNC_WORKERS) as executor:
             future_to_target = {
                 executor.submit(_run_gsc_target, kind, handle, url): (kind, handle)
-                for kind, handle, url in targets
+                for kind, handle, url in queue
             }
 
             for future in as_completed(future_to_target):
                 kind, handle = future_to_target[future]
                 _raise_if_sync_cancelled()
                 summary["considered"] += 1
-                touched_targets.append((kind, handle))
                 SYNC_STATE["current"] = f"Search Console: {kind}:{handle}"
                 try:
-                    result = future.result()
-                    if result == "skipped":
-                        summary["skipped_fresh"] += 1
-                        SYNC_STATE["gsc_skipped"] = summary["skipped_fresh"]
-                    else:
-                        summary["refreshed"] += 1
-                        SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
+                    future.result()
+                    summary["refreshed"] += 1
+                    SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
+                    touched_targets.append((kind, handle))
                 except Exception:
                     summary["errors"] += 1
                     SYNC_STATE["gsc_errors"] = summary["errors"]
+                    touched_targets.append((kind, handle))
                 with progress_lock:
-                    SYNC_STATE["done"] = summary["considered"]
+                    SYNC_STATE["done"] = summary["refreshed"] + summary["errors"]
         _raise_if_sync_cancelled()
         if touched_targets:
             refresh_gsc_signal_data_for_objects(conn, touched_targets)
@@ -483,6 +498,8 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         "skipped_fresh": 0,
         "rows": 0,
         "url_errors": 0,
+        "eligible": 0,
+        "queue_total": 0,
     }
     try:
         payload = dg.get_ga4_summary(conn, refresh=force_refresh or True)
@@ -492,7 +509,7 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
 
         base = dq._base_store_url(conn)
         by_path = _catalog_targets_by_path(conn)
-        work: list[tuple[str, str, str, str]] = []
+        work: list[tuple[str, str, str]] = []
         for row in page_rows:
             raw_dim = dg.ga4_report_page_path_from_row(row)
             kind, handle, url = "", "", ""
@@ -505,18 +522,27 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
                 url = _storefront_url_for_ga_dimension(base, raw_dim)
             work.append((kind, handle, url))
 
-        summary["considered"] = len(work)
         n = len(work)
-        SYNC_STATE["total"] = max(n, 1)
+        summary["eligible"] = n
+        if force_refresh:
+            queue = list(work)
+            precheck_skipped = 0
+        else:
+            queue = [(kind, handle, url) for kind, handle, url in work if dg.ga4_url_cache_stale(conn, url)]
+            precheck_skipped = max(n - len(queue), 0)
+        summary["skipped_fresh"] = precheck_skipped
+        summary["queue_total"] = len(queue)
+        SYNC_STATE["ga4_precheck_skipped"] = precheck_skipped
+        qn = len(queue)
+        SYNC_STATE["total"] = max(qn, 1)
         SYNC_STATE["done"] = 0
 
         rate_limiter = _PerMinuteRateLimiter(GA4_SYNC_RATE_LIMIT_PER_MINUTE)
 
         def _run_ga4_target(kind: str, handle: str, url: str) -> str:
+            _raise_if_sync_cancelled()
             worker_conn = _db_connect_for_actions(db_path)
             try:
-                if not force_refresh and not dg.ga4_url_cache_stale(worker_conn, url):
-                    return "skipped"
                 rate_limiter.acquire(_raise_if_sync_cancelled)
                 _raise_if_sync_cancelled()
                 try:
@@ -534,31 +560,28 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
             finally:
                 worker_conn.close()
 
-        if n == 0:
+        if qn == 0:
             SYNC_STATE["done"] = 1
         else:
             with ThreadPoolExecutor(max_workers=GA4_SYNC_WORKERS) as executor:
                 future_to_target = {
                     executor.submit(_run_ga4_target, kind, handle, url): (kind, handle)
-                    for kind, handle, url in work
+                    for kind, handle, url in queue
                 }
 
-                done = 0
                 for future in as_completed(future_to_target):
                     _raise_if_sync_cancelled()
-                    done += 1
-                    SYNC_STATE["done"] = done
+                    summary["considered"] += 1
                     try:
                         result = future.result()
-                        if result == "skipped":
-                            summary["skipped_fresh"] += 1
-                        elif result == "refreshed":
+                        if result == "refreshed":
                             summary["refreshed"] += 1
                         else:
                             summary["errors"] += 1
                     except Exception as exc:
                         logger.warning("GA4 target worker failed: %s", exc)
                         summary["errors"] += 1
+                    SYNC_STATE["done"] = summary["refreshed"] + summary["errors"]
 
         signal_targets: list[tuple[str, str]] = []
         seen_sig: set[tuple[str, str]] = set()
@@ -569,6 +592,7 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         refresh_ga4_signal_data_for_objects(conn, signal_targets)
         summary["url_errors"] = summary["errors"]
         SYNC_STATE["ga4_url_errors"] = summary["errors"]
+        SYNC_STATE["ga4_refreshed"] = summary["refreshed"]
         if summary["errors"]:
             logger.warning("GA4 per-URL sync completed with %s URL error(s)", summary["errors"])
         return summary

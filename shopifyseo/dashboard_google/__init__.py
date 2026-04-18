@@ -116,6 +116,8 @@ from ._gsc import (  # noqa: E402
     get_search_console_sites,
     get_search_console_summary_cached,
     get_search_console_url_detail,
+    gsc_url_detail_cache_meta_for_sync,
+    gsc_url_detail_needs_refresh,
     get_url_inspection,
     gsc_url_report_window,
     invalidate_pagespeed_memory_cache,

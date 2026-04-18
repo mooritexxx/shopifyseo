@@ -875,6 +875,44 @@ def get_search_console_summary_cached(conn: sqlite3.Connection, refresh: bool = 
 
 # -- Per-URL GSC detail -------------------------------------------------------
 
+
+def gsc_url_detail_cache_meta_for_sync(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    site_url: str,
+    gsc_period: str = "mtd",
+) -> dict:
+    """Return ``_cache``-style meta matching ``get_search_console_url_detail(..., refresh=False)`` (memory then SQLite), without network."""
+    if not (site_url or "").strip():
+        return {"exists": False, "stale": True, "fetched_at": None, "expires_at": None}
+    gsc_cache = _pkg().GSC_CACHE
+    period_mode = _normalize_gsc_period_mode(gsc_period)
+    mem_key = _per_url_memory_cache_key(period_mode, url)
+    if mem_key in gsc_cache.get("per_url", {}):
+        payload = gsc_cache["per_url"][mem_key]
+        meta = payload.get("_cache")
+        if isinstance(meta, dict):
+            return {**meta}
+    cache_key = _url_detail_cache_key(site_url, url, period_mode)
+    _payload, meta = _load_cached_payload(conn, cache_key)
+    if isinstance(meta, dict):
+        return {**meta}
+    return {"exists": False, "stale": True, "fetched_at": None, "expires_at": None}
+
+
+def gsc_url_detail_needs_refresh(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    site_url: str,
+    gsc_period: str = "mtd",
+) -> bool:
+    """True unless per-URL GSC cache exists and is not stale (same rule as bulk sync skip when not forcing)."""
+    meta = gsc_url_detail_cache_meta_for_sync(conn, url, site_url=site_url, gsc_period=gsc_period)
+    return not (bool(meta.get("exists")) and not bool(meta.get("stale")))
+
+
 def get_search_console_url_detail(
     conn: sqlite3.Connection,
     url: str,

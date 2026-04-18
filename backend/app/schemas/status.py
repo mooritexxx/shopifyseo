@@ -38,9 +38,13 @@ class SyncStatusPayload(BaseModel):
     gsc_refreshed: int = 0
     gsc_skipped: int = 0
     gsc_errors: int = 0
+    gsc_eligible_total: int = 0
+    gsc_precheck_skipped: int = 0
     gsc_summary_pages: int = 0
     gsc_summary_queries: int = 0
     ga4_rows: int = 0
+    ga4_refreshed: int = 0
+    ga4_precheck_skipped: int = 0
     ga4_url_errors: int = 0
     ga4_errors: int = 0
     index_refreshed: int = 0

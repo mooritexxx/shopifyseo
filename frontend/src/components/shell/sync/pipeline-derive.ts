@@ -63,8 +63,9 @@ function countsForService(
           (s.images_total || 0)
       };
     case "gsc": {
-      const done = (s.gsc_refreshed || 0) + (s.gsc_skipped || 0) + (s.gsc_errors || 0);
-      return { done, total: Math.max(done, s.total || 0, 1) };
+      const done = (s.gsc_refreshed || 0) + (s.gsc_errors || 0);
+      const total = Math.max(s.total || 0, 1);
+      return { done: Math.min(done, total), total };
     }
     case "ga4": {
       const rows = s.ga4_rows || 0;
@@ -75,20 +76,31 @@ function countsForService(
         const done = Math.min(s.done || 0, total);
         return { done, total };
       }
+      const refreshed = s.ga4_refreshed || 0;
+      const urlErr = s.ga4_url_errors || 0;
+      const doneFin = refreshed + urlErr;
+      if (doneFin > 0) {
+        return { done: doneFin, total: Math.max(doneFin, 1) };
+      }
       if (rows > 0) {
         return { done: rows, total: rows };
       }
       return { done: 0, total: 0 };
     }
     case "index": {
-      const done = (s.index_refreshed || 0) + (s.index_skipped || 0) + (s.index_errors || 0);
-      return { done, total: Math.max(done, s.total || 0, 1) };
+      const done = (s.index_refreshed || 0) + (s.index_errors || 0);
+      const total = Math.max(s.total || 0, 1);
+      return { done: Math.min(done, total), total };
     }
     case "pagespeed": {
-      if (s.pagespeed_phase === "queueing") {
+      const phase = (s.pagespeed_phase || "").toLowerCase();
+      if (phase === "queueing" || (phase === "complete" && (s.pagespeed_queue_total || 0) > 0)) {
         const t = s.pagespeed_queue_total || 0;
         const d = s.pagespeed_queue_completed || 0;
-        return { done: d, total: t || 0 };
+        return { done: d, total: t };
+      }
+      if (phase === "complete") {
+        return { done: 0, total: 0 };
       }
       const t = s.pagespeed_scan_total || s.total || 0;
       const d = s.pagespeed_scanned || s.done || 0;

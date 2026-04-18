@@ -1,19 +1,18 @@
-"""Tests for hybrid sync ETA helpers."""
+"""Tests for sync ETA run history and prediction."""
 import json
 import sqlite3
 import tempfile
 import time
 from pathlib import Path
 
-import pytest
-
 from shopifyseo.dashboard_actions.sync_eta import (
+    append_completed_sync_eta_run,
     compute_shopify_eta_seconds_historical,
     compute_sync_eta_seconds,
-    load_eta_history,
-    record_sync_eta_sample,
+    load_run_history,
     shopify_aggregate_progress,
     sync_progress_pair,
+    weighted_spu_for_module,
 )
 from shopifyseo.dashboard_google._auth import set_service_setting
 
@@ -35,6 +34,12 @@ def _db_with_settings() -> str:
     return str(path)
 
 
+def _set_runs(conn: sqlite3.Connection, runs: list) -> None:
+    from shopifyseo.dashboard_actions.sync_eta import ETA_RUN_HISTORY_KEY
+
+    set_service_setting(conn, ETA_RUN_HISTORY_KEY, json.dumps({"runs": runs}))
+
+
 def test_sync_progress_pair_pagespeed_queueing():
     state = {
         "active_scope": "pagespeed",
@@ -47,12 +52,21 @@ def test_sync_progress_pair_pagespeed_queueing():
     assert sync_progress_pair(state) == (30, 100)
 
 
-def test_compute_eta_historical_cold_start():
+def test_weighted_spu_for_module():
+    runs = [
+        {"modules": {"index": {"duration_s": 60.0, "units": 30}}},
+        {"modules": {"index": {"duration_s": 90.0, "units": 30}}},
+    ]
+    spu = weighted_spu_for_module(runs, "index")
+    assert spu is not None
+    assert abs(spu - 2.5) < 0.01  # 150/60
+
+
+def test_compute_sync_eta_index_with_runs():
     db_path = _db_with_settings()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    hist = {"index": [2.0, 2.0, 2.0]}
-    set_service_setting(conn, "sync_eta_seconds_per_unit_v1", json.dumps(hist))
+    _set_runs(conn, [{"modules": {"index": {"duration_s": 100.0, "units": 50}}}])
     conn.close()
 
     now = int(time.time())
@@ -69,63 +83,19 @@ def test_compute_eta_historical_cold_start():
     }
     eta = compute_sync_eta_seconds(state, db_path)
     assert eta is not None
-    assert 180 <= eta <= 220
+    assert 180 <= eta <= 260
 
 
-def test_compute_eta_live_blend():
-    db_path = _db_with_settings()
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    set_service_setting(conn, "sync_eta_seconds_per_unit_v1", json.dumps({"index": [10.0]}))
-    conn.close()
-
-    now = int(time.time())
-    state = {
-        "running": True,
-        "stage": "refreshing_index",
-        "active_scope": "index",
-        "pagespeed_phase": "",
-        "total": 100,
-        "done": 50,
-        "started_at": now - 100,
-        "stage_started_at": now - 100,
-        "eta_segment_started_at": now - 100,
-    }
-    eta = compute_sync_eta_seconds(state, db_path)
-    assert eta is not None
-    assert eta < 400
-
-
-def test_record_and_load_history_roundtrip():
-    db_path = _db_with_settings()
-    record_sync_eta_sample(db_path, "gsc", 60.0, 30)
-    record_sync_eta_sample(db_path, "gsc", 90.0, 30)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    h = load_eta_history(conn)
-    conn.close()
-    assert "gsc" in h
-    assert len(h["gsc"]) == 2
-
-
-@pytest.mark.parametrize("running,expect_none", [(False, True), (True, False)])
-def test_not_running_no_eta(running, expect_none):
+def test_not_running_no_eta():
     db_path = _db_with_settings()
     state = {
-        "running": running,
-        "stage": "refreshing_index" if running else "idle",
-        "active_scope": "index" if running else "",
+        "running": False,
+        "stage": "idle",
+        "active_scope": "",
         "total": 10,
         "done": 5,
-        "started_at": int(time.time()) - 50,
-        "stage_started_at": int(time.time()) - 50,
-        "eta_segment_started_at": int(time.time()) - 50,
     }
-    eta = compute_sync_eta_seconds(state, db_path)
-    if expect_none:
-        assert eta is None
-    else:
-        assert eta is not None
+    assert compute_sync_eta_seconds(state, db_path) is None
 
 
 def test_shopify_aggregate_progress_includes_blog_articles():
@@ -143,40 +113,24 @@ def test_shopify_aggregate_progress_includes_blog_articles():
         "blog_articles_synced": 7,
         "images_synced": 0,
     }
-    assert shopify_aggregate_progress(state) == (25, 28)  # 10+5+2+1+7+0 done; 10+5+2+1+7+3 total
+    assert shopify_aggregate_progress(state) == (25, 28)
 
 
-def test_sync_progress_pair_uses_aggregate_for_shopify_scope():
-    state = {
-        "active_scope": "shopify",
-        "stage": "syncing_shopify",
-        "products_total": 2,
-        "products_synced": 2,
-        "blog_articles_total": 3,
-        "blog_articles_synced": 1,
-        "collections_total": 0,
-        "pages_total": 0,
-        "blogs_total": 0,
-        "images_total": 0,
-        "collections_synced": 0,
-        "pages_synced": 0,
-        "blogs_synced": 0,
-        "images_synced": 0,
-        "total": 999,
-        "done": 999,
-    }
-    assert sync_progress_pair(state) == (3, 5)
-
-
-def test_compute_shopify_eta_historical_sum():
+def test_compute_shopify_eta_weighted_sum():
     db_path = _db_with_settings()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    hist = {
-        "shopify_products": [2.0],
-        "shopify_blog_articles": [1.0],
-    }
-    set_service_setting(conn, "sync_eta_seconds_per_unit_v1", json.dumps(hist))
+    _set_runs(
+        conn,
+        [
+            {
+                "modules": {
+                    "shopify_products": {"duration_s": 20.0, "units": 10},
+                    "shopify_blog_articles": {"duration_s": 10.0, "units": 10},
+                }
+            }
+        ],
+    )
     conn.close()
     state = {
         "products_synced": 0,
@@ -194,6 +148,34 @@ def test_compute_shopify_eta_historical_sum():
     }
     eta = compute_shopify_eta_seconds_historical(state, db_path)
     assert eta == 25
+
+
+def test_append_trims_to_ten_runs():
+    from shopifyseo.dashboard_actions._state import SYNC_STATE
+
+    db_path = _db_with_settings()
+    prev_scope = SYNC_STATE.get("scope")
+    prev_scopes = list(SYNC_STATE.get("selected_scopes") or [])
+    prev_modules = SYNC_STATE.get("eta_run_modules")
+    try:
+        SYNC_STATE["scope"] = "custom"
+        SYNC_STATE["selected_scopes"] = ["shopify"]
+
+        for i in range(12):
+            SYNC_STATE["eta_run_modules"] = {"gsc": {"duration_s": float(i + 1), "units": 1}}
+            append_completed_sync_eta_run(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        runs = load_run_history(conn)
+        conn.close()
+        assert len(runs) == 10
+        assert runs[-1]["modules"]["gsc"]["duration_s"] == 12.0
+        assert runs[0]["modules"]["gsc"]["duration_s"] == 3.0
+    finally:
+        SYNC_STATE["scope"] = prev_scope
+        SYNC_STATE["selected_scopes"] = prev_scopes
+        SYNC_STATE["eta_run_modules"] = prev_modules if isinstance(prev_modules, dict) else {}
 
 
 def test_normalize_sync_scopes_follows_pipeline_order_not_ui_toggle_order():

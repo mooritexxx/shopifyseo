@@ -28,9 +28,10 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 
 1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`).
 2. **Catalog sync:** `POST /api/sync` starts a **background thread** (`shopifyseo/dashboard_actions`) → Shopify Admin GraphQL/REST → rows in catalog tables (`products`, `collections`, `pages`, `blogs`, `blog_articles`, metafields, images, etc.) plus `sync_runs`.
-3. **Signals:** Sync (and refreshes) pull **GSC, GA4, URL Inspection, PageSpeed** into SQLite (`SEO_SIGNAL_COLUMNS` on entities, `google_api_cache`, GSC fact tables).
-4. **UI:** React app (basename `/app`) calls `/api/...` with TanStack Query; long AI work uses `**GET /api/ai-stream?job_id=`** (SSE) and/or polling `**GET /api/ai-status**`.
-5. **Writebacks:** SEO edits use services that call `**shopifyseo/dashboard_live_updates`** (GraphQL) to push meta/content to Shopify.
+3. **Sync ETA learning:** Each successful sync appends one snapshot to `service_settings.sync_eta_run_history_v2` (last **10** runs): per-module wall `duration_s` and `units` (Shopify kinds, `gsc`, `ga4`, `index`, `pagespeed`, `structured`, etc.). [`compute_sync_eta_seconds`](shopifyseo/dashboard_actions/sync_eta.py) uses **weighted** `sum(duration)/sum(units)` per module across those runs (plus live blend where applicable). Legacy `sync_eta_seconds_per_unit_v1` is unused.
+4. **Signals:** Sync (and refreshes) pull **GSC, GA4, URL Inspection, PageSpeed** into SQLite (`SEO_SIGNAL_COLUMNS` on entities, `google_api_cache`, GSC fact tables).
+5. **UI:** React app (basename `/app`) calls `/api/...` with TanStack Query; long AI work uses `**GET /api/ai-stream?job_id=`** (SSE) and/or polling `**GET /api/ai-status**`. Sync drawer ETA uses [`useSmoothSyncEta`](frontend/src/hooks/use-smooth-sync-eta.ts) so the countdown is smoothed (stretched decay, capped upward slew) from `GET /api/sync-status`’s `eta_seconds`.
+6. **Writebacks:** SEO edits use services that call `**shopifyseo/dashboard_live_updates`** (GraphQL) to push meta/content to Shopify.
 
 ---
 
@@ -257,6 +258,7 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | `useAiJobStatus`    | `frontend/src/hooks/use-ai-job-status.ts`                  | Poll AI job                      | `GET /api/ai-status` every 1.5s while running                           |
 | `useAiJobStepClock` | `frontend/src/hooks/use-ai-job-step-clock.ts`              | Per-step elapsed UI              | Resets when step/stage changes while running                            |
 | `useSyncEventLog`   | `frontend/src/components/shell/sync/use-sync-event-log.ts` | Sync drawer log lines            | Timestamped lines, cap 48                                               |
+| `useSmoothSyncEta`  | `frontend/src/hooks/use-smooth-sync-eta.ts`                 | Sync ETA display (drawer)      | 250ms tick; smooths raw `eta_seconds` (stretch + slew caps)              |
 
 
 ---

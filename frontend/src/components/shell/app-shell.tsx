@@ -44,6 +44,7 @@ import {
 } from "./sync/constants";
 import { activeServiceKey, derivePipelineRows, scopeBelongsToShopifyService } from "./sync/pipeline-derive";
 import { useSyncEventLog } from "./sync/use-sync-event-log";
+import { useSmoothSyncEta } from "../../hooks/use-smooth-sync-eta";
 
 type NavItem = {
   to: string;
@@ -322,6 +323,13 @@ export function AppShell({ children }: PropsWithChildren) {
 
   const syncAccent = "oklch(0.62 0.18 262)";
 
+  const smoothEtaSeconds = useSmoothSyncEta(
+    syncRunning,
+    syncStatus?.eta_seconds,
+    syncStatus?.stage,
+    syncStatus?.active_scope
+  );
+
   const drawerMode: SyncDrawerMode = useMemo(() => {
     if (syncRunning) return "running";
     if (showSyncErrorPanel) return "error";
@@ -508,8 +516,13 @@ export function AppShell({ children }: PropsWithChildren) {
             subtitle: runningHeroSubtitle,
             elapsed: elapsedLabel || "00:00",
             eta:
-              syncStatus?.eta_seconds != null && syncStatus.eta_seconds >= 0
-                ? formatEtaCountdown(syncStatus.eta_seconds)
+              smoothEtaSeconds != null
+                ? smoothEtaSeconds === 0 &&
+                    syncRunning &&
+                    syncStatus?.eta_seconds != null &&
+                    syncStatus.eta_seconds > 0
+                  ? "Finishing…"
+                  : formatEtaCountdown(smoothEtaSeconds)
                 : "--:--"
           }
         : undefined,

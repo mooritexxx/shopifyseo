@@ -1,10 +1,10 @@
-"""Sync ETA: historical seconds-per-unit (per service / Shopify kind) plus non-Shopify hybrid.
+"""Sync ETA: last successful runs (per-module duration + units) plus live blend.
 
-Samples (seconds per work unit) persist in ``service_settings`` under
-``sync_eta_seconds_per_unit_v1``. Shopify catalog uses per-kind keys
-(``shopify_products``, …) and sums ``remaining_k × median_spu_k``. Other
-scopes may blend live throughput with history. The API exposes ``eta_seconds``
-only while ``running`` is true.
+Completed sync snapshots persist in ``service_settings`` under
+``sync_eta_run_history_v2`` (last 10 runs). Prediction uses weighted
+``sum(duration_s)/sum(units)`` per module across those runs.
+
+The API exposes ``eta_seconds`` only while ``running`` is true.
 """
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ import statistics
 import time
 from typing import Any
 
+from shopifyseo.dashboard_actions._state import SYNC_STATE
 from shopifyseo.dashboard_google._auth import get_service_setting, set_service_setting
 
 logger = logging.getLogger(__name__)
 
-ETA_HISTORY_KEY = "sync_eta_seconds_per_unit_v1"
-MAX_SAMPLES = 18
+ETA_RUN_HISTORY_KEY = "sync_eta_run_history_v2"
+MAX_RUNS = 10
 MIN_SPU = 0.03
 MAX_SPU = 180.0
 MAX_ETA_CAP = 6 * 3600
@@ -38,59 +39,54 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def load_eta_history(conn: sqlite3.Connection) -> dict[str, list[float]]:
-    raw = (get_service_setting(conn, ETA_HISTORY_KEY) or "").strip()
+def load_run_history(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    raw = (get_service_setting(conn, ETA_RUN_HISTORY_KEY) or "").strip()
     if not raw:
-        return {}
+        return []
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
+        return []
     if not isinstance(data, dict):
-        return {}
-    out: dict[str, list[float]] = {}
-    for k, v in data.items():
-        if isinstance(k, str) and isinstance(v, list):
-            nums = [float(x) for x in v if isinstance(x, (int, float)) and x > 0]
-            out[k] = nums[-MAX_SAMPLES:]
-    return out
+        return []
+    runs = data.get("runs")
+    if not isinstance(runs, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in runs:
+        if isinstance(item, dict):
+            out.append(item)
+    return out[-MAX_RUNS:]
 
 
-def save_eta_history(conn: sqlite3.Connection, data: dict[str, list[float]]) -> None:
-    set_service_setting(conn, ETA_HISTORY_KEY, json.dumps(data))
+def _save_run_history(conn: sqlite3.Connection, runs: list[dict[str, Any]]) -> None:
+    set_service_setting(conn, ETA_RUN_HISTORY_KEY, json.dumps({"runs": runs[-MAX_RUNS:]}))
 
 
-def record_shopify_kind_eta(db_path: str, bucket: str, started_at: float, units: int) -> None:
-    """Record seconds-per-unit for a Shopify sub-phase (wall clock since ``started_at``)."""
-    dur = max(time.time() - float(started_at), 0.05)
-    record_sync_eta_sample(db_path, bucket, dur, units)
-
-
-def record_sync_eta_sample(db_path: str, bucket: str, duration_s: float, units: int) -> None:
-    if not bucket or duration_s <= 0:
-        return
-    if duration_s < TRIVIAL_DURATION and units < TRIVIAL_UNITS:
-        return
-    units = max(int(units), 1)
-    spu = float(duration_s) / float(units)
-    spu = max(MIN_SPU, min(MAX_SPU, spu))
-    try:
-        conn = _connect(db_path)
-        try:
-            hist = load_eta_history(conn)
-            lst = hist.get(bucket, [])
-            lst.append(spu)
-            hist[bucket] = lst[-MAX_SAMPLES:]
-            save_eta_history(conn, hist)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("sync ETA sample persist failed", exc_info=True)
+def weighted_spu_for_module(runs: list[dict[str, Any]], module_key: str) -> float | None:
+    tot_d = 0.0
+    tot_u = 0
+    for run in runs:
+        mods = run.get("modules")
+        if not isinstance(mods, dict):
+            continue
+        m = mods.get(module_key)
+        if not isinstance(m, dict):
+            continue
+        d = float(m.get("duration_s") or 0)
+        u = int(m.get("units") or 0)
+        if d <= 0 or u <= 0:
+            continue
+        tot_d += d
+        tot_u += u
+    if tot_u <= 0:
+        return None
+    spu = tot_d / float(tot_u)
+    return max(MIN_SPU, min(MAX_SPU, spu))
 
 
 SHOPIFY_ACTIVE_SCOPES = frozenset({"shopify", "products", "collections", "pages", "blogs"})
 
-# (history bucket, synced key, total key)
 SHOPIFY_ETA_KINDS: tuple[tuple[str, str, str], ...] = (
     ("shopify_products", "products_synced", "products_total"),
     ("shopify_collections", "collections_synced", "collections_total"),
@@ -99,6 +95,88 @@ SHOPIFY_ETA_KINDS: tuple[tuple[str, str, str], ...] = (
     ("shopify_blog_articles", "blog_articles_synced", "blog_articles_total"),
     ("shopify_images", "images_synced", "images_total"),
 )
+
+
+def _fallback_spu_shopify_from_runs(runs: list[dict[str, Any]]) -> float:
+    vals: list[float] = []
+    for bucket, _, _ in SHOPIFY_ETA_KINDS:
+        spu = weighted_spu_for_module(runs, bucket)
+        if spu is not None:
+            vals.append(spu)
+    if vals:
+        return float(statistics.median(vals))
+    return DEFAULT_SHOPIFY_FALLBACK_SPU
+
+
+def _accumulate_into_run_modules(state: dict[str, Any], bucket: str, duration_s: float, units: int) -> None:
+    if not bucket or duration_s <= 0:
+        return
+    if duration_s < TRIVIAL_DURATION and units < TRIVIAL_UNITS:
+        return
+    u = max(int(units), 1)
+    d = float(duration_s)
+    rm: dict[str, Any] = state.setdefault("eta_run_modules", {})
+    prev = rm.get(bucket)
+    if isinstance(prev, dict) and "duration_s" in prev and "units" in prev:
+        rm[bucket] = {"duration_s": float(prev["duration_s"]) + d, "units": int(prev["units"]) + u}
+    else:
+        rm[bucket] = {"duration_s": d, "units": u}
+
+
+def record_shopify_kind_eta(db_path: str, bucket: str, started_at: float, units: int) -> None:
+    _ = db_path
+    dur = max(time.time() - float(started_at), 0.05)
+    _accumulate_into_run_modules(SYNC_STATE, bucket, dur, units)
+
+
+def record_sync_eta_sample(db_path: str, bucket: str, duration_s: float, units: int) -> None:
+    _ = db_path
+    _accumulate_into_run_modules(SYNC_STATE, bucket, duration_s, units)
+
+
+def record_scope_eta_segment(db_path: str, state: dict[str, Any], bucket: str) -> None:
+    _ = db_path
+    t0 = int(state.get("eta_segment_started_at") or 0)
+    if t0 <= 0:
+        return
+    dur = max(time.time() - float(t0), 0.05)
+    units = units_for_record(state, bucket)
+    _accumulate_into_run_modules(state, bucket, dur, units)
+
+
+def append_completed_sync_eta_run(db_path: str) -> None:
+    """Append one successful sync snapshot; keep last MAX_RUNS. Clears accumulator."""
+    modules = SYNC_STATE.get("eta_run_modules")
+    if not isinstance(modules, dict) or not modules:
+        SYNC_STATE["eta_run_modules"] = {}
+        return
+    cleaned: dict[str, dict[str, float | int]] = {}
+    for k, v in modules.items():
+        if not isinstance(v, dict):
+            continue
+        d = float(v.get("duration_s") or 0)
+        u = int(v.get("units") or 0)
+        if d > 0 and u > 0:
+            cleaned[str(k)] = {"duration_s": d, "units": u}
+    SYNC_STATE["eta_run_modules"] = {}
+    if not cleaned:
+        return
+    run: dict[str, Any] = {
+        "finished_at": int(time.time()),
+        "scope": str(SYNC_STATE.get("scope") or ""),
+        "selected_scopes": list(SYNC_STATE.get("selected_scopes") or []),
+        "modules": cleaned,
+    }
+    try:
+        conn = _connect(db_path)
+        try:
+            runs = load_run_history(conn)
+            runs.append(run)
+            _save_run_history(conn, runs)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("sync ETA run history persist failed", exc_info=True)
 
 
 def shopify_aggregate_progress(state: dict[str, Any]) -> tuple[int, int]:
@@ -186,54 +264,43 @@ def units_for_record(state: dict[str, Any], bucket: str) -> int:
     return max(total, done, 1)
 
 
-def record_scope_eta_segment(db_path: str, state: dict[str, Any], bucket: str) -> None:
-    t0 = int(state.get("eta_segment_started_at") or 0)
-    if t0 <= 0:
-        return
-    dur = max(time.time() - float(t0), 0.05)
-    units = units_for_record(state, bucket)
-    record_sync_eta_sample(db_path, bucket, dur, units)
-
-
 def _median(nums: list[float]) -> float | None:
     if not nums:
         return None
     return float(statistics.median(nums))
 
 
-def _fallback_spu_from_history(hist: dict[str, list[float]]) -> float:
-    all_vals = [x for xs in hist.values() for x in xs if isinstance(x, (int, float)) and x > 0]
-    med = _median(all_vals)
-    return float(med) if med is not None else DEFAULT_SHOPIFY_FALLBACK_SPU
-
-
 def compute_shopify_eta_seconds_historical(state: dict[str, Any], db_path: str) -> int | None:
-    """ETA ≈ sum_k remaining_k × median_spu_k for each Shopify kind."""
+    """ETA ≈ sum_k remaining_k × weighted_spu_k from last runs per Shopify kind."""
     try:
         conn = _connect(db_path)
         try:
-            hist = load_eta_history(conn)
+            runs = load_run_history(conn)
         finally:
             conn.close()
     except Exception:
-        hist = {}
+        runs = []
 
-    fallback_spu = _fallback_spu_from_history(hist)
+    fallback_spu = _fallback_spu_shopify_from_runs(runs)
     total_eta = 0.0
     for bucket, sk, tk in SHOPIFY_ETA_KINDS:
         rem = max(0, int(state.get(tk) or 0) - int(state.get(sk) or 0))
         if rem <= 0:
             continue
-        med = _median(hist.get(bucket, []))
-        spu = float(med) if med is not None else fallback_spu
+        w = weighted_spu_for_module(runs, bucket)
+        spu = float(w) if w is not None else fallback_spu
         spu = max(MIN_SPU, min(MAX_SPU, spu))
         total_eta += float(rem) * spu
 
     if total_eta <= 0:
         done0, total0 = shopify_aggregate_progress(state)
         if state.get("running") and total0 == 0 and done0 == 0:
-            # Before discovery reports any totals: coarse legacy "shopify" samples from older runs.
-            med = _median(hist.get("shopify", []))
+            coarse = weighted_spu_for_module(runs, "shopify")
+            if coarse is not None:
+                return int(min(MAX_ETA_CAP, max(45, coarse * 80)))
+            vals = [weighted_spu_for_module(runs, b) for b, _, _ in SHOPIFY_ETA_KINDS]
+            nums = [x for x in vals if x is not None]
+            med = _median([float(x) for x in nums])
             if med is not None:
                 return int(min(MAX_ETA_CAP, max(45, med * 80)))
             return None
@@ -273,23 +340,22 @@ def compute_sync_eta_seconds(state: dict[str, Any], db_path: str) -> int | None:
         live_eta = float(remaining) / max(rate, 1e-9)
 
     hist_eta: float | None = None
-    med: float | None = None
     try:
         conn = _connect(db_path)
         try:
-            hist = load_eta_history(conn)
-            med = _median(hist.get(bucket, []))
+            runs = load_run_history(conn)
         finally:
             conn.close()
     except Exception:
-        med = None
-    if med is not None:
-        hist_eta = float(remaining) * float(med)
+        runs = []
+    w_spu = weighted_spu_for_module(runs, bucket)
+    if w_spu is not None:
+        hist_eta = float(remaining) * float(w_spu)
 
     eta: float | None = None
     if live_eta is not None and hist_eta is not None:
-        w = min(1.0, float(done) / float(MIN_BLEND_DONE))
-        eta = w * live_eta + (1.0 - w) * hist_eta
+        w_blend = min(1.0, float(done) / float(MIN_BLEND_DONE))
+        eta = w_blend * live_eta + (1.0 - w_blend) * hist_eta
     elif live_eta is not None:
         eta = live_eta
     elif hist_eta is not None:

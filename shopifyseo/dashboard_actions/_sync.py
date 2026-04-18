@@ -47,7 +47,13 @@ from ._state import (
     clear_last_error,
     record_last_error,
 )
-from .sync_eta import record_scope_eta_segment, record_shopify_kind_eta, record_sync_eta_sample, shopify_aggregate_progress
+from .sync_eta import (
+    append_completed_sync_eta_run,
+    record_scope_eta_segment,
+    record_shopify_kind_eta,
+    record_sync_eta_sample,
+    shopify_aggregate_progress,
+)
 
 # Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
 SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
@@ -113,6 +119,7 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "pagespeed_queue_inflight": 0,
             "pagespeed_error_details": [],
             "cancel_requested": False,
+            "eta_run_modules": {},
         }
     )
 
@@ -1189,6 +1196,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 dg.set_service_setting(conn, "last_dashboard_sync_finished_at", str(int(time.time())))
             finally:
                 conn.close()
+            append_completed_sync_eta_run(db_path)
             return result
         except Exception as exc:
             if str(exc) == "Sync cancelled by user":

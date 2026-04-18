@@ -93,6 +93,7 @@ SYNC_STATE = {
     "pagespeed_error_details": [],
     "cancel_requested": False,
     "selected_scopes": [],
+    "eta_run_modules": {},
 }
 
 AI_STATE = {

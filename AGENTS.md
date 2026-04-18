@@ -1,5 +1,15 @@
 # Agent / dev notes
 
+## Before proposing new features — consult TECHNICAL_DOC.md
+
+[TECHNICAL_DOC.md](TECHNICAL_DOC.md) is the canonical map of what already ships:
+routes (§9), screens (§10), services (§5.5), domain-library modules (§5.2–§5.4),
+tables (§8), background jobs (§7), settings (§4). Skim the relevant section before
+suggesting "we should add X" — it is probably already there.
+
+If you add a router, service, table, or screen, update the matching section in the
+**same PR** (see §14 "Keeping this doc in sync" for the trigger table).
+
 ## Live testing — **do this after code changes** (project default)
 
 The maintainer tests only on **`http://127.0.0.1:8000/app/`** (FastAPI + built SPA from `frontend/dist`). No Vite dev server.

@@ -342,7 +342,8 @@ export function AppShell({ children }: PropsWithChildren) {
       hasError: showSyncErrorPanel,
       syncPercent,
       activeScope: effectiveActiveScope,
-      stepIndex: activeStepIndex
+      stepIndex: activeStepIndex,
+      stage: syncStatus?.stage
     });
   }, [
     orderedScopes,
@@ -397,9 +398,11 @@ export function AppShell({ children }: PropsWithChildren) {
 
   const activePipelineKey = activeServiceKey(effectiveActiveScope);
   const runningHeroSubtitle =
-    activePipelineKey && SYNC_PIPELINE_SUBTITLE[activePipelineKey]
-      ? SYNC_PIPELINE_SUBTITLE[activePipelineKey]
-      : activeStageLabel;
+    syncRunning && syncStatus?.stage === "syncing_product_images"
+      ? syncStageLabels.syncing_product_images
+      : activePipelineKey && SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+        ? SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+        : activeStageLabel;
 
   const canRunSync =
     !syncRunning &&

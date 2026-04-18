@@ -29,7 +29,7 @@ export const SYNC_SCOPE_READY_HELP: Record<SyncServiceValue, string> = {
 
 /** Pipeline row subtitles (V1 design copy deck). */
 export const SYNC_PIPELINE_SUBTITLE: Record<SyncServiceValue, string> = {
-  shopify: "Products, collections, pages, blogs",
+  shopify: "Products, collections, pages, blogs · then product image cache",
   gsc: "Impressions, clicks, coverage",
   ga4: "Sessions, views, acquisition",
   index: "URL inspection on tracked catalog",

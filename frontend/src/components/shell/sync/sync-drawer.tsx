@@ -219,7 +219,7 @@ function StageRow({
   row: PipelineRowModel;
   accent: string;
 }) {
-  const sub = SYNC_PIPELINE_SUBTITLE[row.key];
+  const sub = row.subtitle ?? SYNC_PIPELINE_SUBTITLE[row.key];
   const Icon = rowIcons[row.key];
   const done = row.status === "done";
   const active = row.status === "active";
@@ -243,7 +243,7 @@ function StageRow({
           : row.total > 0
             ? `0/${row.total}`
             : "—";
-  const rightSub = done ? "items" : active ? "syncing" : failed ? "halted" : "queued";
+  const rightSub = done ? "items" : active ? (row.subtitle ? "caching" : "syncing") : failed ? "halted" : "queued";
 
   return (
     <div

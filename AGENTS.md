@@ -4,7 +4,9 @@
 
 The maintainer tests only on **`http://127.0.0.1:8000/app/`** (FastAPI + built SPA from `frontend/dist`). No Vite dev server.
 
-**Agents: this is mandatory.** When you change code, **you** run the commands in the terminal before finishing — do not ask the maintainer to restart or rebuild unless they have no agent shell.
+**Agents: this is mandatory.** After **every** substantive code change, **you** rebuild and restart the local app before handoff — do not ask the maintainer to do it unless there is no agent shell.
+
+**Quick path (from repo root):** `./scripts/dev-restart-local.sh` — stops anything on port **8000**, runs `npm run build` in `frontend/`, then starts uvicorn in the **foreground** (run it in a **background** terminal in the agent, or run the build + uvicorn steps below manually). Use `./scripts/dev-restart-local.sh --rebuild` if the UI still looks cached after `npm run build`.
 
 | What changed | Action |
 |--------------|--------|

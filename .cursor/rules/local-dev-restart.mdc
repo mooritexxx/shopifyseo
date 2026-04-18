@@ -1,0 +1,20 @@
+---
+description: After code edits, rebuild SPA and restart FastAPI on port 8000 for local testing
+alwaysApply: true
+---
+
+# Local app: rebuild + restart
+
+The maintainer tests on **`http://127.0.0.1:8000/app/`** (FastAPI serves `frontend/dist`). Do **not** rely on `npm run dev` / port 5173 for verification unless the user explicitly asks.
+
+**Before finishing any task that changed code:**
+
+1. **Frontend** (`frontend/`, or any change that affects the SPA): run `cd frontend && npm run build` (use `npm run rebuild` if assets look stale).
+2. **Backend / Python** (`backend/`, `shopifyseo/`, `pip` deps): ensure the API on **port 8000** is running with reload. If it was not running, or you need a clean process, stop listeners on 8000 and start:  
+   `PYTHONPATH=. uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000` from the repo root (background is fine).
+3. **Both**: build **and** restart.
+4. Optionally run **`./scripts/dev-restart-local.sh`** from the repo root (build + uvicorn in the **foreground** — use a background shell in the agent, or run build + uvicorn steps separately).
+
+Remind the user to **hard refresh (⌘⇧R)** when testing the bundled UI.
+
+See **`AGENTS.md`** for the full table and git expectations.

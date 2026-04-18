@@ -166,6 +166,7 @@ def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
         )
 
         def _progress(done: int, total: int) -> None:
+            _raise_if_sync_cancelled()
             SYNC_STATE["images_synced"] = done
             SYNC_STATE["images_total"] = total
             SYNC_STATE["current"] = f"Product images (local cache): {done}/{total}"
@@ -178,7 +179,9 @@ def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
             "errors": int(stats.get("errors") or 0),
             "pruned": int(stats.get("pruned") or 0),
         }
-    except Exception:
+    except Exception as exc:
+        if str(exc) == "Sync cancelled by user":
+            raise
         logger.warning("Product image cache warm failed", exc_info=True)
         return None
 
@@ -728,6 +731,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
     total_steps = len(selected_scopes)
 
     def _shopify_progress(kind: str, done: int, total: int) -> None:
+        _raise_if_sync_cancelled()
         label_map = {
             "products": "products",
             "collections": "collections",
@@ -758,10 +762,13 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             )
             result["shopify"] = {
                 "products": sync_products(db_path, 50, progress_callback=_shopify_progress),
-                "collections": sync_collections(db_path, 50, progress_callback=_shopify_progress),
-                "pages": sync_pages(db_path, 50, progress_callback=_shopify_progress),
-                "blogs": sync_blogs(db_path, 50, progress_callback=_shopify_progress),
             }
+            _raise_if_sync_cancelled()
+            result["shopify"]["collections"] = sync_collections(db_path, 50, progress_callback=_shopify_progress)
+            _raise_if_sync_cancelled()
+            result["shopify"]["pages"] = sync_pages(db_path, 50, progress_callback=_shopify_progress)
+            _raise_if_sync_cancelled()
+            result["shopify"]["blogs"] = sync_blogs(db_path, 50, progress_callback=_shopify_progress)
             br = result["shopify"].get("blogs") or {}
             SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
             SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_synced") or 0)
@@ -855,6 +862,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     current="Refreshing product catalog snapshot",
                 )
                 result = {"products": sync_products(db_path, 50, progress_callback=lambda kind, done, total: (
+                    _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("products_synced", done),
                     SYNC_STATE.__setitem__("products_total", total),
                     SYNC_STATE.__setitem__("current", f"Shopify products: {done}/{total}"),
@@ -876,6 +884,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     current="Refreshing collection snapshot",
                 )
                 result = {"collections": sync_collections(db_path, 50, progress_callback=lambda kind, done, total: (
+                    _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("collections_synced", done),
                     SYNC_STATE.__setitem__("collections_total", total),
                     SYNC_STATE.__setitem__("current", f"Shopify collections: {done}/{total}"),
@@ -894,6 +903,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     current="Refreshing page snapshot",
                 )
                 result = {"pages": sync_pages(db_path, 50, progress_callback=lambda kind, done, total: (
+                    _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("pages_synced", done),
                     SYNC_STATE.__setitem__("pages_total", total),
                     SYNC_STATE.__setitem__("current", f"Shopify pages: {done}/{total}"),
@@ -912,6 +922,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     current="Refreshing blogs and articles snapshot",
                 )
                 def _blogs_only_progress(kind: str, done: int, total: int) -> None:
+                    _raise_if_sync_cancelled()
                     if kind == "blogs":
                         SYNC_STATE["blogs_synced"] = done
                         SYNC_STATE["blogs_total"] = total

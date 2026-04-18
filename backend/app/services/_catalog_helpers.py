@@ -188,6 +188,30 @@ def _gsc_date_range_label(gsc_period: str) -> str:
     return f"{gs.isoformat()}–{ge.isoformat()}"
 
 
+def gsc_queries_from_detail(gsc_detail: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalize Search Analytics query_rows from get_search_console_url_detail for API/UI."""
+    if not gsc_detail:
+        return []
+    rows = gsc_detail.get("query_rows") or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        keys = row.get("keys") or []
+        q = (keys[0] if keys else "") or ""
+        if not q:
+            continue
+        out.append(
+            {
+                "query": q,
+                "clicks": int(row.get("clicks") or 0),
+                "impressions": int(row.get("impressions") or 0),
+                "ctr": float(row.get("ctr") or 0),
+                "position": float(row.get("position") or 0),
+            }
+        )
+    out.sort(key=lambda r: (-r["clicks"], -r["impressions"], r["query"].lower()))
+    return out
+
+
 def _ga4_date_range_label() -> str:
     end_d = date.today() - timedelta(days=1)
     start_d = end_d - timedelta(days=27)
@@ -204,11 +228,17 @@ def get_object_inspection_link(object_type: str, handle: str) -> tuple[bool, str
 
 
 def _signal_cards_for(
-    conn: sqlite3.Connection, kind: str, current: dict[str, Any], *, gsc_period: str = "mtd"
+    conn: sqlite3.Connection,
+    kind: str,
+    current: dict[str, Any],
+    *,
+    gsc_period: str = "mtd",
+    signals: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    signals = load_object_signals(
-        kind, current["handle"], conn=conn, gsc_period=normalize_gsc_period_mode(gsc_period)
-    )
+    if signals is None:
+        signals = load_object_signals(
+            kind, current["handle"], conn=conn, gsc_period=normalize_gsc_period_mode(gsc_period)
+        )
     inspection_display = inspection_for_catalog_index_display(signals["inspection_detail"], current)
     index_label, _, index_reason = index_status_info(inspection_display)
     inspect_href = search_console_inspect_href(

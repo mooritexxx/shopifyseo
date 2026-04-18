@@ -13,6 +13,7 @@ import { Modal } from "../components/ui/modal";
 import { SearchPreview } from "../components/ui/search-preview";
 import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
+import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { RichBodyEditor } from "../components/ui/rich-body-editor";
@@ -760,6 +761,8 @@ export function ArticleDetailPage() {
             />
           ))}
         </section>
+
+        <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

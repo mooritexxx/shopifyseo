@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
@@ -200,6 +201,43 @@ def test_products_contract():
     for it in payload["data"]["items"]:
         assert "gsc_segment_flags" in it
         assert "has_dimensional" in it["gsc_segment_flags"]
+
+
+def test_product_detail_includes_gsc_queries_from_gsc_payload(monkeypatch):
+    prod = client.get("/api/products?limit=1").json()["data"]["items"]
+    if not prod:
+        pytest.skip("no products in database")
+    handle = prod[0]["handle"]
+
+    fake_rows = [
+        {"keys": ["vape test query"], "clicks": 2, "impressions": 9, "ctr": 0.222, "position": 4.1},
+        {"keys": ["zz zero clicks"], "clicks": 0, "impressions": 21, "ctr": 0.0, "position": 12.0},
+    ]
+
+    def fake_load(kind, handle_arg, *, conn, gsc_period="mtd"):
+        assert kind == "product" and handle_arg == handle
+        return {
+            "gsc_detail": {"query_rows": fake_rows},
+            "inspection_detail": None,
+            "site_url": "https://example.com/",
+            "ga4_summary": None,
+            "pagespeed_detail": None,
+            "errors": {},
+        }
+
+    monkeypatch.setattr("backend.app.services.product_service.load_object_signals", fake_load)
+    r = client.get(f"/api/products/{handle}")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert "gsc_queries" in data
+    qs = data["gsc_queries"]
+    assert len(qs) == 2
+    assert qs[0]["query"] == "vape test query"
+    assert qs[0]["clicks"] == 2
+    assert qs[1]["query"] == "zz zero clicks"
+    assert qs[1]["impressions"] == 21
+    assert qs[0]["ctr"] == pytest.approx(0.222)
+    assert qs[1]["position"] == pytest.approx(12.0)
 
 
 def test_product_detail_not_found_uses_error_envelope():

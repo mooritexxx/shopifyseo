@@ -312,6 +312,16 @@ export const defaultGscSegmentSummary: z.infer<typeof gscSegmentSummarySchema> =
 
 export type GscSegmentSummary = z.infer<typeof gscSegmentSummarySchema>;
 
+export const gscQueryRowSchema = z.object({
+  query: z.string(),
+  clicks: z.number(),
+  impressions: z.number(),
+  ctr: z.number(),
+  position: z.number()
+});
+
+export type GscQueryRow = z.infer<typeof gscQueryRowSchema>;
+
 export const productDetailSchema = z.object({
   product: z.record(z.any()),
   draft: z.object({
@@ -361,7 +371,8 @@ export const productDetailSchema = z.object({
     .optional()
     .default([]),
   opportunity: z.record(z.any()),
-  gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary)
+  gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
+  gsc_queries: z.array(gscQueryRowSchema).default([])
 });
 
 export const contentListItemSchema = z.object({
@@ -656,7 +667,8 @@ export const contentDetailSchema = z.object({
   related_items: z.array(z.record(z.any())),
   metafields: z.array(z.record(z.any())),
   opportunity: z.record(z.any()),
-  gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary)
+  gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
+  gsc_queries: z.array(gscQueryRowSchema).default([])
 });
 
 export const statusSchema = z.object({

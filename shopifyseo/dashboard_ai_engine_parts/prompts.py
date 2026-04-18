@@ -3,6 +3,41 @@ import json
 from .config import BODY_MIN_LENGTH, DESCRIPTION_HARD_MIN, DESCRIPTION_LIMIT, DESCRIPTION_TARGET_MIN, TITLE_HARD_MIN, TITLE_LIMIT, TITLE_TARGET_MIN
 from .context import _slim_keyword_context, condensed_context, curated_primary_object, infer_product_intent, json_list, prompt_context, signal_availability_summary, strip_html, word_count
 
+_GSC_QUERY_HIGHLIGHTS_MAX = 3
+_GSC_QUERY_HIGHLIGHTS_JSON_CAP = 400
+
+
+def _gsc_query_highlights_for_slim(full_context: dict) -> list[dict]:
+    """Top few GSC queries for meta-description slim prompts (strict JSON size cap)."""
+    rows: list[dict] = list(full_context.get("top_queries") or [])
+    if not rows:
+        sc = full_context.get("seo_context") or {}
+        for r in sc.get("gsc_query_rows") or []:
+            rows.append(
+                {
+                    "query": r.get("query"),
+                    "impressions": r.get("impressions"),
+                    "ctr": r.get("ctr"),
+                    "position": r.get("position"),
+                }
+            )
+    out: list[dict] = []
+    for row in rows[:_GSC_QUERY_HIGHLIGHTS_MAX]:
+        q = str(row.get("query") or "").strip()[:160]
+        if not q:
+            continue
+        out.append(
+            {
+                "query": q,
+                "impressions": int(row.get("impressions") or 0),
+                "ctr": float(row.get("ctr") or 0),
+                "position": float(row.get("position") or 0),
+            }
+        )
+    while len(out) > 0 and len(json.dumps(out, ensure_ascii=True)) > _GSC_QUERY_HIGHLIGHTS_JSON_CAP:
+        out.pop()
+    return out
+
 
 def _market_ctx(conn=None) -> dict:
     """Return a dict of market-specific values for prompt interpolation.
@@ -528,6 +563,9 @@ def _slim_seo_description_context(object_type: str, full_context: dict) -> dict:
     if kw_ctx:
         result["keyword_context"] = _slim_keyword_context(kw_ctx, max_rows=5)
     result = _inject_slim_rag_context(result, full_context)
+    hq = _gsc_query_highlights_for_slim(full_context)
+    if hq:
+        result["gsc_query_highlights"] = hq
     return result
 
 

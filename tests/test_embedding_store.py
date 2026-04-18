@@ -15,6 +15,7 @@ from shopifyseo.embedding_store import (
     _md5,
     _strip_html,
     _coalesce,
+    _build_gsc_queries_text,
     build_embed_text,
     prune_stale_embeddings,
     sync_embeddings,
@@ -152,6 +153,24 @@ class TestHelpers:
         assert len(h) == 32
         assert h == _md5("test")  # deterministic
         assert h != _md5("other")
+
+
+class TestBuildGscQueriesText:
+    def test_includes_catalog_title_and_path(self):
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, seo_title, seo_description, description_html, tags_json, status) "
+            "VALUES ('1', 'p1', 'Super Vape', '', '', '', '[]', 'ACTIVE')",
+        )
+        conn.execute(
+            "INSERT INTO gsc_query_rows (object_type, object_handle, url, query, clicks, impressions, ctr, position, fetched_at) "
+            "VALUES ('product', 'p1', 'https://shop.example/products/p1', 'disposable canada', 2, 88, 0.02, 4.5, '1')",
+        )
+        conn.commit()
+        text = _build_gsc_queries_text("p1", "product", conn)
+        assert "Super Vape" in text
+        assert "disposable canada" in text
+        assert "/products/p1" in text
 
 
 class TestBuildEmbedText:

@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from ..dashboard_http import HttpRequestError
+from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 from ._cache import (
     CACHE_TTLS,
     GSC_PROPERTY_BREAKDOWN_ROW_CAP,
@@ -925,7 +926,7 @@ def get_search_console_url_detail(
             "endDate": end_date.isoformat(),
             "dimensions": ["query"],
             "dimensionFilterGroups": [{"filters": [{"dimension": "page", "operator": "equals", "expression": url}]}],
-            "rowLimit": 15,
+            "rowLimit": GSC_PER_URL_QUERY_ROW_LIMIT,
         },
     ).get("rows", [])
     payload = {

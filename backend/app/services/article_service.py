@@ -13,9 +13,11 @@ from shopifyseo.dashboard_live_updates import live_update_article
 import shopifyseo.dashboard_queries as dq
 from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
 from backend.app.db import open_db_connection
+from backend.app.services.object_signals import load_object_signals
 from backend.app.services._catalog_helpers import (
     _detail_envelope,
     _signal_cards_for,
+    gsc_queries_from_detail,
     serialize_opportunity,
     get_object_inspection_link,
 )
@@ -204,6 +206,7 @@ def get_blog_article_detail(blog_handle: str, article_slug: str, gsc_period: str
         parts = _detail_envelope(detail, current, body_key="body")
         dim_rows = dq.fetch_gsc_query_dimension_rows(conn, "blog_article", composite)
         gsc_segment_summary = dq.build_gsc_segment_summary_from_rows(dim_rows)
+        signals = load_object_signals("blog_article", current["handle"], conn=conn, gsc_period=period)
         return {
             "object_type": "blog_article",
             "current": current,
@@ -211,11 +214,12 @@ def get_blog_article_detail(blog_handle: str, article_slug: str, gsc_period: str
             "workflow": parts["workflow"],
             "recommendation": parts["recommendation"],
             "recommendation_history": parts["recommendation_history"],
-            "signal_cards": _signal_cards_for(conn, "blog_article", current, gsc_period=period),
+            "signal_cards": _signal_cards_for(conn, "blog_article", current, gsc_period=period, signals=signals),
             "related_items": related_items,
             "metafields": [],
             "opportunity": serialize_opportunity(fact),
             "gsc_segment_summary": gsc_segment_summary,
+            "gsc_queries": gsc_queries_from_detail(signals.get("gsc_detail")),
         }
     finally:
         conn.close()

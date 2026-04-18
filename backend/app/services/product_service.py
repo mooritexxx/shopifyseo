@@ -20,7 +20,7 @@ from shopifyseo.dashboard_status import index_status_bucket_from_strings
 from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
 from backend.app.db import open_db_connection
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
-from backend.app.services.object_signals import parse_tags_json
+from backend.app.services.object_signals import load_object_signals, parse_tags_json
 from backend.app.services._catalog_helpers import (
     PRODUCT_SORTERS,
     _normalize_list_focus,
@@ -28,6 +28,7 @@ from backend.app.services._catalog_helpers import (
     _attach_gsc_segment_flags,
     _detail_envelope,
     _signal_cards_for,
+    gsc_queries_from_detail,
     serialize_opportunity,
     get_object_inspection_link,
 )
@@ -140,19 +141,21 @@ def get_product_detail(handle: str, gsc_period: str = "mtd") -> dict[str, Any] |
         opportunity = dq.build_seo_fact("product", detail["product"], parts["workflow"], detail.get("recommendation") or {})
         dim_rows = dq.fetch_gsc_query_dimension_rows(conn, "product", handle)
         gsc_segment_summary = dq.build_gsc_segment_summary_from_rows(dim_rows)
+        signals = load_object_signals("product", handle, conn=conn, gsc_period=period)
         return {
             "product": product,
             "draft": parts["draft"],
             "workflow": parts["workflow"],
             "recommendation": parts["recommendation"],
             "recommendation_history": parts["recommendation_history"],
-            "signal_cards": _signal_cards_for(conn, "product", product, gsc_period=period),
+            "signal_cards": _signal_cards_for(conn, "product", product, gsc_period=period, signals=signals),
             "collections": [dict(row) for row in detail["collections"]],
             "variants": [dict(row) for row in detail["variants"]],
             "metafields": [dict(row) for row in detail["metafields"]],
             "product_images": [dict(row) for row in detail.get("product_images") or []],
             "opportunity": serialize_opportunity(opportunity),
             "gsc_segment_summary": gsc_segment_summary,
+            "gsc_queries": gsc_queries_from_detail(signals.get("gsc_detail")),
         }
     finally:
         conn.close()

@@ -197,6 +197,7 @@ class ProductDetailPayload(BaseModel):
     product_images: list[ProductImagePayload] = Field(default_factory=list)
     opportunity: OpportunityPayload
     gsc_segment_summary: GscSegmentSummaryPayload = Field(default_factory=GscSegmentSummaryPayload)
+    gsc_queries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProductRefreshRequest(BaseModel):

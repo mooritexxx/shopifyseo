@@ -20,8 +20,10 @@ from typing import Any
 
 import numpy as np
 
+from . import dashboard_queries as dq
 from .dashboard_ai_engine_parts.config import GEMINI_API_URL
 from .dashboard_http import HttpRequestError, request_json
+from .gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -257,13 +259,51 @@ def _build_cluster_text(row: dict, conn: sqlite3.Connection) -> str:
     return " | ".join(p for p in parts if p)[:MAX_INPUT_CHARS]
 
 
+def _catalog_title_for_gsc_bundle(conn: sqlite3.Connection, object_type: str, handle: str) -> str:
+    """Resolve storefront title for embedding header (matches catalog object types in gsc_query_rows)."""
+    if object_type == "product":
+        row = conn.execute("SELECT title FROM products WHERE handle = ?", (handle,)).fetchone()
+    elif object_type == "collection":
+        row = conn.execute("SELECT title FROM collections WHERE handle = ?", (handle,)).fetchone()
+    elif object_type == "page":
+        row = conn.execute("SELECT title FROM pages WHERE handle = ?", (handle,)).fetchone()
+    elif object_type == "blog_article":
+        blog_h, sep, art_h = handle.partition("/")
+        if sep and art_h:
+            row = conn.execute(
+                "SELECT title FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+                (blog_h, art_h),
+            ).fetchone()
+        else:
+            return ""
+    else:
+        return ""
+    return _coalesce(row["title"] if row else None)
+
+
 def _build_gsc_queries_text(handle: str, object_type_src: str, conn: sqlite3.Connection) -> str:
+    """Text for `gsc_queries` embeddings: entity title + canonical URL + top queries (same row cap as API/context)."""
+    lim = GSC_PER_URL_QUERY_ROW_LIMIT
     rows = conn.execute(
-        "SELECT query FROM gsc_query_rows WHERE object_type = ? AND object_handle = ? ORDER BY impressions DESC LIMIT 15",
-        (object_type_src, handle),
+        """
+        SELECT query FROM gsc_query_rows
+        WHERE object_type = ? AND object_handle = ?
+        ORDER BY impressions DESC, clicks DESC, query ASC
+        LIMIT ?
+        """,
+        (object_type_src, handle, lim),
     ).fetchall()
     queries = [r["query"] for r in rows if r["query"]]
-    return " | ".join(queries)[:MAX_INPUT_CHARS]
+    queries_part = " | ".join(queries)
+    title = _catalog_title_for_gsc_bundle(conn, object_type_src, handle)
+    url = dq.object_url(object_type_src, handle)
+    header_bits = [b for b in (title, url) if b]
+    if header_bits:
+        header = " | ".join(header_bits)
+        combined = f"{header} | {queries_part}" if queries_part else header
+    else:
+        combined = queries_part
+    return combined[:MAX_INPUT_CHARS] if combined else ""
 
 
 def _build_keyword_text(row: dict) -> str:

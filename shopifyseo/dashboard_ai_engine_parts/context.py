@@ -7,6 +7,7 @@ UTC = timezone.utc
 
 from .. import dashboard_google as dg
 from .. import dashboard_queries as dq
+from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 
 _log = logging.getLogger(__name__)
 
@@ -179,9 +180,9 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
                 FROM gsc_query_rows
                 WHERE object_type = ? AND object_handle = ?
                 ORDER BY impressions DESC, clicks DESC, query ASC
-                LIMIT 20
+                LIMIT ?
                 """,
-                (object_type, handle),
+                (object_type, handle, GSC_PER_URL_QUERY_ROW_LIMIT),
             ).fetchall()
         ]
         recommendation_history = detail.get("recommendation_history", [])[:5]
@@ -222,9 +223,9 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
             FROM gsc_query_rows
             WHERE object_type = ? AND object_handle = ?
             ORDER BY impressions DESC, clicks DESC, query ASC
-            LIMIT 20
+            LIMIT ?
             """,
-            (object_type, handle),
+            (object_type, handle, GSC_PER_URL_QUERY_ROW_LIMIT),
         ).fetchall()
     ]
     if object_type == "product":
@@ -716,7 +717,7 @@ def prompt_context(context: dict) -> dict:
         },
         "approved_internal_link_targets": approved_internal_link_targets,
         "workflow": {"status": workflow.get("status") or "", "notes": workflow.get("notes") or "", "updated_at": workflow.get("updated_at") or ""},
-        "top_queries": [{"query": row.get("query"), "impressions": row.get("impressions"), "clicks": row.get("clicks"), "ctr": row.get("ctr"), "position": row.get("position")} for row in (context.get("gsc_query_rows") or [])[:20]],
+        "top_queries": [{"query": row.get("query"), "impressions": row.get("impressions"), "clicks": row.get("clicks"), "ctr": row.get("ctr"), "position": row.get("position")} for row in (context.get("gsc_query_rows") or [])[:GSC_PER_URL_QUERY_ROW_LIMIT]],
         "query_clusters": context.get("gsc_query_clusters") or [],
         "internal_links": (context.get("fact") or {}).get("internal_links") or [],
         "evidence": (context.get("fact") or {}).get("evidence") or {},

@@ -15,6 +15,7 @@ import { RichBodyEditor } from "../components/ui/rich-body-editor";
 import { SearchPreview } from "../components/ui/search-preview";
 import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
+import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { Textarea } from "../components/ui/textarea";
@@ -1019,6 +1020,8 @@ export function ProductDetailPage() {
             </CardContent>
           </Card>
         </section>
+
+        <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

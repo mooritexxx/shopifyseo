@@ -38,6 +38,14 @@ export function useDashboardGscPeriodSync(): DashboardGscPeriod {
   return period;
 }
 
+/** Short copy for catalog detail pages (aligned with `gsc_period` on detail API requests). */
+export function catalogGscWindowDescription(period: DashboardGscPeriod): string {
+  if (period === "full_months") {
+    return "Full calendar months — same Search Console window as the GSC signal cards above.";
+  }
+  return "Month to date — same Search Console window as the GSC signal cards above.";
+}
+
 /** Overview-only: rolling 30d (default) vs full property history since 2026-02-15. */
 export type OverviewGscPeriod = "rolling_30d" | "since_2026_02_15";
 

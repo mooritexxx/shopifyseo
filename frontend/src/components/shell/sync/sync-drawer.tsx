@@ -783,7 +783,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
           </Button>
         ) : null}
       </div>
-      {cancelRequested ? (
+      {cancelRequested && syncRunning ? (
         <p className="px-[18px] pb-2 text-center text-xs font-semibold uppercase tracking-[0.16em] text-[#ffcf9f]">Stopping sync…</p>
       ) : null}
     </aside>

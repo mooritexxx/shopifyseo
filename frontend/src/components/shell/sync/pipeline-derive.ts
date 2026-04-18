@@ -67,8 +67,18 @@ function countsForService(
       return { done, total: Math.max(done, s.total || 0, 1) };
     }
     case "ga4": {
-      const done = s.ga4_rows || 0;
-      return { done, total: Math.max(done, s.total || 0, 1) };
+      const rows = s.ga4_rows || 0;
+      const stage = (s.stage || "").toLowerCase();
+      const scope = (s.active_scope || "").toLowerCase();
+      if (s.running && (stage === "refreshing_ga4" || scope === "ga4")) {
+        const total = Math.max(s.total || 0, 1);
+        const done = Math.min(s.done || 0, total);
+        return { done, total };
+      }
+      if (rows > 0) {
+        return { done: rows, total: rows };
+      }
+      return { done: 0, total: 0 };
     }
     case "index": {
       const done = (s.index_refreshed || 0) + (s.index_skipped || 0) + (s.index_errors || 0);

@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from urllib.parse import unquote, urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -267,6 +268,73 @@ def _all_object_targets(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
     return targets
 
 
+def _normalize_catalog_path(path: str) -> str:
+    """Canonical path segment for matching GA4 ``pagePathPlusQueryString`` to storefront URLs."""
+    p = unquote((path or "").strip())
+    if not p:
+        return ""
+    if not p.startswith("/"):
+        p = "/" + p
+    if p != "/" and p.endswith("/"):
+        p = p.rstrip("/")
+    return p
+
+
+def _ga4_dimension_path_keys(raw_dim: str) -> list[str]:
+    """Candidate normalized paths from a GA dimension (may be path-only, full URL, or include query)."""
+    raw = unquote((raw_dim or "").strip())
+    if not raw:
+        return []
+    if raw.startswith("http://") or raw.startswith("https://"):
+        path = urlparse(raw).path or "/"
+    else:
+        path = raw.split("?")[0].split("#")[0]
+    norm = _normalize_catalog_path(path)
+    if not norm:
+        return []
+    keys = [norm, norm + "/"]
+    if norm != "/":
+        stripped = norm.rstrip("/")
+        if stripped and stripped != norm:
+            keys.append(stripped)
+    out: list[str] = []
+    seen: set[str] = set()
+    for k in keys:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def _catalog_targets_by_path(conn: sqlite3.Connection) -> dict[str, tuple[str, str, str]]:
+    """Map normalized URL path → first catalog (object_type, handle, canonical_url)."""
+    by_path: dict[str, tuple[str, str, str]] = {}
+    for kind, handle, url in _all_object_targets(conn):
+        norm = _normalize_catalog_path(urlparse(url).path)
+        if not norm:
+            continue
+        for key in (norm, norm + "/", norm.rstrip("/") if norm != "/" else norm):
+            if key and key not in by_path:
+                by_path[key] = (kind, handle, url)
+    return by_path
+
+
+def _storefront_url_for_ga_dimension(base: str, raw_dim: str) -> str:
+    """Build an absolute storefront URL from GA ``pagePathPlusQueryString`` (or full URL)."""
+    raw = (raw_dim or "").strip()
+    if not raw:
+        return (base or "").rstrip("/") + "/" if base else ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    path = unquote(raw)
+    if not path.startswith("/"):
+        path = "/" + path
+    base_clean = (base or "").strip().rstrip("/")
+    if not base_clean:
+        return path
+    return urljoin(f"{base_clean}/", path.lstrip("/"))
+
+
 def _catalog_row_index_bucket(index_status: str | None, index_coverage: str | None) -> str:
     return index_status_bucket_from_strings(
         (index_status or "").strip(),
@@ -411,12 +479,28 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
     }
     try:
         payload = dg.get_ga4_summary(conn, refresh=force_refresh or True)
-        summary["rows"] = len(payload.get("page_rows", []))
+        page_rows: list = list(payload.get("page_rows") or [])
+        summary["rows"] = len(page_rows)
         SYNC_STATE["ga4_rows"] = summary["rows"]
 
-        targets = _all_object_targets(conn)
-        summary["considered"] = len(targets)
-        SYNC_STATE["total"] = max(len(targets), 1)
+        base = dq._base_store_url(conn)
+        by_path = _catalog_targets_by_path(conn)
+        work: list[tuple[str, str, str, str]] = []
+        for row in page_rows:
+            raw_dim = dg.ga4_report_page_path_from_row(row)
+            kind, handle, url = "", "", ""
+            for key in _ga4_dimension_path_keys(raw_dim):
+                hit = by_path.get(key)
+                if hit:
+                    kind, handle, url = hit
+                    break
+            if not url:
+                url = _storefront_url_for_ga_dimension(base, raw_dim)
+            work.append((kind, handle, url))
+
+        summary["considered"] = len(work)
+        n = len(work)
+        SYNC_STATE["total"] = max(n, 1)
         SYNC_STATE["done"] = 0
 
         rate_limiter = _PerMinuteRateLimiter(GA4_SYNC_RATE_LIMIT_PER_MINUTE)
@@ -437,36 +521,45 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
                         object_handle=handle,
                     )
                 except Exception as exc:
-                    logger.warning("GA4 per-URL fetch failed for %s %s: %s", kind, handle, exc)
+                    logger.warning("GA4 per-URL fetch failed for %s %s: %s", kind or "(path)", handle or url, exc)
                     return "error"
                 return "refreshed"
             finally:
                 worker_conn.close()
 
-        with ThreadPoolExecutor(max_workers=GA4_SYNC_WORKERS) as executor:
-            future_to_target = {
-                executor.submit(_run_ga4_target, kind, handle, url): (kind, handle)
-                for kind, handle, url in targets
-            }
+        if n == 0:
+            SYNC_STATE["done"] = 1
+        else:
+            with ThreadPoolExecutor(max_workers=GA4_SYNC_WORKERS) as executor:
+                future_to_target = {
+                    executor.submit(_run_ga4_target, kind, handle, url): (kind, handle)
+                    for kind, handle, url in work
+                }
 
-            done = 0
-            for future in as_completed(future_to_target):
-                _raise_if_sync_cancelled()
-                done += 1
-                SYNC_STATE["done"] = done
-                try:
-                    result = future.result()
-                    if result == "skipped":
-                        summary["skipped_fresh"] += 1
-                    elif result == "refreshed":
-                        summary["refreshed"] += 1
-                    else:
+                done = 0
+                for future in as_completed(future_to_target):
+                    _raise_if_sync_cancelled()
+                    done += 1
+                    SYNC_STATE["done"] = done
+                    try:
+                        result = future.result()
+                        if result == "skipped":
+                            summary["skipped_fresh"] += 1
+                        elif result == "refreshed":
+                            summary["refreshed"] += 1
+                        else:
+                            summary["errors"] += 1
+                    except Exception as exc:
+                        logger.warning("GA4 target worker failed: %s", exc)
                         summary["errors"] += 1
-                except Exception as exc:
-                    logger.warning("GA4 target worker failed: %s", exc)
-                    summary["errors"] += 1
 
-        refresh_ga4_signal_data_for_objects(conn, [(k, h) for k, h, _ in targets])
+        signal_targets: list[tuple[str, str]] = []
+        seen_sig: set[tuple[str, str]] = set()
+        for kind, handle, _url in work:
+            if kind and handle and (kind, handle) not in seen_sig:
+                seen_sig.add((kind, handle))
+                signal_targets.append((kind, handle))
+        refresh_ga4_signal_data_for_objects(conn, signal_targets)
         summary["url_errors"] = summary["errors"]
         SYNC_STATE["ga4_url_errors"] = summary["errors"]
         if summary["errors"]:

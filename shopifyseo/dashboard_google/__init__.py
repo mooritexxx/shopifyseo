@@ -129,6 +129,7 @@ from ._gsc import (  # noqa: E402
 
 from ._ga4 import (  # noqa: E402
     delete_ga4_overview_cache,
+    ga4_report_page_path_from_row,
     get_ga4_properties,
     get_ga4_property_overview_cached,
     get_ga4_summary,

@@ -297,6 +297,50 @@ def get_ga4_properties(conn: sqlite3.Connection) -> dict:
 
 # -- GA4 summary (legacy 28-day landing/pageview report) ----------------------
 
+# GA4 Data API allows up to 100k rows per request; paginate with offset for full exports.
+_GA4_SUMMARY_REPORT_PAGE_SIZE = 10_000
+
+
+def _ga4_collect_report_rows(
+    property_id: str,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+    dimensions: list[dict],
+    metrics: list[dict],
+    order_bys: list[dict],
+) -> list[dict]:
+    """Run ``runReport`` with pagination until all rows are returned."""
+    url = f"https://analyticsdata.googleapis.com/v1beta/properties/{property_id}:runReport"
+    out: list[dict] = []
+    offset = 0
+    while True:
+        body: dict = {
+            "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
+            "dimensions": dimensions,
+            "metrics": metrics,
+            "orderBys": order_bys,
+            "limit": _GA4_SUMMARY_REPORT_PAGE_SIZE,
+            "offset": offset,
+        }
+        resp = google_api_post(url, access_token, body)
+        rows = resp.get("rows") or []
+        out.extend(rows)
+        if len(rows) < _GA4_SUMMARY_REPORT_PAGE_SIZE:
+            break
+        offset += _GA4_SUMMARY_REPORT_PAGE_SIZE
+    return out
+
+
+def ga4_report_page_path_from_row(row: dict) -> str:
+    """First dimension value for a ``runReport`` row (e.g. pagePathPlusQueryString)."""
+    dims = row.get("dimensionValues") or []
+    if not dims:
+        return ""
+    return (dims[0].get("value") or "").strip()
+
+
 def get_ga4_summary(conn: sqlite3.Connection, refresh: bool = False) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     property_id = get_service_setting(conn, "ga4_property_id")
@@ -315,32 +359,28 @@ def get_ga4_summary(conn: sqlite3.Connection, refresh: bool = False) -> dict:
     access_token = get_google_access_token(conn)
     end_date = date.today() - timedelta(days=1)
     start_date = end_date - timedelta(days=27)
-    landing_payload = google_api_post(
-        f"https://analyticsdata.googleapis.com/v1beta/properties/{property_id}:runReport",
+    landing_rows = _ga4_collect_report_rows(
+        property_id,
         access_token,
-        {
-            "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
-            "dimensions": [{"name": "landingPagePlusQueryString"}],
-            "metrics": [{"name": "sessions"}, {"name": "averageSessionDuration"}],
-            "limit": 500,
-            "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
-        },
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=[{"name": "landingPagePlusQueryString"}],
+        metrics=[{"name": "sessions"}, {"name": "averageSessionDuration"}],
+        order_bys=[{"metric": {"metricName": "sessions"}, "desc": True}],
     )
-    pageview_payload = google_api_post(
-        f"https://analyticsdata.googleapis.com/v1beta/properties/{property_id}:runReport",
+    page_rows = _ga4_collect_report_rows(
+        property_id,
         access_token,
-        {
-            "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
-            "dimensions": [{"name": "pagePathPlusQueryString"}],
-            "metrics": [{"name": "screenPageViews"}],
-            "limit": 500,
-            "orderBys": [{"metric": {"metricName": "screenPageViews"}, "desc": True}],
-        },
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=[{"name": "pagePathPlusQueryString"}],
+        metrics=[{"name": "screenPageViews"}],
+        order_bys=[{"metric": {"metricName": "screenPageViews"}, "desc": True}],
     )
     payload = {
-        "rows": landing_payload.get("rows", []),
-        "landing_rows": landing_payload.get("rows", []),
-        "page_rows": pageview_payload.get("rows", []),
+        "rows": landing_rows,
+        "landing_rows": landing_rows,
+        "page_rows": page_rows,
     }
     payload["start_date"] = start_date.isoformat()
     payload["end_date"] = end_date.isoformat()

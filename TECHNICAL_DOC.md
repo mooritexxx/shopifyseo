@@ -1,486 +1,422 @@
-# Shopify Agentic SEO — Technical Documentation
+# Technical Documentation
 
-Maintainer-oriented reference: architecture, configuration, SQLite schema, HTTP API, UI activities, and background jobs. Canonical sources are the cited paths; cross-check with FastAPI OpenAPI at `/docs` when in doubt.
-
----
-
-## Table of contents
-
-1. [Overview](#1-overview)
-2. [Architecture](#2-architecture)
-3. [API contracts, errors, and streaming](#3-api-contracts-errors-and-streaming)
-4. [Configuration and environment](#4-configuration-and-environment)
-5. [External integrations](#5-external-integrations)
-6. [AI subsystem](#6-ai-subsystem)
-7. [Background jobs: sync and AI](#7-background-jobs-sync-and-ai)
-8. [Data model (SQLite)](#8-data-model-sqlite)
-9. [HTTP API reference](#9-http-api-reference)
-10. [Activities by screen](#10-activities-by-screen)
-11. [Execution flows (summary)](#11-execution-flows-summary)
-12. [Testing and scripts](#12-testing-and-scripts)
-13. [Local development](#13-local-development)
-14. [Maintainer notes](#14-maintainer-notes)
+Authoritative inventory of **current** code artifacts for **Shopify Agentic SEO** (self-hosted SEO operations for Shopify). Canonical paths are under this repo; for HTTP shapes, cross-check **OpenAPI** at `/docs` when in doubt. Ignore paths: `node_modules/`, `frontend/dist/`, `tests/`, `__pycache__/`.
 
 ---
 
-## 1. Overview
+## System Architecture
 
-**ShopifySEO** is a self-hosted SEO operations app for **Shopify** merchants. It syncs catalog entities (products, collections, pages, blogs/articles) into **SQLite**, enriches them with **Google Search Console**, **GA4**, **URL indexing** metadata, **PageSpeed Insights** (Lighthouse category scores cached per URL), and optional **structured SEO** rollups. It supports **keyword research** (DataForSEO Labs + SERP when configured), **clustering**, **competitor** tracking, **embeddings** (Gemini) for similarity and gap analysis, **AI-assisted** content and meta workflows, **Sidekick** chat on detail views, **article ideas**, and **image SEO** (vision-based alt suggestions and product media optimization).
+Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON under `/api/...` and static **Vite + React** assets under `/app/` (same origin, default `http://127.0.0.1:8000`). Catalog and SEO state live in **SQLite** (`sqlite3`); the **`shopifyseo`** package holds sync, Google clients, AI, embeddings, and DB helpers. **Background work** (catalog sync, AI jobs, some research) uses **daemon threads**, not Redis/Celery.
 
-The **FastAPI** app serves a production **Vite/React** SPA from `frontend/dist` at **`/app/`** (same origin as `/api/...`).
+| Layer | Technology | Location |
+| --- | --- | --- |
+| Frontend | React 19, Vite 6, TypeScript, Tailwind, TanStack Query 5, React Router 7, Radix UI, Recharts, Zod | `frontend/src/` |
+| Backend API | FastAPI, Pydantic, Starlette | `backend/app/` |
+| Domain / sync / AI | Python 3.10+, `requests`, Pillow, NumPy | `shopifyseo/` |
+| Database | SQLite (WAL), schema via `CREATE TABLE` / `ALTER` on connect | Default file `shopify_catalog.sqlite3` (override `SHOPIFY_CATALOG_DB_PATH`) |
+| Caching | SQLite `google_api_cache`; in-process dicts (e.g. GSC summaries in `shopifyseo/dashboard_google/_gsc.py`); HTTP `Cache-Control: no-store` on SPA shell | No Redis |
 
----
+**Router registration** (`backend/app/main.py`): `article_ideas`, `dashboard`, `products`, `content`, `blogs`, `keywords`, `clusters`, `operations`, `status`, `sidekick`, `actions`, `ai_stream`, `auth`, `embeddings`, `image_seo`, `google_ads_lab`.
 
-## 2. Architecture
-
-| Layer | Technology | Notes |
-|--------|------------|--------|
-| API | FastAPI — [`backend/app/main.py`](backend/app/main.py) | Routers under `backend/app/routers/` |
-| UI | React 18, Vite, Tailwind, TanStack Query — [`frontend/src/`](frontend/src/) | Router basename `/app` — [`frontend/src/app/router.tsx`](frontend/src/app/router.tsx) |
-| Charts | Recharts | Overview, Google Signals |
-| Domain library | [`shopifyseo/`](shopifyseo/) | Shopify sync, Google clients, AI engine, embeddings, store schema |
-| App services | [`backend/app/services/`](backend/app/services/) | Orchestration; delegates to `shopifyseo/` |
-| Schemas | [`backend/app/schemas/`](backend/app/schemas/) | Pydantic models for routers |
-
-**Process model:** Catalog/Google **sync** and **AI** jobs run **in-process** (threads), with state exposed via [`shopifyseo/dashboard_actions.py`](shopifyseo/dashboard_actions.py) and HTTP status endpoints.
+**Lifespan:** on startup, reconciles PageSpeed denormalized columns from SQLite cache (`refresh_pagespeed_columns_from_cache_for_all_cached_objects`). **Exception handlers:** `HTTPException` → JSON `{ ok, error }`; `sqlite3.DatabaseError` → 503 with recovery hint. **No CORS middleware** (same-origin SPA). **No API-key/JWT** on routes; **Google OAuth** only for Search Console (`/auth/google/...`).
 
 ---
 
-## 3. API contracts, errors, and streaming
+## Data Flow
 
-### 3.1 Success envelope (majority of routes)
-
-Most JSON endpoints return:
-
-```json
-{ "ok": true, "data": { ... } }
-```
-
-The React client validates this in [`frontend/src/lib/api.ts`](frontend/src/lib/api.ts) (`getJson` / `postJson` / `patchJson` / `deleteJson`).
-
-### 3.2 Errors
-
-- **`HTTPException`:** [`backend/app/main.py`](backend/app/main.py) maps to `{ "ok": false, "error": { "code": "http_<status>", "message": "<detail>" } }` when `detail` is a string.
-- **Validation errors** and non-envelope responses may surface as thrown errors in the client; `formatHttpErrorDetail` parses common shapes.
-- **409 Conflict:** used when sync or AI is already running (`/api/sync`, `/api/products/{handle}/generate-ai`, etc.).
-
-### 3.3 Alternate JSON shape (keywords and clusters)
-
-These routes return a **flat** `{ "ok": true, "data": ... }` or `{ "ok": false, "detail": "..." }` **without** wrapping `data` in the `SuccessResponse` helper (still `ok` + `data` at top level). The frontend parses them accordingly.
-
-### 3.4 Server-Sent Events (SSE)
-
-| Endpoint | Purpose |
-|----------|---------|
-| [`GET /api/ai-stream?job_id=…`](backend/app/routers/ai_stream.py) | Streams AI job events for a running job (`connected`, progress, `done` / `error` / `cancelled`) — see [`frontend/src/hooks/use-ai-stream.ts`](frontend/src/hooks/use-ai-stream.ts) |
-| [`POST /api/articles/generate-draft-stream`](backend/app/routers/blogs.py) | New article draft generation stream |
-| [`POST /api/keywords/clusters/generate`](backend/app/routers/clusters.py) | Cluster generation: `progress` / `error` / `done` events |
-| [`POST /api/keywords/competitors/research`](backend/app/routers/keywords.py) | Competitor research stream |
-| [`POST /api/keywords/target/research`](backend/app/routers/keywords.py) | Target keyword research stream |
-
-Event lines use `text/event-stream` (`data: {json}` or named `event:` lines as implemented per router).
+1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`).
+2. **Catalog sync:** `POST /api/sync` starts a **background thread** (`shopifyseo/dashboard_actions`) → Shopify Admin GraphQL/REST → rows in catalog tables (`products`, `collections`, `pages`, `blogs`, `blog_articles`, metafields, images, etc.) plus `sync_runs`.
+3. **Signals:** Sync (and refreshes) pull **GSC, GA4, URL Inspection, PageSpeed** into SQLite (`SEO_SIGNAL_COLUMNS` on entities, `google_api_cache`, GSC fact tables).
+4. **UI:** React app (basename `/app`) calls `/api/...` with TanStack Query; long AI work uses **`GET /api/ai-stream?job_id=`** (SSE) and/or polling **`GET /api/ai-status`**.
+5. **Writebacks:** SEO edits use services that call **`shopifyseo/dashboard_live_updates`** (GraphQL) to push meta/content to Shopify.
 
 ---
 
-## 4. Configuration and environment
+## API Routes (With Contracts)
 
-### 4.1 Database path
+**Contract shorthand:** Most JSON routes return **`{ "ok": true, "data": … }`** or **`{ "ok": false, "error": { "code", "message" } }`** (`backend/app/schemas/common.py`). Keyword/cluster/usage routes may use `dict` responses but keep the same top-level `ok` / `data` pattern. **Exact field shapes:** matching module under `backend/app/schemas/` (e.g. `product.py`, `blog.py`). **SSE:** `text/event-stream` for AI stream, article draft stream, cluster generate, competitor research, target research, target metrics refresh.
 
-| Variable | Purpose |
-|----------|---------|
-| `SHOPIFY_CATALOG_DB_PATH` | Optional override for the SQLite file (default: repo root `shopify_catalog.sqlite3`) — see [`shopifyseo/shopify_catalog_sync/__init__.py`](shopifyseo/shopify_catalog_sync/__init__.py) |
+### Dashboard, status, actions, AI stream
 
-### 4.2 Settings stored in SQLite (`service_settings`)
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/summary` | Query: GSC period / segment params (see router) | `{ ok, data }` — dashboard summary | Overview metrics, rollups, top pages |
+| GET | `/api/sync-status` | — | `{ ok, data }` | Catalog sync progress / state |
+| GET | `/api/ai-status` | `?job_id=` optional | `{ ok, data }` | AI job status |
+| POST | `/api/ai-stop` | Body: job id | `{ ok, data }` | Cancel AI job |
+| GET | `/api/store-info` | — | `{ ok, data }` | Store URL, name, timezone, etc. |
+| POST | `/api/sync` | Body: scope, scopes, force flags | `{ ok, data }` | Start catalog sync |
+| POST | `/api/sync/stop` | — | `{ ok, data }` | Request sync cancel |
+| GET | `/api/ai-stream` | `?job_id=` | SSE | AI job event stream |
 
-Keys loaded/saved through Settings UI and [`shopifyseo/dashboard_config.py`](shopifyseo/dashboard_config.py) **`RUNTIME_SETTING_KEYS`**. For keys in `_ENV_MAPPING`, non-empty SQLite values take precedence over process environment for both the API payload and `apply_runtime_settings` (which mirrors those DB values into `os.environ` for libraries that read env):
+### Operations / settings / usage
 
-`shopify_shop`, `shopify_api_version`, `shopify_client_id`, `shopify_client_secret`, `dataforseo_api_login`, `dataforseo_api_password`, `moz_api_token`, `google_client_id`, `google_client_secret`, `search_console_site`, `ga4_property_id`, `openai_api_key`, `gemini_api_key`, `anthropic_api_key`, `openrouter_api_key`, `ollama_api_key`, `ollama_base_url`, `ai_generation_provider`, `ai_generation_model`, `ai_sidekick_provider`, `ai_sidekick_model`, `ai_review_provider`, `ai_review_model`, `ai_image_provider`, `ai_image_model`, `ai_vision_provider`, `ai_vision_model`, `ai_prompt_profile`, `ai_prompt_version`, `ai_max_retries`.
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/google-signals` | — | `{ ok, data }` | GSC/GA4-related signals for settings UI |
+| POST | `/api/google-signals/site` | Body: selected site / property | `{ ok, data }` | Save Search Console site / GA4 property |
+| POST | `/api/google-signals/refresh` | — | `{ ok, data }` | Refresh cached Google summary |
+| GET | `/api/settings` | — | `{ ok, data }` | Read settings payload |
+| POST | `/api/settings` | Body: partial settings | `{ ok, data }` | Save settings |
+| POST | `/api/settings/ai-test` | — | `{ ok, data }` | Test AI provider |
+| POST | `/api/settings/image-model-test` | — | `{ ok, data }` | Test image generation model |
+| POST | `/api/settings/vision-model-test` | — | `{ ok, data }` | Test vision model |
+| POST | `/api/settings/google-ads-test` | — | `{ ok, data }` | Test Google Ads API |
+| GET | `/api/settings/shopify-shop-info` | — | `{ ok, data }` | Shopify shop metadata |
+| POST | `/api/settings/shopify-test` | — | `{ ok, data }` | Test Shopify Admin API |
+| POST | `/api/settings/ollama-models` | Body | `{ ok, data }` | List Ollama models |
+| POST | `/api/settings/anthropic-models` | Body | `{ ok, data }` | List Anthropic models |
+| POST | `/api/settings/gemini-models` | Body | `{ ok, data }` | List Gemini models |
+| POST | `/api/settings/openrouter-models` | Body | `{ ok, data }` | List OpenRouter models |
+| GET | `/api/usage/summary` | `?days=` | `{ ok, data }` | API usage / cost summary |
 
-[`backend/app/services/settings_service.py`](backend/app/services/settings_service.py) resolves each mapped field with **DB first**, then startup environment, when building the payload for `GET /api/settings`.
+### Products
 
-### 4.3 Environment variables (operational and goals)
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/products` | Query: search, sort, pagination, focus filters | `{ ok, data }` | Product list |
+| GET | `/api/products/{handle}` | — | `{ ok, data }` | Product detail + signals |
+| POST | `/api/products/{handle}/refresh` | — | `{ ok, data }` | Refresh signals / cached data |
+| POST | `/api/products/{handle}/generate-ai` | — | `{ ok, data }` | Start full AI generation job |
+| POST | `/api/products/{handle}/regenerate-field` | Body: field key, options | `{ ok, data }` | Regenerate one SEO field (sync) |
+| POST | `/api/products/{handle}/regenerate-field/start` | Body | `{ ok, data }` | Start background field regen |
+| POST | `/api/products/{handle}/update` | Body: SEO edits | `{ ok, data }` | Persist local SEO edits |
+| POST | `/api/products/{handle}/inspection-link` | — | `{ ok, data }` | URL Inspection link |
 
-| Variable | Where used | Purpose |
-|----------|------------|---------|
-| `SHOPIFY_SHOP`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_API_VERSION` | Shopify sync / Admin API | Shop credentials |
-| `SHOPIFY_STORE_URL` | [`shopifyseo/dashboard_queries.py`](shopifyseo/dashboard_queries.py) | Optional store URL helper |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth | OAuth client |
-| `DATAFORSEO_API_LOGIN`, `DATAFORSEO_API_PASSWORD` | Settings / keyword research | DataForSEO (optional) |
-| `MOZ_API_TOKEN` | Settings / Moz manual research | Moz (optional) |
-| `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc. | AI providers | Same keys as in DB settings |
-| `OVERVIEW_GOAL_GSC_DAILY_CLICKS`, `OVERVIEW_GOAL_GSC_DAILY_IMPRESSIONS`, `OVERVIEW_GOAL_GA4_DAILY_SESSIONS`, `OVERVIEW_GOAL_GA4_DAILY_VIEWS` | [`backend/app/services/dashboard_service.py`](backend/app/services/dashboard_service.py) | Optional reference lines on overview charts |
-| `DASHBOARD_TZ` | [`backend/app/services/gsc_overview_calendar.py`](backend/app/services/gsc_overview_calendar.py) | Default `America/Vancouver` |
-| `GSC_DIMENSIONAL_FETCH` | [`shopifyseo/dashboard_store.py`](shopifyseo/dashboard_store.py) | When truthy, enables dimensional GSC fetch behavior |
+### Content (collections & pages)
 
-### 4.4 Settings UI tabs (mirror for operators)
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/collections` | Query | `{ ok, data }` | List collections |
+| GET | `/api/pages` | Query | `{ ok, data }` | List pages |
+| GET | `/api/collections/{handle}` | — | `{ ok, data }` | Collection detail |
+| GET | `/api/pages/{handle}` | — | `{ ok, data }` | Page detail |
+| POST | `/api/collections/{handle}/update` | Body | `{ ok, data }` | Update collection SEO |
+| POST | `/api/pages/{handle}/update` | Body | `{ ok, data }` | Update page SEO |
+| POST | `/api/collections/{handle}/inspection-link` | — | `{ ok, data }` | Inspection link |
+| POST | `/api/pages/{handle}/inspection-link` | — | `{ ok, data }` | Inspection link |
+| POST | `/api/collections/{handle}/refresh` | — | `{ ok, data }` | Refresh collection |
+| POST | `/api/pages/{handle}/refresh` | — | `{ ok, data }` | Refresh page |
+| POST | `/api/collections/{handle}/generate-ai` | — | `{ ok, data }` | Start AI for collection |
+| POST | `/api/pages/{handle}/generate-ai` | — | `{ ok, data }` | Start AI for page |
+| POST | `/api/collections/{handle}/regenerate-field` | Body | `{ ok, data }` | Regenerate field (sync) |
+| POST | `/api/pages/{handle}/regenerate-field` | Body | `{ ok, data }` | Regenerate field (sync) |
+| POST | `/api/collections/{handle}/regenerate-field/start` | Body | `{ ok, data }` | Start field regen (async) |
+| POST | `/api/pages/{handle}/regenerate-field/start` | Body | `{ ok, data }` | Start field regen (async) |
+| POST | `/api/collections/save-meta` | — | `{ ok, data }` | Push all collection meta to Shopify |
+| POST | `/api/pages/save-meta` | — | `{ ok, data }` | Push all page meta to Shopify |
 
-From [`frontend/src/routes/settings-page.tsx`](frontend/src/routes/settings-page.tsx):
+### Blogs & articles
 
-- **Integrations:** provider API keys + Ollama URL; **DataForSEO** login/password; link to validate via `POST /api/keywords/target/validate-dataforseo`.
-- **AI Models:** generation, Sidekick, review QA, image generation, vision (alt).
-- **Runtime:** `ai_prompt_profile`, `ai_prompt_version`, `ai_max_retries` (timeout is **120s fixed in code**).
-- **Data sources:** Shopify shop + API version + client id/secret; Google client id/secret + Search Console site URL + GA4 property id.
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/articles` | Query | `{ ok, data }` | Flat article list |
+| GET | `/api/articles/{blog_handle}/{article_handle}` | — | `{ ok, data }` | Article detail |
+| GET | `/api/articles/{blog_handle}/{article_handle}/keyword-coverage` | — | `{ ok, data }` | Target-keyword coverage |
+| POST | `/api/articles/{blog_handle}/{article_handle}/update` | Body | `{ ok, data }` | Update article SEO/content |
+| PATCH | `/api/articles/{blog_handle}/{article_handle}/publish` | Body | `{ ok, data }` | Publish / unpublish |
+| POST | `/api/articles/{blog_handle}/{article_handle}/inspection-link` | — | `{ ok, data }` | Inspection link |
+| POST | `/api/articles/{blog_handle}/{article_handle}/refresh` | — | `{ ok, data }` | Refresh article |
+| POST | `/api/articles/{blog_handle}/{article_handle}/generate-ai` | — | `{ ok, data }` | Start AI for article |
+| POST | `/api/articles/{blog_handle}/{article_handle}/regenerate-field` | Body | `{ ok, data }` | Regenerate field (sync) |
+| POST | `/api/articles/{blog_handle}/{article_handle}/regenerate-field/start` | Body | `{ ok, data }` | Start field regen |
+| GET | `/api/blogs` | — | `{ ok, data }` | Blog list |
+| GET | `/api/blogs/shopify-ids` | — | `{ ok, data }` | Shopify GIDs for blogs |
+| GET | `/api/blogs/{blog_handle}/articles` | — | `{ ok, data }` | Articles in one blog |
+| POST | `/api/articles/generate-draft` | Body | `{ ok, data }` | AI draft → Shopify draft + DB |
+| POST | `/api/articles/generate-draft-stream` | Body | SSE | Same with progress events |
+| POST | `/api/articles/create` | Body | `{ ok, data }` | Create draft/published article via Admin API |
+
+### Article ideas
+
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/article-ideas` | — | `{ ok, data }` | List ideas (newest first) |
+| POST | `/api/article-ideas/generate` | Body | `{ ok, data }` | Gap analysis + AI; save ideas; optional embedding sync |
+| DELETE | `/api/article-ideas/{idea_id}` | — | `{ ok, data }` | Delete idea |
+| PATCH | `/api/article-ideas/{idea_id}/approve` | — | `{ ok, data }` | Approve idea |
+| PATCH | `/api/article-ideas/{idea_id}/status` | Body | `{ ok, data }` | Set status |
+| PATCH | `/api/article-ideas/bulk-status` | Body | `{ ok, data }` | Bulk status update |
+| GET | `/api/article-ideas/{idea_id}/performance` | — | `{ ok, data }` | Performance for linked articles |
+
+### Keywords & clusters
+
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/keywords/seed` | — | `{ ok, data }` | Load seed keywords |
+| POST | `/api/keywords/seed` | Body | `{ ok, data }` | Save seeds |
+| POST | `/api/keywords/seed/generate` | — | `{ ok, data }` | Auto-generate seeds from catalog |
+| DELETE | `/api/keywords/seed/{keyword}` | — | `{ ok, data }` | Remove one seed |
+| GET | `/api/keywords/competitors` | — | `{ ok, data }` | Competitor list + profiles |
+| GET | `/api/keywords/competitors/{domain:path}/detail` | Path: full domain | `{ ok, data }` | Competitor detail |
+| POST | `/api/keywords/competitors` | Body | `{ ok, data }` | Add competitor |
+| POST | `/api/keywords/competitors/research` | Body | SSE | Site Explorer–style research |
+| DELETE | `/api/keywords/competitors/{domain:path}` | — | `{ ok, data }` | Remove competitor + blocklist |
+| GET | `/api/keywords/target` | — | `{ ok, data }` | Target keyword set |
+| POST | `/api/keywords/target/research` | Body | SSE | Keywords Explorer research |
+| POST | `/api/keywords/target/validate-dataforseo` | Body | `{ ok, data }` | Validate DataForSEO + locale |
+| POST | `/api/keywords/target/gsc-crossref` | Body | `{ ok, data }` | Cross-reference targets with GSC |
+| POST | `/api/keywords/target/refresh-metrics` | Body | SSE | Refresh volume/difficulty/CPC |
+| PATCH | `/api/keywords/target/bulk-status` | Body | `{ ok, data }` | Bulk status (`new` / `approved` / `dismissed`) |
+| PATCH | `/api/keywords/target/{keyword}/status` | Body | `{ ok, data }` | Single keyword status |
+| GET | `/api/keywords/clusters` | — | `{ ok, data }` | Clusters + coverage |
+| POST | `/api/keywords/clusters/generate` | Body | SSE | Generate clusters |
+| GET | `/api/keywords/clusters/match-options` | — | `{ ok, data }` | Page match override options |
+| GET | `/api/keywords/clusters/{cluster_id}/detail` | — | `{ ok, data }` | Cluster detail |
+| PATCH | `/api/keywords/clusters/match` | Body | `{ ok, data }` | Override cluster → page match |
+
+### Embeddings, image SEO, Sidekick, Google Ads lab, Auth
+
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/api/embeddings/status` | — | `{ ok, data }` | Embedding store stats |
+| POST | `/api/embeddings/refresh` | — | `{ ok, data }` | Full embedding sync (background) |
+| GET | `/api/embeddings/similar/{object_type}/{handle:path}` | — | `{ ok, data }` | Semantic neighbors |
+| GET | `/api/embeddings/semantic-keywords/{object_type}/{handle:path}` | — | `{ ok, data }` | Semantic keyword matches |
+| GET | `/api/embeddings/competitive-gaps/{object_type}/{handle:path}` | — | `{ ok, data }` | Competitor gap suggestions |
+| GET | `/api/embeddings/cannibalization` | Query: threshold | `{ ok, data }` | Cannibalization pairs |
+| GET | `/api/image-seo/product-images` | Query: pagination | `{ ok, data }` | Image SEO rows + summary |
+| POST | `/api/image-seo/suggest-alt` | Body | `{ ok, data }` | Vision-based alt suggestion |
+| POST | `/api/image-seo/product-images/draft` | Body | `{ ok, data }` | Draft optimization steps |
+| POST | `/api/image-seo/product-images/optimize` | Body | `{ ok, data }` | Apply optimization to Shopify |
+| POST | `/api/sidekick/chat` | Body: resource context + messages | `{ ok, data }` | Sidekick SEO chat + optional field updates |
+| GET | `/api/google-ads-lab/context` | — | `{ ok, data }` | Lab UI context |
+| POST | `/api/google-ads-lab/invoke` | Body: RPC name + payload | `{ ok, data }` | Proxy Keyword Planner–style Ads RPCs |
+| GET | `/auth/google/start` | — | Redirect | Start Google OAuth |
+| GET | `/auth/google/callback` | Query: OAuth params | Redirect | OAuth callback → SPA settings |
+
+### App shell (non-API)
+
+| Method | Path | Request | Response | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `/` | — | 307 redirect | Redirect to `/app/` |
+| GET | `/app/{path}` | — | `index.html` | SPA shell (`Cache-Control: no-store`) |
+| — | `/app/assets/*` | — | Static files | Vite build assets |
 
 ---
 
-## 5. External integrations
+## Services
 
-| Integration | Implementation |
-|-------------|----------------|
-| **Shopify Admin API** | [`shopifyseo/shopify_catalog_sync/`](shopifyseo/shopify_catalog_sync/), [`shopifyseo/shopify_admin.py`](shopifyseo/shopify_admin.py), [`shopifyseo/shopify_product_media.py`](shopifyseo/shopify_product_media.py) — sync, metafields, articles, media |
-| **Google OAuth + GSC + GA4 + Inspection** | [`shopifyseo/dashboard_google.py`](shopifyseo/dashboard_google.py) — tokens in `service_tokens`; cached API payloads in `google_api_cache` |
-| **PageSpeed Insights** | Lighthouse JSON via `get_pagespeed` / cache — performance and SEO category scores persisted in `SEO_SIGNAL_COLUMNS` on entities — [`shopifyseo/dashboard_store.py`](shopifyseo/dashboard_store.py) |
-| **DataForSEO** | [`backend/app/services/keyword_research/`](backend/app/services/keyword_research/) (Labs + SERP clients), [`backend/app/routers/keywords.py`](backend/app/routers/keywords.py) |
-| **Embeddings (Gemini)** | [`shopifyseo/embedding_store.py`](shopifyseo/embedding_store.py) — model `gemini-embedding-2-preview`, dimension **3072** |
+Backend orchestration lives in `backend/app/services/` and delegates to `shopifyseo/*`.
 
-### 5.1 Image and theme assets
+| Name | File | Purpose | Dependencies |
+| --- | --- | --- | --- |
+| Dashboard / summary / generic orchestration | `backend/app/services/dashboard_service.py` | Summary, sync/AI coordination, refresh/regenerate/start-AI for object types, Sidekick entry, re-exports settings/Google tests | `shopifyseo.dashboard_*`, `sidekick`, local helpers |
+| Product flows | `backend/app/services/product_service.py` | List/detail, refresh, AI, updates, inspection | `dashboard_actions`, `dashboard_queries`, `dashboard_ai`, `dashboard_live_updates`, `dashboard_store`, `_catalog_helpers`, `object_signals` |
+| Article / blog flows | `backend/app/services/article_service.py` | Blog/article list, detail, update | `dashboard_actions`, `dashboard_live_updates`, `dashboard_queries`, `dashboard_store`, `_catalog_helpers` |
+| Collections / pages | `backend/app/services/content_service.py` | List/detail/update, bulk meta save | `dashboard_actions`, `dashboard_live_updates`, `dashboard_queries`, `dashboard_store`, `_catalog_helpers` |
+| Settings | `backend/app/services/settings_service.py` | Read/write settings, probes, Shopify/Google/AI tests | `dashboard_ai`, `dashboard_google`, `dashboard_config`, `dashboard_http`, `shopify_admin` |
+| Google signals UI | `backend/app/services/google_signals_service.py` | GSC/GA4 cache payloads for operations | `dashboard_google`, `gsc_overview_calendar`, `index_status` |
+| Store info | `backend/app/services/store_info_service.py` | Store URL, name, market, timezone | `dashboard_queries`, `dashboard_google` |
+| Overview metrics | `backend/app/services/overview_metrics.py` | Simple GSC/GA4 aggregates | Fact rows / helpers |
+| Catalog completion | `backend/app/services/catalog_completion.py` | Meta completion % by segment | SQLite reads |
+| Indexing rollup | `backend/app/services/indexing_rollup.py` | URL Inspection buckets by entity | `shopifyseo.dashboard_status` |
+| Index status | `backend/app/services/index_status.py` | Re-export cache/index helpers | `shopifyseo.dashboard_status` |
+| Object signals | `backend/app/services/object_signals.py` | Detail/signals helpers | `shopifyseo.dashboard_detail_common` |
+| Catalog helpers | `backend/app/services/_catalog_helpers.py` | Shared sort/segment/detail/inspection | `dashboard_google`, `dashboard_actions`, `dashboard_queries`, `object_signals`, `index_status` |
+| GSC calendar | `backend/app/services/gsc_overview_calendar.py` | Date windows in dashboard TZ | `DASHBOARD_TZ`, `zoneinfo` |
+| Google Ads lab | `backend/app/services/google_ads_lab_service.py` | Lab context + Ads REST proxy | `dashboard_google`, `dashboard_config`, `dashboard_http` |
+| Keyword research | `backend/app/services/keyword_research/` | Seeds, competitors, DataForSEO, targets, metrics refresh | `dashboard_google`, `dashboard_http`, `embedding_store`, `api_usage`, etc. |
+| Keyword clustering | `backend/app/services/keyword_clustering/` | Cluster storage, AI generation, match overrides | `dashboard_queries`, `dashboard_google`, `dashboard_ai_engine_parts`, `embedding_store` |
+| Image SEO | `backend/app/services/image_seo_service/` | List rows, alt suggest, draft/apply | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache |
 
-- [`shopifyseo/product_image_seo.py`](shopifyseo/product_image_seo.py), [`shopifyseo/html_images.py`](shopifyseo/html_images.py), [`shopifyseo/theme_template_images.py`](shopifyseo/theme_template_images.py), [`shopifyseo/shopify_theme_assets.py`](shopifyseo/shopify_theme_assets.py) support catalog/HTML/theme-related image analysis and SEO helpers used from [`backend/app/services/image_seo_service.py`](backend/app/services/image_seo_service.py).
-
----
-
-## 6. AI subsystem
-
-| Component | Role |
-|-----------|------|
-| [`shopifyseo/dashboard_ai.py`](shopifyseo/dashboard_ai.py) | Connection tests, configuration gates |
-| [`shopifyseo/dashboard_ai_engine.py`](shopifyseo/dashboard_ai_engine.py) | Orchestrates generation / field flows |
-| [`shopifyseo/dashboard_ai_engine_parts/providers.py`](shopifyseo/dashboard_ai_engine_parts/providers.py) | Provider-specific HTTP |
-| [`shopifyseo/dashboard_ai_engine_parts/prompts.py`](shopifyseo/dashboard_ai_engine_parts/prompts.py), [`context.py`](shopifyseo/dashboard_ai_engine_parts/context.py) | Prompt assembly and RAG-style context (signals, GSC, embeddings) |
-| [`shopifyseo/dashboard_ai_engine_parts/generation.py`](shopifyseo/dashboard_ai_engine_parts/generation.py), [`qa.py`](shopifyseo/dashboard_ai_engine_parts/qa.py) | Draft and review passes |
-| [`shopifyseo/dashboard_ai_engine_parts/images.py`](shopifyseo/dashboard_ai_engine_parts/images.py) | Image generation / WebP / vision alt |
-| [`shopifyseo/sidekick.py`](shopifyseo/sidekick.py) | `run_sidekick_turn` for [`POST /api/sidekick/chat`](backend/app/routers/sidekick.py) |
-
-**UI:** Sidekick posts to `/api/sidekick/chat` from [`frontend/src/components/sidekick/sidekick-context.tsx`](frontend/src/components/sidekick/sidekick-context.tsx).
+**Middleware:** none registered; auth is OAuth-only for Google (no global API auth middleware).
 
 ---
 
-## 7. Background jobs: sync and AI
+## Custom Hooks
 
-### 7.1 Sync (`SYNC_STATE`)
-
-Defined in [`shopifyseo/dashboard_actions.py`](shopifyseo/dashboard_actions.py). Exposed as [`GET /api/sync-status`](backend/app/routers/status.py) / [`backend/app/schemas/status.py`](backend/app/schemas/status.py) **`SyncStatusPayload`**.
-
-**Start / stop:** [`POST /api/sync`](backend/app/routers/actions.py) body: `scope` (default `all`), `selected_scopes` (list), `force_refresh`. [`POST /api/sync/stop`](backend/app/routers/actions.py).
-
-**Selectable scopes (UI):** [`frontend/src/components/shell/app-shell.tsx`](frontend/src/components/shell/app-shell.tsx) — `shopify`, `gsc`, `ga4`, `index`, `pagespeed`, `structured`.
-
-**Stage labels (display):** same file — e.g. `syncing_shopify`, `syncing_products`, `syncing_collections`, `syncing_pages`, `syncing_blogs`, `refreshing_gsc`, `refreshing_ga4`, `refreshing_index`, `refreshing_pagespeed`, `updating_structured_seo`, `complete`, `idle`, `starting`.
-
-**Notable counters in payload:** per-entity Shopify progress (`products_*`, `collections_*`, `pages_*`, `blogs_*`, `blog_articles_*`), GSC refresh/skip/error counts, GA4 rows/errors, index refresh/skip/errors, PageSpeed refreshed/rate-limited/skipped/errors/queue fields, `cancel_requested`, `last_error`.
-
-**Throttling / concurrency (code constants in `dashboard_actions.py`):** e.g. `GSC_SYNC_THROTTLE_SECONDS`, `GSC_SYNC_WORKERS`, `INDEX_SYNC_*`, `PAGESPEED_SYNC_*`, `PAGESPEED_RECENT_FETCH_WINDOW_SECONDS`.
-
-```mermaid
-sequenceDiagram
-  participant UI as Shell_UI
-  participant API as FastAPI
-  participant DA as dashboard_actions
-  UI->>API: POST /api/sync
-  API->>DA: start_sync
-  DA-->>API: SYNC_STATE snapshot
-  API-->>UI: ok + data
-  loop Poll
-    UI->>API: GET /api/sync-status
-    API-->>UI: SYNC_STATE
-  end
-```
-
-### 7.2 AI jobs (`AI_STATE`, `AI_JOBS`)
-
-- **Global state:** `AI_STATE`, per-job map `AI_JOBS`, queues `AI_JOB_QUEUES` in [`shopifyseo/dashboard_actions.py`](shopifyseo/dashboard_actions.py).
-- **Status:** [`GET /api/ai-status?job_id=…`](backend/app/routers/status.py) → [`AiStatusPayload`](backend/app/schemas/status.py) (`running`, `stage`, `steps`, `last_error`, …).
-- **Cancel:** [`POST /api/ai-stop`](backend/app/routers/status.py) body `{ "job_id": "..." }`.
-- **Field regeneration:** synchronous suggestion via `POST .../regenerate-field` (returns proposed content); background apply via `POST .../regenerate-field/start` (returns `job_id` / state) — used on product, collection, page, and article detail pages.
+| Name | File | Purpose | Key Behavior |
+| --- | --- | --- | --- |
+| `useStoreInfo` | `frontend/src/hooks/use-store-info.ts` | Load store metadata | React Query → `GET /api/store-info`, 5m stale |
+| `useStoreUrl` | `frontend/src/hooks/use-store-info.ts` | Convenience string for store URL | Derived from `useStoreInfo` |
+| `useAiStream` | `frontend/src/hooks/use-ai-stream.ts` | Subscribe to AI SSE | `EventSource` on `/api/ai-stream?job_id=`; merges events until terminal |
+| `useAiJobStatus` | `frontend/src/hooks/use-ai-job-status.ts` | Poll AI job | `GET /api/ai-status` every 1.5s while running |
+| `useAiJobStepClock` | `frontend/src/hooks/use-ai-job-step-clock.ts` | Per-step elapsed UI | Resets when step/stage changes while running |
+| `useSyncEventLog` | `frontend/src/components/shell/sync/use-sync-event-log.ts` | Sync drawer log lines | Timestamped lines, cap 48 |
 
 ---
 
-## 8. Data model (SQLite)
+## Screens / Pages
 
-Single file (see §4.1). Schema = **Shopify catalog tables** + **dashboard extensions** + **Google cache**.
+Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths = `/app` + route.
 
-### 8.1 Catalog core ([`shopifyseo/shopify_catalog_sync/db.py`](shopifyseo/shopify_catalog_sync/db.py))
+| Name | Route | Purpose | API areas used |
+| --- | --- | --- | --- |
+| OverviewPage | `/` | Dashboard overview | `/api/summary`, sync/status |
+| ProductsPage | `/products` | Product list | `/api/products` |
+| ProductDetailPage | `/products/:handle` | Product SEO + signals + Sidekick | `/api/products/{handle}`, AI stream, inspection |
+| ContentListPage | `/collections`, `/pages` | List collections or pages | `/api/collections`, `/api/pages` |
+| ContentDetailPage | `/collections/:handle`, `/pages/:handle` | Collection/page SEO + Sidekick | Content routes, AI, inspection |
+| BlogsPage | `/blogs` | Blog list | `/api/blogs` |
+| BlogArticlesPage | `/blogs/:blogHandle` | Articles in blog | `/api/blogs/.../articles` |
+| ArticlesPage | `/articles` | All articles | `/api/articles` |
+| ArticleDetailPage | `/articles/:blogHandle/:articleHandle` | Article SEO + Sidekick | Article routes, draft stream |
+| KeywordsPage | `/keywords` | Keyword research UI | `/api/keywords/*` |
+| ClusterDetailPage | `/keywords/clusters/:id` | Single cluster | `/api/keywords/clusters/...` |
+| CompetitorDetailPage | `/keywords/competitors/:domain` | Competitor drill-down | `/api/keywords/competitors/...` |
+| ArticleIdeasPage | `/article-ideas` | Ideas list | `/api/article-ideas` |
+| IdeaDetailPage | `/article-ideas/:ideaId` | Idea detail | `/api/article-ideas/...` |
+| GoogleAdsLabPage | `/google-ads-lab` | Ads Keyword Planner lab | `/api/google-ads-lab/*` |
+| EmbeddingsPage | `/embeddings` | Embeddings tools | `/api/embeddings/*` |
+| ImageSeoPage | `/image-seo` | Product image SEO | `/api/image-seo/*` |
+| ApiUsagePage | `/api-usage` | Usage / cost | `/api/usage/summary` |
+| SettingsPage | `/settings` | Integrations + models | `/api/settings`, tests, `/api/google-signals` |
 
-Tables include: `sync_runs`, `products`, `product_variants`, `product_images`, `product_metafields`, `collections`, `collection_metafields`, `pages`, `blogs`, `blog_articles`, `collection_products`, `shopify_metaobjects`.
-
-### 8.2 Dashboard extensions ([`shopifyseo/dashboard_store.py`](shopifyseo/dashboard_store.py) `ensure_dashboard_schema`)
-
-**New tables:** `seo_workflow_states`, `service_tokens`, `service_settings`, `clusters`, `cluster_keywords`, `gsc_query_rows`, `gsc_query_dimension_rows`, `seo_recommendations`, `keyword_metrics`, `keyword_research_runs` (legacy installs may still have `ahrefs_research_runs` until schema init runs once), `keyword_page_map`, `competitor_keyword_gaps`, `competitor_profiles`, `competitor_top_pages`, `article_ideas`, `embeddings`.
-
-**Columns added** to `products`, `collections`, `pages`, `blog_articles` (`SEO_SIGNAL_COLUMNS`):  
-`gsc_clicks`, `gsc_impressions`, `gsc_ctr`, `gsc_position`, `gsc_last_fetched_at`, `ga4_sessions`, `ga4_views`, `ga4_avg_session_duration`, `ga4_last_fetched_at`, `index_status`, `index_coverage`, `google_canonical`, `index_last_fetched_at`, `pagespeed_performance`, `pagespeed_seo`, `pagespeed_status`, `pagespeed_last_fetched_at`, `seo_signal_updated_at`.
-
-### 8.3 Google API cache ([`shopifyseo/dashboard_google.py`](shopifyseo/dashboard_google.py) `ensure_google_cache_schema`)
-
-**Table:** `google_api_cache` — `cache_key`, `cache_type`, `object_type`, `object_handle`, `url`, `strategy`, `payload_json`, `fetched_at`, `expires_at`, `updated_at`; indexes on `cache_type` and `url`.
-
-### 8.4 Embeddable entity types ([`shopifyseo/embedding_store.py`](shopifyseo/embedding_store.py))
-
-`product`, `collection`, `page`, `blog_article`, `cluster`, `gsc_queries`, `keyword`, `article_idea`, `competitor_page`.
-
----
-
-## 9. HTTP API reference
-
-**`GscPeriodMode`** (query on many detail/list endpoints): `mtd` | `full_months` | `since_2026_02_15` | `rolling_30d` — [`backend/app/schemas/dashboard.py`](backend/app/schemas/dashboard.py).
-
-### 9.1 Auth
-
-| Method | Path | Notes |
-|--------|------|--------|
-| GET | `/auth/google/start` | OAuth start |
-| GET | `/auth/google/callback` | OAuth callback |
-
-### 9.2 Dashboard
-
-| Method | Path | Query / body | Response schema |
-|--------|------|----------------|-----------------|
-| GET | `/api/summary` | `gsc_period`, `gsc_segment` | [`DashboardSummary`](backend/app/schemas/dashboard.py) |
-
-### 9.3 Actions and status
-
-| Method | Path | Body | Response |
-|--------|------|------|----------|
-| POST | `/api/sync` | `SyncStartPayload`: `scope`, `selected_scopes`, `force_refresh` | `SyncStatusPayload` |
-| POST | `/api/sync/stop` | — | `SyncStatusPayload` |
-| GET | `/api/sync-status` | — | `SyncStatusPayload` |
-| GET | `/api/ai-status` | `job_id` | `AiStatusPayload` |
-| POST | `/api/ai-stop` | `{ job_id }` | `AiStatusPayload` |
-
-### 9.4 Products (`/api/products`)
-
-| Method | Path | Query / body |
-|--------|------|----------------|
-| GET | `/api/products` | `query`, `sort`, `direction`, `limit`, `offset`, `focus` (`missing_meta` \| `thin_body`) |
-| GET | `/api/products/{handle}` | `gsc_period` |
-| POST | `/api/products/{handle}/refresh` | `ProductRefreshRequest`, `gsc_period` |
-| POST | `/api/products/{handle}/generate-ai` | — |
-| POST | `/api/products/{handle}/regenerate-field` | `FieldRegenerateRequest` |
-| POST | `/api/products/{handle}/regenerate-field/start` | `FieldRegenerateRequest` |
-| POST | `/api/products/{handle}/update` | `ProductUpdatePayload`, `gsc_period` |
-| POST | `/api/products/{handle}/inspection-link` | — |
-
-Schemas: [`backend/app/schemas/product.py`](backend/app/schemas/product.py).
-
-### 9.5 Collections and pages (`/api`)
-
-| Method | Path | Query / body |
-|--------|------|----------------|
-| GET | `/api/collections` | Same list params as products; `focus=missing_meta` only |
-| GET | `/api/pages` | Same |
-| GET | `/api/collections/{handle}` | `gsc_period` |
-| GET | `/api/pages/{handle}` | `gsc_period` |
-| POST | `/api/collections/{handle}/update` | `ContentUpdatePayload`, `gsc_period` |
-| POST | `/api/pages/{handle}/update` | same |
-| POST | `/api/collections/{handle}/inspection-link` | — |
-| POST | `/api/pages/{handle}/inspection-link` | — |
-| POST | `/api/collections/{handle}/refresh` | optional JSON `step`, `gsc_period` |
-| POST | `/api/pages/{handle}/refresh` | same |
-| POST | `/api/collections/{handle}/generate-ai` | — |
-| POST | `/api/pages/{handle}/generate-ai` | — |
-| POST | `/api/collections/{handle}/regenerate-field` | `FieldRegenerateRequest` |
-| POST | `/api/pages/{handle}/regenerate-field` | same |
-| POST | `/api/collections/{handle}/regenerate-field/start` | same |
-| POST | `/api/pages/{handle}/regenerate-field/start` | same |
-| POST | `/api/collections/save-meta` | bulk meta save payload (service) |
-| POST | `/api/pages/save-meta` | same |
-
-Schemas: [`backend/app/schemas/content.py`](backend/app/schemas/content.py).
-
-### 9.6 Blogs and articles (`/api`)
-
-| Method | Path | Notes |
-|--------|------|--------|
-| GET | `/api/articles` | All articles list |
-| GET | `/api/articles/{blog_handle}/{article_handle}` | `gsc_period` |
-| POST | `/api/articles/{blog_handle}/{article_handle}/update` | `ContentUpdatePayload`, `gsc_period` |
-| POST | `/api/articles/{blog_handle}/{article_handle}/inspection-link` | — |
-| POST | `/api/articles/{blog_handle}/{article_handle}/refresh` | optional `step`, `gsc_period` |
-| POST | `/api/articles/{blog_handle}/{article_handle}/generate-ai` | — |
-| POST | `/api/articles/{blog_handle}/{article_handle}/regenerate-field` | `FieldRegenerateRequest` |
-| POST | `/api/articles/{blog_handle}/{article_handle}/regenerate-field/start` | same |
-| GET | `/api/blogs` | Blog list |
-| GET | `/api/blogs/shopify-ids` | Blog id map |
-| GET | `/api/blogs/{blog_handle}/articles` | Articles in blog |
-| POST | `/api/articles/generate-draft` | `ArticleGenerateDraftRequest` |
-| POST | `/api/articles/generate-draft-stream` | SSE stream |
-| POST | `/api/articles/create` | `ArticleCreateRequest` |
-
-Schemas: [`backend/app/schemas/blog.py`](backend/app/schemas/blog.py).
-
-### 9.7 Keywords (`/api/keywords`)
-
-| Method | Path | Notes |
-|--------|------|--------|
-| GET/POST | `/api/keywords/seed` | List / save seeds |
-| POST | `/api/keywords/seed/generate` | AI seed generation |
-| DELETE | `/api/keywords/seed/{keyword}` | |
-| GET | `/api/keywords/competitors` | |
-| GET | `/api/keywords/competitors/{domain}/detail` | Path domain |
-| POST | `/api/keywords/competitors` | Add competitor |
-| POST | `/api/keywords/competitors/research` | SSE |
-| DELETE | `/api/keywords/competitors/{domain}` | |
-| GET | `/api/keywords/target` | |
-| POST | `/api/keywords/target/research` | SSE |
-| POST | `/api/keywords/target/validate-dataforseo` | Returns `{ ok, detail }` |
-| POST | `/api/keywords/target/gsc-crossref` | |
-| PATCH | `/api/keywords/target/bulk-status` | `BulkStatusRequest` |
-| PATCH | `/api/keywords/target/{keyword}/status` | `KeywordStatusRequest` |
-
-### 9.8 Clusters (`/api/keywords/clusters`)
-
-| Method | Path | Notes |
-|--------|------|--------|
-| GET | `/api/keywords/clusters` | Returns `{ ok, data }` |
-| POST | `/api/keywords/clusters/generate` | SSE |
-| GET | `/api/keywords/clusters/match-options` | |
-| GET | `/api/keywords/clusters/{cluster_id}/detail` | |
-| PATCH | `/api/keywords/clusters/match` | `MatchUpdateBody` |
-
-### 9.9 Article ideas (`/api/article-ideas`)
-
-| Method | Path |
-|--------|------|
-| GET | `/api/article-ideas` |
-| POST | `/api/article-ideas/generate` |
-| DELETE | `/api/article-ideas/{idea_id}` |
-| PATCH | `/api/article-ideas/{idea_id}/approve` |
-| PATCH | `/api/article-ideas/{idea_id}/status` | `UpdateIdeaStatusRequest` |
-
-### 9.10 Embeddings (`/api/embeddings`)
-
-| Method | Path | Query |
-|--------|------|--------|
-| GET | `/api/embeddings/status` | |
-| POST | `/api/embeddings/refresh` | Background full sync |
-| GET | `/api/embeddings/similar/{object_type}/{handle}` | `top_k` (1–20) |
-| GET | `/api/embeddings/semantic-keywords/{object_type}/{handle}` | `top_k` (1–30) |
-| GET | `/api/embeddings/competitive-gaps/{object_type}/{handle}` | `top_k` (1–20) |
-| GET | `/api/embeddings/cannibalization` | `threshold` (0.5–1.0) |
-
-**Note:** The SPA currently calls **status** and **refresh** only; other endpoints are API-ready for tools or future UI.
-
-### 9.11 Image SEO (`/api/image-seo`)
-
-| Method | Path | Query / body |
-|--------|------|----------------|
-| GET | `/api/image-seo/product-images` | `limit`, `offset`, `missing_alt`, `weak_filename`, `product_query`, `resource_type`, `sort`, `direction` |
-| POST | `/api/image-seo/product-images/sync-from-shopify` | |
-| POST | `/api/image-seo/suggest-alt` | `ImageSeoSuggestAltRequest` |
-| POST | `/api/image-seo/product-images/draft` | `ProductImageSeoDraftRequest` |
-| POST | `/api/image-seo/product-images/optimize` | `ProductImageSeoOptimizeRequest` |
-
-### 9.12 Google Signals and settings (`/api`)
-
-| Method | Path |
-|--------|------|
-| GET | `/api/google-signals` |
-| POST | `/api/google-signals/site` |
-| POST | `/api/google-signals/refresh` |
-| GET | `/api/settings` |
-| POST | `/api/settings` |
-| POST | `/api/settings/ai-test` |
-| POST | `/api/settings/image-model-test` |
-| POST | `/api/settings/ollama-models` |
-| POST | `/api/settings/anthropic-models` |
-| POST | `/api/settings/gemini-models` |
-| POST | `/api/settings/openrouter-models` |
-
-Payload types: [`backend/app/schemas/operations.py`](backend/app/schemas/operations.py).
-
-### 9.13 Sidekick and AI stream
-
-| Method | Path |
-|--------|------|
-| POST | `/api/sidekick/chat` |
-| GET | `/api/ai-stream` | `job_id` (required) |
+**Shell:** `frontend/src/components/shell/app-shell.tsx` wraps routes with nav, sync controls, `SidekickProvider`.
 
 ---
 
-## 10. Activities by screen
+## Database Tables
 
-Paths are under **`/app`** (basename). Shell: sync start/stop, scope toggles, `GET /api/sync-status` — [`frontend/src/components/shell/app-shell.tsx`](frontend/src/components/shell/app-shell.tsx).
+SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/dashboard_store.py`, `shopifyseo/dashboard_google/_cache.py`. No Alembic/SQLAlchemy ORM.
 
-| Screen | Route | User activities | APIs (representative) |
-|--------|-------|-----------------|------------------------|
-| Overview | `/` | GSC period/segment, charts, top pages | `GET /api/summary?gsc_period=&gsc_segment=` |
-| Products | `/products` | Search, sort, focus missing meta / thin body, pagination | `GET /api/products?...` |
-| Product detail | `/products/:handle` | Edit fields, save, refresh signals, inspection link, full AI generate, field regen + job poll, Sidekick, `ai-stream`, stop AI | `/api/products/{handle}/*`, `/api/ai-status`, `/api/ai-stop`, `/api/ai-stream`, `/api/sidekick/chat` |
-| Collections list | `/collections` | Search, sort, focus, bulk save meta | `GET /api/collections?...`, `POST /api/collections/save-meta` |
-| Collection detail | `/collections/:handle` | Same pattern as product (no Sidekick binding unless shell provides) | `/api/collections/{handle}/*`, AI status/stop |
-| Pages list | `/pages` | Same as collections | `GET /api/pages?...`, `POST /api/pages/save-meta` |
-| Page detail | `/pages/:handle` | Same as collection detail | `/api/pages/{handle}/*` |
-| Blogs | `/blogs` | List blogs | `GET /api/blogs` |
-| Blog articles | `/blogs/:blogHandle` | List articles | `GET /api/blogs/{blog}/articles` |
-| Articles hub | `/articles` | Cross-blog list, Shopify id hints | `GET /api/articles`, `GET /api/blogs/shopify-ids` |
-| Article detail | `/articles/:blogHandle/:articleHandle` | Edit, refresh, inspection, AI, field regen, stream, stop | `/api/articles/.../*`, `/api/ai-status`, `/api/ai-stop` |
-| Keywords | `/keywords` | Tabs: seeds (load/save/generate), competitors (add/delete/research SSE), targets (research SSE, GSC crossref, bulk/single status) | `/api/keywords/*` (see §9.7) |
-| Cluster detail | `/keywords/clusters/:id` | View cluster detail, target keyword context | `GET /api/keywords/clusters/{id}/detail`, `GET /api/keywords/target` |
-| Competitor detail | `/keywords/competitors/:domain` | Competitor breakdown | `GET /api/keywords/competitors/{domain}/detail` |
-| Article ideas | `/article-ideas` | Generate, filter by status, delete, approve (PATCH), blog mapping | `/api/article-ideas/*`, `/api/blogs/shopify-ids` |
-| Google Signals | `/google-signals` | Select site/property, refresh breakdowns | `GET /api/google-signals`, `POST /api/google-signals/site`, `POST /api/google-signals/refresh` |
-| Embeddings | `/embeddings` | View coverage, refresh all | `GET /api/embeddings/status`, `POST /api/embeddings/refresh` |
-| Image SEO | `/image-seo` | Filter list, sync from Shopify, suggest alt, draft optimize, optimize | `/api/image-seo/*` |
-| Settings | `/settings` | Save all keys, AI test (generation/review/sidekick), image model test, fetch model lists | `/api/settings*`, `POST /api/keywords/target/validate-dataforseo` |
-
-**Clusters panel** (embedded in Keywords): `GET/POST/PATCH` cluster endpoints + SSE generate — [`frontend/src/routes/keywords/ClustersPanel.tsx`](frontend/src/routes/keywords/ClustersPanel.tsx).
-
----
-
-## 11. Execution flows (summary)
-
-1. **Ingest:** Shopify Admin API → SQLite (`shopify_catalog_sync`); optional CLI [`python -m shopifyseo.shopify_catalog_sync`](shopifyseo/shopify_catalog_sync/__init__.py).
-2. **Sync job:** `POST /api/sync` → refresh Shopify slice then GSC / GA4 / index / PageSpeed / structured per scope.
-3. **Read dashboards:** Summary and lists read SQLite + `google_api_cache` / computed rollups.
-4. **AI:** Detail actions → `dashboard_ai_engine` → optional SSE; writes back to Shopify or local rows.
-5. **Keywords:** DataForSEO (seed + competitor pipelines) + GSC cross-reference + embeddings for clusters/targets.
-6. **Embeddings:** Gemini batch embed → `embeddings` table; similarity/gap queries optional via API.
+| Table | Purpose | Key fields / notes | Relationships |
+| --- | --- | --- | --- |
+| `sync_runs` | Sync job audit | Status, counts, errors | — |
+| `products` | Product catalog + denormalized SEO signals | `shopify_id` PK; GSC/GA4/index/PageSpeed columns | ← variants, images, metafields |
+| `product_variants` | Variants | FK → `products` | |
+| `product_images` | Gallery rows | FK → `products` | |
+| `product_metafields` | Metafields | FK → `products` | |
+| `collections` | Collections + signals | `shopify_id` PK | ← `collection_metafields`, `collection_products` |
+| `collection_products` | Collection–product membership | FKs | → collections, products |
+| `pages` | Online Store pages + signals | `shopify_id` | |
+| `blogs`, `blog_articles` | Blogs and articles + signals | Article unique `(blog_shopify_id, handle)` | articles → blogs |
+| `shopify_metaobjects` | Cached metaobjects | | |
+| `product_image_file_cache` | Local image cache metadata | `image_shopify_id` PK | |
+| `seo_workflow_states` | Per-object workflow | `(object_type, handle)` PK | |
+| `service_tokens` | OAuth tokens | `service` | |
+| `service_settings` | App settings key/value | Mirrors env for runtime | |
+| `clusters`, `cluster_keywords` | Keyword clusters | `cluster_keywords.cluster_id` → `clusters` | |
+| `gsc_query_rows`, `gsc_query_dimension_rows` | GSC query storage | Composite keys on dims | → entities via object keys |
+| `seo_recommendations` | AI/SEO recs | Per object | |
+| `keyword_metrics`, `keyword_research_runs`, `keyword_page_map` | Research + mapping | Maps keyword ↔ `object_type`/`object_handle` | |
+| `competitor_profiles`, `competitor_top_pages`, `competitor_keyword_gaps` | Competitor analysis | Domain-scoped | |
+| `article_ideas`, `idea_articles`, `article_target_keywords` | Content ideation | Links ideas ↔ articles | |
+| `embeddings` | Vector chunks | `(object_type, object_handle, chunk_index)` PK | |
+| `api_usage_log` | API cost / usage lines | | |
+| `google_api_cache` | Cached Google API JSON | `cache_key`, TTL `expires_at` | Optional object refs |
 
 ---
 
-## 12. Testing and scripts
+## Utilities & Constants
 
-### 12.1 Pytest (`tests/`)
+### Frontend (`frontend/src/lib/`)
 
-| File | Focus |
-|------|--------|
-| `test_api.py` | API-level behavior |
-| `test_catalog_completion.py` | Catalog completion metrics |
-| `test_embedding_store.py` | Embeddings |
-| `test_keyword_research.py`, `test_keyword_clustering.py` | Keywords / clusters |
-| `test_indexing_rollup.py`, `test_index_inspection_targets.py` | Indexing |
-| `test_gsc_*` | GSC overview, segments, cache keys, property breakdown |
-| `test_phase3_gsc_ai_context.py` | GSC in AI context |
-| `test_article_idea_*` | Article ideas lifecycle |
-| `test_article_image_webp.py`, `test_article_body_image_inject.py` | Article images |
-| `test_product_image_seo.py`, `test_blog_image_seo_filename_alt.py` | Product/blog image SEO |
-| `test_html_images.py`, `test_theme_template_images.py` | HTML / theme images |
-| `test_seo_slug.py`, `test_seo_clamp.py` | SEO utilities |
+| Name | Purpose | File |
+| --- | --- | --- |
+| `getJson` / `postJson` / `patchJson` / `deleteJson` | Typed fetch + `{ok,data}` handling | `frontend/src/lib/api.ts` |
+| `formatHttpErrorDetail` | Parse error payloads for UI | `frontend/src/lib/api.ts` |
+| `runArticleDraftStream` | Consume article draft SSE | `frontend/src/lib/run-article-draft-stream.ts` |
+| Slug helpers | Align with backend slug rules | `frontend/src/lib/seo-slug.ts` |
+| GSC period helpers | Period modes for charts/API | `frontend/src/lib/gsc-period.ts` |
+| Settings connection localStorage | Persist connection test state | `frontend/src/lib/settings-connection-storage.ts` |
+| Toast helpers | Sonner wrappers | `frontend/src/lib/toast-utils.ts` |
+| `cn` / class merge | Tailwind class merging | `frontend/src/lib/utils.ts` |
+| Google Ads CSV helpers | Lab / export utilities | `frontend/src/lib/google-ads-keywords-csv.ts` |
+| AI provider readiness | UI gating for models | `frontend/src/lib/ai-provider-readiness.ts` |
 
-### 12.2 Frontend
+### Python (`shopifyseo/` — representative)
 
-Vitest: `*.test.tsx` co-located (e.g. [`frontend/src/routes/settings-page.test.tsx`](frontend/src/routes/settings-page.test.tsx)).
-
-### 12.3 Scripts
-
-[`scripts/test_gemini_vision.py`](scripts/test_gemini_vision.py) — ad-hoc Gemini vision check.
-
----
-
-## 13. Local development
-
-- **SPA build:** `cd frontend && npm run build` (use `npm run rebuild` if Vite cache is stale).
-- **API:** from repo root: `PYTHONPATH=. uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000`.
-- **Open:** `http://127.0.0.1:8000/app/` (hard refresh after deploy). See [AGENTS.md](AGENTS.md).
+| Module | Purpose |
+| --- | --- |
+| `dashboard_http.py` | Shared HTTP session, errors |
+| `dashboard_config.py` | `RUNTIME_SETTING_KEYS`, env mapping |
+| `seo_slug.py` | Handle/slug normalization |
+| `market_context.py` | Primary market / locale constants |
+| `dashboard_ai_engine_parts/config.py` | Default models, limits, provider URLs |
+| `dashboard_actions/_state.py` | `SYNC_STATE`, `AI_JOBS`, locks |
 
 ---
 
-## 14. Maintainer notes
+## External Integrations
 
-- **OpenAPI:** `http://127.0.0.1:8000/docs` — authoritative for parameter names; this doc adds behavioral context.
-- **Stray merge artifacts:** files matching `*.sync-conflict-*` under `backend/` or `frontend/` are **not** registered in [`backend/app/main.py`](backend/app/main.py); remove or resolve in git — do not treat as live routes.
-- **Generated artifacts:** `node_modules/`, `frontend/dist/`, SQLite `-wal`/`-shm` files are environment outputs, not source-of-truth documentation targets.
+| Service | Purpose | How invoked | Sync / frequency |
+| --- | --- | --- | --- |
+| Shopify Admin API | Catalog sync, articles, media, live SEO writebacks | GraphQL/REST in `shopifyseo/shopify_catalog_sync/`, `shopify_admin.py`, `dashboard_live_updates.py`, `shopify_product_media.py` | On `POST /api/sync` and refreshes |
+| Google OAuth + GSC + GA4 + Inspection + PageSpeed + Ads | Signals, analytics, lab | `shopifyseo/dashboard_google/*`, `GET /auth/google/*` | On sync, refresh endpoints, and operator actions |
+| DataForSEO | Keyword/competitor research | `backend/app/services/keyword_research/` + keywords router | On-demand + SSE streams |
+| OpenAI / Anthropic / Gemini / OpenRouter / Ollama | AI generation, review, images, vision | `shopifyseo/dashboard_ai_engine_parts/providers.py` etc. | Per generate/regenerate/Sidekick |
+| Gemini embeddings | Similarity, gaps, cannibalization | `shopifyseo/embedding_store.py` | Sync + `/api/embeddings/refresh` |
 
 ---
 
-*Document expanded for full activity coverage. Update this file when adding routers, tables, or settings keys.*
+## Business Context
+
+| Topic | Current state (manual) |
+| --- | --- |
+| **Platform** | Self-hosted **Shopify** SEO operations app (single-tenant per install). |
+| **Primary goal** | Organic search visibility: catalog + content SEO workflows, GSC/GA4-informed prioritization, AI-assisted copy/meta, keyword and cluster tooling. |
+| **Key metrics** | Surfaced in-app via GSC/GA4 rollups, indexing/PageSpeed signals, overview goals (optional env `OVERVIEW_GOAL_*`). |
+| **Constraints** | **No built-in multi-user auth** on the API; relies on network access control for deployments. **No paid ads** requirement is a *business* constraint for some merchants, not enforced in code. |
+
+---
+
+## Incomplete Features / Known Gaps
+
+- **Not inferred from `TODO` comments** in application source (none found in a quick `TODO|FIXME` scan of `*.py` / `*.ts` / `*.tsx` excluding tests).
+- **Operator-maintained gaps:** any roadmap items should be recorded here when known.
+
+---
+
+## Tech Debt / Known Issues
+
+- **Process model:** Sync and AI state live **in-memory** in the server process (`shopifyseo/dashboard_actions`); restarts lose in-flight job UI unless persisted paths recover.
+- **Security:** API routes are **not** behind app-level JWT/API keys; treat as trusted-network or add a reverse proxy with auth for production.
+- **AI HTTP timeouts:** Settings docs note a **fixed long timeout** for AI calls in engine code (verify `dashboard_ai_engine_parts` when tuning).
+- **Moz:** `moz_api_token` may appear in settings mapping; confirm whether Moz APIs are fully wired before relying on them.
+
+---
+
+## Dependencies (External Packages)
+
+### Python (pinned in `backend/requirements.txt`)
+
+| Package | Version | Purpose |
+| --- | --- | --- |
+| fastapi | 0.123.5 | HTTP API |
+| uvicorn | 0.38.0 | ASGI server |
+| pydantic | 2.12.5 | Request/response models |
+| starlette | 0.50.0 | ASGI toolkit (FastAPI dep) |
+| httpx | 0.28.1 | Async-capable HTTP client |
+| anyio | 4.12.0 | Async I/O compatibility |
+| pillow | 11.1.0 | Image handling |
+| requests | ≥2.31.0 | HTTP for integrations |
+| numpy | ≥1.24.0 | Numeric helpers |
+
+### Frontend (`frontend/package.json` ranges)
+
+| Package | Version (range) | Purpose |
+| --- | --- | --- |
+| react / react-dom | ^19.0.0 | UI |
+| react-router-dom | ^7.6.0 | Routing |
+| @tanstack/react-query | ^5.68.0 | Server state |
+| @tanstack/react-virtual | ^3.13.23 | Virtualized lists |
+| vite | ^6.2.0 | Build |
+| typescript | ~5.7.2 | Types |
+| tailwindcss | ^3.4.17 | Styling |
+| zod | ^3.25.76 | Runtime validation |
+| recharts | ^2.15.4 | Charts |
+| sonner | ^2.0.7 | Toasts |
+| @tiptap/* | ^3.x | Rich text |
+| @radix-ui/react-* | ^1–2 | Primitives |
+| lucide-react | ^0.511.0 | Icons |
+| clsx / tailwind-merge / cva | various | Class utilities |
+
+---
+
+## Environment Configs
+
+| Source | Role |
+| --- | --- |
+| `.env.example` (repo root) | Documents `SHOPIFY_*`, `GOOGLE_*`, AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `GSC_DIMENSIONAL_FETCH`, `OVERVIEW_GOAL_*`, etc. |
+| `service_settings` + `shopifyseo/dashboard_config.py` | DB-stored settings; `apply_runtime_settings` mirrors selected keys into `os.environ` |
+| `SHOPIFY_CATALOG_DB_PATH` | SQLite file path override |
+| `DASHBOARD_TZ` | Overview calendar default (`America/Vancouver` if unset) |
+| `GSC_DIMENSIONAL_FETCH` | Dimensional GSC fetch toggle (`shopifyseo/dashboard_store.py`) |
+
+---
+
+## Keeping This Doc in Sync
+
+When adding a **router**, **service**, **table**, or **screen**, update the matching section in the **same change** as the code. Prefer verifying paths against `backend/app/routers/*.py`, `frontend/src/app/router.tsx`, and `shopifyseo/dashboard_store.py` / `shopify_catalog_sync/db.py`.

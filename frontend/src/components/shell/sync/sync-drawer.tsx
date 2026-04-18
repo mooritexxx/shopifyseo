@@ -219,7 +219,7 @@ function StageRow({
   row: PipelineRowModel;
   accent: string;
 }) {
-  const sub = row.subtitle ?? SYNC_PIPELINE_SUBTITLE[row.key];
+  const sub = SYNC_PIPELINE_SUBTITLE[row.key];
   const Icon = rowIcons[row.key];
   const done = row.status === "done";
   const active = row.status === "active";
@@ -243,7 +243,7 @@ function StageRow({
           : row.total > 0
             ? `0/${row.total}`
             : "—";
-  const rightSub = done ? "items" : active ? (row.subtitle ? "caching" : "syncing") : failed ? "halted" : "queued";
+  const rightSub = done ? "items" : active ? "syncing" : failed ? "halted" : "queued";
 
   return (
     <div
@@ -361,6 +361,8 @@ export type SyncDrawerProps = {
     lastRunLine: string;
     serviceCount: number;
   };
+  /** Per-entity rows for Shopify catalog + image cache while sync is running. */
+  shopifyBreakdown?: { label: string; synced: number; total: number }[];
   pipelineRows: PipelineRowModel[];
   pipelineFraction: string;
   showEventStream: boolean;
@@ -408,6 +410,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
     doneHero,
     errorHero,
     idleHero,
+    shopifyBreakdown,
     pipelineRows,
     pipelineFraction,
     showEventStream,
@@ -496,6 +499,24 @@ export function SyncDrawer(props: SyncDrawerProps) {
             elapsed={runningHero.elapsed}
             eta={runningHero.eta}
           />
+        ) : null}
+
+        {mode === "running" && shopifyBreakdown && shopifyBreakdown.length > 0 ? (
+          <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-2.5">
+            <div className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/40">Shopify progress</div>
+            <div className="grid gap-1.5">
+              {shopifyBreakdown.map((row) => {
+                const line =
+                  row.total > 0 ? `${row.synced}/${row.total}` : row.synced > 0 ? `${row.synced}` : "—";
+                return (
+                  <div key={row.label} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-white/55">{row.label}</span>
+                    <span className="sync-event-stream-mono tabular-nums text-white/85">{line}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         ) : null}
 
         {mode === "done" && doneHero ? (

@@ -94,12 +94,21 @@ def upsert_collection(conn: sqlite3.Connection, collection: dict, synced_at: str
     return len(metafields)
 
 
-def sync_collections(db_path: Path, page_size: int, progress_callback=None) -> dict:
+def sync_collections(
+    db_path: Path,
+    page_size: int,
+    progress_callback=None,
+    *,
+    collections: list[dict] | None = None,
+) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
     synced_at = now_iso()
     try:
-        collections = fetch_all_collections(page_size)
+        if collections is None:
+            collections = fetch_all_collections(page_size)
+        else:
+            collections = list(collections)
         if progress_callback is not None:
             progress_callback("collections", 0, len(collections))
         collection_count = 0

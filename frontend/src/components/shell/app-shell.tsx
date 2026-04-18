@@ -42,7 +42,7 @@ import {
   syncSortScopesInPipelineOrder,
   type SyncServiceValue
 } from "./sync/constants";
-import { activeServiceKey, derivePipelineRows } from "./sync/pipeline-derive";
+import { activeServiceKey, derivePipelineRows, scopeBelongsToShopifyService } from "./sync/pipeline-derive";
 import { useSyncEventLog } from "./sync/use-sync-event-log";
 
 type NavItem = {
@@ -76,7 +76,8 @@ const syncStageLabels: Record<string, string> = {
   syncing_collections: "Collections sync",
   syncing_pages: "Pages sync",
   syncing_blogs: "Blogs sync",
-  syncing_product_images: "Product images (local cache)",
+  /** Legacy backend stage; treat as unified Shopify run */
+  syncing_product_images: "Shopify sync",
   refreshing_gsc: "Search Console sync",
   refreshing_ga4: "GA4 sync",
   refreshing_index: "Index status sync",
@@ -342,8 +343,7 @@ export function AppShell({ children }: PropsWithChildren) {
       hasError: showSyncErrorPanel,
       syncPercent,
       activeScope: effectiveActiveScope,
-      stepIndex: activeStepIndex,
-      stage: syncStatus?.stage
+      stepIndex: activeStepIndex
     });
   }, [
     orderedScopes,
@@ -355,6 +355,28 @@ export function AppShell({ children }: PropsWithChildren) {
     effectiveActiveScope,
     activeStepIndex
   ]);
+
+  const shopifyBreakdown = useMemo(() => {
+    if (!syncRunning || !syncStatus) return undefined;
+    const scope = (effectiveActiveScope || "").toLowerCase();
+    const stage = (syncStatus.stage || "").toLowerCase();
+    const shopifyPhase =
+      scopeBelongsToShopifyService(scope) ||
+      stage === "syncing_shopify" ||
+      stage === "syncing_products" ||
+      stage === "syncing_collections" ||
+      stage === "syncing_pages" ||
+      stage === "syncing_blogs";
+    if (!shopifyPhase) return undefined;
+    return [
+      { label: "Products", synced: syncStatus.products_synced ?? 0, total: syncStatus.products_total ?? 0 },
+      { label: "Collections", synced: syncStatus.collections_synced ?? 0, total: syncStatus.collections_total ?? 0 },
+      { label: "Pages", synced: syncStatus.pages_synced ?? 0, total: syncStatus.pages_total ?? 0 },
+      { label: "Blogs", synced: syncStatus.blogs_synced ?? 0, total: syncStatus.blogs_total ?? 0 },
+      { label: "Articles", synced: syncStatus.blog_articles_synced ?? 0, total: syncStatus.blog_articles_total ?? 0 },
+      { label: "Images", synced: syncStatus.images_synced ?? 0, total: syncStatus.images_total ?? 0 }
+    ];
+  }, [syncRunning, syncStatus, effectiveActiveScope]);
 
   const pipelineFraction = useMemo(() => {
     const n = Math.max(orderedScopes.length || selectedScopes.length, 1);
@@ -398,11 +420,9 @@ export function AppShell({ children }: PropsWithChildren) {
 
   const activePipelineKey = activeServiceKey(effectiveActiveScope);
   const runningHeroSubtitle =
-    syncRunning && syncStatus?.stage === "syncing_product_images"
-      ? syncStageLabels.syncing_product_images
-      : activePipelineKey && SYNC_PIPELINE_SUBTITLE[activePipelineKey]
-        ? SYNC_PIPELINE_SUBTITLE[activePipelineKey]
-        : activeStageLabel;
+    activePipelineKey && SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+      ? SYNC_PIPELINE_SUBTITLE[activePipelineKey]
+      : activeStageLabel;
 
   const canRunSync =
     !syncRunning &&
@@ -488,11 +508,12 @@ export function AppShell({ children }: PropsWithChildren) {
             subtitle: runningHeroSubtitle,
             elapsed: elapsedLabel || "00:00",
             eta:
-              typeof syncStatus?.eta_seconds === "number" && syncStatus.eta_seconds >= 0
+              syncStatus?.eta_seconds != null && syncStatus.eta_seconds >= 0
                 ? formatEtaCountdown(syncStatus.eta_seconds)
                 : "--:--"
           }
         : undefined,
+    shopifyBreakdown,
     doneHero:
       drawerMode === "done"
         ? {

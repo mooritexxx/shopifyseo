@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 import requests
 
+from shopifyseo.catalog_image_work import build_catalog_image_registry_from_db, count_catalog_images_for_cache_db
 from shopifyseo.product_image_seo import infer_image_format_from_bytes, normalize_shopify_image_url
 from shopifyseo.shopify_catalog_sync.db import now_iso, open_db
 
@@ -201,13 +202,24 @@ def _worker_fetch(
         return _WorkerOutcome(image_id, norm_url, "error", error=str(exc) or "request failed")
 
 
+def count_catalog_images_for_cache(db_path: Path) -> int:
+    """Distinct Shopify-hosted catalog image URLs the cache warm will fetch (products, collections, pages, blogs)."""
+    conn = open_db(db_path)
+    try:
+        return count_catalog_images_for_cache_db(conn)
+    finally:
+        conn.close()
+
+
 def warm_product_image_cache(
     db_path: Path,
     *,
     max_workers: int = 6,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, int]:
-    """After product sync: prune removed images, then fetch/cache each ``product_images`` row.
+    """After catalog sync: prune stale rows, then fetch/cache each distinct catalog image URL.
+
+    Covers product gallery rows, collection/page/article images and inline HTML, and theme template URLs.
 
     ``progress_callback`` is invoked as ``(done, total)`` while network fetches complete
     (``done`` from 0 through ``total``). Also called once with ``(0, total)`` before fetches.
@@ -219,34 +231,39 @@ def warm_product_image_cache(
     conn = open_db(db_path)
     stats = {"downloaded": 0, "skipped": 0, "errors": 0, "pruned": 0}
     try:
-        stale = conn.execute(
-            """
-            SELECT image_shopify_id, local_relpath FROM product_image_file_cache
-            WHERE image_shopify_id NOT IN (SELECT shopify_id FROM product_images)
-            """
-        ).fetchall()
+        registry = build_catalog_image_registry_from_db(conn)
+        expected = registry.expected_cache_ids()
+        if expected:
+            placeholders = ",".join("?" * len(expected))
+            stale = conn.execute(
+                f"""
+                SELECT image_shopify_id, local_relpath FROM product_image_file_cache
+                WHERE image_shopify_id NOT IN ({placeholders})
+                """,
+                tuple(expected),
+            ).fetchall()
+        else:
+            stale = conn.execute(
+                "SELECT image_shopify_id, local_relpath FROM product_image_file_cache"
+            ).fetchall()
         for sid, rel in stale:
             _safe_unlink(root / rel)
             conn.execute("DELETE FROM product_image_file_cache WHERE image_shopify_id = ?", (sid,))
             stats["pruned"] += 1
         conn.commit()
 
-        rows = conn.execute("SELECT shopify_id, url FROM product_images").fetchall()
         work: list[tuple[str, str, str, dict[str, Any] | None, str]] = []
-        for sid, url in rows:
-            if not sid or not (url or "").strip():
-                continue
-            norm = normalize_shopify_image_url(url.strip())
+        for cache_id, url, norm in registry.work_items():
             crow = conn.execute(
                 "SELECT * FROM product_image_file_cache WHERE image_shopify_id = ?",
-                (sid,),
+                (cache_id,),
             ).fetchone()
             crow_d: dict[str, Any] | None = dict(crow) if crow else None
             if crow_d and crow_d.get("normalized_url") != norm:
                 _safe_unlink(root / crow_d["local_relpath"])
-                conn.execute("DELETE FROM product_image_file_cache WHERE image_shopify_id = ?", (sid,))
+                conn.execute("DELETE FROM product_image_file_cache WHERE image_shopify_id = ?", (cache_id,))
                 crow_d = None
-            work.append((sid, url.strip(), norm, crow_d, str(root)))
+            work.append((cache_id, url.strip(), norm, crow_d, str(root)))
         conn.commit()
 
         total_fetch = len(work)

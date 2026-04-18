@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ExternalLink, LoaderCircle, RefreshCw, Save, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, RefreshCw, Save, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { z } from "zod";
 
@@ -52,6 +52,32 @@ function humanizeAiStage(value: string) {
   return value ? value.replace(/_/g, " ") : "Preparing generation";
 }
 
+/** Shopify Admin ``image`` on the collection (stored as ``image_json``). */
+function parseCollectionFeaturedImage(current: Record<string, unknown>): { url: string; alt: string } | null {
+  const raw = current.image_json;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const obj = JSON.parse(raw) as { url?: string; altText?: string; alt?: string };
+    const url = String(obj.url ?? "").trim();
+    if (!/^https?:\/\//i.test(url)) return null;
+    const alt = String(obj.altText ?? obj.alt ?? "").trim() || "Collection image";
+    return { url, alt };
+  } catch {
+    return null;
+  }
+}
+
+/** First Shopify CDN ``<img>`` in collection description when no featured image is set. */
+function firstInlineImageFromDescriptionHtml(html: string): { url: string; alt: string } | null {
+  if (!html || !/<img/i.test(html)) return null;
+  const srcMatch = html.match(/<img[^>]+src\s*=\s*["']([^"']+)["'][^>]*>/i);
+  const url = (srcMatch?.[1] ?? "").trim();
+  if (!/^https?:\/\//i.test(url)) return null;
+  const altMatch = html.match(/<img[^>]+alt\s*=\s*["']([^"']*)["'][^>]*>/i);
+  const alt = (altMatch?.[1] ?? "").trim() || "Image in collection description";
+  return { url, alt };
+}
+
 export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   const { handle = "" } = useParams();
   const queryClient = useQueryClient();
@@ -68,6 +94,8 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   const [fieldJobId, setFieldJobId] = useState("");
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const [savedDraftBaseline, setSavedDraftBaseline] = useState(emptyDraft);
+  const [collectionGallerySelected, setCollectionGallerySelected] = useState(0);
+  const [collectionGalleryPreviewOpen, setCollectionGalleryPreviewOpen] = useState(false);
   const aiStatusQuery = useAiJobStatus(aiJobId);
   const fieldStatusQuery = useAiJobStatus(fieldJobId);
   const detailQuery = useQuery({
@@ -78,6 +106,44 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
     structuralSharing: false
   });
   const [draft, setDraft] = useState(emptyDraft);
+
+  const collectionGalleryImages = useMemo(() => {
+    if (kind !== "collections" || !detailQuery.data) return [];
+    const current = detailQuery.data.current as Record<string, unknown>;
+    const out: { url: string; alt: string; key: string }[] = [];
+    const featured = parseCollectionFeaturedImage(current);
+    if (featured) out.push({ ...featured, key: "featured" });
+    const inline = firstInlineImageFromDescriptionHtml(String(current.description_html ?? ""));
+    if (inline && (!featured || inline.url !== featured.url)) {
+      out.push({ ...inline, key: "inline" });
+    }
+    return out;
+  }, [kind, detailQuery.data]);
+
+  useEffect(() => {
+    setCollectionGallerySelected(0);
+  }, [handle, kind]);
+
+  useEffect(() => {
+    if (collectionGalleryImages.length > 0 && collectionGallerySelected >= collectionGalleryImages.length) {
+      setCollectionGallerySelected(0);
+    }
+  }, [collectionGalleryImages.length, collectionGallerySelected]);
+
+  useEffect(() => {
+    if (!collectionGalleryPreviewOpen || collectionGalleryImages.length <= 1) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setCollectionGallerySelected((s) => (s - 1 + collectionGalleryImages.length) % collectionGalleryImages.length);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setCollectionGallerySelected((s) => (s + 1) % collectionGalleryImages.length);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [collectionGalleryPreviewOpen, collectionGalleryImages.length]);
 
   /** Only reset draft from server when navigating to another page/collection — not on every detail refetch (avoids wiping AI-filled draft). */
   const lastHydratedContentKeyRef = useRef<string | null>(null);
@@ -393,6 +459,7 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   const recommendation = detail.recommendation.details;
   const isDirty = draftChanged(draft, savedDraftBaseline);
   const previewUrl = storeUrl ? `${storeUrl}/${kind}/${handle}` : null;
+
   const refreshingStep = refreshMutation.isPending ? refreshMutation.variables : null;
   const isSignalStepRefreshing = (step: string) => {
     if (!refreshMutation.isPending || refreshingStep === undefined || refreshingStep === null) {
@@ -638,35 +705,130 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
             </CardHeader>
 
             <CardContent className="space-y-6 pt-0">
-              <div className="grid gap-2">
-                <Label htmlFor={`${kind}-title`}>Title</Label>
-                <Input
-                  id={`${kind}-title`}
-                  value={draft.title}
-                  onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-                />
-              </div>
+              {kind === "collections" ? (
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+                  <div className="flex w-full flex-col gap-2 lg:w-[220px] lg:max-w-[240px] lg:shrink-0">
+                    {collectionGalleryImages.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setCollectionGalleryPreviewOpen(true)}
+                          className="group mx-auto aspect-square w-full max-w-[240px] overflow-hidden rounded-xl border border-[#e2eaf4] bg-slate-50 text-left outline-none ring-offset-2 transition hover:border-[#b8cce4] focus-visible:ring-2 focus-visible:ring-[#2b6cb0]"
+                          aria-label="Open image preview"
+                        >
+                          <img
+                            src={collectionGalleryImages[collectionGallerySelected]?.url}
+                            alt={collectionGalleryImages[collectionGallerySelected]?.alt || ""}
+                            className="h-full w-full object-contain object-center transition group-hover:opacity-95"
+                          />
+                        </button>
+                        {collectionGalleryImages.length > 1 ? (
+                          <div className="mx-auto flex max-w-[240px] gap-1.5 overflow-x-auto pb-0.5">
+                            {collectionGalleryImages.map((im, i) => (
+                              <button
+                                key={im.key}
+                                type="button"
+                                aria-label={`Collection image ${i + 1}`}
+                                aria-current={i === collectionGallerySelected ? "true" : undefined}
+                                onClick={() => setCollectionGallerySelected(i)}
+                                onDoubleClick={() => {
+                                  setCollectionGallerySelected(i);
+                                  setCollectionGalleryPreviewOpen(true);
+                                }}
+                                className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 transition ${
+                                  i === collectionGallerySelected
+                                    ? "border-[#2b6cb0] ring-1 ring-[#2b6cb0]/30"
+                                    : "border-transparent opacity-80 hover:opacity-100"
+                                }`}
+                              >
+                                <img src={im.url} alt="" className="h-full w-full object-cover" />
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <p className="text-center text-[11px] text-slate-500">
+                          {collectionGalleryImages.length} image{collectionGalleryImages.length === 1 ? "" : "s"} · Shopify collection
+                          {collectionGalleryImages.length > 1 ? (
+                            <span className="block text-[10px] text-slate-400">Double-click a thumbnail to preview</span>
+                          ) : null}
+                        </p>
+                      </>
+                    ) : (
+                      <div className="mx-auto flex min-h-[160px] w-full max-w-[240px] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-[#d7e2f0] bg-[#fbfdff] px-3 py-6 text-center">
+                        <p className="text-xs font-medium text-slate-600">No collection image</p>
+                        <p className="text-[11px] leading-snug text-slate-400">
+                          Add an image in Shopify Admin or sync from Shopify to load it here.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-6">
+                    <div className="grid gap-2">
+                      <Label htmlFor={`${kind}-title`}>Title</Label>
+                      <Input
+                        id={`${kind}-title`}
+                        value={draft.title}
+                        onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                      />
+                    </div>
 
-              <Separator />
+                    <Separator />
 
-              <div className="grid gap-2">
-                <Label htmlFor={`${kind}-seo-title`}>SEO title</Label>
-                <Input
-                  id={`${kind}-seo-title`}
-                  value={draft.seo_title}
-                  onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
-                />
-                <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
-                <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-                  <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>{draft.seo_title.trim().length}/65 characters</span>
-                  <span className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
-                      <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
-                      {isRegeneratingField("seo_title") ? "Regenerating…" : "Regenerate"}
-                    </Button>
-                  </span>
+                    <div className="grid gap-2">
+                      <Label htmlFor={`${kind}-seo-title`}>SEO title</Label>
+                      <Input
+                        id={`${kind}-seo-title`}
+                        value={draft.seo_title}
+                        onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
+                      />
+                      <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
+                      <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+                        <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>
+                          {draft.seo_title.trim().length}/65 characters
+                        </span>
+                        <span className="flex gap-2">
+                          <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
+                            <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
+                            {isRegeneratingField("seo_title") ? "Regenerating…" : "Regenerate"}
+                          </Button>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor={`${kind}-title`}>Title</Label>
+                    <Input
+                      id={`${kind}-title`}
+                      value={draft.title}
+                      onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                    />
+                  </div>
+
+                  <Separator />
+
+                  <div className="grid gap-2">
+                    <Label htmlFor={`${kind}-seo-title`}>SEO title</Label>
+                    <Input
+                      id={`${kind}-seo-title`}
+                      value={draft.seo_title}
+                      onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
+                    />
+                    <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+                      <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>{draft.seo_title.trim().length}/65 characters</span>
+                      <span className="flex gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
+                          <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
+                          {isRegeneratingField("seo_title") ? "Regenerating…" : "Regenerate"}
+                        </Button>
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="grid gap-2">
                 <Label htmlFor={`${kind}-seo-description`}>SEO description</Label>
@@ -754,6 +916,63 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
             </CardContent>
           </Card>
         </section>
+
+        {kind === "collections" && collectionGalleryImages.length > 0 ? (
+          <Modal
+            open={collectionGalleryPreviewOpen}
+            onOpenChange={setCollectionGalleryPreviewOpen}
+            title="Image preview"
+            description="Collection image from Shopify (featured or description)."
+            contentClassName="w-[min(960px,96vw)] max-h-[min(920px,92vh)] overflow-y-auto"
+          >
+            <div className="flex flex-col items-center gap-4">
+              <div className="flex w-full max-w-full items-center justify-center gap-1 sm:gap-3">
+                {collectionGalleryImages.length > 1 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 rounded-full"
+                    aria-label="Previous image"
+                    onClick={() =>
+                      setCollectionGallerySelected((s) => (s - 1 + collectionGalleryImages.length) % collectionGalleryImages.length)
+                    }
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </Button>
+                ) : null}
+                <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center rounded-2xl bg-slate-50 p-2">
+                  <img
+                    src={collectionGalleryImages[collectionGallerySelected]?.url}
+                    alt={collectionGalleryImages[collectionGallerySelected]?.alt || ""}
+                    className="max-h-[min(72vh,720px)] w-full max-w-full object-contain"
+                  />
+                </div>
+                {collectionGalleryImages.length > 1 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 rounded-full"
+                    aria-label="Next image"
+                    onClick={() => setCollectionGallerySelected((s) => (s + 1) % collectionGalleryImages.length)}
+                  >
+                    <ChevronRight className="h-5 w-5" />
+                  </Button>
+                ) : null}
+              </div>
+              {collectionGalleryImages[collectionGallerySelected]?.alt ? (
+                <p className="max-w-full text-center text-sm text-slate-600">{collectionGalleryImages[collectionGallerySelected].alt}</p>
+              ) : null}
+              {collectionGalleryImages.length > 1 ? (
+                <p className="text-xs text-slate-500">
+                  {collectionGallerySelected + 1} of {collectionGalleryImages.length}
+                  <span className="ml-2 text-slate-400">Use arrow keys when this dialog is open</span>
+                </p>
+              ) : null}
+            </div>
+          </Modal>
+        ) : null}
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

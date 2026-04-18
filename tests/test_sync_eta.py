@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from shopifyseo.dashboard_actions.sync_eta import (
+    compute_shopify_eta_seconds_historical,
     compute_sync_eta_seconds,
     load_eta_history,
     record_sync_eta_sample,
+    shopify_aggregate_progress,
     sync_progress_pair,
 )
 from shopifyseo.dashboard_google._auth import set_service_setting
@@ -124,6 +126,74 @@ def test_not_running_no_eta(running, expect_none):
         assert eta is None
     else:
         assert eta is not None
+
+
+def test_shopify_aggregate_progress_includes_blog_articles():
+    state = {
+        "products_total": 10,
+        "collections_total": 5,
+        "pages_total": 2,
+        "blogs_total": 1,
+        "blog_articles_total": 7,
+        "images_total": 3,
+        "products_synced": 10,
+        "collections_synced": 5,
+        "pages_synced": 2,
+        "blogs_synced": 1,
+        "blog_articles_synced": 7,
+        "images_synced": 0,
+    }
+    assert shopify_aggregate_progress(state) == (25, 28)  # 10+5+2+1+7+0 done; 10+5+2+1+7+3 total
+
+
+def test_sync_progress_pair_uses_aggregate_for_shopify_scope():
+    state = {
+        "active_scope": "shopify",
+        "stage": "syncing_shopify",
+        "products_total": 2,
+        "products_synced": 2,
+        "blog_articles_total": 3,
+        "blog_articles_synced": 1,
+        "collections_total": 0,
+        "pages_total": 0,
+        "blogs_total": 0,
+        "images_total": 0,
+        "collections_synced": 0,
+        "pages_synced": 0,
+        "blogs_synced": 0,
+        "images_synced": 0,
+        "total": 999,
+        "done": 999,
+    }
+    assert sync_progress_pair(state) == (3, 5)
+
+
+def test_compute_shopify_eta_historical_sum():
+    db_path = _db_with_settings()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    hist = {
+        "shopify_products": [2.0],
+        "shopify_blog_articles": [1.0],
+    }
+    set_service_setting(conn, "sync_eta_seconds_per_unit_v1", json.dumps(hist))
+    conn.close()
+    state = {
+        "products_synced": 0,
+        "products_total": 10,
+        "blog_articles_synced": 0,
+        "blog_articles_total": 5,
+        "collections_synced": 0,
+        "collections_total": 0,
+        "pages_synced": 0,
+        "pages_total": 0,
+        "blogs_synced": 0,
+        "blogs_total": 0,
+        "images_synced": 0,
+        "images_total": 0,
+    }
+    eta = compute_shopify_eta_seconds_historical(state, db_path)
+    assert eta == 25
 
 
 def test_normalize_sync_scopes_follows_pipeline_order_not_ui_toggle_order():

@@ -55,3 +55,51 @@ def extract_shopify_image_urls_from_theme_json_text(raw: str) -> list[str]:
     except json.JSONDecodeError:
         return []
     return extract_shopify_image_urls_from_theme_json_obj(data)
+
+
+def collect_template_image_urls_for_pages(
+    pages: list[dict[str, Any]],
+    *,
+    theme_id: int | None = None,
+) -> dict[str, list[str]]:
+    """Map page Shopify id -> image URLs from Online Store 2.0 JSON templates.
+
+    Uses the same asset keys and parsing as :func:`enrich_pages_template_images`.
+    Requires Admin **read_themes** (REST). Returns an empty dict if the themes API fails
+    or no main theme exists (discovery counts then match post-sync only when enrich also skips).
+    """
+    from shopifyseo.dashboard_http import HttpRequestError
+    from shopifyseo.shopify_theme_assets import fetch_main_theme_id, fetch_theme_asset_text
+
+    if not pages:
+        return {}
+
+    tid = theme_id
+    if tid is None:
+        try:
+            tid = fetch_main_theme_id()
+        except HttpRequestError:
+            return {}
+    if tid is None:
+        return {}
+    parsed_by_key: dict[str, list[str]] = {}
+    out: dict[str, list[str]] = {}
+    for page in pages:
+        pid = str(page.get("id") or "")
+        if not pid:
+            continue
+        suf = (page.get("templateSuffix") or page.get("template_suffix") or "").strip()
+        urls: list[str] = []
+        for key in page_template_asset_keys(suf):
+            if key not in parsed_by_key:
+                try:
+                    raw = fetch_theme_asset_text(tid, key)
+                except HttpRequestError:
+                    parsed_by_key[key] = []
+                    continue
+                parsed_by_key[key] = extract_shopify_image_urls_from_theme_json_text(raw) if raw else []
+            if parsed_by_key[key]:
+                urls = list(parsed_by_key[key])
+                break
+        out[pid] = urls
+    return out

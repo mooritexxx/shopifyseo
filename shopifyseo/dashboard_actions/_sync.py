@@ -26,7 +26,9 @@ from ..shopify_catalog_sync import (
     sync_pages,
     sync_products,
 )
-from ..shopify_image_cache import warm_product_image_cache
+from ..catalog_image_work import count_catalog_image_urls_discover
+from ..shopify_catalog_sync.discovery import discover_shopify_catalog
+from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
 from ._state import (
     GA4_SYNC_RATE_LIMIT_PER_MINUTE,
     GA4_SYNC_WORKERS,
@@ -44,7 +46,7 @@ from ._state import (
     clear_last_error,
     record_last_error,
 )
-from .sync_eta import record_scope_eta_segment
+from .sync_eta import record_scope_eta_segment, record_shopify_kind_eta, record_sync_eta_sample, shopify_aggregate_progress
 
 # Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
 SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
@@ -132,44 +134,34 @@ def _set_sync_stage(
     SYNC_STATE["step_total"] = step_total
     if current is not None:
         SYNC_STATE["current"] = current
-    chain_images = prev_stage in ("syncing_shopify", "syncing_products") and stage == "syncing_product_images"
-    if not chain_images and (stage != prev_stage or (active_scope or "") != (prev_scope or "")):
+    if stage != prev_stage or (active_scope or "") != (prev_scope or ""):
         SYNC_STATE["stage_started_at"] = int(time.time())
 
 
 def _recompute_shopify_scoped_progress() -> None:
-    """Sidebar progress bar: sum catalog entity steps plus optional product image cache warm."""
-    pt = int(SYNC_STATE.get("products_total") or 0)
-    ct = int(SYNC_STATE.get("collections_total") or 0)
-    pgt = int(SYNC_STATE.get("pages_total") or 0)
-    bgt = int(SYNC_STATE.get("blogs_total") or 0)
-    ps = int(SYNC_STATE.get("products_synced") or 0)
-    cs = int(SYNC_STATE.get("collections_synced") or 0)
-    pgs = int(SYNC_STATE.get("pages_synced") or 0)
-    bgs = int(SYNC_STATE.get("blogs_synced") or 0)
-    img_t = int(SYNC_STATE.get("images_total") or 0)
-    img_s = int(SYNC_STATE.get("images_synced") or 0)
-    SYNC_STATE["total"] = pt + ct + pgt + bgt + img_t
-    SYNC_STATE["done"] = ps + cs + pgs + bgs + img_s
+    """Sidebar progress bar: sum catalog entity steps plus catalog image cache warm."""
+    done, total = shopify_aggregate_progress(SYNC_STATE)
+    SYNC_STATE["done"] = done
+    SYNC_STATE["total"] = total
 
 
 def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
-    """Download product gallery files into shopify_image_cache/; non-fatal on failure."""
+    """Download catalog image files into shopify_image_cache/; non-fatal on failure."""
     try:
         _set_sync_stage(
-            stage="syncing_product_images",
-            label="Caching product images",
+            stage="syncing_shopify",
+            label="Syncing Shopify",
             active_scope=SYNC_STATE.get("active_scope") or "",
             step_index=int(SYNC_STATE.get("step_index") or 0),
             step_total=int(SYNC_STATE.get("step_total") or 0),
-            current="Product images (local cache): starting…",
+            current="Shopify: caching catalog images (local)…",
         )
 
         def _progress(done: int, total: int) -> None:
             _raise_if_sync_cancelled()
             SYNC_STATE["images_synced"] = done
             SYNC_STATE["images_total"] = total
-            SYNC_STATE["current"] = f"Product images (local cache): {done}/{total}"
+            SYNC_STATE["current"] = f"Shopify: catalog images {done}/{total}"
             _recompute_shopify_scoped_progress()
 
         stats = warm_product_image_cache(Path(db_path), max_workers=6, progress_callback=_progress)
@@ -754,29 +746,118 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
         if selected_scope == "shopify":
             _set_sync_stage(
                 stage="syncing_shopify",
+                label="Discovering catalog…",
+                active_scope=selected_scope,
+                step_index=index,
+                step_total=total_steps,
+                current="Counting products, collections, pages, and blogs…",
+            )
+
+            def _discovery_progress(kind: str, count: int) -> None:
+                _raise_if_sync_cancelled()
+                if kind == "products":
+                    SYNC_STATE["products_total"] = count
+                elif kind == "collections":
+                    SYNC_STATE["collections_total"] = count
+                elif kind == "pages":
+                    SYNC_STATE["pages_total"] = count
+                elif kind == "blogs":
+                    SYNC_STATE["blogs_total"] = count
+                elif kind == "blog_articles":
+                    SYNC_STATE["blog_articles_total"] = count
+                _recompute_shopify_scoped_progress()
+
+            disc = discover_shopify_catalog(
+                50, cancel_check=_raise_if_sync_cancelled, progress_callback=_discovery_progress
+            )
+            SYNC_STATE["products_total"] = len(disc.products)
+            SYNC_STATE["collections_total"] = len(disc.collections)
+            SYNC_STATE["pages_total"] = len(disc.pages)
+            SYNC_STATE["blogs_total"] = len(disc.blogs)
+            SYNC_STATE["blog_articles_total"] = int(disc.blog_articles_total)
+            SYNC_STATE["products_synced"] = 0
+            SYNC_STATE["collections_synced"] = 0
+            SYNC_STATE["pages_synced"] = 0
+            SYNC_STATE["blogs_synced"] = 0
+            SYNC_STATE["blog_articles_synced"] = 0
+            SYNC_STATE["images_synced"] = 0
+            SYNC_STATE["images_total"] = count_catalog_image_urls_discover(
+                disc.products, disc.collections, disc.pages, disc.articles_by_blog_id
+            )
+            _recompute_shopify_scoped_progress()
+            _set_sync_stage(
+                stage="syncing_shopify",
                 label="Syncing Shopify",
                 active_scope=selected_scope,
                 step_index=index,
                 step_total=total_steps,
-                current="Refreshing products, collections, pages, and blogs from Shopify",
+                current="Refreshing products from Shopify",
             )
-            result["shopify"] = {
-                "products": sync_products(db_path, 50, progress_callback=_shopify_progress),
-            }
+            result["shopify"] = {}
+            t0 = time.time()
+            result["shopify"]["products"] = sync_products(
+                db_path, 50, progress_callback=_shopify_progress, products=disc.products
+            )
+            record_shopify_kind_eta(
+                db_path, "shopify_products", t0, int(result["shopify"]["products"].get("products_synced") or 0)
+            )
             _raise_if_sync_cancelled()
-            result["shopify"]["collections"] = sync_collections(db_path, 50, progress_callback=_shopify_progress)
+            t0 = time.time()
+            result["shopify"]["collections"] = sync_collections(
+                db_path, 50, progress_callback=_shopify_progress, collections=disc.collections
+            )
+            record_shopify_kind_eta(
+                db_path,
+                "shopify_collections",
+                t0,
+                int(result["shopify"]["collections"].get("collections_synced") or 0),
+            )
             _raise_if_sync_cancelled()
-            result["shopify"]["pages"] = sync_pages(db_path, 50, progress_callback=_shopify_progress)
+            t0 = time.time()
+            result["shopify"]["pages"] = sync_pages(db_path, 50, progress_callback=_shopify_progress, pages=disc.pages)
+            record_shopify_kind_eta(
+                db_path, "shopify_pages", t0, int(result["shopify"]["pages"].get("pages_synced") or 0)
+            )
             _raise_if_sync_cancelled()
-            result["shopify"]["blogs"] = sync_blogs(db_path, 50, progress_callback=_shopify_progress)
+            t0 = time.time()
+            result["shopify"]["blogs"] = sync_blogs(
+                db_path,
+                50,
+                progress_callback=_shopify_progress,
+                blogs=disc.blogs,
+                articles_by_blog_id=disc.articles_by_blog_id,
+                blog_articles_total_hint=disc.blog_articles_total,
+            )
             br = result["shopify"].get("blogs") or {}
             SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
-            SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_synced") or 0)
+            SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_total") or br.get("blog_articles_synced") or 0)
+            _recompute_shopify_scoped_progress()
+            record_sync_eta_sample(
+                db_path,
+                "shopify_blogs",
+                max(float(br.get("meta_duration_seconds") or 0.05), 1.3),
+                max(1, int(br.get("blogs_synced") or 0)),
+            )
+            record_sync_eta_sample(
+                db_path,
+                "shopify_blog_articles",
+                max(float(br.get("article_duration_seconds") or 0.05), 1.3),
+                max(1, int(br.get("blog_articles_synced") or 0)),
+            )
+            SYNC_STATE["images_total"] = count_catalog_images_for_cache(Path(db_path))
+            SYNC_STATE["images_synced"] = 0
+            _recompute_shopify_scoped_progress()
             _raise_if_sync_cancelled()
+            t0 = time.time()
             ic = _warm_product_image_cache_safe(db_path)
             if ic is not None:
                 result["shopify"]["product_image_cache"] = ic
-            record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
+            record_shopify_kind_eta(
+                db_path,
+                "shopify_images",
+                t0,
+                max(int(SYNC_STATE.get("images_total") or 0), int(SYNC_STATE.get("images_synced") or 0), 1),
+            )
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -861,6 +942,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing product catalog snapshot",
                 )
+                t0 = time.time()
                 result = {"products": sync_products(db_path, 50, progress_callback=lambda kind, done, total: (
                     _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("products_synced", done),
@@ -868,11 +950,23 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     SYNC_STATE.__setitem__("current", f"Shopify products: {done}/{total}"),
                     _recompute_shopify_scoped_progress(),
                 ))}
+                record_shopify_kind_eta(
+                    db_path, "shopify_products", t0, int(result["products"].get("products_synced") or 0)
+                )
+                SYNC_STATE["images_total"] = count_catalog_images_for_cache(Path(db_path))
+                SYNC_STATE["images_synced"] = 0
+                _recompute_shopify_scoped_progress()
                 _raise_if_sync_cancelled()
+                t_img = time.time()
                 ic = _warm_product_image_cache_safe(db_path)
                 if ic is not None:
                     result["products"]["product_image_cache"] = ic
-                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
+                record_shopify_kind_eta(
+                    db_path,
+                    "shopify_images",
+                    t_img,
+                    max(int(SYNC_STATE.get("images_total") or 0), int(SYNC_STATE.get("images_synced") or 0), 1),
+                )
             elif normalized_scope == "collections":
                 SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
@@ -883,15 +977,17 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing collection snapshot",
                 )
+                t0 = time.time()
                 result = {"collections": sync_collections(db_path, 50, progress_callback=lambda kind, done, total: (
                     _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("collections_synced", done),
                     SYNC_STATE.__setitem__("collections_total", total),
                     SYNC_STATE.__setitem__("current", f"Shopify collections: {done}/{total}"),
-                    SYNC_STATE.__setitem__("done", done),
-                    SYNC_STATE.__setitem__("total", total),
+                    _recompute_shopify_scoped_progress(),
                 ))}
-                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
+                record_shopify_kind_eta(
+                    db_path, "shopify_collections", t0, int(result["collections"].get("collections_synced") or 0)
+                )
             elif normalized_scope == "pages":
                 SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
@@ -902,15 +998,15 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing page snapshot",
                 )
+                t0 = time.time()
                 result = {"pages": sync_pages(db_path, 50, progress_callback=lambda kind, done, total: (
                     _raise_if_sync_cancelled(),
                     SYNC_STATE.__setitem__("pages_synced", done),
                     SYNC_STATE.__setitem__("pages_total", total),
                     SYNC_STATE.__setitem__("current", f"Shopify pages: {done}/{total}"),
-                    SYNC_STATE.__setitem__("done", done),
-                    SYNC_STATE.__setitem__("total", total),
+                    _recompute_shopify_scoped_progress(),
                 ))}
-                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
+                record_shopify_kind_eta(db_path, "shopify_pages", t0, int(result["pages"].get("pages_synced") or 0))
             elif normalized_scope == "blogs":
                 SYNC_STATE["eta_segment_started_at"] = int(time.time())
                 _set_sync_stage(
@@ -921,24 +1017,37 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing blogs and articles snapshot",
                 )
+                t0 = time.time()
+
                 def _blogs_only_progress(kind: str, done: int, total: int) -> None:
                     _raise_if_sync_cancelled()
                     if kind == "blogs":
                         SYNC_STATE["blogs_synced"] = done
                         SYNC_STATE["blogs_total"] = total
                         SYNC_STATE["current"] = f"Shopify blogs: {done}/{total}"
-                        SYNC_STATE["done"] = done
-                        SYNC_STATE["total"] = total
                     elif kind == "blog_articles":
                         SYNC_STATE["blog_articles_synced"] = done
                         SYNC_STATE["blog_articles_total"] = total
                         SYNC_STATE["current"] = f"Shopify blog articles: {done}/{total}"
+                    _recompute_shopify_scoped_progress()
 
                 result = {"blogs": sync_blogs(db_path, 50, progress_callback=_blogs_only_progress)}
                 br = result.get("blogs") or {}
                 SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
-                SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_synced") or 0)
-                record_scope_eta_segment(db_path, SYNC_STATE, "shopify")
+                SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_total") or br.get("blog_articles_synced") or 0)
+                _recompute_shopify_scoped_progress()
+                record_sync_eta_sample(
+                    db_path,
+                    "shopify_blogs",
+                    max(float(br.get("meta_duration_seconds") or 0.05), 1.3),
+                    max(1, int(br.get("blogs_synced") or 0)),
+                )
+                record_sync_eta_sample(
+                    db_path,
+                    "shopify_blog_articles",
+                    max(float(br.get("article_duration_seconds") or 0.05), 1.3),
+                    max(1, int(br.get("blog_articles_synced") or 0)),
+                )
             else:
                 result = _run_selected_sync_steps(db_path, normalized_selected_scopes, force_refresh=force_refresh)
             _raise_if_sync_cancelled()

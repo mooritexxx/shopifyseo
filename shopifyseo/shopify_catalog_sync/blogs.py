@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from pathlib import Path
 
 from .db import (
@@ -226,22 +227,43 @@ def sync_article(db_path: Path, article_id: str) -> dict:
         conn.close()
 
 
-def sync_blogs(db_path: Path, page_size: int, progress_callback=None) -> dict:
+def sync_blogs(
+    db_path: Path,
+    page_size: int,
+    progress_callback=None,
+    *,
+    blogs: list[dict] | None = None,
+    articles_by_blog_id: dict[str, list[dict]] | None = None,
+    blog_articles_total_hint: int | None = None,
+) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
     synced_at = now_iso()
     try:
-        blogs = fetch_all_blogs(page_size)
+        if blogs is None:
+            blogs = fetch_all_blogs(page_size)
+        else:
+            blogs = list(blogs)
         if progress_callback is not None:
             progress_callback("blogs", 0, len(blogs))
         blog_count = 0
         article_count = 0
+        t_meta_start = time.perf_counter()
         for blog in blogs:
             upsert_blog(conn, blog, synced_at)
             replace_blog_articles(conn, blog["id"])
-            articles = fetch_all_articles_for_blog(blog["id"], page_size)
+        t_articles_start = time.perf_counter()
+        for blog in blogs:
             blog_handle = blog.get("handle") or ""
-            articles_total_known = article_count + len(articles)
+            bid = str(blog.get("id") or "")
+            if articles_by_blog_id is not None:
+                articles = list(articles_by_blog_id.get(bid) or [])
+            else:
+                articles = fetch_all_articles_for_blog(blog["id"], page_size)
+            if blog_articles_total_hint is not None:
+                articles_total_known = blog_articles_total_hint
+            else:
+                articles_total_known = article_count + len(articles)
             if progress_callback is not None:
                 progress_callback("blog_articles", article_count, articles_total_known)
             for article in articles:
@@ -252,6 +274,7 @@ def sync_blogs(db_path: Path, page_size: int, progress_callback=None) -> dict:
             blog_count += 1
             if progress_callback is not None:
                 progress_callback("blogs", blog_count, len(blogs))
+        t_end = time.perf_counter()
         pruned = prune_deleted_blogs(conn, blogs)
         conn.commit()
         finish_run(
@@ -265,9 +288,12 @@ def sync_blogs(db_path: Path, page_size: int, progress_callback=None) -> dict:
             "db_path": str(db_path),
             "blogs_synced": blog_count,
             "blog_articles_synced": article_count,
+            "blog_articles_total": article_count,
             "blogs_pruned": pruned,
             "synced_at": synced_at,
             "run_id": run_id,
+            "meta_duration_seconds": max(t_articles_start - t_meta_start, 0.0),
+            "article_duration_seconds": max(t_end - t_articles_start, 0.0),
         }
     except Exception as exc:
         conn.rollback()

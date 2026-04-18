@@ -7,11 +7,8 @@ import sqlite3
 from typing import Any
 
 from shopifyseo.dashboard_http import HttpRequestError
-from shopifyseo.shopify_theme_assets import fetch_main_theme_id, fetch_theme_asset_text
-from shopifyseo.theme_template_images import (
-    extract_shopify_image_urls_from_theme_json_text,
-    page_template_asset_keys,
-)
+from shopifyseo.shopify_theme_assets import fetch_main_theme_id
+from shopifyseo.theme_template_images import collect_template_image_urls_for_pages
 
 
 def enrich_pages_template_images(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -34,30 +31,13 @@ def enrich_pages_template_images(conn: sqlite3.Connection) -> dict[str, Any]:
     if not rows:
         return {"ok": True, "message": "No pages.", "pages_updated": 0}
 
-    # Cache: theme asset key -> list of image URLs (parsed once per template file)
-    parsed_by_key: dict[str, list[str]] = {}
-
-    def urls_for_suffix(suffix: str) -> list[str]:
-        for key in page_template_asset_keys(suffix):
-            if key not in parsed_by_key:
-                try:
-                    raw = fetch_theme_asset_text(theme_id, key)
-                except HttpRequestError:
-                    parsed_by_key[key] = []
-                    continue
-                if not raw:
-                    parsed_by_key[key] = []
-                else:
-                    parsed_by_key[key] = extract_shopify_image_urls_from_theme_json_text(raw)
-            if parsed_by_key[key]:
-                return list(parsed_by_key[key])
-        return []
+    pages_payload = [{"id": r["shopify_id"], "templateSuffix": (r["suf"] or "")} for r in rows]
+    by_id = collect_template_image_urls_for_pages(pages_payload, theme_id=theme_id)
 
     updated = 0
     for row in rows:
         sid = row["shopify_id"]
-        suffix = (row["suf"] or "") if row["suf"] is not None else ""
-        urls = urls_for_suffix(suffix)
+        urls = list(by_id.get(str(sid), []) or [])
         conn.execute(
             "UPDATE pages SET template_images_json = ? WHERE shopify_id = ?",
             (json.dumps(urls), sid),

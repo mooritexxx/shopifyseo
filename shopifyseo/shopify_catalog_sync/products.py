@@ -342,7 +342,13 @@ def upsert_product(conn: sqlite3.Connection, product: dict, synced_at: str) -> t
     return len(variants), len(images), len(metafields)
 
 
-def sync_products(db_path: Path, page_size: int, progress_callback=None) -> dict:
+def sync_products(
+    db_path: Path,
+    page_size: int,
+    progress_callback=None,
+    *,
+    products: list[dict] | None = None,
+) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
     synced_at = now_iso()
@@ -351,7 +357,10 @@ def sync_products(db_path: Path, page_size: int, progress_callback=None) -> dict
             if progress_callback is not None:
                 progress_callback("products", 0, n_so_far)
 
-        products = fetch_all_products(page_size, after_page=_on_product_page_loaded)
+        if products is None:
+            products = fetch_all_products(page_size, after_page=_on_product_page_loaded)
+        else:
+            products = list(products)
         all_metaobject_ids = sorted(
             {
                 metaobject_id

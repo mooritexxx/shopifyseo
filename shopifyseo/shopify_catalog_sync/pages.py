@@ -56,12 +56,21 @@ def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
     )
 
 
-def sync_pages(db_path: Path, page_size: int, progress_callback=None) -> dict:
+def sync_pages(
+    db_path: Path,
+    page_size: int,
+    progress_callback=None,
+    *,
+    pages: list[dict] | None = None,
+) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
     synced_at = now_iso()
     try:
-        pages = fetch_all_pages(page_size)
+        if pages is None:
+            pages = fetch_all_pages(page_size)
+        else:
+            pages = list(pages)
         if progress_callback is not None:
             progress_callback("pages", 0, len(pages))
         page_count = 0

@@ -10,8 +10,6 @@ export type PipelineRowStatus = "queued" | "active" | "done" | "failed" | "off";
 export type PipelineRowModel = {
   key: SyncServiceValue;
   label: string;
-  /** When set, replaces SYNC_PIPELINE_SUBTITLE for this row (e.g. Shopify image-cache phase). */
-  subtitle?: string;
   status: PipelineRowStatus;
   pct: number;
   count: number;
@@ -101,12 +99,9 @@ export function derivePipelineRows(args: {
   syncPercent: number;
   activeScope: string;
   stepIndex: number;
-  /** Backend sync stage — used to surface Shopify product image cache as its own visible step. */
-  stage?: string;
 }): PipelineRowModel[] {
-  const { orderedScopes, syncStatus, running, hasError, syncPercent, activeScope, stepIndex, stage } = args;
+  const { orderedScopes, syncStatus, running, hasError, syncPercent, activeScope, stepIndex } = args;
   const activeKey = activeServiceKey(activeScope);
-  const imageCachePhase = (stage || "") === "syncing_product_images";
   const failedIdx = hasError
     ? Math.max(
         0,
@@ -169,24 +164,13 @@ export function derivePipelineRows(args: {
       };
     }
     if (i === activeI) {
-      let displayCount = done;
-      let displayTotal = total || 0;
-      let subtitle: string | undefined;
-      if (imageCachePhase && key === "shopify") {
-        subtitle = "Product gallery images (local cache)";
-        if (typeof syncStatus?.images_total === "number" && syncStatus.images_total > 0) {
-          displayCount = syncStatus.images_synced ?? 0;
-          displayTotal = syncStatus.images_total;
-        }
-      }
       return {
         key,
         label,
-        subtitle,
         status: "active",
         pct: syncPercent,
-        count: displayCount,
-        total: displayTotal
+        count: done,
+        total: total || 0
       };
     }
     return { key, label, status: "queued", pct: 0, count: 0, total: 0 };

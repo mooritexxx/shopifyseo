@@ -1054,6 +1054,13 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 summary["errors"] += 1
                 SYNC_STATE["pagespeed_errors"] = summary["errors"]
                 _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
+                
+                # Check for 5xx errors (e.g. from PageSpeed Insights overload) and throttle
+                http_status = getattr(exc, "status", None)
+                if isinstance(http_status, int) and 500 <= http_status < 600:
+                    changed, new_limit = adaptive_limiter.note_rate_limited(retry_after_seconds=5.0)
+                    if changed:
+                        _record_pagespeed_limit_change(f"HTTP {http_status} overload", new_limit)
             _raise_if_sync_cancelled()
 
         pending_targets = deque(queued_targets)

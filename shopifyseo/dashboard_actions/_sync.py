@@ -7,7 +7,7 @@ import time
 from collections import deque
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ from ..shopify_catalog_sync import (
 from ..catalog_image_work import count_catalog_image_urls_discover
 from ..shopify_catalog_sync.discovery import discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
-from ._rpm_limiter import PerMinuteRateLimiter
+from ._rpm_limiter import AdaptiveMinuteRateLimiter, PerMinuteRateLimiter
 from ._state import (
     GA4_SYNC_RATE_LIMIT_PER_MINUTE,
     GA4_SYNC_WORKERS,
@@ -43,15 +43,15 @@ from ._state import (
     INDEX_SYNC_WORKERS,
     PAGESPEED_ERROR_DETAILS_MAX,
     PAGESPEED_RECENT_FETCH_WINDOW_SECONDS,
-    PAGESPEED_SYNC_WORKERS,
+    PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
     SYNC_LOCK,
     SYNC_STATE,
     _db_connect_for_actions,
     _raise_if_sync_cancelled,
-    acquire_pagespeed_http_rate_slot,
     clear_last_error,
     append_sync_event,
     clear_pagespeed_http_call_tracker,
+    record_pagespeed_http_api_call_at,
     record_last_error,
 )
 from ..dashboard_http import HttpRequestError
@@ -833,6 +833,21 @@ def _record_pagespeed_error(kind: str, handle: str, url: str, exc: Exception, *,
     SYNC_STATE["pagespeed_error_details"] = details[-PAGESPEED_ERROR_DETAILS_MAX:]
 
 
+def _pagespeed_bulk_max_inflight(limit_per_minute: int) -> int:
+    """Enough concurrency to keep the limiter busy without making workers the throttle."""
+    cap = max(int(limit_per_minute or 0), 1)
+    return max(16, min(64, (cap + 3) // 4))
+
+
+def _pagespeed_adaptive_floor(limit_per_minute: int) -> int:
+    cap = max(int(limit_per_minute or 0), 1)
+    return max(60, cap // 2)
+
+
+def _record_pagespeed_limit_change(reason: str, limit_per_minute: int) -> None:
+    append_sync_event("pagespeed", f"Adaptive PageSpeed limit now {limit_per_minute}/min after {reason}")
+
+
 def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_refresh: bool = False) -> dict:
     conn = _db_connect_for_actions(db_path)
     summary = {
@@ -881,10 +896,34 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
             return summary
 
         progress_lock = threading.Lock()
+        adaptive_limiter = AdaptiveMinuteRateLimiter(
+            PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
+            minimum_limit=_pagespeed_adaptive_floor(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE),
+            maximum_limit=PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
+            on_granted=record_pagespeed_http_api_call_at,
+        )
+        max_inflight = _pagespeed_bulk_max_inflight(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE)
+        append_sync_event(
+            "pagespeed",
+            f"PageSpeed scheduler armed at {adaptive_limiter.current_limit}/min with up to {max_inflight} in flight",
+        )
 
-        def _run_pagespeed_target(kind: str, handle: str, url: str, strategy: str) -> dict:
+        def _run_pagespeed_target(
+            kind: str,
+            handle: str,
+            url: str,
+            strategy: str,
+            *,
+            initial_slot_reserved: bool,
+        ) -> dict:
+            first_http = bool(initial_slot_reserved)
+
             def _before_each_psi_http() -> None:
-                acquire_pagespeed_http_rate_slot(_raise_if_sync_cancelled)
+                nonlocal first_http
+                if first_http:
+                    first_http = False
+                else:
+                    adaptive_limiter.acquire(_raise_if_sync_cancelled)
                 append_sync_event("pagespeed", f"HTTP {strategy} {kind}:{handle}")
 
             _raise_if_sync_cancelled()
@@ -901,51 +940,107 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 )
                 refreshed_meta = refreshed.get("_cache") or {}
                 if refreshed_meta.get("rate_limited"):
-                    return {"status": "rate_limited"}
+                    retry_after_seconds = None
+                    retry_after_at = refreshed_meta.get("retry_after_at")
+                    try:
+                        if retry_after_at not in (None, ""):
+                            retry_after_seconds = max(int(retry_after_at) - int(time.time()), 0)
+                    except (TypeError, ValueError):
+                        retry_after_seconds = None
+                    return {"status": "rate_limited", "retry_after_seconds": retry_after_seconds}
                 return {"status": "refreshed"}
             finally:
                 worker_conn.close()
 
-        with ThreadPoolExecutor(max_workers=PAGESPEED_SYNC_WORKERS) as executor:
-            future_to_target = {}
-            for kind, handle, url, strategy in queued_targets:
-                _raise_if_sync_cancelled()
-                with progress_lock:
-                    summary["queue_inflight"] += 1
-                    SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
-                future = executor.submit(_run_pagespeed_target, kind, handle, url, strategy)
-                future_to_target[future] = (kind, handle, url, strategy)
+        def _submit_target(executor: ThreadPoolExecutor, future_to_target: dict) -> bool:
+            if not pending_targets:
+                return False
+            if len(future_to_target) >= max_inflight:
+                return False
+            wait_seconds = adaptive_limiter.wait_seconds()
+            if wait_seconds > 0.0:
+                return False
+            adaptive_limiter.acquire(_raise_if_sync_cancelled)
+            kind, handle, url, strategy = pending_targets.popleft()
+            with progress_lock:
+                summary["queue_inflight"] += 1
+                SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
+            future = executor.submit(
+                _run_pagespeed_target,
+                kind,
+                handle,
+                url,
+                strategy,
+                initial_slot_reserved=True,
+            )
+            future_to_target[future] = (kind, handle, url, strategy)
+            return True
 
-            for future in as_completed(future_to_target):
-                kind, handle, url, strategy = future_to_target[future]
-                with progress_lock:
-                    summary["queue_inflight"] = max(summary["queue_inflight"] - 1, 0)
-                    summary["queue_completed"] += 1
-                    SYNC_STATE["pagespeed_phase"] = "queueing"
-                    SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
-                    SYNC_STATE["pagespeed_queue_completed"] = summary["queue_completed"]
-                    _sync_current(f"PageSpeed ({strategy}): {kind}:{handle}")
+        def _handle_finished_future(future, future_to_target: dict) -> None:
+            kind, handle, url, strategy = future_to_target.pop(future)
+            with progress_lock:
+                summary["queue_inflight"] = max(summary["queue_inflight"] - 1, 0)
+                summary["queue_completed"] += 1
+                SYNC_STATE["pagespeed_phase"] = "queueing"
+                SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
+                SYNC_STATE["pagespeed_queue_completed"] = summary["queue_completed"]
+                _sync_current(f"PageSpeed ({strategy}): {kind}:{handle}")
+            try:
+                result = future.result()
+                if result["status"] == "rate_limited":
+                    summary["rate_limited"] += 1
+                    SYNC_STATE["pagespeed_rate_limited"] = summary["rate_limited"]
+                    changed, new_limit = adaptive_limiter.note_rate_limited(result.get("retry_after_seconds"))
+                    if changed:
+                        _record_pagespeed_limit_change("rate limit", new_limit)
+                else:
+                    summary["refreshed"] += 1
+                    SYNC_STATE["pagespeed_refreshed"] = summary["refreshed"]
+                    changed, new_limit = adaptive_limiter.note_success()
+                    if changed:
+                        _record_pagespeed_limit_change("healthy responses", new_limit)
                 try:
-                    result = future.result()
-                    if result["status"] == "rate_limited":
-                        summary["rate_limited"] += 1
-                        SYNC_STATE["pagespeed_rate_limited"] = summary["rate_limited"]
-                    else:
-                        summary["refreshed"] += 1
-                        SYNC_STATE["pagespeed_refreshed"] = summary["refreshed"]
-                    try:
-                        refresh_object_pagespeed_signal_data(conn, kind, handle)
-                    except Exception:
-                        logger.warning(
-                            "Incremental PageSpeed denormalize failed (non-fatal)",
-                            exc_info=True,
-                            extra={"object_type": kind, "handle": handle},
-                        )
-                except Exception as exc:
-                    summary["errors"] += 1
-                    SYNC_STATE["pagespeed_errors"] = summary["errors"]
-                    _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
+                    refresh_object_pagespeed_signal_data(conn, kind, handle)
+                except Exception:
+                    logger.warning(
+                        "Incremental PageSpeed denormalize failed (non-fatal)",
+                        exc_info=True,
+                        extra={"object_type": kind, "handle": handle},
+                    )
+            except Exception as exc:
+                summary["errors"] += 1
+                SYNC_STATE["pagespeed_errors"] = summary["errors"]
+                _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
+                if isinstance(exc, HttpRequestError) and exc.status in (408, 500, 502, 503, 504):
+                    changed, new_limit = adaptive_limiter.note_transient_error()
+                    if changed:
+                        _record_pagespeed_limit_change("server errors", new_limit)
+            _raise_if_sync_cancelled()
+
+        pending_targets = deque(queued_targets)
+        with ThreadPoolExecutor(max_workers=max_inflight) as executor:
+            future_to_target = {}
+            while pending_targets or future_to_target:
                 _raise_if_sync_cancelled()
+
+                submitted = False
+                while _submit_target(executor, future_to_target):
+                    submitted = True
+                    _raise_if_sync_cancelled()
+                if submitted:
+                    continue
+
+                if future_to_target:
+                    timeout = 1.0
+                    if pending_targets and len(future_to_target) < max_inflight:
+                        timeout = min(max(adaptive_limiter.wait_seconds(), 0.05), 1.0)
+                    done, _ = wait(set(future_to_target), timeout=timeout, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        _handle_finished_future(future, future_to_target)
+                    continue
+
+                if pending_targets:
+                    time.sleep(min(max(adaptive_limiter.wait_seconds(), 0.05), 1.0))
         _raise_if_sync_cancelled()
         SYNC_STATE["pagespeed_phase"] = "complete"
     finally:

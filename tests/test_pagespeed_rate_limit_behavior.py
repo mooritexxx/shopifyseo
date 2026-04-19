@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+import shopifyseo.dashboard_actions._rpm_limiter as rpm
 from shopifyseo.dashboard_actions import _sync
 from shopifyseo.dashboard_google import _gsc
 from shopifyseo.dashboard_google._cache import ensure_google_cache_schema
@@ -123,3 +124,40 @@ def test_pagespeed_http_429_is_not_retried(monkeypatch):
         )
 
     assert calls == {"before_each_http": 1, "google_api_get": 1}
+
+
+def test_adaptive_pagespeed_limiter_slows_down_and_recovers(monkeypatch):
+    now = 1_000_000.0
+
+    def _monotonic() -> float:
+        return now
+
+    monkeypatch.setattr(rpm.time, "monotonic", _monotonic)
+
+    limiter = rpm.AdaptiveMinuteRateLimiter(
+        190,
+        minimum_limit=95,
+        maximum_limit=190,
+    )
+
+    changed, lowered = limiter.note_rate_limited(12)
+    assert changed is True
+    assert lowered == 142
+    assert limiter.current_limit == 142
+    assert limiter.wait_seconds() >= 11.0
+
+    now += 12.0
+    assert limiter.wait_seconds() == 0.0
+
+    changed = False
+    new_limit = limiter.current_limit
+    for _ in range(25):
+        changed, new_limit = limiter.note_success()
+    assert changed is True
+    assert new_limit == 147
+
+
+def test_pagespeed_bulk_max_inflight_tracks_rate_limit():
+    assert _sync._pagespeed_bulk_max_inflight(60) == 16
+    assert _sync._pagespeed_bulk_max_inflight(190) == 48
+    assert _sync._pagespeed_bulk_max_inflight(400) == 64

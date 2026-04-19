@@ -77,8 +77,9 @@ frontend/.vitest/
 *.sqlite
 shopify_image_cache/
 
-# Syncthing conflict files
+# Syncthing conflict and temp files
 *.sync-conflict-*
+.syncthing.*.tmp
 
 # Office documents (may contain sensitive info)
 *.docx

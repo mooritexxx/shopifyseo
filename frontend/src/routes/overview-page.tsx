@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, FileSearch, Globe, Layers, Monitor, MousePointerClick, TrendingUp } from "lucide-react";
-import type { ComponentType, CSSProperties, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -21,7 +20,30 @@ import {
 import { summarySchema } from "../types/api";
 
 import { GscPerformanceSection } from "../components/gsc/gsc-performance-section";
+import {
+  CompletionBar,
+  DeltaInline,
+  KpiCard,
+  SegmentMixTile,
+  overviewCacheHint
+} from "../components/overview/overview-cards";
 import { OverviewOnboarding, overviewShowsOnboarding } from "../components/overview/overview-onboarding";
+import {
+  CHART_GRID,
+  CHART_META_COMPLETE,
+  CHART_MISSING_META,
+  CHART_PRIMARY,
+  CHART_THIN_BODY,
+  CHART_TOOLTIP_STYLE,
+  ENTITY_TYPE_COLORS,
+  ENTITY_TYPE_LABELS,
+  GA4_CHART_SESSIONS,
+  GA4_CHART_VIEWS,
+  GSC_SEGMENT_OPTIONS,
+  OVERVIEW_GSC_PERIOD_OPTIONS,
+  entityAppPath,
+  formatChartAxisDate
+} from "../components/overview/overview-theme";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -32,239 +54,7 @@ import {
   readStoredOverviewGscPeriod,
   type OverviewGscPeriod
 } from "../lib/gsc-period";
-import { cn, formatDurationSeconds, formatNumber, formatPercent, formatRelativeTimestamp } from "../lib/utils";
-
-const OVERVIEW_GSC_PERIOD_OPTIONS = [
-  { value: "rolling_30d" as const, label: "Last 30 days" },
-  { value: "since_2026_02_15" as const, label: "All time" }
-] as const;
-
-const GSC_SEGMENT_OPTIONS = [
-  { value: "all" as const, label: "All URLs" },
-  { value: "products" as const, label: "Products" },
-  { value: "collections" as const, label: "Collections" },
-  { value: "pages" as const, label: "Pages" },
-  { value: "blogs" as const, label: "Blogs" }
-] as const;
-
-const CHART_TOOLTIP_STYLE: CSSProperties = {
-  borderRadius: 12,
-  border: "1px solid #e8e4f8",
-  boxShadow: "0 8px 24px rgba(15,23,42,0.08)"
-};
-
-function formatChartAxisDate(iso: string) {
-  const d = new Date(`${iso}T12:00:00`);
-  return d.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
-}
-
-function DeltaInline({
-  pct,
-  unit = "percent"
-}: {
-  pct: number | null | undefined;
-  unit?: "percent" | "points";
-}) {
-  if (pct == null || Number.isNaN(pct)) return null;
-  const up = pct > 0;
-  const down = pct < 0;
-  const suffix = unit === "points" ? " pp" : "%";
-  return (
-    <span
-      className={cn(
-        "ml-1.5 text-xs font-semibold tabular-nums",
-        up && "text-emerald-600",
-        down && "text-rose-600",
-        !up && !down && "text-slate-500"
-      )}
-    >
-      {up ? "↑" : down ? "↓" : "→"} {Math.abs(pct).toFixed(1)}
-      {suffix} vs prior
-    </span>
-  );
-}
-
-function topGscPropertyBreakdownRow(slice: {
-  rows: Array<{ keys?: string[]; impressions?: number | string }>;
-}): { rawKey: string; impressions: number } | null {
-  const r = slice.rows?.[0];
-  if (!r?.keys?.length) return null;
-  const rawKey = String(r.keys[0] ?? "").trim();
-  if (!rawKey) return null;
-  return { rawKey, impressions: Number(r.impressions) || 0 };
-}
-
-function formatGscBreakdownSegmentLabel(rawKey: string, dimension: "country" | "device" | "appearance"): string {
-  const s = rawKey.trim();
-  if (!s) return "—";
-  if (dimension === "country" && s.length <= 3) return s.toUpperCase();
-  if (dimension === "device") {
-    const lower = s.toLowerCase();
-    return lower.charAt(0).toUpperCase() + lower.slice(1);
-  }
-  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function SegmentMixTile({
-  label,
-  dimension,
-  slice,
-  icon: Icon
-}: {
-  label: string;
-  dimension: "country" | "device" | "appearance";
-  slice: {
-    rows: Array<{ keys?: string[]; impressions?: number | string }>;
-    top_bucket_impressions_pct_vs_prior?: number | null;
-  };
-  icon: ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean }>;
-}) {
-  const row = topGscPropertyBreakdownRow(slice);
-  return (
-    <div className="rounded-2xl border border-[#e8e4f8] bg-white p-5 shadow-[0_2px_12px_rgba(87,70,217,0.06)]">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</p>
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f4f2ff] text-[#5746d9]">
-          <Icon size={16} strokeWidth={2} aria-hidden />
-        </span>
-      </div>
-      {row ? (
-        <>
-          <p className="mt-2 font-mono text-2xl font-bold tabular-nums tracking-tight text-ink">
-            {formatNumber(row.impressions)}
-          </p>
-          <p className="mt-1 text-xs font-medium text-slate-600">
-            {formatGscBreakdownSegmentLabel(row.rawKey, dimension)}
-          </p>
-          <p className="mt-2 text-[11px] leading-snug text-slate-500">
-            Impressions · top bucket in window
-            <DeltaInline pct={slice.top_bucket_impressions_pct_vs_prior ?? null} />
-          </p>
-        </>
-      ) : (
-        <>
-          <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-slate-300">—</p>
-          <p className="mt-1 text-xs text-slate-500">No rows in cache</p>
-        </>
-      )}
-    </div>
-  );
-}
-
-function overviewCacheHint(cache: { text: string; meta?: unknown }) {
-  const meta =
-    cache.meta && typeof cache.meta === "object" && cache.meta !== null
-      ? (cache.meta as Record<string, unknown>)
-      : null;
-  const raw = meta?.fetched_at;
-  const ts =
-    raw != null
-      ? typeof raw === "number"
-        ? raw
-        : Number(raw)
-      : null;
-  const relative =
-    ts != null && Number.isFinite(ts) ? formatRelativeTimestamp(ts).split(" · ")[0] : null;
-  return (
-    <span className="block space-y-0.5">
-      {relative ? <span className="font-medium text-slate-700">Refreshed {relative}</span> : null}
-      <span className="text-slate-500">{cache.text}</span>
-    </span>
-  );
-}
-
-function CompletionBar({
-  label,
-  pct,
-  href,
-  sub
-}: {
-  label: string;
-  pct: number;
-  href: string;
-  sub?: string;
-}) {
-  const w = Math.min(100, Math.max(0, pct));
-  return (
-    <div>
-      <div className="flex items-baseline justify-between gap-2 text-sm">
-        <Link className="font-semibold text-[#5746d9] hover:underline" to={href}>
-          {label}
-        </Link>
-        <span className="shrink-0 tabular-nums text-slate-600">{pct.toFixed(1)}%</span>
-      </div>
-      <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-[#ede9f7]">
-        <div
-          className="h-full rounded-full bg-[#5746d9] transition-[width] duration-500 ease-out"
-          style={{ width: `${w}%` }}
-        />
-      </div>
-      {sub ? <p className="mt-1.5 text-xs text-slate-500">{sub}</p> : null}
-    </div>
-  );
-}
-
-/** Metorik-adjacent accent: confident purple on analytics surfaces */
-const CHART_PRIMARY = "#5746d9";
-const CHART_GRID = "#e8e4f4";
-const GA4_CHART_SESSIONS = "#0891b2";
-const GA4_CHART_VIEWS = "#94a3b8";
-const CHART_META_COMPLETE = "#22c55e";
-const CHART_MISSING_META = "#f59e0b";
-const CHART_THIN_BODY = "#e879f9";
-
-const ENTITY_TYPE_LABELS: Record<string, string> = {
-  product: "Product",
-  collection: "Collection",
-  page: "Page",
-  blog_article: "Article"
-};
-
-const ENTITY_TYPE_COLORS: Record<string, string> = {
-  product: "#5746d9",
-  collection: "#0891b2",
-  page: "#10b981",
-  blog_article: "#f59e0b"
-};
-
-function entityAppPath(entityType: string, handle: string): string {
-  if (entityType === "product") return `/products/${handle}`;
-  if (entityType === "collection") return `/collections/${handle}`;
-  if (entityType === "page") return `/pages/${handle}`;
-  if (entityType === "blog_article") {
-    const [blog, ...rest] = handle.split("/");
-    return `/articles/${blog}/${rest.join("/")}`;
-  }
-  return "/";
-}
-
-function KpiCard({
-  label,
-  value,
-  hint,
-  sparkline,
-  className
-}: {
-  label: string;
-  value: string;
-  hint?: ReactNode;
-  sparkline?: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-2xl border border-[#e8e4f8] bg-white p-5 shadow-[0_2px_12px_rgba(87,70,217,0.06)]",
-        className
-      )}
-    >
-      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</p>
-      <p className="mt-2 font-mono text-2xl font-bold tabular-nums tracking-tight text-ink">{value}</p>
-      {sparkline ? <div className="mt-3 w-full min-w-0">{sparkline}</div> : null}
-      {hint ? <div className="mt-1.5 text-xs text-slate-500">{hint}</div> : null}
-    </div>
-  );
-}
+import { cn, formatDurationSeconds, formatNumber, formatPercent } from "../lib/utils";
 
 type GscChartTab = "traffic" | "ctr_position";
 

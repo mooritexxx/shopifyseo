@@ -53,7 +53,7 @@ type NavItem = {
   disabled?: boolean;
   group: string;
   badge?: string;
-  countKey?: "products" | "collections" | "pages" | "blogs";
+  countKey?: "products" | "collections" | "pages" | "blogs" | "blog_articles";
 };
 
 type SyncStatusPayload = z.infer<typeof statusSchema>;
@@ -153,7 +153,7 @@ const items: NavItem[] = [
   { to: "/products", label: "Products", icon: Box, group: "Catalog", countKey: "products" },
   { to: "/collections", label: "Collections", icon: Layers3, group: "Catalog", countKey: "collections" },
   { to: "/pages", label: "Pages", icon: BookOpen, group: "Catalog", countKey: "pages" },
-  { to: "/articles", label: "Articles", icon: FileText, group: "Catalog" },
+  { to: "/articles", label: "Articles", icon: FileText, group: "Catalog", countKey: "blog_articles" },
   { to: "/blogs", label: "Blogs", icon: Rss, group: "Catalog", countKey: "blogs" },
   { to: "/keywords", label: "Keyword Research", icon: Key, group: "Research" },
   { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Research", badge: "NEW" },

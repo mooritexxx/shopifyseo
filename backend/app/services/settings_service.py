@@ -143,13 +143,13 @@ def save_settings(payload: dict[str, str]) -> str:
         try:
             import shopifyseo.market_context as _mc
             _mc._PRIMARY_MARKET_CACHE = None
-        except Exception:
+        except (ImportError, AttributeError):
             pass
         # Reset cached store base URL so custom domain changes take effect
         try:
             import shopifyseo.dashboard_queries as _dq
             _dq._BASE_URL_CACHE = None
-        except Exception:
+        except (ImportError, AttributeError):
             pass
         return "Settings saved"
     finally:

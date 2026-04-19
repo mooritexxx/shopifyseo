@@ -37,6 +37,7 @@ from ._state import (
     GA4_SYNC_WORKERS,
     GSC_SYNC_RATE_LIMIT_PER_MINUTE,
     GSC_SYNC_WORKERS,
+    IMAGE_CACHE_WORKERS,
     INDEX_SYNC_RATE_LIMIT_PER_MINUTE,
     INDEX_SYNC_WORKERS,
     PAGESPEED_RECENT_FETCH_WINDOW_SECONDS,
@@ -49,6 +50,7 @@ from ._state import (
     clear_last_error,
     record_last_error,
 )
+from ..exceptions import SyncCancelledError
 from .sync_eta import (
     append_completed_sync_eta_run,
     record_scope_eta_segment,
@@ -178,16 +180,16 @@ def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
             SYNC_STATE["current"] = f"Shopify: catalog images {done}/{total}"
             _recompute_shopify_scoped_progress()
 
-        stats = warm_product_image_cache(Path(db_path), max_workers=6, progress_callback=_progress)
+        stats = warm_product_image_cache(Path(db_path), max_workers=IMAGE_CACHE_WORKERS, progress_callback=_progress)
         return {
             "downloaded": int(stats.get("downloaded") or 0),
             "skipped": int(stats.get("skipped") or 0),
             "errors": int(stats.get("errors") or 0),
             "pruned": int(stats.get("pruned") or 0),
         }
-    except Exception as exc:
-        if str(exc) == "Sync cancelled by user":
-            raise
+    except SyncCancelledError:
+        raise
+    except Exception:
         logger.warning("Product image cache warm failed", exc_info=True)
         return None
 
@@ -1268,29 +1270,29 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 conn.close()
             append_completed_sync_eta_run(db_path)
             return result
+        except SyncCancelledError:
+            _set_sync_stage(
+                stage="cancelled",
+                label="Sync cancelled",
+                active_scope=SYNC_STATE.get("active_scope") or "",
+                step_index=SYNC_STATE.get("step_index") or 0,
+                step_total=SYNC_STATE.get("step_total") or 0,
+                current="Sync cancelled before completion",
+            )
+            SYNC_STATE["finished_at"] = int(time.time())
+            SYNC_STATE["last_result"] = {"cancelled": True}
+            clear_last_error()
+            raise
         except Exception as exc:
-            if str(exc) == "Sync cancelled by user":
-                _set_sync_stage(
-                    stage="cancelled",
-                    label="Sync cancelled",
-                    active_scope=SYNC_STATE.get("active_scope") or "",
-                    step_index=SYNC_STATE.get("step_index") or 0,
-                    step_total=SYNC_STATE.get("step_total") or 0,
-                    current="Sync cancelled before completion",
-                )
-                SYNC_STATE["finished_at"] = int(time.time())
-                SYNC_STATE["last_result"] = {"cancelled": True}
-                clear_last_error()
-            else:
-                _set_sync_stage(
-                    stage="error",
-                    label="Sync failed",
-                    active_scope=SYNC_STATE.get("active_scope") or "",
-                    step_index=SYNC_STATE.get("step_index") or 0,
-                    step_total=SYNC_STATE.get("step_total") or 0,
-                )
-                SYNC_STATE["finished_at"] = int(time.time())
-                record_last_error(exc)
+            _set_sync_stage(
+                stage="error",
+                label="Sync failed",
+                active_scope=SYNC_STATE.get("active_scope") or "",
+                step_index=SYNC_STATE.get("step_index") or 0,
+                step_total=SYNC_STATE.get("step_total") or 0,
+            )
+            SYNC_STATE["finished_at"] = int(time.time())
+            record_last_error(exc)
             raise
         finally:
             SYNC_STATE["running"] = False
@@ -1304,7 +1306,7 @@ def start_sync_background(db_path: str, scope: str, selected_scopes: list[str] |
         try:
             run_sync(db_path, scope, selected_scopes, force_refresh=force_refresh)
         except Exception:
-            pass
+            logger.exception("Background sync worker exited with an exception")
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()

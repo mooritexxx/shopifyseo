@@ -7,6 +7,8 @@ import time
 import uuid
 from collections import deque
 
+from ..exceptions import AICancelledError, SyncCancelledError
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -25,6 +27,7 @@ INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 55
 PAGESPEED_SYNC_WORKERS = 12
 PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 60
 PAGESPEED_RECENT_FETCH_WINDOW_SECONDS = 30 * 24 * 60 * 60
+IMAGE_CACHE_WORKERS = 6
 
 # ---------------------------------------------------------------------------
 # Locks
@@ -190,7 +193,7 @@ def _ai_cancelled(job_id: str | None = None) -> bool:
 
 def _raise_if_ai_cancelled(job_id: str | None = None) -> None:
     if _ai_cancelled(job_id):
-        raise RuntimeError("AI generation cancelled by user")
+        raise AICancelledError()
 
 
 def request_sync_cancel() -> None:
@@ -203,7 +206,7 @@ def _sync_cancelled() -> bool:
 
 def _raise_if_sync_cancelled() -> None:
     if _sync_cancelled():
-        raise RuntimeError("Sync cancelled by user")
+        raise SyncCancelledError()
 
 
 # ---------------------------------------------------------------------------

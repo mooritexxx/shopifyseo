@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
@@ -69,12 +70,12 @@ def resolve_competitor_labs_target_domain(conn: sqlite3.Connection) -> str:
 
 def _run_source(
     label: str,
-    call_fn,
+    call_fn: Callable[..., tuple[list[dict], float]],
     call_args: list,
-    batch_label: str,
+    batch_label: Callable[..., str],
     all_raw: list[dict],
     errors: list[str],
-    on_progress=None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> float:
     """Run a single source, appending results to all_raw. Returns cost."""
     cost = 0.0

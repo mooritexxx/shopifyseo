@@ -29,6 +29,7 @@ from ._state import (
     _sync_global_ai_state,
     clear_ai_last_error,
 )
+from ..exceptions import AICancelledError
 from ..shopify_catalog_sync import sync_products
 
 # ---------------------------------------------------------------------------
@@ -269,7 +270,8 @@ def run_ai_generation(db_path: str, scope: str, job_id: str) -> dict:
                     })
             try:
                 logger.info(
-                    f"Starting full generation: object_type={object_type}, handle={handle}, job_id={job_id}, mode={state.get('mode')}"
+                    "Starting full generation: object_type=%s, handle=%s, job_id=%s, mode=%s",
+                    object_type, handle, job_id, state.get("mode"),
                 )
                 dai.generate_recommendation(
                     conn,
@@ -279,25 +281,27 @@ def run_ai_generation(db_path: str, scope: str, job_id: str) -> dict:
                     cancel_callback=lambda: _ai_cancelled(job_id),
                 )
                 logger.info(
-                    f"Full generation completed: object_type={object_type}, handle={handle}, job_id={job_id}"
+                    "Full generation completed: object_type=%s, handle=%s, job_id=%s",
+                    object_type, handle, job_id,
                 )
                 state["successes"] += 1
+            except AICancelledError:
+                _finalize_ai_timeline(state, "cancelled", "AI generation cancelled")
+                state["last_result"] = {
+                    "job_id": job_id,
+                    "scope": scope,
+                    "total": state["total"],
+                    "successes": state["successes"],
+                    "failures": state["failures"],
+                    "cancelled": True,
+                }
+                return dict(state["last_result"])
             except Exception as exc:
-                if str(exc) == "AI generation cancelled by user":
-                    _finalize_ai_timeline(state, "cancelled", "AI generation cancelled")
-                    state["last_result"] = {
-                        "job_id": job_id,
-                        "scope": scope,
-                        "total": state["total"],
-                        "successes": state["successes"],
-                        "failures": state["failures"],
-                        "cancelled": True,
-                    }
-                    return dict(state["last_result"])
                 state["failures"] += 1
                 state["last_error"] = str(exc)
                 logger.error(
-                    f"AI generation failed for {object_type}/{handle} in job {job_id}: {str(exc)}",
+                    "AI generation failed for %s/%s in job %s: %s",
+                    object_type, handle, job_id, exc,
                     exc_info=True,
                     extra={
                         "job_id": job_id,
@@ -374,7 +378,8 @@ def run_ai_field_regeneration(db_path: str, object_type: str, handle: str, field
         try:
             _raise_if_ai_cancelled(job_id)
             logger.info(
-                f"Starting field regeneration: object_type={object_type}, handle={handle}, field={field}, job_id={job_id}, mode={state.get('mode')}"
+                "Starting field regeneration: object_type=%s, handle=%s, field=%s, job_id=%s, mode=%s",
+                object_type, handle, field, job_id, state.get("mode"),
             )
             result = dai.generate_field_recommendation(
                 conn,
@@ -386,7 +391,8 @@ def run_ai_field_regeneration(db_path: str, object_type: str, handle: str, field
                 cancel_callback=lambda: _ai_cancelled(job_id),
             )
             logger.info(
-                f"Field regeneration completed: object_type={object_type}, handle={handle}, field={field}, job_id={job_id}, result_field={result.get('field')}"
+                "Field regeneration completed: object_type=%s, handle=%s, field=%s, job_id=%s, result_field=%s",
+                object_type, handle, field, job_id, result.get("field"),
             )
             state["successes"] = 1
             state["done"] = 1
@@ -399,23 +405,24 @@ def run_ai_field_regeneration(db_path: str, object_type: str, handle: str, field
             }
             _finalize_ai_timeline(state, "complete", f"{field.replace('_', ' ')} regeneration complete")
             return dict(state["last_result"])
+        except AICancelledError:
+            state["last_result"] = {
+                "job_id": job_id,
+                "object_type": object_type,
+                "handle": handle,
+                "field": field,
+                "mode": "field_regeneration",
+                "cancelled": True,
+            }
+            _finalize_ai_timeline(state, "cancelled", f"{field.replace('_', ' ')} regeneration cancelled")
+            return dict(state["last_result"])
         except Exception as exc:
-            if str(exc) == "AI generation cancelled by user":
-                state["last_result"] = {
-                    "job_id": job_id,
-                    "object_type": object_type,
-                    "handle": handle,
-                    "field": field,
-                    "mode": "field_regeneration",
-                    "cancelled": True,
-                }
-                _finalize_ai_timeline(state, "cancelled", f"{field.replace('_', ' ')} regeneration cancelled")
-                return dict(state["last_result"])
             state["failures"] = 1
             state["done"] = 1
             state["last_error"] = str(exc)
             logger.error(
-                f"Field regeneration failed: object_type={object_type}, handle={handle}, field={field}, job_id={job_id}: {str(exc)}",
+                "Field regeneration failed: object_type=%s, handle=%s, field=%s, job_id=%s: %s",
+                object_type, handle, field, job_id, exc,
                 exc_info=True,
                 extra={
                     "job_id": job_id,

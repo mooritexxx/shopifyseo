@@ -7,6 +7,8 @@ import sqlite3
 import time
 from typing import Callable
 
+from shopifyseo.exceptions import AICancelledError
+
 logger = logging.getLogger(__name__)
 
 from .config import REGENERABLE_FIELDS
@@ -148,7 +150,7 @@ def _augment_error_details(details: dict | None, exc: Exception) -> dict | None:
 
 def _raise_if_cancelled(cancel_callback: CancelCallback | None) -> None:
     if cancel_callback and cancel_callback():
-        raise RuntimeError("AI generation cancelled by user")
+        raise AICancelledError()
 
 
 def _context_with_accepted_fields(context: dict, accepted_fields: dict[str, str]) -> dict:
@@ -539,9 +541,9 @@ def generate_recommendation(
                 model=f"{_provider_display(generation_provider, generation_model)}+{_provider_display(review_provider, review_model)}",
                 prompt_version=prompt_version,
             )
+    except AICancelledError:
+        raise
     except Exception as exc:
-        if str(exc) == "AI generation cancelled by user":
-            raise
         last_error = str(exc)
         logger.error(
             f"AI generation failed for {object_type}/{handle}: {last_error}",
@@ -735,9 +737,9 @@ def generate_field_recommendation(
         if field == "body":
             final_value = ensure_link_titles(final_value, conn)
         review_action = result["review_action"]
+    except AICancelledError:
+        raise
     except Exception as exc:
-        if str(exc) == "AI generation cancelled by user":
-            raise
         error_message = _friendly_ai_error(exc) if isinstance(exc, Exception) else str(exc)
         logger.error(
             f"Single field regeneration failed: object_type={object_type}, handle={handle}, field={field}: {error_message}",

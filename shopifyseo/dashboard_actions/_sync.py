@@ -834,9 +834,7 @@ def _record_pagespeed_error(kind: str, handle: str, url: str, exc: Exception, *,
 
 
 def _pagespeed_bulk_max_inflight(limit_per_minute: int) -> int:
-    """Enough concurrency to keep the limiter busy without making workers the throttle."""
-    cap = max(int(limit_per_minute or 0), 1)
-    return max(12, min(64, (cap + 4) // 8))
+    return PAGESPEED_SYNC_WORKERS
 
 
 def _pagespeed_adaptive_floor(limit_per_minute: int) -> int:
@@ -940,7 +938,6 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     first_http = False
                 else:
                     adaptive_limiter.acquire(_raise_if_sync_cancelled)
-                append_sync_event("pagespeed", f"HTTP {strategy} {kind}:{handle}")
 
             _raise_if_sync_cancelled()
             worker_conn = _db_connect_for_actions(db_path)

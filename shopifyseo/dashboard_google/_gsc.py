@@ -1253,7 +1253,7 @@ def _fetch_run_pagespeed_with_retries(
     ``before_each_http`` runs immediately before every HTTP attempt (including the first),
     so callers can rate-limit **total** API calls including retries.
     """
-    max_attempts = 6
+    max_attempts = 3
     last_exc: HttpRequestError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1312,7 +1312,7 @@ def get_pagespeed(
     access_token = get_google_access_token(conn)
     api_url = (
         "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?"
-        + urlencode({"url": url, "strategy": strategy, "category": ["PERFORMANCE", "SEO"]}, doseq=True)
+        + urlencode({"url": url, "strategy": strategy, "category": ["PERFORMANCE"]}, doseq=True)
     )
 
     def _before_each_run_pagespeed_http_effective() -> None:

@@ -79,12 +79,8 @@ class AdaptiveMinuteRateLimiter:
 
     @property
     def max_inflight(self) -> int:
-        """Dynamic concurrency cap: fewer workers when the limit is low (overload/5xx)."""
-        with self._lock:
-            # Match the formula used in _sync.py but keep it central here.
-            # 16 is a safe floor, 64 is a reasonable ceiling for PSI.
-            cap = max(int(self._limit or 0), 1)
-            return max(12, min(64, (cap + 4) // 8))
+        """Fixed concurrency cap as requested."""
+        return 25
 
     def _trim_unlocked(self, now: float) -> None:
         cutoff = now - self.period_seconds

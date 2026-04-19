@@ -126,42 +126,44 @@ export function PageSpeedErrorStream({ items }: Props) {
           />
           Error Stream
           <span className="flex-1" />
-          <span className="font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">
+        </button>
+        <div className="flex shrink-0 items-center gap-1.5 pr-3">
+          <button
+            type="button"
+            className={cn(
+              "flex items-center justify-center rounded p-1 text-white/35 transition-colors",
+              "hover:bg-white/[0.06] hover:text-white/55",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
+            )}
+            aria-label={copyDone ? "Copied to clipboard" : "Copy all errors to clipboard"}
+            onClick={() => void copyAllErrors()}
+          >
+            {copyDone ? (
+              <Check className="h-3.5 w-3.5 text-[#91efbb]" strokeWidth={2.5} aria-hidden />
+            ) : (
+              <ClipboardCopy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            )}
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "flex items-center text-white/35 transition-colors",
+              "hover:text-white/50",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
+            )}
+            aria-label={collapsed ? "Expand error stream" : "Collapse error stream"}
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            {collapsed ? (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            )}
+          </button>
+          <span className="ml-1 font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">
             {items.length} {items.length === 1 ? "row" : "rows"}
           </span>
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "flex shrink-0 items-center justify-center px-1.5 py-2 text-white/35 transition-colors",
-            "hover:bg-white/[0.06] hover:text-white/55",
-            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
-          )}
-          aria-label={copyDone ? "Copied to clipboard" : "Copy all errors to clipboard"}
-          onClick={() => void copyAllErrors()}
-        >
-          {copyDone ? (
-            <Check className="h-3.5 w-3.5 text-[#91efbb]" strokeWidth={2.5} aria-hidden />
-          ) : (
-            <ClipboardCopy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-          )}
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "flex shrink-0 items-center pr-3 pl-0.5 py-2 text-white/35 transition-colors",
-            "hover:bg-white/[0.04] hover:text-white/50",
-            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
-          )}
-          aria-label={collapsed ? "Expand error stream" : "Collapse error stream"}
-          onClick={() => setCollapsed((c) => !c)}
-        >
-          {collapsed ? (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          )}
-        </button>
+        </div>
       </div>
       <div
         id="pagespeed-error-stream-body"

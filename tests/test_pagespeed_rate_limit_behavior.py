@@ -158,9 +158,9 @@ def test_adaptive_pagespeed_limiter_slows_down_and_recovers(monkeypatch):
 
 
 def test_pagespeed_bulk_max_inflight_tracks_rate_limit():
-    assert _sync._pagespeed_bulk_max_inflight(60) == 16
-    assert _sync._pagespeed_bulk_max_inflight(190) == 48
-    assert _sync._pagespeed_bulk_max_inflight(400) == 64
+    assert _sync._pagespeed_bulk_max_inflight(60) == 12
+    assert _sync._pagespeed_bulk_max_inflight(190) == 24
+    assert _sync._pagespeed_bulk_max_inflight(400) == 50
 
 
 def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatch):

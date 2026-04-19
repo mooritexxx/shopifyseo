@@ -34,6 +34,9 @@ PAGESPEED_RECENT_FETCH_WINDOW_SECONDS = 30 * 24 * 60 * 60
 PAGESPEED_ERROR_DETAILS_MAX = 500
 # Rolling window for counting real runPagespeed HTTP attempts (monotonic timestamps).
 PAGESPEED_HTTP_TRACK_WINDOW_SECONDS = 60
+# Cap on in-memory sync event log; one bulk PageSpeed run easily appends thousands
+# of HTTP/queue events that get serialized into every status response.
+SYNC_EVENTS_MAX = 2000
 IMAGE_CACHE_WORKERS = 6
 
 # ---------------------------------------------------------------------------
@@ -160,7 +163,7 @@ def clear_pagespeed_http_call_tracker() -> None:
 
 
 def append_sync_event(tag: str, msg: str) -> None:
-    """Append one row to the sync event log (API + UI). No size cap by design."""
+    """Append one row to the sync event log (API + UI). Trimmed to ``SYNC_EVENTS_MAX``."""
     t = (tag or "sync").strip() or "sync"
     m = (msg or "").strip()
     if not m:
@@ -172,6 +175,8 @@ def append_sync_event(tag: str, msg: str) -> None:
             events = []
             SYNC_STATE["sync_events"] = events
         events.append(row)
+        if len(events) > SYNC_EVENTS_MAX:
+            del events[: len(events) - SYNC_EVENTS_MAX]
 
 
 AI_STATE = {

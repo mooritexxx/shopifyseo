@@ -11,9 +11,57 @@ import json
 import secrets
 import sqlite3
 import sys
+import threading
 import time
 
 from ..dashboard_http import HttpRequestError, request_json
+
+# Single-flight refresh + in-process token cache. Without this, ~30 PageSpeed
+# workers each do a SELECT on every HTTP call, and all race to POST to /token
+# at the same instant when the access token expires (Google rate-limits that).
+_TOKEN_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_TOKEN_REFRESH_LOCKS_GUARD = threading.Lock()
+
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_CACHE: dict[str, tuple[str, int]] = {}  # service -> (access_token, expires_at_epoch)
+_TOKEN_FRESHNESS_MARGIN_SECONDS = 60
+
+
+def _refresh_lock_for(service: str) -> threading.Lock:
+    with _TOKEN_REFRESH_LOCKS_GUARD:
+        lock = _TOKEN_REFRESH_LOCKS.get(service)
+        if lock is None:
+            lock = threading.Lock()
+            _TOKEN_REFRESH_LOCKS[service] = lock
+        return lock
+
+
+def _token_cache_get(service: str, now_ts: int) -> str | None:
+    with _TOKEN_CACHE_LOCK:
+        entry = _TOKEN_CACHE.get(service)
+    if not entry:
+        return None
+    access_token, expires_at = entry
+    if not access_token or expires_at <= now_ts + _TOKEN_FRESHNESS_MARGIN_SECONDS:
+        return None
+    return access_token
+
+
+def _token_cache_put(service: str, access_token: str, expires_at: int | None) -> None:
+    with _TOKEN_CACHE_LOCK:
+        if access_token and expires_at:
+            _TOKEN_CACHE[service] = (access_token, int(expires_at))
+        else:
+            _TOKEN_CACHE.pop(service, None)
+
+
+def invalidate_token_cache(service: str | None = None) -> None:
+    """Drop one or all cached access tokens (tests, manual reconnect)."""
+    with _TOKEN_CACHE_LOCK:
+        if service is None:
+            _TOKEN_CACHE.clear()
+        else:
+            _TOKEN_CACHE.pop(service, None)
 
 
 def _pkg():
@@ -60,6 +108,7 @@ def set_service_token(conn: sqlite3.Connection, service: str, payload: dict) -> 
         ),
     )
     conn.commit()
+    _token_cache_put(service, payload.get("access_token", ""), expires_at)
 
 
 def get_service_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
@@ -128,18 +177,44 @@ def google_refresh_token(refresh_token: str) -> dict:
 
 
 def get_google_access_token(conn: sqlite3.Connection) -> str:
-    token = get_service_token(conn, "search_console")
-    if not token:
-        raise RuntimeError("Search Console is not connected")
-    now_ts = int(time.time())
-    if token["access_token"] and token["expires_at"] and token["expires_at"] > now_ts + 60:
+    service = "search_console"
+
+    def _fresh_from_row(token: sqlite3.Row | None, now_ts: int) -> str | None:
+        if not token or not token["access_token"] or not token["expires_at"]:
+            return None
+        if token["expires_at"] <= now_ts + _TOKEN_FRESHNESS_MARGIN_SECONDS:
+            return None
         return token["access_token"]
-    if not token["refresh_token"]:
-        raise RuntimeError("Search Console token expired and no refresh token is available")
-    payload = google_refresh_token(token["refresh_token"])
-    payload["refresh_token"] = token["refresh_token"]
-    set_service_token(conn, "search_console", payload)
-    return payload["access_token"]
+
+    now_ts = int(time.time())
+    cached = _token_cache_get(service, now_ts)
+    if cached is not None:
+        return cached
+
+    with _refresh_lock_for(service):
+        # Re-check the cache inside the lock — another worker may have just refreshed.
+        now_ts = int(time.time())
+        cached = _token_cache_get(service, now_ts)
+        if cached is not None:
+            return cached
+
+        # Cache cold or stale: hydrate from DB before deciding to refresh, in case
+        # an OAuth callback updated the row out-of-band.
+        token = get_service_token(conn, service)
+        if not token:
+            raise RuntimeError("Search Console is not connected")
+        fresh = _fresh_from_row(token, now_ts)
+        if fresh is not None:
+            _token_cache_put(service, fresh, token["expires_at"])
+            return fresh
+        if not token["refresh_token"]:
+            raise RuntimeError("Search Console token expired and no refresh token is available")
+
+        payload = google_refresh_token(token["refresh_token"])
+        payload["refresh_token"] = token["refresh_token"]
+        # set_service_token writes the DB and populates the in-process cache.
+        set_service_token(conn, service, payload)
+        return payload["access_token"]
 
 
 def google_token_has_scope(conn: sqlite3.Connection, scope: str) -> bool:

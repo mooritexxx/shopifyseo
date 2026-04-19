@@ -51,6 +51,9 @@ Thumbs.db
 .claude/
 .minimax/
 
+# Cursor: project-local skills (e.g. copies of Shopify plugin SKILL.md trees)
+.cursor/skills/
+
 # Coverage / lint caches
 htmlcov/
 .eslintcache

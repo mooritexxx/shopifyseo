@@ -29,6 +29,7 @@ INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 55
 # Rolling cap on every runPagespeed HTTP request process-wide (bulk sync, per-object refresh, retries).
 PAGESPEED_SYNC_WORKERS = 50
 PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 220
+PAGESPEED_SYNC_MIN_INTERVAL_SECONDS = 60.0 / PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE
 PAGESPEED_RECENT_FETCH_WINDOW_SECONDS = 30 * 24 * 60 * 60
 # Cap in-memory PageSpeed error log during one sync (avoids huge payloads / memory).
 PAGESPEED_ERROR_DETAILS_MAX = 500
@@ -304,6 +305,7 @@ def _step_result(status: str, message: str) -> dict:
 _PAGESPEED_HTTP_RATE_LIMITER = PerMinuteRateLimiter(
     PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
     on_granted=record_pagespeed_http_api_call_at,
+    min_interval_seconds=PAGESPEED_SYNC_MIN_INTERVAL_SECONDS,
 )
 
 

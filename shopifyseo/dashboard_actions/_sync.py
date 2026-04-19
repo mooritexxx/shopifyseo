@@ -734,59 +734,54 @@ def _pagespeed_target_counts(conn: sqlite3.Connection) -> tuple[int, list[tuple[
     """Return (catalog object count, PageSpeed API jobs to run).
 
     Each job is ``(object_type, handle, url, strategy)`` for ``strategy`` in ``mobile`` / ``desktop``.
-    A job is queued when there is **no** row for that strategy in ``google_api_cache``, **or** the cached
-    ``fetched_at`` is older than ``PAGESPEED_RECENT_FETCH_WINDOW_SECONDS``. Fresh rows skip the API call;
+    A job is queued when there is **no** row for that strategy in ``google_api_cache``, when a
+    previous PageSpeed rate-limit cooldown has expired, or when the cached ``fetched_at`` is older
+    than ``PAGESPEED_RECENT_FETCH_WINDOW_SECONDS``. Fresh rows skip the API call;
     ``refresh_pagespeed_columns_from_cache_for_all_cached_objects`` still merges cache into catalog tables.
     """
     dg.ensure_google_cache_schema(conn)
-    cutoff_ts = int(time.time()) - PAGESPEED_RECENT_FETCH_WINDOW_SECONDS
-    total_targets = conn.execute(
-        """
-        SELECT
-          (SELECT COUNT(*) FROM products) +
-          (SELECT COUNT(*) FROM collections) +
-          (SELECT COUNT(*) FROM pages) +
-          (SELECT COUNT(*) FROM blog_articles)
-        """
-    ).fetchone()[0]
+    now_ts = int(time.time())
+    cutoff_ts = now_ts - PAGESPEED_RECENT_FETCH_WINDOW_SECONDS
+    targets = _all_object_targets(conn)
+    total_targets = len(targets)
     rows = conn.execute(
         """
-        WITH all_targets AS (
-          SELECT 'product' AS object_type, handle FROM products
-          UNION ALL
-          SELECT 'collection' AS object_type, handle FROM collections
-          UNION ALL
-          SELECT 'page' AS object_type, handle FROM pages
-          UNION ALL
-          SELECT 'blog_article' AS object_type, (blog_handle || '/' || handle) AS handle FROM blog_articles
-        )
-        SELECT object_type, handle, strategy FROM (
-          SELECT target.object_type, target.handle, 'mobile' AS strategy
-          FROM all_targets AS target
-          LEFT JOIN google_api_cache AS cache
-            ON cache.cache_type = 'pagespeed'
-           AND COALESCE(cache.strategy, 'mobile') = 'mobile'
-           AND cache.object_type = target.object_type
-           AND cache.object_handle = target.handle
-          WHERE cache.fetched_at IS NULL OR cache.fetched_at < ?
-          UNION ALL
-          SELECT target.object_type, target.handle, 'desktop' AS strategy
-          FROM all_targets AS target
-          LEFT JOIN google_api_cache AS cache
-            ON cache.cache_type = 'pagespeed'
-           AND cache.strategy = 'desktop'
-           AND cache.object_type = target.object_type
-           AND cache.object_handle = target.handle
-          WHERE cache.fetched_at IS NULL OR cache.fetched_at < ?
-        ) AS pending_psi
-        ORDER BY object_type, handle, strategy
+        SELECT object_type, object_handle, strategy, fetched_at, expires_at, payload_json
+        FROM google_api_cache
+        WHERE cache_type = 'pagespeed'
         """,
-        (cutoff_ts, cutoff_ts),
     ).fetchall()
-    queued_targets = [
-        (row["object_type"], row["handle"], dq.object_url(row["object_type"], row["handle"]), row["strategy"])
-        for row in rows
-    ]
+
+    cache_rows: dict[tuple[str, str, str], sqlite3.Row] = {}
+    for row in rows:
+        object_type = str(row["object_type"] or "")
+        object_handle = str(row["object_handle"] or "")
+        if not object_type or not object_handle:
+            continue
+        strategy = str(row["strategy"] or "mobile")
+        cache_rows[(object_type, object_handle, strategy)] = row
+
+    def _needs_pagespeed_refresh(row: sqlite3.Row | None) -> bool:
+        if row is None:
+            return True
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        payload_meta = payload.get("_meta") if isinstance(payload, dict) else {}
+        rate_limited = isinstance(payload_meta, dict) and bool(payload_meta.get("rate_limited"))
+        if rate_limited:
+            return int(row["expires_at"] or 0) <= now_ts
+        return int(row["fetched_at"] or 0) < cutoff_ts
+
+    queued_targets: list[tuple[str, str, str, str]] = []
+    for object_type, handle, url in targets:
+        for strategy in ("mobile", "desktop"):
+            row = cache_rows.get((object_type, handle, strategy))
+            if strategy == "mobile" and row is None:
+                row = cache_rows.get((object_type, handle, ""))
+            if _needs_pagespeed_refresh(row):
+                queued_targets.append((object_type, handle, url, strategy))
     return int(total_targets or 0), queued_targets
 
 

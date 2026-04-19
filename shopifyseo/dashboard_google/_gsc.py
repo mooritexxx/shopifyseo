@@ -11,7 +11,8 @@ import sqlite3
 import sys
 import time
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -1121,7 +1122,28 @@ def _pagespeed_transient_http_error(exc: HttpRequestError) -> bool:
     status = exc.status
     if status is None:
         return True
-    return status in (408, 429, 500, 502, 503, 504)
+    return status in (408, 500, 502, 503, 504)
+
+
+def _pagespeed_retry_after_seconds(exc: HttpRequestError, default_seconds: int = 15 * 60) -> int:
+    """Best-effort cooldown from Retry-After; falls back to a short safety pause."""
+    raw = ""
+    if exc.headers:
+        raw = str(exc.headers.get("Retry-After") or exc.headers.get("retry-after") or "").strip()
+    if not raw:
+        return default_seconds
+    try:
+        return max(int(float(raw)), 1)
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        delay = int((retry_at - datetime.now(timezone.utc)).total_seconds())
+        return max(delay, 1)
+    except Exception:
+        return default_seconds
 
 
 def _fetch_run_pagespeed_with_retries(
@@ -1206,6 +1228,8 @@ def get_pagespeed(
         )
     except HttpRequestError as exc:
         if exc.status == 429:
+            cooldown_seconds = _pagespeed_retry_after_seconds(exc)
+            retry_after_at = int(time.time()) + cooldown_seconds
             stale_payload, stale_meta = _load_cached_payload(conn, db_cache_key)
             error_payload = {
                 "error": "pagespeed_rate_limited",
@@ -1218,6 +1242,7 @@ def get_pagespeed(
                 "_error": error_payload,
                 "_meta": {
                     "rate_limited": True,
+                    "retry_after_at": retry_after_at,
                 },
             }
             meta = {
@@ -1225,16 +1250,17 @@ def get_pagespeed(
                 "exists": True,
                 "stale": True,
                 "fetched_at": stale_meta.get("fetched_at"),
-                "expires_at": stale_meta.get("expires_at"),
+                "expires_at": retry_after_at,
                 "rate_limited": True,
                 "status": 429,
+                "retry_after_at": retry_after_at,
             }
             _write_cache_payload(
                 conn,
                 cache_key=db_cache_key,
                 cache_type="pagespeed",
                 payload=payload,
-                ttl_seconds=15 * 60,
+                ttl_seconds=cooldown_seconds,
                 object_type=object_type,
                 object_handle=object_handle,
                 url=url,

@@ -836,7 +836,7 @@ def _record_pagespeed_error(kind: str, handle: str, url: str, exc: Exception, *,
 def _pagespeed_bulk_max_inflight(limit_per_minute: int) -> int:
     """Enough concurrency to keep the limiter busy without making workers the throttle."""
     cap = max(int(limit_per_minute or 0), 1)
-    return max(16, min(64, (cap + 3) // 4))
+    return max(16, min(64, (cap + 4) // 5))
 
 
 def _pagespeed_adaptive_floor(limit_per_minute: int) -> int:
@@ -906,7 +906,7 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
         max_inflight = _pagespeed_bulk_max_inflight(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE)
         
         def _current_max_inflight() -> int:
-            return min(max_inflight, _pagespeed_bulk_max_inflight(adaptive_limiter.current_limit))
+            return min(max_inflight, adaptive_limiter.max_inflight)
 
         append_sync_event(
             "pagespeed",
@@ -1055,10 +1055,11 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 SYNC_STATE["pagespeed_errors"] = summary["errors"]
                 _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
                 
-                # Check for 5xx errors (e.g. from PageSpeed Insights overload) and throttle
+                # Check for 5xx errors (e.g. from PageSpeed Insights overload) and throttle aggressively.
+                # A 500 is often worse than a 429; we want a longer cooldown to let the backend recover.
                 http_status = getattr(exc, "status", None)
                 if isinstance(http_status, int) and 500 <= http_status < 600:
-                    changed, new_limit = adaptive_limiter.note_rate_limited(retry_after_seconds=5.0)
+                    changed, new_limit = adaptive_limiter.note_rate_limited(retry_after_seconds=15.0)
                     if changed:
                         _record_pagespeed_limit_change(f"HTTP {http_status} overload", new_limit)
             _raise_if_sync_cancelled()

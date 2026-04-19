@@ -836,7 +836,7 @@ def _record_pagespeed_error(kind: str, handle: str, url: str, exc: Exception, *,
 def _pagespeed_bulk_max_inflight(limit_per_minute: int) -> int:
     """Enough concurrency to keep the limiter busy without making workers the throttle."""
     cap = max(int(limit_per_minute or 0), 1)
-    return max(12, min(64, (cap + 4) // 6))
+    return max(12, min(64, (cap + 4) // 8))
 
 
 def _pagespeed_adaptive_floor(limit_per_minute: int) -> int:

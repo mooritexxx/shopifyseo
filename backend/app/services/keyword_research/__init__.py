@@ -8,13 +8,16 @@ continue to work without modification.
 from .dataforseo_client import validate_dataforseo_access
 from .competitor_blocklist import (
     COMPETITOR_BLOCKLIST_KEY,
+    COMPETITOR_DISMISSED_SNAPSHOTS_KEY,
     DISCOVERY_SKIP_DOMAINS,
     add_competitor_to_blocklist,
     competitor_domain_allowed_for_research,
     load_competitor_blocklist,
+    load_dismissed_snapshots,
     norm_competitor_domain,
     purge_disallowed_competitor_rows,
     remove_competitor_from_blocklist,
+    upsert_dismissed_profile_snapshot,
 )
 from .keyword_db import (
     TARGET_KEY,
@@ -46,15 +49,20 @@ from .keyword_utils import (
     normalize_opportunity_scores,
 )
 from .research_runner import (
+    COMPETITOR_DISCOVERY_PENDING_KEY,
     COMPETITOR_RESEARCH_META_KEY,
     _finalize_keyword_research,
     _preflight_keyword_research,
     _prepare_competitors_list,
     _run_source,
+    load_competitor_discovery_pending,
     refresh_target_keyword_metrics,
+    resolve_competitor_labs_target_domain,
     run_competitor_research,
+    run_discover_competitors_for_review,
     run_research,
     run_seed_keyword_research,
+    save_competitor_discovery_pending,
 )
 
 # Back-compat alias used by tests and older imports
@@ -65,13 +73,16 @@ __all__ = [
     "validate_dataforseo_access",
     # competitor_blocklist
     "COMPETITOR_BLOCKLIST_KEY",
+    "COMPETITOR_DISMISSED_SNAPSHOTS_KEY",
     "DISCOVERY_SKIP_DOMAINS",
     "add_competitor_to_blocklist",
     "competitor_domain_allowed_for_research",
     "load_competitor_blocklist",
+    "load_dismissed_snapshots",
     "norm_competitor_domain",
     "purge_disallowed_competitor_rows",
     "remove_competitor_from_blocklist",
+    "upsert_dismissed_profile_snapshot",
     # keyword_db
     "TARGET_KEY",
     "bulk_update_status",
@@ -101,13 +112,18 @@ __all__ = [
     "merge_with_existing",
     "normalize_opportunity_scores",
     # research_runner
+    "COMPETITOR_DISCOVERY_PENDING_KEY",
     "COMPETITOR_RESEARCH_META_KEY",
     "_finalize_keyword_research",
     "_preflight_keyword_research",
     "_prepare_competitors_list",
     "_run_source",
+    "load_competitor_discovery_pending",
     "refresh_target_keyword_metrics",
+    "resolve_competitor_labs_target_domain",
     "run_competitor_research",
+    "run_discover_competitors_for_review",
     "run_research",
     "run_seed_keyword_research",
+    "save_competitor_discovery_pending",
 ]

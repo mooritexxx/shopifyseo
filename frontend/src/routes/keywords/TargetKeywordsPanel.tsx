@@ -26,9 +26,17 @@ import {
   INTENT_OPTIONS,
   DIFFICULTY_OPTIONS,
   RANKING_OPTIONS,
+  VOLUME_OPTIONS,
+  OPPORTUNITY_OPTIONS,
+  TRAFFIC_POTENTIAL_OPTIONS,
+  CONTENT_TYPE_LABELS,
+  CONTENT_TYPE_UNSET,
   type IntentFilter,
   type DifficultyFilter,
   type RankingFilter,
+  type VolumeFilter,
+  type OpportunityFilter,
+  type TrafficPotentialFilter,
 } from "./badges";
 import { startKeywordResearchSse } from "./sse";
 
@@ -63,6 +71,11 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
   const [statusTab, setStatusTab] = useState<TargetStatusTab>("approved");
   const [difficultyFilter, setDifficultyFilter] = useState<DifficultyFilter>("all");
   const [rankingFilter, setRankingFilter] = useState<RankingFilter>("all");
+  const [volumeFilter, setVolumeFilter] = useState<VolumeFilter>("all");
+  const [opportunityFilter, setOpportunityFilter] = useState<OpportunityFilter>("all");
+  const [trafficPotentialFilter, setTrafficPotentialFilter] =
+    useState<TrafficPotentialFilter>("all");
+  const [contentTypeFilter, setContentTypeFilter] = useState<string>("all");
 
   const [sortKey, setSortKey] = useState<SortKey>("opportunity");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -129,10 +142,31 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     [items],
   );
 
+  const contentTypeOptions = useMemo(() => {
+    const seen = new Set<string>();
+    let hasUnset = false;
+    for (const i of items) {
+      const c = (i.content_type ?? "").trim();
+      if (!c) hasUnset = true;
+      else seen.add(c);
+    }
+    const sorted = Array.from(seen).sort((a, b) => a.localeCompare(b));
+    const opts: { value: string; label: string }[] = [{ value: "all", label: "All" }];
+    if (hasUnset) opts.push({ value: CONTENT_TYPE_UNSET, label: "Not set" });
+    for (const c of sorted) {
+      opts.push({ value: c, label: CONTENT_TYPE_LABELS[c] ?? c });
+    }
+    return opts;
+  }, [items]);
+
   const activeFilterCount =
     (intentFilter !== "all" ? 1 : 0) +
     (difficultyFilter !== "all" ? 1 : 0) +
-    (rankingFilter !== "all" ? 1 : 0);
+    (rankingFilter !== "all" ? 1 : 0) +
+    (volumeFilter !== "all" ? 1 : 0) +
+    (opportunityFilter !== "all" ? 1 : 0) +
+    (trafficPotentialFilter !== "all" ? 1 : 0) +
+    (contentTypeFilter !== "all" ? 1 : 0);
 
   const filtered = useMemo(() => {
     let list = items;
@@ -160,6 +194,47 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (rankingFilter !== "all") {
       list = list.filter((item) => (item.ranking_status ?? "not_ranking") === rankingFilter);
     }
+    if (volumeFilter !== "all") {
+      list = list.filter((i) => {
+        const v = i.volume;
+        if (v === null) return false;
+        if (volumeFilter === "v0") return v === 0;
+        if (volumeFilter === "v1_100") return v >= 1 && v <= 100;
+        if (volumeFilter === "v101_500") return v >= 101 && v <= 500;
+        if (volumeFilter === "v501_2000") return v >= 501 && v <= 2000;
+        if (volumeFilter === "v2001") return v >= 2001;
+        return true;
+      });
+    }
+    if (opportunityFilter !== "all") {
+      list = list.filter((i) => {
+        const o = i.opportunity;
+        if (opportunityFilter === "opp_none") return o === null || o === 0;
+        if (o === null || o === 0) return false;
+        if (opportunityFilter === "opp_high") return o >= 70;
+        if (opportunityFilter === "opp_mid") return o >= 30 && o < 70;
+        if (opportunityFilter === "opp_low") return o >= 1 && o < 30;
+        return true;
+      });
+    }
+    if (trafficPotentialFilter !== "all") {
+      list = list.filter((i) => {
+        const tp = i.traffic_potential;
+        if (tp === null) return false;
+        if (trafficPotentialFilter === "tp0") return tp === 0;
+        if (trafficPotentialFilter === "tp1_500") return tp >= 1 && tp <= 500;
+        if (trafficPotentialFilter === "tp501_2000") return tp >= 501 && tp <= 2000;
+        if (trafficPotentialFilter === "tp2001") return tp >= 2001;
+        return true;
+      });
+    }
+    if (contentTypeFilter !== "all") {
+      list = list.filter((i) => {
+        const c = (i.content_type ?? "").trim();
+        if (contentTypeFilter === CONTENT_TYPE_UNSET) return !c;
+        return c === contentTypeFilter;
+      });
+    }
 
     list = [...list].sort((a, b) => {
       const av = a[sortKey] ?? -Infinity;
@@ -170,7 +245,20 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     });
 
     return list;
-  }, [items, searchQuery, statusTab, intentFilter, difficultyFilter, rankingFilter, sortKey, sortDir]);
+  }, [
+    items,
+    searchQuery,
+    statusTab,
+    intentFilter,
+    difficultyFilter,
+    rankingFilter,
+    volumeFilter,
+    opportunityFilter,
+    trafficPotentialFilter,
+    contentTypeFilter,
+    sortKey,
+    sortDir,
+  ]);
 
   const virtualizer = useVirtualizer({
     count: filtered.length,
@@ -345,11 +433,37 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
             onChange={setIntentFilter}
           />
           <FilterDropdown
-            label="Difficulty"
+            label="KD"
             options={DIFFICULTY_OPTIONS}
             value={difficultyFilter}
             onChange={setDifficultyFilter}
           />
+          <FilterDropdown
+            label="Volume"
+            options={VOLUME_OPTIONS}
+            value={volumeFilter}
+            onChange={setVolumeFilter}
+          />
+          <FilterDropdown
+            label="Traffic pot."
+            options={TRAFFIC_POTENTIAL_OPTIONS}
+            value={trafficPotentialFilter}
+            onChange={setTrafficPotentialFilter}
+          />
+          <FilterDropdown
+            label="Opportunity"
+            options={OPPORTUNITY_OPTIONS}
+            value={opportunityFilter}
+            onChange={setOpportunityFilter}
+          />
+          {contentTypeOptions.length > 1 ? (
+            <FilterDropdown
+              label="Content type"
+              options={contentTypeOptions}
+              value={contentTypeFilter}
+              onChange={setContentTypeFilter}
+            />
+          ) : null}
           <FilterDropdown
             label="Ranking"
             options={RANKING_OPTIONS}
@@ -364,6 +478,10 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                 setIntentFilter("all");
                 setDifficultyFilter("all");
                 setRankingFilter("all");
+                setVolumeFilter("all");
+                setOpportunityFilter("all");
+                setTrafficPotentialFilter("all");
+                setContentTypeFilter("all");
               }}
               className="text-xs text-slate-400 hover:text-slate-600"
             >
@@ -587,10 +705,16 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                             className="h-4 w-4"
                           />
                         </div>
-                        <div className="min-w-0 pr-2 font-medium text-ink">
-                          <span className="block truncate" title={item.keyword}>
+                        <div className="min-w-0 pr-2 font-medium">
+                          <a
+                            href={`https://www.google.com/search?q=${encodeURIComponent(item.keyword)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block truncate text-ink underline-offset-2 hover:text-ocean hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean/25"
+                            title={`Google: ${item.keyword}`}
+                          >
                             {item.keyword}
-                          </span>
+                          </a>
                         </div>
                         <div className="pr-2 text-slate-600">
                           {item.volume !== null ? item.volume.toLocaleString() : "—"}

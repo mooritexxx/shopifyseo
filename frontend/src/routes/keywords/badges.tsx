@@ -100,6 +100,52 @@ export const RANKING_OPTIONS: { value: RankingFilter; label: string }[] = [
   { value: "not_ranking", label: "Not Ranking" }
 ];
 
+export type VolumeFilter =
+  | "all"
+  | "v0"
+  | "v1_100"
+  | "v101_500"
+  | "v501_2000"
+  | "v2001";
+
+export const VOLUME_OPTIONS: { value: VolumeFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "v0", label: "Vol. 0" },
+  { value: "v1_100", label: "Vol. 1–100" },
+  { value: "v101_500", label: "Vol. 101–500" },
+  { value: "v501_2000", label: "Vol. 501–2k" },
+  { value: "v2001", label: "Vol. 2k+" }
+];
+
+/** Buckets align with OpportunityBadge coloring (70+ / 30–69 / under 30). */
+export type OpportunityFilter = "all" | "opp_high" | "opp_mid" | "opp_low" | "opp_none";
+
+export const OPPORTUNITY_OPTIONS: { value: OpportunityFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "opp_high", label: "High (70+)" },
+  { value: "opp_mid", label: "Mid (30–69)" },
+  { value: "opp_low", label: "Low (1–29)" },
+  { value: "opp_none", label: "No score" }
+];
+
+export type TrafficPotentialFilter =
+  | "all"
+  | "tp0"
+  | "tp1_500"
+  | "tp501_2000"
+  | "tp2001";
+
+export const TRAFFIC_POTENTIAL_OPTIONS: { value: TrafficPotentialFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "tp0", label: "TP 0" },
+  { value: "tp1_500", label: "TP 1–500" },
+  { value: "tp501_2000", label: "TP 501–2k" },
+  { value: "tp2001", label: "TP 2k+" }
+];
+
+/** Sentinel for “no content type” in target keyword filters. */
+export const CONTENT_TYPE_UNSET = "__unset__";
+
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------

@@ -91,6 +91,13 @@ export function postJson<T extends z.ZodTypeAny>(path: string, schema: T, body?:
   });
 }
 
+export function putJson<T extends z.ZodTypeAny>(path: string, schema: T, body?: unknown) {
+  return request(path, schema, {
+    method: "PUT",
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  });
+}
+
 export function patchJson<T extends z.ZodTypeAny>(path: string, schema: T, body?: unknown) {
   return request(path, schema, {
     method: "PATCH",

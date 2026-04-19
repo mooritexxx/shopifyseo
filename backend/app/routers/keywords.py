@@ -3,6 +3,7 @@ import logging
 import queue
 import sqlite3
 import threading
+import time
 
 from fastapi import APIRouter, Body, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -14,13 +15,18 @@ from backend.app.services.keyword_research import (
     bulk_update_status,
     cross_reference_gsc,
     load_competitor_blocklist,
+    load_competitor_discovery_pending,
+    load_dismissed_snapshots,
     load_target_keywords,
     norm_competitor_domain,
     refresh_target_keyword_metrics,
     remove_competitor_from_blocklist,
     run_competitor_research,
+    run_discover_competitors_for_review,
     run_seed_keyword_research,
+    save_competitor_discovery_pending,
     update_keyword_status,
+    upsert_dismissed_profile_snapshot,
     validate_dataforseo_access,
 )
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
@@ -219,16 +225,52 @@ def _as_float(v: object, default: float = 0.0) -> float:
         return default
 
 
+_COMPETITOR_PROFILE_COLS = [
+    "domain",
+    "keywords_common",
+    "keywords_they_have",
+    "keywords_we_have",
+    "share",
+    "traffic",
+    "is_manual",
+    "updated_at",
+    "labs_visibility",
+    "labs_avg_position",
+    "labs_median_position",
+    "labs_seed_etv",
+    "labs_bulk_etv",
+    "labs_rating",
+]
+_COMPETITOR_PROFILE_SELECT = ", ".join(_COMPETITOR_PROFILE_COLS)
+
+
+def _zero_competitor_profile(domain: str) -> dict:
+    return {
+        "domain": domain,
+        "keywords_common": 0,
+        "keywords_they_have": 0,
+        "keywords_we_have": 0,
+        "share": 0.0,
+        "traffic": 0,
+        "is_manual": 0,
+        "updated_at": 0,
+        "labs_visibility": 0.0,
+        "labs_avg_position": 0,
+        "labs_median_position": 0,
+        "labs_seed_etv": 0,
+        "labs_bulk_etv": 0,
+        "labs_rating": 0,
+    }
+
+
 def _competitors_response_data(conn: sqlite3.Connection) -> dict:
-    """Build the same payload as GET /competitors (profiles + manual stubs, hide blocklist)."""
+    """Build the same payload as GET /competitors (profiles + manual stubs + pending + dismissed blocklist)."""
     blocklist = load_competitor_blocklist(conn)
     manual_list = _load_competitors(conn)
     rows = conn.execute(
-        "SELECT domain, keywords_common, keywords_they_have, keywords_we_have, "
-        "share, traffic, is_manual, updated_at FROM competitor_profiles ORDER BY traffic DESC"
+        f"SELECT {_COMPETITOR_PROFILE_SELECT} FROM competitor_profiles ORDER BY traffic DESC"
     ).fetchall()
-    cols = ["domain", "keywords_common", "keywords_they_have", "keywords_we_have",
-            "share", "traffic", "is_manual", "updated_at"]
+    cols = list(_COMPETITOR_PROFILE_COLS)
     profiles = {r[0]: dict(zip(cols, r)) for r in rows}
     enriched: list[dict] = []
     seen: set[str] = set()
@@ -244,10 +286,27 @@ def _competitors_response_data(conn: sqlite3.Connection) -> dict:
             continue
         if nd not in seen:
             seen.add(nd)
-            enriched.append({"domain": nd, "keywords_common": 0, "keywords_they_have": 0,
-                             "keywords_we_have": 0, "share": 0, "traffic": 0,
-                             "is_manual": 1, "updated_at": 0})
-    out: dict = {"items": enriched, "total": len(enriched)}
+            z = _zero_competitor_profile(nd)
+            z["is_manual"] = 1
+            enriched.append(z)
+    dismissed_snaps = load_dismissed_snapshots(conn)
+    dismissed_competitors: list[dict] = []
+    for d in sorted(blocklist):
+        sn = dismissed_snaps.get(d)
+        if sn:
+            merged = _zero_competitor_profile(d)
+            merged.update(sn)
+            merged["domain"] = d
+            dismissed_competitors.append(merged)
+        else:
+            dismissed_competitors.append(_zero_competitor_profile(d))
+
+    out: dict = {
+        "items": enriched,
+        "total": len(enriched),
+        "pending_suggestions": load_competitor_discovery_pending(conn),
+        "dismissed_competitors": dismissed_competitors,
+    }
     raw_meta = get_service_setting(conn, "competitor_research_meta", "")
     if raw_meta:
         try:
@@ -255,6 +314,117 @@ def _competitors_response_data(conn: sqlite3.Connection) -> dict:
         except json.JSONDecodeError:
             pass
     return out
+
+
+@router.post("/competitors/discover-from-seed", response_model=dict)
+def post_discover_competitors_from_seed():
+    conn = open_db_connection()
+    try:
+        data = run_discover_competitors_for_review(conn, on_progress=None)
+        merged = {**_competitors_response_data(conn), **data}
+        return {"ok": True, "data": merged}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@router.post("/competitors/pending/clear", response_model=dict)
+def clear_competitor_pending():
+    conn = open_db_connection()
+    try:
+        save_competitor_discovery_pending(conn, [])
+        return {"ok": True, "data": _competitors_response_data(conn)}
+    finally:
+        conn.close()
+
+
+@router.post("/competitors/pending/{domain:path}/approve", response_model=dict)
+def approve_pending_competitor(domain: str):
+    norm = norm_competitor_domain(domain)
+    if not norm:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain cannot be empty")
+    conn = open_db_connection()
+    try:
+        pending = load_competitor_discovery_pending(conn)
+        match_row = next((p for p in pending if norm_competitor_domain(str(p.get("domain", ""))) == norm), None)
+        if not match_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not in pending suggestions")
+        save_competitor_discovery_pending(conn, [p for p in pending if norm_competitor_domain(str(p.get("domain", ""))) != norm])
+        remove_competitor_from_blocklist(conn, norm)
+        items = _load_competitors(conn)
+        norms = {norm_competitor_domain(d) for d in items}
+        if norm not in norms:
+            items.append(norm)
+            _save_competitors(conn, items)
+        now_ts = int(time.time())
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO competitor_profiles
+                ({_COMPETITOR_PROFILE_SELECT})
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                norm,
+                _as_int(match_row.get("keywords_common")),
+                _as_int(match_row.get("keywords_they_have")),
+                _as_int(match_row.get("keywords_we_have")),
+                _as_float(match_row.get("share")),
+                _as_int(match_row.get("traffic")),
+                now_ts,
+                _as_float(match_row.get("labs_visibility")),
+                _as_int(match_row.get("labs_avg_position")),
+                _as_int(match_row.get("labs_median_position")),
+                _as_int(match_row.get("labs_seed_etv")),
+                _as_int(match_row.get("labs_bulk_etv")),
+                _as_int(match_row.get("labs_rating")),
+            ),
+        )
+        conn.commit()
+        return {"ok": True, "data": _competitors_response_data(conn)}
+    finally:
+        conn.close()
+
+
+@router.post("/competitors/dismissed/{domain:path}/restore", response_model=dict)
+def restore_dismissed_competitor(domain: str):
+    """Remove a domain from the competitor blocklist so it can appear in discovery again (does not add to approved)."""
+    norm = norm_competitor_domain(domain)
+    if not norm:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain cannot be empty")
+    conn = open_db_connection()
+    try:
+        if norm not in load_competitor_blocklist(conn):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Domain is not in the dismissed list",
+            )
+        remove_competitor_from_blocklist(conn, norm)
+        return {"ok": True, "data": _competitors_response_data(conn)}
+    finally:
+        conn.close()
+
+
+@router.post("/competitors/pending/{domain:path}/reject", response_model=dict)
+def reject_pending_competitor(domain: str):
+    norm = norm_competitor_domain(domain)
+    if not norm:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Domain cannot be empty")
+    conn = open_db_connection()
+    try:
+        pending = load_competitor_discovery_pending(conn)
+        match_row = next(
+            (p for p in pending if norm_competitor_domain(str(p.get("domain", ""))) == norm),
+            None,
+        )
+        if not match_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not in pending suggestions")
+        upsert_dismissed_profile_snapshot(conn, dict(match_row))
+        save_competitor_discovery_pending(conn, [p for p in pending if norm_competitor_domain(str(p.get("domain", ""))) != norm])
+        add_competitor_to_blocklist(conn, norm)
+        return {"ok": True, "data": _competitors_response_data(conn)}
+    finally:
+        conn.close()
 
 
 @router.get("/competitors", response_model=dict)
@@ -272,32 +442,27 @@ def get_competitor_detail(domain: str):
     try:
         domain = norm_competitor_domain(domain)
         row = conn.execute(
-            "SELECT domain, keywords_common, keywords_they_have, keywords_we_have, "
-            "share, traffic, is_manual, updated_at FROM competitor_profiles WHERE domain = ?",
+            f"SELECT {_COMPETITOR_PROFILE_SELECT} FROM competitor_profiles WHERE domain = ?",
             (domain,),
         ).fetchone()
         if row:
-            profile = {
-                "domain": row[0] or domain,
-                "keywords_common": _as_int(row[1]),
-                "keywords_they_have": _as_int(row[2]),
-                "keywords_we_have": _as_int(row[3]),
-                "share": _as_float(row[4]),
-                "traffic": _as_int(row[5]),
-                "is_manual": _as_int(row[6]),
-                "updated_at": _as_int(row[7]),
-            }
+            profile = dict(zip(_COMPETITOR_PROFILE_COLS, row))
+            profile["domain"] = row[0] or domain
+            profile["keywords_common"] = _as_int(profile.get("keywords_common"))
+            profile["keywords_they_have"] = _as_int(profile.get("keywords_they_have"))
+            profile["keywords_we_have"] = _as_int(profile.get("keywords_we_have"))
+            profile["share"] = _as_float(profile.get("share"))
+            profile["traffic"] = _as_int(profile.get("traffic"))
+            profile["is_manual"] = _as_int(profile.get("is_manual"))
+            profile["updated_at"] = _as_int(profile.get("updated_at"))
+            profile["labs_visibility"] = _as_float(profile.get("labs_visibility"))
+            profile["labs_avg_position"] = _as_int(profile.get("labs_avg_position"))
+            profile["labs_median_position"] = _as_int(profile.get("labs_median_position"))
+            profile["labs_seed_etv"] = _as_int(profile.get("labs_seed_etv"))
+            profile["labs_bulk_etv"] = _as_int(profile.get("labs_bulk_etv"))
+            profile["labs_rating"] = _as_int(profile.get("labs_rating"))
         else:
-            profile = {
-                "domain": domain,
-                "keywords_common": 0,
-                "keywords_they_have": 0,
-                "keywords_we_have": 0,
-                "share": 0.0,
-                "traffic": 0,
-                "is_manual": 0,
-                "updated_at": 0,
-            }
+            profile = _zero_competitor_profile(domain)
         top_pages = conn.execute(
             "SELECT url, top_keyword, top_keyword_volume, top_keyword_position, "
             "total_keywords, estimated_traffic, traffic_value, page_type "
@@ -429,6 +594,16 @@ def delete_competitor(domain: str):
         ).fetchone() is not None
         if not in_saved and not in_profile and not in_pages:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Domain not found")
+        prow = conn.execute(
+            f"SELECT {_COMPETITOR_PROFILE_SELECT} FROM competitor_profiles WHERE domain = ?",
+            (norm,),
+        ).fetchone()
+        if prow:
+            upsert_dismissed_profile_snapshot(conn, dict(zip(_COMPETITOR_PROFILE_COLS, prow)))
+        else:
+            stub = _zero_competitor_profile(norm)
+            stub["is_manual"] = 1 if in_saved else 0
+            upsert_dismissed_profile_snapshot(conn, stub)
         filtered = [d for d in items if norm_competitor_domain(d) != norm]
         _save_competitors(conn, filtered)
         conn.execute("DELETE FROM competitor_profiles WHERE domain = ?", (norm,))

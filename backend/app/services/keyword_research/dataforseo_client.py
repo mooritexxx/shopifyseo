@@ -18,6 +18,13 @@ DFS_LABS_KEYWORD_EXPANSION_LIMIT = 50  # related_keywords, keyword_suggestions, 
 DFS_LABS_RANKED_KEYWORDS_LIMIT = 100
 DFS_LABS_RELEVANT_PAGES_DEFAULT = 50
 
+# competitors_domain: only request as many rows as we surface (avoid paying for unused items).
+DFS_COMPETITORS_DOMAIN_DEFAULT_LIMIT = 10
+
+# serp_competitors (seed-driven discovery): wider fetch pool, then bulk-traffic sort → slice to this many rows.
+DFS_SERP_COMPETITORS_FETCH_LIMIT = 120
+DFS_SERP_COMPETITORS_DISCOVERY_LIMIT = 50
+
 # Labs: (location_name, language_name) per primary market country — human-readable; payloads use codes below.
 _LABS_LOCALE: dict[str, tuple[str, str]] = {
     "CA": ("Canada", "English"),
@@ -597,13 +604,94 @@ def _organic_count(metrics: dict) -> int:
     return total
 
 
+def call_serp_competitors(
+    login: str,
+    password: str,
+    keywords: list[str],
+    *,
+    country_iso: str = "CA",
+    limit: int = 50,
+) -> tuple[list[dict], float]:
+    """Labs ``serp_competitors``: domains that rank for the given keyword set (SERP / market peers).
+
+    Up to 200 keywords per task (DataForSEO limit). See
+    https://docs.dataforseo.com/v3/dataforseo_labs-google-serp_competitors-live/
+    """
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for raw in keywords:
+        k = (raw or "").strip().lower()
+        if not k or k in seen_set:
+            continue
+        seen_set.add(k)
+        seen.append(k)
+    if not seen:
+        return [], 0.0
+    if len(seen) > 200:
+        seen = seen[:200]
+    out_cap = max(1, min(int(limit), 1000))
+    task_obj: dict[str, object] = {
+        **_labs_geo_task_fields(country_iso),
+        "keywords": seen,
+        "item_types": ["organic"],
+        "limit": out_cap,
+        # Ask Labs to rank by seed-set ETV (default is ``rating``); otherwise ``limit`` truncates in
+        # rating order and high-ETV domains can be missing from the slice we reorder client-side.
+        "order_by": ["etv,desc"],
+    }
+    payload = [task_obj]
+    timeout = 180 if len(seen) > 25 else 120
+    resp = _dfs_post(login, password, "/dataforseo_labs/google/serp_competitors/live", payload, timeout=timeout)
+    try:
+        _check_tasks(resp)
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "40501" in str(exc) and "order_by" in msg:
+            task_obj.pop("order_by", None)
+            api_limit = min(100, max(out_cap * 2, 80))
+            if api_limit > out_cap:
+                task_obj["limit"] = api_limit
+            resp = _dfs_post(login, password, "/dataforseo_labs/google/serp_competitors/live", [task_obj], timeout=timeout)
+            _check_tasks(resp)
+        else:
+            raise
+    cost = _response_cost(resp)
+    rows: list[dict] = []
+    for t in resp.get("tasks") or []:
+        for res in t.get("result") or []:
+            for item in res.get("items") or []:
+                dom = (item.get("domain") or "").strip().lower()
+                if not dom:
+                    continue
+                etv_raw = item.get("etv")
+                etv = 0.0
+                if etv_raw is not None:
+                    try:
+                        etv = float(etv_raw)
+                    except (TypeError, ValueError):
+                        etv = 0.0
+                rows.append(
+                    {
+                        "domain": dom,
+                        "etv": etv,
+                        "rating": int(item.get("rating") or 0),
+                        "visibility": float(item.get("visibility") or 0.0),
+                        "keywords_count": int(item.get("keywords_count") or 0),
+                        "avg_position": int(item.get("avg_position") or 0),
+                        "median_position": int(item.get("median_position") or 0),
+                    }
+                )
+    rows.sort(key=lambda r: r["etv"], reverse=True)
+    return rows[:out_cap], cost
+
+
 def call_competitors_domain(
     login: str,
     password: str,
     target_domain: str,
     *,
     country_iso: str = "CA",
-    limit: int = 30,
+    limit: int = DFS_COMPETITORS_DOMAIN_DEFAULT_LIMIT,
 ) -> tuple[list[dict], float]:
     target = _norm_domain(target_domain)
     if not target:
@@ -614,6 +702,9 @@ def call_competitors_domain(
             "target": target,
             "exclude_top_domains": True,
             "limit": limit,
+            "item_types": ["organic"],
+            # Labs returns 40501 ``Invalid Field: 'order_by'`` if ``order_by`` is sent here; rank by
+            # ``traffic`` (full-domain organic ETV) among the returned rows only.
         }
     ]
     resp = _dfs_post(login, password, "/dataforseo_labs/google/competitors_domain/live", payload)
@@ -635,11 +726,12 @@ def call_competitors_domain(
                 share = 0.0
                 if comp_organic and intersections:
                     share = min(1.0, intersections / max(comp_organic, 1))
+                # Full-domain organic ETV only (``metrics.organic`` is overlap vs target).
                 etv = 0
-                org = item.get("metrics", {}).get("organic") if isinstance(item.get("metrics"), dict) else {}
-                if isinstance(org, dict) and org.get("etv") is not None:
+                fd_org = comp_full.get("organic") if isinstance(comp_full, dict) else {}
+                if isinstance(fd_org, dict) and fd_org.get("etv") is not None:
                     try:
-                        etv = int(float(org["etv"]))
+                        etv = int(float(fd_org["etv"]))
                     except (TypeError, ValueError):
                         etv = 0
                 profiles.append(
@@ -652,7 +744,8 @@ def call_competitors_domain(
                         "traffic": etv,
                     }
                 )
-    return profiles, cost
+    profiles.sort(key=lambda p: int(p.get("traffic") or 0), reverse=True)
+    return profiles[:limit], cost
 
 
 def _ranked_item_to_site_explorer_row(item: dict, domain: str) -> dict | None:

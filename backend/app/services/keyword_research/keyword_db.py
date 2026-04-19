@@ -263,7 +263,7 @@ def sync_competitor_keyword_gaps(conn: sqlite3.Connection) -> int:
 
 
 def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], manual_domains: list[str] | None = None) -> int:
-    """UPSERT competitor profile rows from competitor discovery (e.g. Labs competitors_domain). `manual_domains` = domains user had before this run (is_manual=1)."""
+    """UPSERT competitor profile rows from competitor discovery (e.g. Labs ``serp_competitors`` / profiles). `manual_domains` = domains user had before this run (is_manual=1)."""
     now = int(time.time())
     manual = {norm_competitor_domain(d) for d in (manual_domains or []) if d}
     count = 0
@@ -274,14 +274,22 @@ def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], man
         conn.execute(
             """
             INSERT INTO competitor_profiles
-                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
+                 labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
+                 is_manual, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(domain) DO UPDATE SET
                 keywords_common = excluded.keywords_common,
                 keywords_they_have = excluded.keywords_they_have,
                 keywords_we_have = excluded.keywords_we_have,
                 share = excluded.share,
                 traffic = excluded.traffic,
+                labs_visibility = excluded.labs_visibility,
+                labs_avg_position = excluded.labs_avg_position,
+                labs_median_position = excluded.labs_median_position,
+                labs_seed_etv = excluded.labs_seed_etv,
+                labs_bulk_etv = excluded.labs_bulk_etv,
+                labs_rating = excluded.labs_rating,
                 is_manual = MAX(competitor_profiles.is_manual, excluded.is_manual),
                 updated_at = excluded.updated_at
             """,
@@ -292,6 +300,12 @@ def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], man
                 p.get("keywords_target", 0),
                 p.get("share", 0.0),
                 p.get("traffic", 0),
+                float(p.get("labs_visibility") or 0.0),
+                int(p.get("labs_avg_position") or 0),
+                int(p.get("labs_median_position") or 0),
+                int(p.get("labs_seed_etv") or 0),
+                int(p.get("labs_bulk_etv") or 0),
+                int(p.get("labs_rating") or 0),
                 1 if domain in manual else 0,
                 now,
             ),
@@ -337,11 +351,13 @@ def update_competitor_profile_from_organic_keywords(
         conn.execute(
             """
             INSERT INTO competitor_profiles
-                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
-            VALUES (?, 0, ?, 0, 0, ?, 1, ?)
-            """,
-            (domain, n_kw, traffic, now),
-        )
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
+                 labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
+                 is_manual, updated_at)
+                VALUES (?, 0, ?, 0, 0, ?, 0, 0, 0, 0, 0, 0, 1, ?)
+                """,
+                (domain, n_kw, traffic, now),
+            )
     conn.commit()
 
 
@@ -367,11 +383,13 @@ def update_competitor_profile_organic_sample_count(
         conn.execute(
             """
             INSERT INTO competitor_profiles
-                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
-            VALUES (?, 0, ?, 0, 0, 0, 1, ?)
-            """,
-            (domain, n_kw, now),
-        )
+                (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
+                 labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
+                 is_manual, updated_at)
+                VALUES (?, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ?)
+                """,
+                (domain, n_kw, now),
+            )
     conn.commit()
 
 
@@ -402,8 +420,10 @@ def apply_competitor_traffic_from_provider_batch(
             conn.execute(
                 """
                 INSERT INTO competitor_profiles
-                    (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
-                VALUES (?, 0, 0, 0, 0, ?, 0, ?)
+                    (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
+                     labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
+                     is_manual, updated_at)
+                VALUES (?, 0, 0, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, ?)
                 """,
                 (domain, tval, now),
             )

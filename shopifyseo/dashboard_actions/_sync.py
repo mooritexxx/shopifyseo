@@ -30,6 +30,8 @@ from ..shopify_catalog_sync import (
 from ..catalog_image_work import count_catalog_image_urls_discover
 from ..shopify_catalog_sync.discovery import discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
+from shopifyseo.debug_session_log import agent_debug_log
+
 from ._state import (
     GA4_SYNC_RATE_LIMIT_PER_MINUTE,
     GA4_SYNC_WORKERS,
@@ -484,6 +486,21 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         _raise_if_sync_cancelled()
         if touched_targets:
             refresh_gsc_signal_data_for_objects(conn, touched_targets)
+        # region agent log
+        agent_debug_log(
+            hypothesis_id="H2",
+            location="dashboard_actions/_sync.py:bulk_refresh_search_console",
+            message="gsc_bulk_finished",
+            data={
+                "queue_total": summary.get("queue_total"),
+                "refreshed": summary.get("refreshed"),
+                "errors": summary.get("errors"),
+                "eligible": summary.get("eligible"),
+                "skipped_fresh": summary.get("skipped_fresh"),
+                "touched_targets": len(touched_targets),
+            },
+        )
+        # endregion
     finally:
         conn.close()
     return summary
@@ -1037,6 +1054,18 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             )
             SYNC_STATE["total"] = 1
             SYNC_STATE["done"] = 0
+            # region agent log
+            agent_debug_log(
+                hypothesis_id="H1",
+                location="dashboard_actions/_sync.py:structured_scope",
+                message="after_structured_total_reset",
+                data={
+                    "total": SYNC_STATE.get("total"),
+                    "gsc_refreshed": SYNC_STATE.get("gsc_refreshed"),
+                    "index_refreshed": SYNC_STATE.get("index_refreshed"),
+                },
+            )
+            # endregion
             conn = _db_connect_for_actions(db_path)
             try:
                 refresh_structured_seo_data(conn)
@@ -1205,6 +1234,23 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     f"Blogs {blogs_n}, Articles {articles_n}"
                     f"{_image_cache_summary_suffix(ic_d)}"
                 )
+            # region agent log
+            agent_debug_log(
+                hypothesis_id="H1",
+                location="dashboard_actions/_sync.py:run_sync_before_complete",
+                message="sync_state_snapshot",
+                data={
+                    "total": SYNC_STATE.get("total"),
+                    "done": SYNC_STATE.get("done"),
+                    "gsc_refreshed": SYNC_STATE.get("gsc_refreshed"),
+                    "gsc_errors": SYNC_STATE.get("gsc_errors"),
+                    "index_refreshed": SYNC_STATE.get("index_refreshed"),
+                    "index_errors": SYNC_STATE.get("index_errors"),
+                    "ga4_refreshed": SYNC_STATE.get("ga4_refreshed"),
+                    "selected_scopes": list(SYNC_STATE.get("selected_scopes") or []),
+                },
+            )
+            # endregion
             _set_sync_stage(
                 stage="complete",
                 label="Sync complete",

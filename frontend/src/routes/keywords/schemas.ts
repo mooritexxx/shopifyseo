@@ -57,6 +57,12 @@ export const competitorProfileSchema = z.object({
   traffic: z.number(),
   is_manual: z.number(),
   updated_at: z.number(),
+  labs_visibility: z.number().optional().default(0),
+  labs_avg_position: z.number().optional().default(0),
+  labs_median_position: z.number().optional().default(0),
+  labs_seed_etv: z.number().optional().default(0),
+  labs_bulk_etv: z.number().optional().default(0),
+  labs_rating: z.number().optional().default(0),
 });
 
 export const competitorResearchMetaSchema = z
@@ -74,5 +80,10 @@ export const competitorResearchMetaSchema = z
 export const competitorPayloadSchema = z.object({
   items: z.array(competitorProfileSchema),
   total: z.number(),
-  last_research: competitorResearchMetaSchema
+  last_research: competitorResearchMetaSchema.optional(),
+  pending_suggestions: z.array(competitorProfileSchema).optional().default([]),
+  dismissed_competitors: z.array(competitorProfileSchema).optional().default([]),
+  suggestions: z.array(competitorProfileSchema).optional(),
+  target_domain: z.string().optional(),
+  unit_cost: z.number().optional()
 });

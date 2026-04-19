@@ -163,9 +163,14 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | POST   | `/api/keywords/seed`                             | Body              | `{ ok, data }` | Save seeds                                     |
 | POST   | `/api/keywords/seed/generate`                    | —                 | `{ ok, data }` | Auto-generate seeds from catalog               |
 | DELETE | `/api/keywords/seed/{keyword}`                   | —                 | `{ ok, data }` | Remove one seed                                |
-| GET    | `/api/keywords/competitors`                      | —                 | `{ ok, data }` | Competitor list + profiles                     |
+| GET    | `/api/keywords/competitors`                      | —                 | `{ ok, data }` | Competitor list + profiles + pending suggestions |
 | GET    | `/api/keywords/competitors/{domain:path}/detail` | Path: full domain | `{ ok, data }` | Competitor detail                              |
 | POST   | `/api/keywords/competitors`                      | Body              | `{ ok, data }` | Add competitor                                 |
+| PUT    | `/api/keywords/competitors/discovery-seed`       | Body: `{ url }`   | `{ ok, data }` | Save competitor-discovery seed URL             |
+| POST   | `/api/keywords/competitors/discover-from-seed`   | Body: `{ url? }`  | `{ ok, data }` | Run DataForSEO SERP discovery → pending list   |
+| POST   | `/api/keywords/competitors/pending/clear`        | —                 | `{ ok, data }` | Clear all pending competitor suggestions       |
+| POST   | `/api/keywords/competitors/pending/{domain:path}/approve` | — | `{ ok, data }` | Approve pending suggestion → active competitor |
+| POST   | `/api/keywords/competitors/pending/{domain:path}/reject` | — | `{ ok, data }` | Drop a pending suggestion                      |
 | POST   | `/api/keywords/competitors/research`             | Body              | SSE            | Site Explorer–style research                   |
 | DELETE | `/api/keywords/competitors/{domain:path}`        | —                 | `{ ok, data }` | Remove competitor + blocklist                  |
 | GET    | `/api/keywords/target`                           | —                 | `{ ok, data }` | Target keyword set                             |
@@ -238,9 +243,9 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Catalog helpers                             | `backend/app/services/_catalog_helpers.py`       | Shared sort/segment/detail/inspection; `gsc_queries_from_detail` serializes per-URL GSC query rows for catalog detail APIs      | `dashboard_google`, `dashboard_actions`, `dashboard_queries`, `object_signals`, `index_status`                                              |
 | GSC calendar                                | `backend/app/services/gsc_overview_calendar.py`  | Date windows in dashboard TZ                                                                                                  | `DASHBOARD_TZ`, `zoneinfo`                                                                                                                  |
 | Google Ads lab                              | `backend/app/services/google_ads_lab_service.py` | Lab context + Ads REST proxy                                                                                                  | `dashboard_google`, `dashboard_config`, `dashboard_http`                                                                                    |
-| Keyword research                            | `backend/app/services/keyword_research/`         | Seeds, competitors, DataForSEO, targets, metrics refresh                                                                      | `dashboard_google`, `dashboard_http`, `embedding_store`, `api_usage`, etc.                                                                  |
-| Keyword clustering                          | `backend/app/services/keyword_clustering/`       | Cluster storage, AI generation, match overrides                                                                               | `dashboard_queries`, `dashboard_google`, `dashboard_ai_engine_parts`, `embedding_store`                                                     |
-| Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, draft/apply                                                                                           | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
+| Keyword research                            | `backend/app/services/keyword_research/`         | Seeds, competitor discovery/research, DataForSEO, targets, metrics refresh. Modules: `__init__` (public API), `research_runner` (seed + competitor + gap flows), `dataforseo_client`, `keyword_db`, `keyword_utils`, `competitor_blocklist` | `dashboard_google`, `dashboard_http`, `embedding_store`, `api_usage`, etc.                                                                  |
+| Keyword clustering                          | `backend/app/services/keyword_clustering/`       | Cluster storage, AI generation, match overrides. Modules: `_crud`, `_storage`, `_generation`, `_context`, `_gaps`, `_helpers` | `dashboard_queries`, `dashboard_google`, `dashboard_ai_engine_parts`, `embedding_store`                                                     |
+| Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, draft/apply. Modules: `__init__`, `_catalog`, `_optimizer`                                            | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
 
 
 **Middleware:** none registered; auth is OAuth-only for Google (no global API auth middleware).
@@ -317,11 +322,13 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `service_tokens`                                                         | OAuth tokens                               | `service`                                        |                                                  |
 | `service_settings`                                                       | App settings key/value                     | Mirrors env for runtime                          |                                                  |
 | `clusters`, `cluster_keywords`                                           | Keyword clusters                           | `cluster_keywords.cluster_id` → `clusters`       |                                                  |
-| `gsc_query_rows`, `gsc_query_dimension_rows`                             | GSC query storage                          | Per-URL row cap **20** via [`shopifyseo/gsc_query_limits.py`](shopifyseo/gsc_query_limits.py) (aligned with GSC API fetch, AI context SQL, embedding bundle) | → entities via object keys                       |
+| `gsc_query_rows`, `gsc_query_dimension_rows`                             | GSC query storage                          | Per-URL row cap **20** via [`shopifyseo/gsc_query_limits.py`](shopifyseo/gsc_query_limits.py) (aligned with GSC API fetch, AI context SQL, embedding bundle); dimension rows keyed by `dimension_kind`/`dimension_value` | → entities via object keys                       |
 | `seo_recommendations`                                                    | AI/SEO recs                                | Per object                                       |                                                  |
 | `keyword_metrics`, `keyword_research_runs`, `keyword_page_map`           | Research + mapping                         | Maps keyword ↔ `object_type`/`object_handle`     |                                                  |
-| `competitor_profiles`, `competitor_top_pages`, `competitor_keyword_gaps` | Competitor analysis                        | Domain-scoped                                    |                                                  |
-| `article_ideas`, `idea_articles`, `article_target_keywords`              | Content ideation                           | Links ideas ↔ articles                           |                                                  |
+| `competitor_profiles`, `competitor_top_pages`, `competitor_keyword_gaps` | Competitor analysis                        | Domain-scoped; `competitor_top_pages` carries `top_keyword_volume`, `top_keyword_position`, `page_type` | |
+| `article_ideas`                                                          | Gap-analysis article ideas                 | `id` PK; `linked_cluster_id`, `status`, `linked_article_handle` legacy 1:1 fields | ← `idea_articles`                                |
+| `idea_articles`                                                          | N:M idea ↔ article mapping                 | `(idea_id, blog_handle, article_handle)` unique; `angle_label` for multi-angle drafts | → `article_ideas`                                 |
+| `article_target_keywords`                                                | Keywords per article                       | `(blog_handle, article_handle, keyword)` unique; `is_primary`, `source` | → `blog_articles` via handles                    |
 | `embeddings`                                                             | Vector chunks                              | `(object_type, object_handle, chunk_index)` PK; `object_type=gsc_queries` bundles **title + canonical URL + top queries** for that entity handle |                                                  |
 | `api_usage_log`                                                          | API cost / usage lines                     |                                                  |                                                  |
 | `google_api_cache`                                                       | Cached Google API JSON                     | `cache_key`, TTL `expires_at`                    | Optional object refs                             |
@@ -360,7 +367,19 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `dashboard_ai_engine_parts/config.py` | Default models, limits, provider URLs |
 | `dashboard_ai_engine_parts/prompts.py` | Full + slim prompt assembly; slim `seo_description` adds `gsc_query_highlights` (top GSC queries, JSON size cap) |
 | `gsc_query_limits.py`                   | `GSC_PER_URL_QUERY_ROW_LIMIT` (20) shared by GSC fetch, context SQL, `gsc_queries` embeddings |
+| `debug_session_log.py`                | NDJSON session log helper for Cursor-agent / debug captures |
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
+
+
+---
+
+## Scripts (`scripts/`)
+
+
+| Script                              | Purpose                                                                                   |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| `dev-restart-local.sh`              | Developer convenience — restart local dev server / Vite build                             |
+| `run_serp_competitors_from_seeds.py` | CLI runner for DataForSEO SERP-based competitor discovery from seed keywords             |
 
 
 ---
@@ -441,10 +460,13 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | zod                         | ^3.25.76        | Runtime validation |
 | recharts                    | ^2.15.4         | Charts             |
 | sonner                      | ^2.0.7          | Toasts             |
-| @tiptap/*                   | ^3.x            | Rich text          |
-| @radix-ui/react-*           | ^1–2            | Primitives         |
+| @tiptap/* (react, starter-kit, image, placeholder) | ^3.x     | Rich text                         |
+| @radix-ui/react-* (checkbox, dialog, dropdown-menu, label, popover, progress, scroll-area, select, separator, slot, switch, tabs, tooltip) | ^1–2 | Primitives |
 | lucide-react                | ^0.511.0        | Icons              |
+| next-themes                 | ^0.4.6          | Theme mode toggling |
 | clsx / tailwind-merge / cva | various         | Class utilities    |
+
+**Dev/test:** `vitest` ^3, `@testing-library/{react,jest-dom,user-event}`, `jsdom`, `@vitejs/plugin-react`, `autoprefixer`, `postcss`.
 
 
 ---

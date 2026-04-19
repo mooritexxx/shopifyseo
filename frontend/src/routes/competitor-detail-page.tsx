@@ -16,6 +16,12 @@ const profileSchema = z.object({
   traffic: z.number(),
   is_manual: z.number(),
   updated_at: z.number(),
+  labs_visibility: z.number().optional().default(0),
+  labs_avg_position: z.number().optional().default(0),
+  labs_median_position: z.number().optional().default(0),
+  labs_seed_etv: z.number().optional().default(0),
+  labs_bulk_etv: z.number().optional().default(0),
+  labs_rating: z.number().optional().default(0),
 });
 
 /** SQLite / API may emit null for numeric columns; coerce so the page does not fail Zod parse. */
@@ -106,9 +112,24 @@ export function CompetitorDetailPage() {
           {/* Profile stats */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label="Est. Traffic" value={data.profile.traffic} />
-            <StatCard label="Common Keywords" value={data.profile.keywords_common} />
-            <StatCard label="Their Keywords" value={data.profile.keywords_they_have} />
+            <StatCard label="Seeds hit (Labs)" value={data.profile.keywords_common} />
+            <StatCard label="Organic sample rows" value={data.profile.keywords_they_have} />
             <StatCard label="Keyword Share" value={`${(data.profile.share * 100).toFixed(1)}%`} />
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <StatCard label="Labs seed ETV" value={data.profile.labs_seed_etv} />
+            <StatCard label="Labs bulk ETV" value={data.profile.labs_bulk_etv} />
+            <StatCard label="Labs rating" value={data.profile.labs_rating} />
+            <StatCard
+              label="Labs visibility"
+              value={
+                data.profile.labs_visibility < 1e-6
+                  ? "—"
+                  : data.profile.labs_visibility.toFixed(4)
+              }
+            />
+            <StatCard label="Avg position" value={data.profile.labs_avg_position} />
+            <StatCard label="Median position" value={data.profile.labs_median_position} />
           </div>
 
           {/* Top pages */}

@@ -1,7 +1,10 @@
 """Product domain: listing, detail, refresh, AI generation, and update."""
 from __future__ import annotations
 
+import time
 from typing import Any
+
+from shopifyseo.debug_session_log import agent_debug_log
 
 from shopifyseo.dashboard_actions import (
     SYNC_LOCK,
@@ -32,6 +35,8 @@ from backend.app.services._catalog_helpers import (
     serialize_opportunity,
     get_object_inspection_link,
 )
+
+_LIST_DBG_AT = 0.0
 
 
 def list_products(
@@ -98,6 +103,28 @@ def list_products(
         _attach_gsc_segment_flags(conn, "product", items)
     finally:
         conn.close()
+    # region agent log
+    global _LIST_DBG_AT
+    _now = time.time()
+    if _now - _LIST_DBG_AT > 2.5:
+        _LIST_DBG_AT = _now
+        nz_gsc = sum(
+            1
+            for it in items
+            if int(it.get("gsc_impressions") or 0) > 0 or int(it.get("gsc_clicks") or 0) > 0
+        )
+        agent_debug_log(
+            hypothesis_id="H3",
+            location="product_service.py:list_products",
+            message="product_list_gsc_rollups",
+            data={
+                "n_items": len(items),
+                "nonzero_gsc_rows": nz_gsc,
+                "sum_impressions": int(sum(int(it.get("gsc_impressions") or 0) for it in items)),
+                "sort": sort_key,
+            },
+        )
+    # endregion
     items.sort(key=PRODUCT_SORTERS[sort_key], reverse=sort_reverse)
     total = len(items)
     summary = {

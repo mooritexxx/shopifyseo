@@ -9,18 +9,22 @@ from datetime import datetime, timezone
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
 from .dataforseo_client import (
+    DFS_SERP_COMPETITORS_DISCOVERY_LIMIT,
+    DFS_SERP_COMPETITORS_FETCH_LIMIT,
+    _norm_domain,
     call_bulk_traffic_estimation,
-    call_competitors_domain,
     call_google_autocomplete_suggestions,
     call_keyword_ideas,
     call_keyword_overview,
     call_keyword_suggestions,
     call_ranked_keywords,
     call_relevant_pages,
+    call_serp_competitors,
     validate_dataforseo_access,
 )
 from .competitor_blocklist import (
     competitor_domain_allowed_for_research,
+    load_competitor_blocklist,
     norm_competitor_domain,
     purge_disallowed_competitor_rows,
 )
@@ -48,6 +52,19 @@ from .keyword_utils import (
 logger = logging.getLogger(__name__)
 
 COMPETITOR_RESEARCH_META_KEY = "competitor_research_meta"
+COMPETITOR_DISCOVERY_PENDING_KEY = "competitor_discovery_pending"
+
+
+def resolve_competitor_labs_target_domain(conn: sqlite3.Connection) -> str:
+    """Normalized hostname for Labs competitor flows: public store domain, then Shopify hostname."""
+    for key in ("store_custom_domain", "shopify_shop"):
+        raw = (get_service_setting(conn, key, "") or "").strip()
+        if not raw:
+            continue
+        dom = _norm_domain(raw)
+        if dom:
+            return dom
+    return ""
 
 
 def _run_source(
@@ -128,6 +145,124 @@ def _prepare_competitors_list(conn: sqlite3.Connection) -> list[str]:
     except Exception:
         logger.exception("purge_disallowed_competitor_rows failed (non-fatal)")
     return competitors
+
+
+def _load_seed_keyword_strings(conn: sqlite3.Connection) -> list[str]:
+    """Ordered unique seed keyword strings from ``seed_keywords`` service setting.
+
+    Labs ``serp_competitors`` accepts at most 200 keywords per request; :func:`call_serp_competitors` truncates
+    to that cap in order listed here.
+    """
+    raw = get_service_setting(conn, "seed_keywords", "[]")
+    try:
+        seeds = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(seeds, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in seeds:
+        if not isinstance(s, dict):
+            continue
+        kw = (s.get("keyword") or "").strip()
+        if not kw:
+            continue
+        low = kw.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(kw)
+    return out
+
+
+def _serp_rows_to_discovery_profiles(
+    rows: list[dict],
+    *,
+    seed_total: int,
+    bulk_traffic_by_domain: dict[str, int] | None = None,
+) -> list[dict]:
+    """Map Labs ``serp_competitors`` items to the profile dict shape used by discovery + ``sync_competitor_profiles``.
+
+    When ``bulk_traffic_by_domain`` is set (full-domain organic ETV from Labs bulk traffic estimation),
+    ``traffic`` is ``max(bulk_etv, seed_etv)`` so we never show a number below the seed-keyword slice when bulk
+    is missing or anomalously low for a domain.
+    """
+    seed_total = max(int(seed_total), 1)
+    bulk = bulk_traffic_by_domain or {}
+    profiles: list[dict] = []
+    for r in rows:
+        raw_dom = str(r.get("domain") or "")
+        dom = norm_competitor_domain(raw_dom)
+        if not dom:
+            continue
+        kc = int(r.get("keywords_count") or 0)
+        rating = int(r.get("rating") or 0)
+        try:
+            seed_etv = int(float(r.get("etv") or 0))
+        except (TypeError, ValueError):
+            seed_etv = 0
+        bulk_etv = int(bulk.get(dom, 0))
+        traffic = max(bulk_etv, seed_etv)
+        share = min(1.0, kc / float(seed_total))
+        try:
+            vis = float(r.get("visibility") or 0.0)
+        except (TypeError, ValueError):
+            vis = 0.0
+        profiles.append(
+            {
+                "competitor_domain": dom,
+                "keywords_common": kc,
+                "keywords_competitor": rating,
+                "keywords_target": seed_total,
+                "share": float(share),
+                "traffic": int(traffic),
+                "labs_visibility": vis,
+                "labs_avg_position": int(r.get("avg_position") or 0),
+                "labs_median_position": int(r.get("median_position") or 0),
+                "labs_seed_etv": seed_etv,
+                "labs_bulk_etv": bulk_etv,
+                "labs_rating": rating,
+            }
+        )
+    profiles.sort(key=lambda p: int(p.get("traffic") or 0), reverse=True)
+    return profiles
+
+
+def _serp_discovery_profiles_with_bulk_traffic(
+    login: str,
+    password: str,
+    seed_strings: list[str],
+    *,
+    country_iso: str,
+    out_limit: int,
+) -> tuple[list[dict], float]:
+    """SERP competitors for seeds (wide pool), bulk full-domain organic ETV, sort by traffic.
+
+    Returns **all** ranked profiles from the fetch pool (typically up to :data:`DFS_SERP_COMPETITORS_FETCH_LIMIT` rows).
+    ``out_limit`` only raises the Labs fetch floor so small caps still request a wide SERP pool.
+    """
+    fetch_limit = max(out_limit, min(DFS_SERP_COMPETITORS_FETCH_LIMIT, 1000))
+    rows, c1 = call_serp_competitors(
+        login, password, seed_strings, country_iso=country_iso, limit=fetch_limit
+    )
+    cost = float(c1 or 0.0)
+    if not rows:
+        return [], cost
+    doms: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        d = norm_competitor_domain(str(r.get("domain") or ""))
+        if d and d not in seen:
+            seen.add(d)
+            doms.append(d)
+    bulk_map, c2 = call_bulk_traffic_estimation(login, password, doms, country_iso=country_iso)
+    cost += float(c2 or 0.0)
+    n_kw = min(len(seed_strings), 200)
+    profiles = _serp_rows_to_discovery_profiles(rows, seed_total=n_kw, bulk_traffic_by_domain=bulk_map)
+    # Return the full ranked pool (up to ``fetch_limit`` domains from Labs). Callers filter (e.g. saved / dismissed /
+    # own store) then cap to ``DFS_SERP_COMPETITORS_DISCOVERY_LIMIT`` so filtered rows do not consume suggestion slots.
+    return profiles, cost
 
 
 def _finalize_keyword_research(
@@ -288,7 +423,7 @@ def run_seed_keyword_research(conn: sqlite3.Connection, on_progress=None) -> dic
 
 
 def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
-    """Competitor pipeline via DataForSEO: optional discovery (competitors_domain), organic keywords, profiles, top pages.
+    """Competitor pipeline via DataForSEO: optional discovery (``serp_competitors`` on seed keywords), organic keywords, profiles, top pages.
 
     New keywords merge into the same target_keywords store and DB as seed research so clusters / gaps stay in sync.
     """
@@ -296,11 +431,11 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
     cc_iso = _primary_country_iso(conn)
     competitors = _prepare_competitors_list(conn)
     manual_seed_snapshot = frozenset(competitors)
-    our_domain = (get_service_setting(conn, "shopify_domain", "") or "").strip()
+    our_domain = resolve_competitor_labs_target_domain(conn)
     if not competitors and not our_domain:
         raise RuntimeError(
-            "Add at least one competitor domain on the Competitors tab, or set your shop domain in Settings "
-            "so we can discover similar sites (DataForSEO)."
+            "Add at least one competitor domain on the Competitors tab, or set your website URL for discovery above, "
+            "or your public store domain / Shopify shop in Settings so we can discover similar sites (DataForSEO)."
         )
 
     all_raw: list[dict] = []
@@ -311,32 +446,51 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
     organic_fail = 0
 
     if our_domain:
-        if on_progress:
-            on_progress("Discovering similar sites (DataForSEO organic competitors)…")
-        try:
-            profiles_raw, cost = call_competitors_domain(
-                login, password, our_domain, country_iso=cc_iso, limit=30
-            )
-            total_cost += float(cost or 0)
-            discovered_profiles = [
-                p for p in profiles_raw
-                if competitor_domain_allowed_for_research(conn, str(p.get("competitor_domain", "")))
-            ]
-            discovered_domains = [
-                norm_competitor_domain(str(p.get("competitor_domain", "")))
-                for p in discovered_profiles
-                if p.get("competitor_domain")
-            ]
-            merged_list = list(competitors)
-            for d in discovered_domains:
-                if d and d not in merged_list:
-                    merged_list.append(d)
-            if len(merged_list) > len(competitors):
-                set_service_setting(conn, "competitor_domains", json.dumps(merged_list))
-                logger.info("Auto-merged %d new competitor domains", len(merged_list) - len(competitors))
-        except RuntimeError as exc:
-            logger.warning("Skipping organic-competitors discovery: %s", exc)
-            errors.append(str(exc))
+        seed_strings = _load_seed_keyword_strings(conn)
+        if seed_strings:
+            if on_progress:
+                on_progress("Discovering sites for your seed keywords (SERP + organic traffic)…")
+            try:
+                profiles_raw, dcost = _serp_discovery_profiles_with_bulk_traffic(
+                    login,
+                    password,
+                    seed_strings,
+                    country_iso=cc_iso,
+                    out_limit=DFS_SERP_COMPETITORS_DISCOVERY_LIMIT,
+                )
+                total_cost += dcost
+                blocklist = load_competitor_blocklist(conn)
+                discovered_profiles = []
+                for p in profiles_raw:
+                    if len(discovered_profiles) >= DFS_SERP_COMPETITORS_DISCOVERY_LIMIT:
+                        break
+                    dom = norm_competitor_domain(str(p.get("competitor_domain", "")))
+                    if not dom:
+                        continue
+                    if our_domain and dom == our_domain:
+                        continue
+                    if dom in manual_seed_snapshot:
+                        continue
+                    if dom in blocklist:
+                        continue
+                    discovered_profiles.append(p)
+                discovered_domains = [
+                    norm_competitor_domain(str(p.get("competitor_domain", "")))
+                    for p in discovered_profiles
+                    if p.get("competitor_domain")
+                ]
+                merged_list = list(competitors)
+                for d in discovered_domains:
+                    if d and d not in merged_list:
+                        merged_list.append(d)
+                if len(merged_list) > len(competitors):
+                    set_service_setting(conn, "competitor_domains", json.dumps(merged_list))
+                    logger.info("Auto-merged %d new competitor domains", len(merged_list) - len(competitors))
+            except RuntimeError as exc:
+                logger.warning("Skipping serp competitor discovery: %s", exc)
+                errors.append(str(exc))
+        else:
+            logger.info("Skipping serp competitor discovery: no seed keywords in settings.")
 
     competitors = _prepare_competitors_list(conn)
 
@@ -354,8 +508,10 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO competitor_profiles
-                    (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic, is_manual, updated_at)
-                VALUES (?, 0, 0, 0, 0, 0, ?, ?)
+                    (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
+                     labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
+                     is_manual, updated_at)
+                VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?)
                 """,
                 (d, is_man, now_stub),
             )
@@ -554,6 +710,89 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
         on_progress(f"Done — refreshed {updated_count} of {len(items)} keywords (${total_cost:.4f})")
 
     return data
+
+
+def load_competitor_discovery_pending(conn: sqlite3.Connection) -> list[dict]:
+    raw = get_service_setting(conn, COMPETITOR_DISCOVERY_PENDING_KEY, "")
+    if not (raw or "").strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict)]
+
+
+def save_competitor_discovery_pending(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    set_service_setting(conn, COMPETITOR_DISCOVERY_PENDING_KEY, json.dumps(rows))
+
+
+def run_discover_competitors_for_review(
+    conn: sqlite3.Connection,
+    *,
+    on_progress=None,
+) -> dict:
+    """Labs ``serp_competitors`` on seed keywords; replaces pending suggestions (does not merge into ``competitor_domains``).
+
+    Drops your store (when Settings has a public domain), domains already saved as competitors, and domains on the
+    competitor blocklist (persisted when you reject a suggestion or remove a saved competitor).
+    """
+    login, password = _preflight_keyword_research(conn, on_progress)
+    cc_iso = _primary_country_iso(conn)
+    seed_strings = _load_seed_keyword_strings(conn)
+    if not seed_strings:
+        raise RuntimeError("Add seed keywords on the Seed Keywords tab first, then find competitors.")
+    target = resolve_competitor_labs_target_domain(conn)
+    competitors_set = set(_prepare_competitors_list(conn))
+    blocklist = load_competitor_blocklist(conn)
+    if on_progress:
+        on_progress(f"Fetching SERP competitors for {len(seed_strings)} seeds and organic traffic estimates…")
+    profiles_raw, cost = _serp_discovery_profiles_with_bulk_traffic(
+        login,
+        password,
+        seed_strings,
+        country_iso=cc_iso,
+        out_limit=DFS_SERP_COMPETITORS_DISCOVERY_LIMIT,
+    )
+    suggestions: list[dict] = []
+    for p in profiles_raw:
+        if len(suggestions) >= DFS_SERP_COMPETITORS_DISCOVERY_LIMIT:
+            break
+        dom = norm_competitor_domain(str(p.get("competitor_domain", "")))
+        if not dom:
+            continue
+        if target and dom == target:
+            continue
+        if dom in competitors_set:
+            continue
+        if dom in blocklist:
+            continue
+        suggestions.append(
+            {
+                "domain": dom,
+                "keywords_common": int(p.get("keywords_common") or 0),
+                "keywords_they_have": int(p.get("keywords_competitor") or 0),
+                "keywords_we_have": int(p.get("keywords_target") or 0),
+                "share": float(p.get("share") or 0.0),
+                "traffic": int(p.get("traffic") or 0),
+                "labs_visibility": float(p.get("labs_visibility") or 0.0),
+                "labs_avg_position": int(p.get("labs_avg_position") or 0),
+                "labs_median_position": int(p.get("labs_median_position") or 0),
+                "labs_seed_etv": int(p.get("labs_seed_etv") or 0),
+                "labs_bulk_etv": int(p.get("labs_bulk_etv") or 0),
+                "labs_rating": int(p.get("labs_rating") or 0),
+                "is_manual": 0,
+                "updated_at": 0,
+            }
+        )
+    save_competitor_discovery_pending(conn, suggestions)
+    return {
+        "suggestions": suggestions,
+        "target_domain": target,
+        "unit_cost": float(cost or 0.0),
+    }
 
 
 def run_research(conn: sqlite3.Connection, on_progress=None) -> dict:

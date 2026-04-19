@@ -342,6 +342,18 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _ensure_columns(
+        conn,
+        "competitor_profiles",
+        {
+            "labs_visibility": "REAL DEFAULT 0",
+            "labs_avg_position": "INTEGER DEFAULT 0",
+            "labs_median_position": "INTEGER DEFAULT 0",
+            "labs_seed_etv": "INTEGER DEFAULT 0",
+            "labs_bulk_etv": "INTEGER DEFAULT 0",
+            "labs_rating": "INTEGER DEFAULT 0",
+        },
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS competitor_top_pages (

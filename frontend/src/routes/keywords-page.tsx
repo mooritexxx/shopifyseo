@@ -140,7 +140,10 @@ export function KeywordsPage() {
             />
           </TabsContent>
           <TabsContent value="competitors" className="mt-0">
-            <CompetitorsPanel />
+            <CompetitorsPanel
+              onOpenSeedKeywordsTab={() => setActiveTab("seed")}
+              onOpenTargetKeywordsTab={() => setActiveTab("target")}
+            />
           </TabsContent>
           <TabsContent value="target" className="mt-0">
             <TargetKeywordsPanel seedResearchRunning={seedResearchStatus === "running"} />

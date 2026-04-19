@@ -1281,6 +1281,10 @@ def refresh_ga4_signal_data_for_objects(conn: sqlite3.Connection, targets: list[
 
 
 def refresh_structured_seo_data(conn: sqlite3.Connection, *, batch_size: int = 10) -> None:
+    """Denormalize GSC / GA4 / URL Inspection / PageSpeed from local API cache onto all catalog rows.
+
+    (Name kept for callers; this is catalog *signal* reconciliation, not JSON-LD.)
+    """
     ensure_dashboard_schema(conn)
     counter = 0
     for row in dq.fetch_all_products(conn):

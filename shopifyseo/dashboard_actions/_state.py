@@ -28,7 +28,10 @@ INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 55
 # PageSpeed Insights often returns HTTP 500 when overloaded. Fewer concurrent calls + lower RPM reduce 5xx.
 # Rolling cap on every runPagespeed HTTP request process-wide (bulk sync, per-object refresh, retries).
 PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 240
-PAGESPEED_SYNC_WORKERS = 25
+PAGESPEED_SYNC_WORKERS = 40
+# Primary PageSpeed queue is processed in slices of this many jobs, then a pause (bulk sync only).
+PAGESPEED_SYNC_BATCH_SIZE = 400
+PAGESPEED_SYNC_BATCH_PAUSE_SECONDS = 180.0
 PAGESPEED_SYNC_MIN_INTERVAL_SECONDS = 60.0 / PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE
 PAGESPEED_RECENT_FETCH_WINDOW_SECONDS = 30 * 24 * 60 * 60
 # Cap in-memory PageSpeed error log during one sync (avoids huge payloads / memory).
@@ -118,11 +121,12 @@ SYNC_STATE = {
     "pagespeed_http_calls_last_60s": 0,
     "sync_events": [],
     "pagespeed_error_details": [],
+    "pagespeed_queue_details": [],
+    "pagespeed_queue_meta": {},
+    "pagespeed_queue_baseline": 0,
     "pagespeed_error_seq": 0,
     "cancel_requested": False,
     "selected_scopes": [],
-    "structured_total": 0,
-    "structured_done": 0,
 }
 
 # Monotonic timestamps of each granted runPagespeed HTTP attempt (shared rate gate).

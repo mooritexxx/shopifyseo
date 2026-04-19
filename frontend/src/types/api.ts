@@ -740,6 +740,7 @@ export const statusSchema = z.object({
   pagespeed_queue_total: z.number().optional().default(0),
   pagespeed_queue_completed: z.number().optional().default(0),
   pagespeed_queue_inflight: z.number().optional().default(0),
+  pagespeed_queue_baseline: z.number().optional().default(0),
   pagespeed_http_calls_last_60s: z.number().optional().default(0),
   sync_events: z.array(z.object({
     at: z.number(),
@@ -756,8 +757,18 @@ export const statusSchema = z.object({
     http_status: z.number().optional(),
     response_body: z.string().optional()
   })).optional().default([]),
-  structured_total: z.number().optional().default(0),
-  structured_done: z.number().optional().default(0),
+  pagespeed_queue_details: z.array(z.object({
+    seq: z.number(),
+    object_type: z.string(),
+    handle: z.string(),
+    url: z.string(),
+    strategy: z.string().optional().default(""),
+    code: z.string(),
+    state: z.string(),
+    error: z.string().optional().default(""),
+    http_status: z.number().optional(),
+    response_body: z.string().optional()
+  })).optional().default([]),
   cancel_requested: z.boolean().optional().default(false),
   successes: z.number().optional().default(0),
   failures: z.number().optional().default(0),
@@ -838,8 +849,7 @@ export const settingsSchema = z.object({
         gsc: z.boolean(),
         ga4: z.boolean(),
         index: z.boolean(),
-        pagespeed: z.boolean(),
-        structured: z.boolean()
+        pagespeed: z.boolean()
       }),
       z.null(),
       z.undefined()
@@ -852,15 +862,13 @@ export const settingsSchema = z.object({
             ga4: boolean;
             index: boolean;
             pagespeed: boolean;
-            structured: boolean;
           })
         : {
             shopify: false,
             gsc: false,
             ga4: false,
             index: false,
-            pagespeed: false,
-            structured: false
+            pagespeed: false
           }
     )
 });

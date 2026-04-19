@@ -59,6 +59,7 @@ class AdaptiveMinuteRateLimiter:
         on_granted: Callable[[float], None] | None = None,
         recovery_step: int = 5,
         recovery_successes: int = 25,
+        max_inflight: int = 25,
     ) -> None:
         self.period_seconds = max(int(period_seconds or 0), 1)
         self.minimum_limit = max(int(minimum_limit or 0), 1)
@@ -67,6 +68,7 @@ class AdaptiveMinuteRateLimiter:
         self._on_granted = on_granted
         self._recovery_step = max(int(recovery_step or 0), 1)
         self._recovery_successes = max(int(recovery_successes or 0), 1)
+        self._max_inflight = max(1, int(max_inflight or 0))
         self._lock = threading.Lock()
         self._request_times: deque[float] = deque()
         self._cooldown_until = 0.0
@@ -79,8 +81,8 @@ class AdaptiveMinuteRateLimiter:
 
     @property
     def max_inflight(self) -> int:
-        """Fixed concurrency cap as requested."""
-        return 25
+        """Upper bound on concurrent HTTP attempts coordinated with this limiter."""
+        return self._max_inflight
 
     def _trim_unlocked(self, now: float) -> None:
         cutoff = now - self.period_seconds

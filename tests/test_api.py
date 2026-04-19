@@ -292,7 +292,7 @@ def test_operations_contract():
     assert "dataforseo_api_login" in vals
     assert isinstance(vals["dataforseo_api_login"], str)
     sr = data["sync_scope_ready"]
-    for key in ("shopify", "gsc", "ga4", "index", "pagespeed", "structured"):
+    for key in ("shopify", "gsc", "ga4", "index", "pagespeed"):
         assert key in sr
         assert isinstance(sr[key], bool)
     gsig = google_response.json()["data"]

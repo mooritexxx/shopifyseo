@@ -16,7 +16,6 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from ..dashboard_actions._state import acquire_pagespeed_http_rate_slot
 from ..dashboard_http import HttpRequestError
 from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 from ._cache import (
@@ -42,6 +41,13 @@ from ._auth import (
 def _pkg():
     """Return the shopifyseo.dashboard_google package namespace."""
     return sys.modules["shopifyseo.dashboard_google"]
+
+
+def _default_acquire_pagespeed_http_rate_slot(cancel_check=None) -> None:
+    """Import on first use so ``dashboard_store`` → ``dashboard_google`` load order avoids a circular import."""
+    from ..dashboard_actions._state import acquire_pagespeed_http_rate_slot
+
+    acquire_pagespeed_http_rate_slot(cancel_check)
 
 
 # -- Cache key helpers --------------------------------------------------------
@@ -1319,7 +1325,7 @@ def get_pagespeed(
         if before_each_run_pagespeed_http is not None:
             before_each_run_pagespeed_http()
         else:
-            acquire_pagespeed_http_rate_slot(None)
+            _default_acquire_pagespeed_http_rate_slot(None)
 
     try:
         payload = _fetch_run_pagespeed_with_retries(

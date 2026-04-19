@@ -7,6 +7,7 @@ import pytest
 
 import shopifyseo.dashboard_actions._rpm_limiter as rpm
 from shopifyseo.dashboard_actions import _sync
+from shopifyseo.dashboard_actions._state import PAGESPEED_SYNC_WORKERS
 from shopifyseo.dashboard_google import _gsc
 from shopifyseo.dashboard_google._cache import ensure_google_cache_schema
 from shopifyseo.dashboard_http import HttpRequestError
@@ -96,6 +97,44 @@ def test_pagespeed_target_counts_waits_for_rate_limit_cooldown_then_requeues(mon
     assert queued_targets == [("product", "widget", url, "mobile")]
 
 
+def test_pagespeed_target_counts_pairs_mobile_desktop_when_cache_empty(monkeypatch):
+    """Every catalog object should enqueue two PSI jobs (mobile + desktop) when neither cache row exists."""
+    conn = _memory_cache_conn()
+    now_ts = 2_000_000_000
+    url = "https://example.com/products/widget"
+    monkeypatch.setattr(_sync.time, "time", lambda: now_ts)
+    monkeypatch.setattr(_sync, "_all_object_targets", lambda _conn: [("product", "widget", url)])
+
+    total_targets, queued_targets = _sync._pagespeed_target_counts(conn)
+    assert total_targets == 1
+    assert queued_targets == [
+        ("product", "widget", url, "mobile"),
+        ("product", "widget", url, "desktop"),
+    ]
+
+
+def test_pagespeed_target_counts_pairs_strategies_per_object(monkeypatch):
+    conn = _memory_cache_conn()
+    now_ts = 2_000_000_100
+    u1 = "https://example.com/p1"
+    u2 = "https://example.com/p2"
+    monkeypatch.setattr(_sync.time, "time", lambda: now_ts)
+    monkeypatch.setattr(
+        _sync,
+        "_all_object_targets",
+        lambda _conn: [("product", "a", u1), ("collection", "b", u2)],
+    )
+
+    total_targets, queued_targets = _sync._pagespeed_target_counts(conn)
+    assert total_targets == 2
+    assert set(queued_targets) == {
+        ("product", "a", u1, "mobile"),
+        ("product", "a", u1, "desktop"),
+        ("collection", "b", u2, "mobile"),
+        ("collection", "b", u2, "desktop"),
+    }
+
+
 def test_pagespeed_http_429_is_not_retried(monkeypatch):
     calls = {"before_each_http": 0, "google_api_get": 0}
 
@@ -157,10 +196,9 @@ def test_adaptive_pagespeed_limiter_slows_down_and_recovers(monkeypatch):
     assert new_limit == 147
 
 
-def test_pagespeed_bulk_max_inflight_tracks_rate_limit():
-    assert _sync._pagespeed_bulk_max_inflight(60) == 12
-    assert _sync._pagespeed_bulk_max_inflight(190) == 24
-    assert _sync._pagespeed_bulk_max_inflight(400) == 50
+def test_pagespeed_bulk_max_inflight_matches_worker_pool():
+    """Bulk PageSpeed concurrency follows ``PAGESPEED_SYNC_WORKERS``."""
+    assert _sync._pagespeed_bulk_max_inflight() == PAGESPEED_SYNC_WORKERS
 
 
 def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatch):

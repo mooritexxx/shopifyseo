@@ -137,7 +137,6 @@ class SyncScopeReadyPayload(BaseModel):
     ga4: bool
     index: bool
     pagespeed: bool
-    structured: bool
 
 
 class SettingsPayload(BaseModel):

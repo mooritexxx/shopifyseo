@@ -7,7 +7,6 @@ import {
   ClipboardCopy,
   Database,
   Globe,
-  Layers3,
   Play,
   RefreshCw,
   Settings2,
@@ -21,8 +20,8 @@ import { ToggleSwitch } from "../../ui/toggle-switch";
 import { cn } from "../../../lib/utils";
 import { SYNC_PIPELINE_SUBTITLE, syncServices, syncSelectionSummary, type SyncServiceValue } from "./constants";
 import type { PipelineRowModel } from "./pipeline-derive";
-import { PageSpeedErrorStream } from "./sync-pagespeed-error-stream";
-import type { PagespeedErrorDetailItem } from "./sync-pagespeed-error-stream";
+import { PageSpeedQueueTable } from "./sync-pagespeed-queue-table";
+import type { PagespeedQueueDetailItem } from "./sync-pagespeed-queue-table";
 import { SyncEventStream } from "./sync-event-stream";
 import type { SyncLogLine } from "./use-sync-event-log";
 
@@ -33,8 +32,7 @@ const rowIcons: Record<SyncServiceValue, typeof Box> = {
   gsc: Globe,
   ga4: Activity,
   index: Database,
-  pagespeed: Sparkles,
-  structured: Layers3
+  pagespeed: Sparkles
 };
 
 function HeroRing({
@@ -376,7 +374,7 @@ export type SyncDrawerProps = {
   eventLines: SyncLogLine[];
   showChangesGrid: boolean;
   changeCards: { label: string; total: number; sub?: string }[];
-  pagespeedErrorDetails: PagespeedErrorDetailItem[];
+  pagespeedQueueDetails: PagespeedQueueDetailItem[];
   rawSyncError: string;
   errorSummary: string;
   errorDetails: string | null;
@@ -424,7 +422,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
     eventLines,
     showChangesGrid,
     changeCards,
-    pagespeedErrorDetails,
+    pagespeedQueueDetails,
     rawSyncError,
     errorSummary,
     errorDetails,
@@ -674,9 +672,9 @@ export function SyncDrawer(props: SyncDrawerProps) {
           </div>
         ) : null}
 
-        {pagespeedErrorDetails.length > 0 ? (
+        {pagespeedQueueDetails.length > 0 ? (
           <div className="mt-[18px]">
-            <PageSpeedErrorStream items={pagespeedErrorDetails} />
+            <PageSpeedQueueTable items={pagespeedQueueDetails} />
           </div>
         ) : null}
 

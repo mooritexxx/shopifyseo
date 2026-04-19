@@ -16,9 +16,16 @@ from ._helpers import (
     _build_clustering_prompt,
     _check_keyword_coverage,
     _compute_cluster_stats,
+    _detect_vendor,
+    _group_by_parent_topic,
     _keyword_coverage_detail,
 )
-from ._context import _get_matched_cluster_keywords, _load_cluster_context
+from ._context import (
+    _find_clusters_for_product,
+    _format_cluster_context,
+    _get_matched_cluster_keywords,
+    _load_cluster_context,
+)
 from ._storage import load_clusters
 
 __all__ = [
@@ -33,8 +40,12 @@ __all__ = [
     # Semi-public (used by other services)
     "_get_matched_cluster_keywords",
     "_load_cluster_context",
+    "_find_clusters_for_product",
+    "_format_cluster_context",
     "_build_clustering_prompt",
     "_check_keyword_coverage",
     "_compute_cluster_stats",
+    "_detect_vendor",
+    "_group_by_parent_topic",
     "_keyword_coverage_detail",
 ]

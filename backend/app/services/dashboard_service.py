@@ -362,6 +362,11 @@ def get_sync_status() -> dict[str, Any]:
     ev = out.get("sync_events")
     if isinstance(ev, list):
         out["sync_events"] = list(ev)
+    qd = out.get("pagespeed_queue_details")
+    if isinstance(qd, list):
+        out["pagespeed_queue_details"] = list(qd)
+    # Internal map for merging hints into queue rows; never expose to the client.
+    out.pop("pagespeed_queue_meta", None)
     return out
 
 

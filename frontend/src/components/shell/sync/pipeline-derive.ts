@@ -102,10 +102,11 @@ function countsForService(
     }
     case "pagespeed": {
       const phase = (s.pagespeed_phase || "").toLowerCase();
-      if (phase === "queueing" || (phase === "complete" && (s.pagespeed_queue_total || 0) > 0)) {
-        const t = s.pagespeed_queue_total || 0;
-        const d = s.pagespeed_queue_completed || 0;
-        return { done: d, total: t };
+      const baseline = s.pagespeed_queue_baseline || 0;
+      if (phase === "queueing" || (phase === "complete" && baseline > 0)) {
+        const total = Math.max(baseline, 1);
+        const done = Math.min(s.pagespeed_refreshed || 0, total);
+        return { done, total };
       }
       if (phase === "complete") {
         return { done: 0, total: 0 };
@@ -113,11 +114,6 @@ function countsForService(
       const t = s.pagespeed_scan_total || 0;
       const d = s.pagespeed_scanned || 0;
       return { done: d, total: t };
-    }
-    case "structured": {
-      const st = Number(s.structured_total ?? 0);
-      const sd = Number(s.structured_done ?? 0);
-      return { done: sd, total: st };
     }
     default:
       return { done: 0, total: 0 };
@@ -130,9 +126,9 @@ export function heroProgressFromStatus(s: SyncStatusPayload | undefined): { done
   const scope = (s.active_scope || "").toLowerCase();
   const phase = (s.pagespeed_phase || "").toLowerCase();
   if (scope === "pagespeed" && phase === "queueing") {
-    const t = s.pagespeed_queue_total || 0;
-    const d = s.pagespeed_queue_completed || 0;
-    return { done: d, total: t };
+    const baseline = Math.max(s.pagespeed_queue_baseline || 0, 1);
+    const done = Math.min(s.pagespeed_refreshed || 0, baseline);
+    return { done, total: baseline };
   }
   if (scopeBelongsToShopifyService(scope)) {
     return { done: s.shopify_progress_done || 0, total: s.shopify_progress_total || 0 };
@@ -150,11 +146,6 @@ export function heroProgressFromStatus(s: SyncStatusPayload | undefined): { done
     const done = (s.index_refreshed || 0) + (s.index_errors || 0);
     const cap = Math.max(s.index_progress_total || 0, 1);
     return { done: Math.min(done, cap), total: cap };
-  }
-  if (scope === "structured") {
-    const st = s.structured_total || 0;
-    const sd = s.structured_done || 0;
-    return { done: sd, total: Math.max(st, 1) };
   }
   if (scope === "pagespeed") {
     return { done: s.pagespeed_scanned || 0, total: s.pagespeed_scan_total || 0 };

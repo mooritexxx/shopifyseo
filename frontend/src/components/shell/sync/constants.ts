@@ -3,8 +3,7 @@ export const syncServices = [
   { value: "gsc", label: "Search Console" },
   { value: "ga4", label: "GA4" },
   { value: "index", label: "Index status" },
-  { value: "pagespeed", label: "PageSpeed" },
-  { value: "structured", label: "Structured SEO" }
+  { value: "pagespeed", label: "PageSpeed" }
 ] as const;
 
 export type SyncServiceValue = (typeof syncServices)[number]["value"];
@@ -23,8 +22,7 @@ export const SYNC_SCOPE_READY_HELP: Record<SyncServiceValue, string> = {
   gsc: "Configure Google OAuth in Settings → Data sources, then pick a Search Console property.",
   ga4: "Connect Google OAuth (same as Search Console) before syncing GA4.",
   index: "URL Inspection needs a connected Google account with Search Console access.",
-  pagespeed: "PageSpeed Insights sync uses your Google OAuth session.",
-  structured: "Configure Shopify first — structured SEO runs against your synced catalog."
+  pagespeed: "PageSpeed Insights sync uses your Google OAuth session."
 };
 
 /** Pipeline row subtitles (V1 design copy deck). */
@@ -33,8 +31,7 @@ export const SYNC_PIPELINE_SUBTITLE: Record<SyncServiceValue, string> = {
   gsc: "Impressions, clicks, coverage",
   ga4: "Sessions, views, acquisition",
   index: "URL inspection on tracked catalog",
-  pagespeed: "Core Web Vitals per URL",
-  structured: "JSON-LD & schema completion"
+  pagespeed: "Core Web Vitals per URL"
 };
 
 export function syncSelectionSummary(selectedScopes: string[]) {

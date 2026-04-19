@@ -50,7 +50,7 @@ describe("derivePipelineRows accurate counts", () => {
     expect(idx?.total).toBe(10);
   });
 
-  it("PageSpeed complete uses queue totals when queue had work", () => {
+  it("PageSpeed complete uses refreshed count vs queue baseline when queue had work", () => {
     const rows = derivePipelineRows({
       orderedScopes: ["pagespeed"],
       syncStatus: {
@@ -58,8 +58,8 @@ describe("derivePipelineRows accurate counts", () => {
         stage: "refreshing_pagespeed",
         active_scope: "pagespeed",
         pagespeed_phase: "complete",
-        pagespeed_queue_total: 4,
-        pagespeed_queue_completed: 4,
+        pagespeed_queue_baseline: 4,
+        pagespeed_refreshed: 4,
         pagespeed_scan_total: 100,
         pagespeed_scanned: 100
       } as never,
@@ -71,30 +71,25 @@ describe("derivePipelineRows accurate counts", () => {
     expect(ps?.total).toBe(4);
   });
 
-  it("after structured SEO, Search Console row still shows full refreshed count (not capped by structured total)", () => {
+  it("after sync complete, Search Console row shows full refreshed count", () => {
     const rows = derivePipelineRows({
-      orderedScopes: ["gsc", "structured"],
+      orderedScopes: ["gsc", "pagespeed"],
       syncStatus: {
         running: false,
         stage: "complete",
-        active_scope: "structured",
+        active_scope: "pagespeed",
         gsc_refreshed: 667,
-        gsc_errors: 0,
-        structured_total: 1,
-        structured_done: 1
+        gsc_errors: 0
       } as never,
       running: false,
       hasError: false,
       syncPercent: 100,
-      activeScope: "structured",
+      activeScope: "pagespeed",
       stepIndex: 2
     });
     const gsc = rows.find((r) => r.key === "gsc");
     expect(gsc?.status).toBe("done");
     expect(gsc?.count).toBe(667);
     expect(gsc?.total).toBe(667);
-    const st = rows.find((r) => r.key === "structured");
-    expect(st?.count).toBe(1);
-    expect(st?.total).toBe(1);
   });
 });

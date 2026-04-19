@@ -22,8 +22,7 @@ const DEFAULT_SYNC_SCOPE_READY = {
   gsc: true,
   ga4: true,
   index: true,
-  pagespeed: true,
-  structured: true
+  pagespeed: true
 } as const;
 
 function getSettingsTab(name: RegExp | string) {

@@ -82,7 +82,8 @@ const syncStageLabels: Record<string, string> = {
   refreshing_ga4: "GA4 sync",
   refreshing_index: "Index status sync",
   refreshing_pagespeed: "PageSpeed sync",
-  updating_structured_seo: "Structured SEO rebuild",
+  /** Legacy backend stage: denormalized GSC/GA4/index/PageSpeed columns on catalog rows */
+  updating_structured_seo: "Merging catalog SEO signals",
   complete: "Sync complete"
 };
 
@@ -304,7 +305,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const rawSyncError = (syncStatus?.last_error || "").trim();
   const syncErrorParts = useMemo(() => splitSyncError(rawSyncError), [rawSyncError]);
   const showSyncErrorPanel = !syncRunning && Boolean(rawSyncError);
-  const pagespeedErrorDetails = syncStatus?.pagespeed_error_details || [];
+  const pagespeedQueueDetails = syncStatus?.pagespeed_queue_details || [];
 
   const syncAccent = "oklch(0.62 0.18 262)";
 
@@ -527,7 +528,7 @@ export function AppShell({ children }: PropsWithChildren) {
     eventLines: eventLogLines,
     showChangesGrid: drawerMode === "done",
     changeCards,
-    pagespeedErrorDetails,
+    pagespeedQueueDetails,
     rawSyncError,
     errorSummary: syncErrorParts.summary || "",
     errorDetails: syncErrorParts.details,

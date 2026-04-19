@@ -6,6 +6,7 @@ Internal layout:
 """
 
 from ._catalog import (
+    _product_gallery_seo_suffix_seed,
     list_catalog_image_seo_rows,
     list_product_image_seo_rows,
     suggest_catalog_image_alt_vision,
@@ -16,6 +17,7 @@ from ._optimizer import (
 )
 
 __all__ = [
+    "_product_gallery_seo_suffix_seed",
     "list_catalog_image_seo_rows",
     "list_product_image_seo_rows",
     "suggest_catalog_image_alt_vision",

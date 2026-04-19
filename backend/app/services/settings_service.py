@@ -52,12 +52,11 @@ def get_sync_scope_readiness(conn: sqlite3.Connection) -> dict[str, bool]:
         "ga4": google_ok,
         "index": google_ok,
         "pagespeed": google_ok,
-        "structured": shopify_ok,
     }
 
 
 _GRANULAR_SHOPIFY_SCOPES = frozenset({"products", "collections", "pages", "blogs"})
-_PIPELINE_SCOPES = frozenset({"shopify", "gsc", "ga4", "index", "pagespeed", "structured"})
+_PIPELINE_SCOPES = frozenset({"shopify", "gsc", "ga4", "index", "pagespeed"})
 
 
 def filter_normalized_scopes_for_readiness(normalized_scopes: list[str], readiness: dict[str, bool]) -> list[str]:

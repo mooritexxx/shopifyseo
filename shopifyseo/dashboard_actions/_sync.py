@@ -32,7 +32,7 @@ from ..shopify_catalog_sync import (
 from ..catalog_image_work import count_catalog_image_urls_discover
 from ..shopify_catalog_sync.discovery import discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
-from ._rpm_limiter import AdaptiveMinuteRateLimiter, PerMinuteRateLimiter
+from ._rpm_limiter import PerMinuteRateLimiter
 from ._state import (
     GA4_SYNC_RATE_LIMIT_PER_MINUTE,
     GA4_SYNC_WORKERS,
@@ -43,7 +43,8 @@ from ._state import (
     INDEX_SYNC_WORKERS,
     PAGESPEED_ERROR_DETAILS_MAX,
     PAGESPEED_RECENT_FETCH_WINDOW_SECONDS,
-    PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
+    PAGESPEED_SYNC_BATCH_PAUSE_SECONDS,
+    PAGESPEED_SYNC_BATCH_SIZE,
     PAGESPEED_SYNC_WORKERS,
     SYNC_LOCK,
     SYNC_STATE,
@@ -52,14 +53,14 @@ from ._state import (
     clear_last_error,
     append_sync_event,
     clear_pagespeed_http_call_tracker,
-    record_pagespeed_http_api_call_at,
     record_last_error,
+    record_pagespeed_http_api_call,
 )
 from ..dashboard_http import HttpRequestError
 from ..exceptions import SyncCancelledError
 
 # Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
-SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed", "structured"]
+SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed"]
 
 SHOPIFY_ACTIVE_SCOPES = frozenset({"shopify", "products", "collections", "pages", "blogs"})
 
@@ -100,18 +101,16 @@ def sync_progress_pair(state: dict[str, Any]) -> tuple[int, int]:
     active = (state.get("active_scope") or "").strip().lower()
     phase = (state.get("pagespeed_phase") or "").strip().lower()
     if active == "pagespeed" and phase == "queueing":
+        baseline = int(state.get("pagespeed_queue_baseline") or 0)
+        if baseline > 0:
+            refreshed = int(state.get("pagespeed_refreshed") or 0)
+            return min(refreshed, baseline), max(baseline, 1)
         qt = int(state.get("pagespeed_queue_total") or 0)
         qc = int(state.get("pagespeed_queue_completed") or 0)
         if qt > 0:
             return qc, qt
     if _is_shopify_progress_state(state):
         return shopify_aggregate_progress(state)
-    if active == "structured":
-        st = int(state.get("structured_total") or 0)
-        sd = int(state.get("structured_done") or 0)
-        if st > 0:
-            return sd, st
-        return 0, 1
     if active == "gsc":
         gt = int(state.get("gsc_progress_total") or 0)
         gd = int(state.get("gsc_progress_done") or 0)
@@ -142,6 +141,24 @@ def _sync_current(message: str) -> None:
     SYNC_STATE["current"] = message
     tag = (SYNC_STATE.get("active_scope") or "sync")[:12]
     append_sync_event(tag, message)
+
+
+def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: str) -> None:
+    """Rewrite denormalized GSC / GA4 / index / PageSpeed columns for every catalog row from local cache."""
+    _raise_if_sync_cancelled()
+    label = {
+        "shopify": "Shopify catalog",
+        "gsc": "Search Console",
+        "ga4": "GA4",
+        "index": "index status",
+        "pagespeed": "PageSpeed",
+    }.get(after_scope, after_scope)
+    _sync_current(f"Merging cached SEO signals into catalog (after {label})…")
+    conn = _db_connect_for_actions(db_path)
+    try:
+        refresh_structured_seo_data(conn)
+    finally:
+        conn.close()
 
 
 def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -> None:
@@ -211,10 +228,11 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "pagespeed_http_calls_last_60s": 0,
             "sync_events": [],
             "pagespeed_error_details": [],
+            "pagespeed_queue_details": [],
+            "pagespeed_queue_meta": {},
+            "pagespeed_queue_baseline": 0,
             "pagespeed_error_seq": 0,
             "cancel_requested": False,
-            "structured_total": 0,
-            "structured_done": 0,
         }
     )
 
@@ -816,38 +834,101 @@ def _pagespeed_error_detail_for_ui(exc: Exception) -> tuple[str, dict[str, Any]]
     return summary, extra
 
 
-def _record_pagespeed_error(kind: str, handle: str, url: str, exc: Exception, *, strategy: str = "") -> None:
-    details = list(SYNC_STATE.get("pagespeed_error_details") or [])
-    error_text, http_extra = _pagespeed_error_detail_for_ui(exc)
+def _pagespeed_queue_row_key(kind: str, handle: str, strategy: str) -> str:
+    return f"{kind}\x00{handle}\x00{strategy}"
+
+
+def _pagespeed_queue_meta_map() -> dict[str, Any]:
+    m = SYNC_STATE.get("pagespeed_queue_meta")
+    if not isinstance(m, dict):
+        m = {}
+        SYNC_STATE["pagespeed_queue_meta"] = m
+    return m
+
+
+def _pagespeed_queue_clear_success(kind: str, handle: str, strategy: str) -> None:
+    k = _pagespeed_queue_row_key(kind, handle, strategy)
+    meta = SYNC_STATE.get("pagespeed_queue_meta")
+    if isinstance(meta, dict) and k in meta:
+        del meta[k]
+
+
+def _pagespeed_queue_note_hint(
+    kind: str, handle: str, url: str, strategy: str, *, code_hint: str, error: str = ""
+) -> None:
+    k = _pagespeed_queue_row_key(kind, handle, strategy)
+    meta = _pagespeed_queue_meta_map()
+    prev = meta.get(k) if isinstance(meta.get(k), dict) else {}
     seq = int(SYNC_STATE.get("pagespeed_error_seq") or 0) + 1
     SYNC_STATE["pagespeed_error_seq"] = seq
-    row: dict[str, Any] = {
+    meta[k] = {
+        **prev,
         "seq": seq,
-        "object_type": kind,
-        "handle": handle,
+        "code_hint": code_hint,
+        "error": error or str(prev.get("error") or ""),
         "url": url,
-        "strategy": strategy,
-        "error": error_text,
-        **http_extra,
     }
-    details.append(row)
-    SYNC_STATE["pagespeed_error_details"] = details[-PAGESPEED_ERROR_DETAILS_MAX:]
 
 
-def _pagespeed_bulk_max_inflight(limit_per_minute: int) -> int:
+def _record_pagespeed_error(
+    kind: str,
+    handle: str,
+    url: str,
+    exc: Exception,
+    *,
+    strategy: str = "",
+    append_final_batch_retry_note: bool = False,
+) -> None:
+    error_text, http_extra = _pagespeed_error_detail_for_ui(exc)
+    if append_final_batch_retry_note:
+        note = " — scheduled for final batch retry"
+        if note not in error_text:
+            error_text = f"{error_text}{note}"
+    seq = int(SYNC_STATE.get("pagespeed_error_seq") or 0) + 1
+    SYNC_STATE["pagespeed_error_seq"] = seq
+    k = _pagespeed_queue_row_key(kind, handle, strategy)
+    meta = _pagespeed_queue_meta_map()
+    prev = meta.get(k) if isinstance(meta.get(k), dict) else {}
+    meta[k] = {
+        **prev,
+        "seq": seq,
+        "error": error_text,
+        "http_status": http_extra.get("http_status"),
+        "response_body": http_extra.get("response_body"),
+    }
+    if http_extra.get("http_status") is not None:
+        meta[k].pop("code_hint", None)
+
+
+def _pagespeed_bulk_max_inflight() -> int:
     return PAGESPEED_SYNC_WORKERS
 
 
-def _pagespeed_adaptive_floor(limit_per_minute: int) -> int:
-    cap = max(int(limit_per_minute or 0), 1)
-    return max(60, cap // 2)
+def _sleep_interruptible_seconds(total_seconds: float, cancel_check) -> None:
+    """Sleep for up to ``total_seconds``, calling ``cancel_check`` at least once per second."""
+    if total_seconds <= 0.0:
+        return
+    deadline = time.monotonic() + total_seconds
+    while time.monotonic() < deadline:
+        cancel_check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            break
+        time.sleep(min(1.0, max(0.05, remaining)))
 
 
-def _record_pagespeed_limit_change(reason: str, limit_per_minute: int) -> None:
-    append_sync_event("pagespeed", f"Adaptive PageSpeed limit now {limit_per_minute}/min after {reason}")
+# PageSpeed bulk job: (not_before_monotonic, object_type, handle, url, strategy, pagespeed_429_requeue_pass)
+_PageSpeedQueuedJob = tuple[float, str, str, str, str, int]
 
 
 def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_refresh: bool = False) -> dict:
+    """Bulk PageSpeed: primary work in bounded batches with pauses, then one final batch for deferred failures.
+
+    During the **primary** phase, ``rate_limited`` responses, hybrid ``requeue_429`` markers, and worker
+    exceptions enqueue one retry in ``deferred_failure_targets`` (no terminal outcome / second deferral).
+    After all primary chunks finish, those jobs run once in a **final** phase where outcomes are applied
+    normally. Bulk sync does not use the global per-minute PageSpeed HTTP limiter (workers + batch pauses only).
+    """
     conn = _db_connect_for_actions(db_path)
     summary = {
         "considered": 0,
@@ -881,7 +962,6 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
         SYNC_STATE["pagespeed_scanned"] = total_targets
         SYNC_STATE["pagespeed_skipped_recent"] = summary["skipped_recent"]
         SYNC_STATE["pagespeed_skipped"] = summary["skipped_fresh"]
-        SYNC_STATE["pagespeed_phase"] = "queueing"
         SYNC_STATE["pagespeed_queue_total"] = summary["queue_total"]
         SYNC_STATE["pagespeed_queue_completed"] = 0
         SYNC_STATE["pagespeed_queue_inflight"] = 0
@@ -892,35 +972,24 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
 
         if not queued_targets:
             SYNC_STATE["pagespeed_phase"] = "complete"
+            SYNC_STATE["pagespeed_queue_details"] = []
+            SYNC_STATE["pagespeed_queue_meta"] = {}
+            SYNC_STATE["pagespeed_queue_baseline"] = 0
             _sync_current("PageSpeed queue empty (cache fresh). Catalog scores updated from cache.")
             return summary
 
-        progress_lock = threading.Lock()
-        adaptive_limiter = AdaptiveMinuteRateLimiter(
-            PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
-            minimum_limit=_pagespeed_adaptive_floor(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE),
-            maximum_limit=PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
-            on_granted=record_pagespeed_http_api_call_at,
-        )
-        max_inflight = _pagespeed_bulk_max_inflight(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE)
-        
-        def _current_max_inflight() -> int:
-            return min(max_inflight, adaptive_limiter.max_inflight)
+        all_queued: list[_PageSpeedQueuedJob] = list(queued_targets)
+        SYNC_STATE["pagespeed_queue_baseline"] = len(all_queued)
+        SYNC_STATE["pagespeed_queue_meta"] = {}
+        SYNC_STATE["pagespeed_queue_details"] = []
 
+        progress_lock = threading.Lock()
+        max_inflight = _pagespeed_bulk_max_inflight()
         append_sync_event(
             "pagespeed",
-            f"PageSpeed scheduler armed at {adaptive_limiter.current_limit}/min with up to {max_inflight} in flight",
+            f"PageSpeed: {max_inflight} workers, batches of {PAGESPEED_SYNC_BATCH_SIZE} "
+            f"(+{int(PAGESPEED_SYNC_BATCH_PAUSE_SECONDS)}s between batches); no per-minute HTTP cap",
         )
-
-        def _on_hybrid_429_slowdown(exc: HttpRequestError) -> None:
-            retry_after: float | None = None
-            try:
-                raw = (exc.headers or {}).get("Retry-After") or (exc.headers or {}).get("retry-after")
-                if raw not in (None, ""):
-                    retry_after = float(max(float(raw), 1.0))
-            except (TypeError, ValueError):
-                retry_after = None
-            adaptive_limiter.note_rate_limited(retry_after)
 
         def _run_pagespeed_target(
             kind: str,
@@ -928,18 +997,7 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
             url: str,
             strategy: str,
             r429_pass: int,
-            *,
-            initial_slot_reserved: bool,
         ) -> dict:
-            first_http = bool(initial_slot_reserved)
-
-            def _before_each_psi_http() -> None:
-                nonlocal first_http
-                if first_http:
-                    first_http = False
-                else:
-                    adaptive_limiter.acquire(_raise_if_sync_cancelled)
-
             _raise_if_sync_cancelled()
             worker_conn = _db_connect_for_actions(db_path)
             try:
@@ -950,11 +1008,13 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     refresh=True,
                     object_type=kind,
                     object_handle=handle,
-                    before_each_run_pagespeed_http=_before_each_psi_http,
+                    # Count each runPagespeed HTTP attempt for the sidebar Speed readout without acquiring
+                    # the per-minute gate (bulk uses workers + batch pauses only).
+                    before_each_run_pagespeed_http=record_pagespeed_http_api_call,
                     hybrid_pagespeed_429_retry=True,
                     pagespeed_429_requeue_pass=r429_pass,
-                    on_hybrid_429_slowdown=_on_hybrid_429_slowdown,
-                    hybrid_429_adaptive_wait_seconds=adaptive_limiter.wait_seconds,
+                    on_hybrid_429_slowdown=lambda _e: None,
+                    hybrid_429_adaptive_wait_seconds=lambda: 0.0,
                     cancel_check=_raise_if_sync_cancelled,
                 )
                 refreshed_meta = refreshed.get("_cache") or {}
@@ -971,7 +1031,6 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     return {
                         "status": "rate_limited",
                         "retry_after_seconds": retry_after_seconds,
-                        "skip_adaptive_note": bool(refreshed_meta.get("hybrid_429_final")),
                     }
                 return {"status": "refreshed"}
             finally:
@@ -980,14 +1039,10 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
         def _submit_target(executor: ThreadPoolExecutor, future_to_target: dict) -> bool:
             if not pending_targets:
                 return False
-            if len(future_to_target) >= _current_max_inflight():
-                return False
-            wait_seconds = adaptive_limiter.wait_seconds()
-            if wait_seconds > 0.0:
+            if len(future_to_target) >= max_inflight:
                 return False
             if pending_targets[0][0] > time.monotonic():
                 return False
-            adaptive_limiter.acquire(_raise_if_sync_cancelled)
             _, kind, handle, url, strategy, r429_pass = pending_targets.popleft()
             with progress_lock:
                 summary["queue_inflight"] += 1
@@ -999,10 +1054,126 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 url,
                 strategy,
                 r429_pass,
-                initial_slot_reserved=True,
             )
             future_to_target[future] = (kind, handle, url, strategy, r429_pass)
+            _emit_ps_queue_snapshot()
             return True
+
+        deferred_failure_targets: list[_PageSpeedQueuedJob] = []
+        failure_final_batch_active = False
+
+        def _emit_ps_queue_snapshot() -> None:
+            now = time.monotonic()
+            meta = _pagespeed_queue_meta_map()
+            rank = {"running": 3, "deferred": 2, "queued": 1}
+            by_key: dict[str, dict[str, Any]] = {}
+
+            def touch(
+                not_before: float,
+                kind: str,
+                handle: str,
+                url: str,
+                strategy: str,
+                r429_pass: int,
+                phase: str,
+            ) -> None:
+                k = _pagespeed_queue_row_key(kind, handle, strategy)
+                cur = by_key.get(k)
+                if cur is None or rank[phase] > rank.get(str(cur.get("_phase") or "queued"), 0):
+                    by_key[k] = {
+                        "object_type": kind,
+                        "handle": handle,
+                        "url": url,
+                        "strategy": strategy,
+                        "not_before": float(not_before),
+                        "_phase": phase,
+                        "r429_pass": int(r429_pass),
+                    }
+
+            for _fut, (kind, handle, url, strategy, r429_pass) in future_to_target.items():
+                touch(0.0, kind, handle, url, strategy, r429_pass, "running")
+
+            for nb, kind, handle, url, strategy, r429_pass in list(pending_targets):
+                touch(nb, kind, handle, url, strategy, r429_pass, "queued")
+
+            for nb, kind, handle, url, strategy, r429_pass in list(deferred_failure_targets):
+                touch(nb, kind, handle, url, strategy, r429_pass, "deferred")
+
+            active = set(by_key.keys())
+            for mk in list(meta.keys()):
+                if mk not in active:
+                    del meta[mk]
+
+            rows_out: list[dict[str, Any]] = []
+            for k in sorted(
+                by_key.keys(),
+                key=lambda kk: (
+                    str(by_key[kk].get("strategy") or ""),
+                    str(by_key[kk].get("handle") or ""),
+                    str(by_key[kk].get("object_type") or ""),
+                ),
+            ):
+                base = by_key[k]
+                phase = str(base.get("_phase") or "queued")
+                mraw = meta.get(k)
+                m = mraw if isinstance(mraw, dict) else {}
+                http_st = m.get("http_status")
+                code_hint = str(m.get("code_hint") or "").upper()
+                err_text = str(m.get("error") or "")
+                if http_st is not None:
+                    try:
+                        tag = f"HTTP {int(http_st)}"
+                    except (TypeError, ValueError):
+                        tag = "HTTP ?"
+                elif code_hint == "RATE":
+                    tag = "RATE"
+                elif code_hint == "429":
+                    tag = "429"
+                elif err_text:
+                    tag = "ERR"
+                elif phase == "running":
+                    tag = "RUN"
+                elif phase == "deferred":
+                    tag = "RETRY"
+                else:
+                    nb = float(base.get("not_before") or 0.0)
+                    tag = "WAIT" if nb > now else "READY"
+
+                seq = m.get("seq")
+                if seq is None:
+                    seq = abs(hash(k)) % (10**9 - 1) + 1
+
+                row_d: dict[str, Any] = {
+                    "seq": int(seq),
+                    "object_type": base["object_type"],
+                    "handle": base["handle"],
+                    "url": base["url"],
+                    "strategy": str(base.get("strategy") or ""),
+                    "code": tag,
+                    "state": phase,
+                    "error": err_text,
+                }
+                if http_st is not None:
+                    try:
+                        row_d["http_status"] = int(http_st)
+                    except (TypeError, ValueError):
+                        pass
+                rb = m.get("response_body")
+                if isinstance(rb, str) and rb.strip():
+                    row_d["response_body"] = rb
+                rows_out.append(row_d)
+
+            SYNC_STATE["pagespeed_queue_details"] = rows_out[:PAGESPEED_ERROR_DETAILS_MAX]
+
+        def _register_extra_queued_jobs(n: int) -> None:
+            if n <= 0:
+                return
+            with progress_lock:
+                summary["queue_total"] += n
+                SYNC_STATE["pagespeed_queue_total"] = summary["queue_total"]
+
+        def _defer_job_for_final_batch(kind: str, handle: str, url: str, strategy: str, r429_pass: int) -> None:
+            deferred_failure_targets.append((0.0, kind, handle, url, strategy, r429_pass))
 
         def _handle_finished_future(future, future_to_target: dict) -> None:
             kind, handle, url, strategy, r429_pass = future_to_target.pop(future)
@@ -1013,33 +1184,70 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
                 SYNC_STATE["pagespeed_queue_completed"] = summary["queue_completed"]
                 _sync_current(f"PageSpeed ({strategy}): {kind}:{handle}")
+
             try:
-                result = future.result()
-                if result["status"] == "requeue_429":
-                    append_sync_event(
-                        "pagespeed",
-                        f"429 re-queue scheduled ({strategy}) {kind}:{handle}",
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    summary["errors"] += 1
+                    SYNC_STATE["pagespeed_errors"] = summary["errors"]
+                    _record_pagespeed_error(
+                        kind,
+                        handle,
+                        url,
+                        exc,
+                        strategy=strategy,
+                        append_final_batch_retry_note=not failure_final_batch_active,
                     )
-                    with progress_lock:
-                        summary["queue_total"] += 1
-                        SYNC_STATE["pagespeed_queue_total"] = summary["queue_total"]
-                    delay_seconds = min(max(adaptive_limiter.wait_seconds(), 5.0), 30.0)
-                    available_at = time.monotonic() + delay_seconds
-                    pending_targets.append((available_at, kind, handle, url, strategy, 1))
-                elif result["status"] == "rate_limited":
-                    summary["rate_limited"] += 1
-                    SYNC_STATE["pagespeed_rate_limited"] = summary["rate_limited"]
-                    if not result.get("skip_adaptive_note"):
-                        changed, new_limit = adaptive_limiter.note_rate_limited(result.get("retry_after_seconds"))
-                        if changed:
-                            _record_pagespeed_limit_change("rate limit", new_limit)
+                    if not failure_final_batch_active:
+                        _defer_job_for_final_batch(kind, handle, url, strategy, r429_pass)
+                    _raise_if_sync_cancelled()
+                    return
+
+                status = result["status"]
+                if status == "requeue_429":
+                    if not failure_final_batch_active:
+                        append_sync_event(
+                            "pagespeed",
+                            f"429 deferred to final batch ({strategy}) {kind}:{handle}",
+                        )
+                        _pagespeed_queue_note_hint(
+                            kind,
+                            handle,
+                            url,
+                            strategy,
+                            code_hint="429",
+                            error="HTTP 429 — scheduled for final batch retry",
+                        )
+                        _defer_job_for_final_batch(kind, handle, url, strategy, 1)
+                    else:
+                        summary["errors"] += 1
+                        SYNC_STATE["pagespeed_errors"] = summary["errors"]
+                        _record_pagespeed_error(
+                            kind,
+                            handle,
+                            url,
+                            RuntimeError("PageSpeed API returned HTTP 429 after hybrid retry (final batch)"),
+                            strategy=strategy,
+                        )
+                elif status == "rate_limited":
+                    if not failure_final_batch_active:
+                        _pagespeed_queue_note_hint(
+                            kind,
+                            handle,
+                            url,
+                            strategy,
+                            code_hint="RATE",
+                            error="PageSpeed API rate limited — scheduled for final batch retry",
+                        )
+                        _defer_job_for_final_batch(kind, handle, url, strategy, r429_pass)
+                    else:
+                        summary["rate_limited"] += 1
+                        SYNC_STATE["pagespeed_rate_limited"] = summary["rate_limited"]
                 else:
+                    _pagespeed_queue_clear_success(kind, handle, strategy)
                     summary["refreshed"] += 1
                     SYNC_STATE["pagespeed_refreshed"] = summary["refreshed"]
-                    changed, new_limit = adaptive_limiter.note_success()
-                    if changed:
-                        _record_pagespeed_limit_change("healthy responses", new_limit)
-                if result["status"] not in ("requeue_429",):
                     try:
                         refresh_object_pagespeed_signal_data(conn, kind, handle)
                     except Exception:
@@ -1048,24 +1256,16 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                             exc_info=True,
                             extra={"object_type": kind, "handle": handle},
                         )
-            except Exception as exc:
-                summary["errors"] += 1
-                SYNC_STATE["pagespeed_errors"] = summary["errors"]
-                _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
-                
-                # Check for 5xx errors (e.g. from PageSpeed Insights overload) and throttle aggressively.
-                # A 500 is often worse than a 429; we want a longer cooldown to let the backend recover.
-                http_status = getattr(exc, "status", None)
-                if isinstance(http_status, int) and 500 <= http_status < 600:
-                    changed, new_limit = adaptive_limiter.note_rate_limited(retry_after_seconds=15.0)
-                    if changed:
-                        _record_pagespeed_limit_change(f"HTTP {http_status} overload", new_limit)
-            _raise_if_sync_cancelled()
+                _raise_if_sync_cancelled()
+            finally:
+                _emit_ps_queue_snapshot()
 
-        pending_targets = deque(queued_targets)
-        with ThreadPoolExecutor(max_workers=max_inflight) as executor:
-            future_to_target = {}
+        batch_size = max(1, int(PAGESPEED_SYNC_BATCH_SIZE))
+        pause_s = max(0.0, float(PAGESPEED_SYNC_BATCH_PAUSE_SECONDS))
+
+        def _drain_pagespeed_work() -> None:
             while pending_targets or future_to_target:
+                _emit_ps_queue_snapshot()
                 _raise_if_sync_cancelled()
 
                 submitted = False
@@ -1077,9 +1277,9 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
 
                 if future_to_target:
                     timeout = 1.0
-                    if pending_targets and len(future_to_target) < _current_max_inflight():
+                    if pending_targets and len(future_to_target) < max_inflight:
                         head_delay = max(0.0, pending_targets[0][0] - time.monotonic())
-                        timeout = min(max(adaptive_limiter.wait_seconds(), head_delay, 0.05), 1.0)
+                        timeout = min(max(head_delay, 0.05), 1.0)
                     done, _ = wait(set(future_to_target), timeout=timeout, return_when=FIRST_COMPLETED)
                     for future in done:
                         _handle_finished_future(future, future_to_target)
@@ -1087,7 +1287,34 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
 
                 if pending_targets:
                     head_delay = max(0.0, pending_targets[0][0] - time.monotonic())
-                    time.sleep(min(max(adaptive_limiter.wait_seconds(), head_delay, 0.05), 1.0))
+                    time.sleep(min(max(head_delay, 0.05), 1.0))
+
+        with ThreadPoolExecutor(max_workers=max_inflight) as executor:
+            future_to_target: dict = {}
+            n_jobs = len(all_queued)
+            for batch_start in range(0, n_jobs, batch_size):
+                if batch_start > 0:
+                    append_sync_event(
+                        "pagespeed",
+                        f"PageSpeed batch pause: sleeping {int(pause_s)}s before next chunk "
+                        f"({batch_start}/{n_jobs} job(s) done)",
+                    )
+                    _sleep_interruptible_seconds(pause_s, _raise_if_sync_cancelled)
+                pending_targets = deque(all_queued[batch_start : batch_start + batch_size])
+                _drain_pagespeed_work()
+
+            if deferred_failure_targets:
+                n_final = len(deferred_failure_targets)
+                append_sync_event(
+                    "pagespeed",
+                    f"PageSpeed final batch: {n_final} job(s) deferred from earlier errors or rate limits",
+                )
+                failure_final_batch_active = True
+                pending_targets = deque(deferred_failure_targets)
+                deferred_failure_targets.clear()
+                _register_extra_queued_jobs(n_final)
+                _emit_ps_queue_snapshot()
+                _drain_pagespeed_work()
         _raise_if_sync_cancelled()
         SYNC_STATE["pagespeed_phase"] = "complete"
     finally:
@@ -1213,6 +1440,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             ic = _warm_product_image_cache_safe(db_path)
             if ic is not None:
                 result["shopify"]["product_image_cache"] = ic
+            _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -1223,6 +1451,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Loading Search Console summary",
             )
             result["gsc"] = bulk_refresh_search_console(db_path, force_refresh=force_refresh)
+            _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="gsc")
         elif selected_scope == "ga4":
             _set_sync_stage(
                 stage="refreshing_ga4",
@@ -1233,6 +1462,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Refreshing GA4 summary and per-URL metrics",
             )
             result["ga4"] = refresh_ga4_summary(db_path, force_refresh=force_refresh)
+            _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="ga4")
         elif selected_scope == "index":
             _set_sync_stage(
                 stage="refreshing_index",
@@ -1243,6 +1473,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Inspecting URL index status",
             )
             result["index"] = bulk_refresh_index_status(db_path, force_refresh=force_refresh)
+            _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="index")
         elif selected_scope == "pagespeed":
             _set_sync_stage(
                 stage="refreshing_pagespeed",
@@ -1253,26 +1484,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 current="Collecting PageSpeed results",
             )
             result["pagespeed"] = bulk_refresh_pagespeed(db_path, force_refresh=force_refresh)
-        elif selected_scope == "structured":
-            _set_sync_stage(
-                stage="updating_structured_seo",
-                label="Rebuilding structured SEO data",
-                active_scope=selected_scope,
-                step_index=index,
-                step_total=total_steps,
-                current="Refreshing structured SEO records",
-            )
-            # Use dedicated fields so we do not clobber global total/done (still used to
-            # render completed Search Console + Index counts in the pipeline UI).
-            SYNC_STATE["structured_total"] = 1
-            SYNC_STATE["structured_done"] = 0
-            conn = _db_connect_for_actions(db_path)
-            try:
-                refresh_structured_seo_data(conn)
-            finally:
-                conn.close()
-            SYNC_STATE["structured_done"] = 1
-            result["structured"] = {"updated": True}
+            _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="pagespeed")
     return result
 
 
@@ -1307,6 +1519,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 ic = _warm_product_image_cache_safe(db_path)
                 if ic is not None:
                     result["products"]["product_image_cache"] = ic
+                _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             elif normalized_scope == "collections":
                 _set_sync_stage(
                     stage="syncing_collections",
@@ -1323,6 +1536,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     SYNC_STATE.__setitem__("current", f"Shopify collections: {done}/{total}"),
                     _recompute_shopify_scoped_progress(),
                 ))}
+                _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             elif normalized_scope == "pages":
                 _set_sync_stage(
                     stage="syncing_pages",
@@ -1339,6 +1553,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     SYNC_STATE.__setitem__("current", f"Shopify pages: {done}/{total}"),
                     _recompute_shopify_scoped_progress(),
                 ))}
+                _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             elif normalized_scope == "blogs":
                 _set_sync_stage(
                     stage="syncing_blogs",
@@ -1366,6 +1581,7 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                 SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
                 SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_total") or br.get("blog_articles_synced") or 0)
                 _recompute_shopify_scoped_progress()
+                _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             else:
                 result = _run_selected_sync_steps(db_path, normalized_selected_scopes, force_refresh=force_refresh)
             _raise_if_sync_cancelled()

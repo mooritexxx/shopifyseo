@@ -29,6 +29,7 @@ from shopifyseo.dashboard_actions import (
     start_ai_object_background,
     start_sync_background,
 )
+from shopifyseo.dashboard_actions._state import refresh_pagespeed_http_calls_window
 import shopifyseo.dashboard_queries as dq
 import shopifyseo.dashboard_ai as dai
 import shopifyseo.dashboard_google as dg
@@ -355,7 +356,13 @@ def get_dashboard_summary(
 # ---------------------------------------------------------------------------
 
 def get_sync_status() -> dict[str, Any]:
-    return dict(SYNC_STATE)
+    refresh_pagespeed_http_calls_window()
+    out = dict(SYNC_STATE)
+    # Shallow copy can share the live ``sync_events`` list with mutating workers; snapshot for JSON.
+    ev = out.get("sync_events")
+    if isinstance(ev, list):
+        out["sync_events"] = list(ev)
+    return out
 
 
 def get_ai_status(job_id: str = "") -> dict[str, Any]:

@@ -9,6 +9,8 @@ from collections import deque
 
 from ..exceptions import AICancelledError, SyncCancelledError
 
+from ._rpm_limiter import PerMinuteRateLimiter
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -24,9 +26,14 @@ PAGESPEED_SYNC_THROTTLE_SECONDS = 0.4
 INDEX_SYNC_WORKERS = 5
 INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 55
 # PageSpeed Insights often returns HTTP 500 when overloaded. Fewer concurrent calls + lower RPM reduce 5xx.
-PAGESPEED_SYNC_WORKERS = 12
-PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 60
+# Rolling cap on every runPagespeed HTTP request process-wide (bulk sync, per-object refresh, retries).
+PAGESPEED_SYNC_WORKERS = 50
+PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 220
 PAGESPEED_RECENT_FETCH_WINDOW_SECONDS = 30 * 24 * 60 * 60
+# Cap in-memory PageSpeed error log during one sync (avoids huge payloads / memory).
+PAGESPEED_ERROR_DETAILS_MAX = 500
+# Rolling window for counting real runPagespeed HTTP attempts (monotonic timestamps).
+PAGESPEED_HTTP_TRACK_WINDOW_SECONDS = 60
 IMAGE_CACHE_WORKERS = 6
 
 # ---------------------------------------------------------------------------
@@ -36,6 +43,8 @@ IMAGE_CACHE_WORKERS = 6
 SYNC_LOCK = threading.Lock()
 AI_LOCK = threading.Lock()
 AI_JOBS_LOCK = threading.Lock()
+_pagespeed_http_times_lock = threading.Lock()
+SYNC_EVENTS_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Global state dicts
@@ -102,12 +111,68 @@ SYNC_STATE = {
     "pagespeed_queue_total": 0,
     "pagespeed_queue_completed": 0,
     "pagespeed_queue_inflight": 0,
+    "pagespeed_http_calls_last_60s": 0,
+    "sync_events": [],
     "pagespeed_error_details": [],
+    "pagespeed_error_seq": 0,
     "cancel_requested": False,
     "selected_scopes": [],
     "structured_total": 0,
     "structured_done": 0,
 }
+
+# Monotonic timestamps of each granted runPagespeed HTTP attempt (shared rate gate).
+_pagespeed_http_monotonic_times: deque[float] = deque()
+
+
+def _trim_pagespeed_http_times_unlocked(now: float) -> int:
+    """Drop timestamps at or before ``now - window`` (match ``_PerMinuteRateLimiter`` semantics)."""
+    cutoff = now - PAGESPEED_HTTP_TRACK_WINDOW_SECONDS
+    while _pagespeed_http_monotonic_times and _pagespeed_http_monotonic_times[0] <= cutoff:
+        _pagespeed_http_monotonic_times.popleft()
+    return len(_pagespeed_http_monotonic_times)
+
+
+def record_pagespeed_http_api_call_at(monotonic_ts: float) -> None:
+    """Record one granted runPagespeed HTTP slot using the same instant the rate limiter used."""
+    with _pagespeed_http_times_lock:
+        _trim_pagespeed_http_times_unlocked(monotonic_ts)
+        _pagespeed_http_monotonic_times.append(monotonic_ts)
+        SYNC_STATE["pagespeed_http_calls_last_60s"] = len(_pagespeed_http_monotonic_times)
+
+
+def record_pagespeed_http_api_call() -> None:
+    """Record using current monotonic time (tests / ad-hoc); bulk sync uses ``record_pagespeed_http_api_call_at``."""
+    record_pagespeed_http_api_call_at(time.monotonic())
+
+
+def refresh_pagespeed_http_calls_window() -> None:
+    """Expire old timestamps and refresh ``pagespeed_http_calls_last_60s`` (e.g. on each sync-status read)."""
+    now = time.monotonic()
+    with _pagespeed_http_times_lock:
+        SYNC_STATE["pagespeed_http_calls_last_60s"] = _trim_pagespeed_http_times_unlocked(now)
+
+
+def clear_pagespeed_http_call_tracker() -> None:
+    with _pagespeed_http_times_lock:
+        _pagespeed_http_monotonic_times.clear()
+        SYNC_STATE["pagespeed_http_calls_last_60s"] = 0
+
+
+def append_sync_event(tag: str, msg: str) -> None:
+    """Append one row to the sync event log (API + UI). No size cap by design."""
+    t = (tag or "sync").strip() or "sync"
+    m = (msg or "").strip()
+    if not m:
+        return
+    row = {"at": int(time.time()), "tag": t[:48], "msg": m}
+    with SYNC_EVENTS_LOCK:
+        events = SYNC_STATE.get("sync_events")
+        if not isinstance(events, list):
+            events = []
+            SYNC_STATE["sync_events"] = events
+        events.append(row)
+
 
 AI_STATE = {
     "job_id": "",
@@ -230,3 +295,18 @@ def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:
 
 def _step_result(status: str, message: str) -> dict:
     return {"status": status, "message": message}
+
+
+# ---------------------------------------------------------------------------
+# PageSpeed Insights — one shared RPM gate for every refresh=True caller
+# ---------------------------------------------------------------------------
+
+_PAGESPEED_HTTP_RATE_LIMITER = PerMinuteRateLimiter(
+    PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE,
+    on_granted=record_pagespeed_http_api_call_at,
+)
+
+
+def acquire_pagespeed_http_rate_slot(cancel_check=None) -> None:
+    """Block until a ``runPagespeed`` HTTP attempt may proceed; updates the rolling Speed counter."""
+    _PAGESPEED_HTTP_RATE_LIMITER.acquire(cancel_check)

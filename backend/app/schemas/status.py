@@ -65,6 +65,8 @@ class SyncStatusPayload(BaseModel):
     pagespeed_queue_total: int = 0
     pagespeed_queue_completed: int = 0
     pagespeed_queue_inflight: int = 0
+    pagespeed_http_calls_last_60s: int = 0
+    sync_events: list[dict[str, Any]] = []
     pagespeed_error_details: list[dict[str, Any]] = []
     cancel_requested: bool = False
     structured_total: int = 0

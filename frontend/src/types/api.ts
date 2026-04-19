@@ -740,12 +740,21 @@ export const statusSchema = z.object({
   pagespeed_queue_total: z.number().optional().default(0),
   pagespeed_queue_completed: z.number().optional().default(0),
   pagespeed_queue_inflight: z.number().optional().default(0),
+  pagespeed_http_calls_last_60s: z.number().optional().default(0),
+  sync_events: z.array(z.object({
+    at: z.number(),
+    tag: z.string(),
+    msg: z.string()
+  })).optional().default([]),
   pagespeed_error_details: z.array(z.object({
+    seq: z.number().optional(),
     object_type: z.string(),
     handle: z.string(),
     url: z.string(),
     strategy: z.string().optional().default(""),
-    error: z.string()
+    error: z.string(),
+    http_status: z.number().optional(),
+    response_body: z.string().optional()
   })).optional().default([]),
   structured_total: z.number().optional().default(0),
   structured_done: z.number().optional().default(0),

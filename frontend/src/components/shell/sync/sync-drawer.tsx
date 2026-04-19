@@ -21,6 +21,8 @@ import { ToggleSwitch } from "../../ui/toggle-switch";
 import { cn } from "../../../lib/utils";
 import { SYNC_PIPELINE_SUBTITLE, syncServices, syncSelectionSummary, type SyncServiceValue } from "./constants";
 import type { PipelineRowModel } from "./pipeline-derive";
+import { PageSpeedErrorStream } from "./sync-pagespeed-error-stream";
+import type { PagespeedErrorDetailItem } from "./sync-pagespeed-error-stream";
 import { SyncEventStream } from "./sync-event-stream";
 import type { SyncLogLine } from "./use-sync-event-log";
 
@@ -40,13 +42,16 @@ function HeroRing({
   accent,
   label,
   sublabel,
-  elapsed
+  elapsed,
+  psiHttpCallsLast60s
 }: {
   pct: number;
   accent: string;
   label: string;
   sublabel: string;
   elapsed: string;
+  /** Rolling count of granted runPagespeed HTTP attempts in the last 60s (all refresh traffic); shown as “N / min”. */
+  psiHttpCallsLast60s?: number | null;
 }) {
   const r = 58;
   const c = 2 * Math.PI * r;
@@ -87,9 +92,20 @@ function HeroRing({
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">Live sync</div>
           <div className="text-balance text-[17px] font-semibold leading-snug text-white">{label}</div>
           <div className="mt-1 text-xs leading-snug text-white/55">{sublabel}</div>
-          <div className="mt-3 text-[11px] text-white/60">
-            <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Elapsed</div>
-            <div className="sync-event-stream-mono text-[13px] text-white">{elapsed}</div>
+          <div className="mt-3 flex flex-wrap items-end gap-x-8 gap-y-2 text-[11px] text-white/60">
+            <div>
+              <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Elapsed</div>
+              <div className="sync-event-stream-mono text-[13px] text-white">{elapsed}</div>
+            </div>
+            {typeof psiHttpCallsLast60s === "number" ? (
+              <div>
+                <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Speed</div>
+                <div className="sync-event-stream-mono text-[13px] text-white">
+                  {psiHttpCallsLast60s}
+                  <span className="ml-1.5 text-[11px] font-medium tracking-normal text-white/45">/ min</span>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -335,6 +351,7 @@ export type SyncDrawerProps = {
     title: string;
     subtitle: string;
     elapsed: string;
+    psiHttpCallsLast60s?: number | null;
   };
   doneHero?: {
     title: string;
@@ -359,7 +376,7 @@ export type SyncDrawerProps = {
   eventLines: SyncLogLine[];
   showChangesGrid: boolean;
   changeCards: { label: string; total: number; sub?: string }[];
-  pagespeedErrorDetails: Array<{ object_type: string; handle: string; url: string; error: string }>;
+  pagespeedErrorDetails: PagespeedErrorDetailItem[];
   rawSyncError: string;
   errorSummary: string;
   errorDetails: string | null;
@@ -487,6 +504,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
             label={runningHero.title}
             sublabel={runningHero.subtitle}
             elapsed={runningHero.elapsed}
+            psiHttpCallsLast60s={runningHero.psiHttpCallsLast60s}
           />
         ) : null}
 
@@ -657,21 +675,8 @@ export function SyncDrawer(props: SyncDrawerProps) {
         ) : null}
 
         {pagespeedErrorDetails.length > 0 ? (
-          <div className="mt-4 rounded-2xl border border-[#5c2833] bg-[#2a141a]/70 p-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f0b7c1]">Recent PageSpeed errors</p>
-            <div className="mt-2 grid gap-2">
-              {pagespeedErrorDetails
-                .slice(-3)
-                .reverse()
-                .map((item) => (
-                  <div key={`${item.object_type}:${item.handle}:${item.url}`} className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#f0b7c1]">
-                      {item.object_type}:{item.handle}
-                    </p>
-                    <p className="mt-1 break-all text-xs text-white/70">{item.error}</p>
-                  </div>
-                ))}
-            </div>
+          <div className="mt-[18px]">
+            <PageSpeedErrorStream items={pagespeedErrorDetails} accent={accent} />
           </div>
         ) : null}
 

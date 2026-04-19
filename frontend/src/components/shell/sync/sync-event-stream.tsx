@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { SyncLogLine } from "./use-sync-event-log";
 
 type Props = {
@@ -6,11 +6,27 @@ type Props = {
   accent: string;
 };
 
+/** Pixels from the bottom to still treat the user as "following" the tail (auto-scroll on new lines). */
+const STICK_TO_BOTTOM_THRESHOLD_PX = 48;
+
 export function SyncEventStream({ lines, accent }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  /** When true, new log lines keep the view pinned to the latest entry. */
+  const stickToBottomRef = useRef(true);
+
+  const updateStickFromScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distFromBottom <= STICK_TO_BOTTOM_THRESHOLD_PX;
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [lines]);
 
   return (
@@ -31,7 +47,8 @@ export function SyncEventStream({ lines, accent }: Props) {
       </div>
       <div
         ref={scrollRef}
-        className="sync-event-stream-mono max-h-[140px] overflow-y-auto px-3 py-1.5 text-[10.5px] leading-relaxed"
+        onScroll={updateStickFromScroll}
+        className="sync-event-stream-mono max-h-[min(60vh,28rem)] overflow-y-auto px-3 py-1.5 text-[10.5px] leading-relaxed"
       >
         {lines.length === 0 ? (
           <div className="py-1.5 text-white/35">waiting for events…</div>
@@ -45,7 +62,7 @@ export function SyncEventStream({ lines, accent }: Props) {
               >
                 {l.tag}
               </span>
-              <span className="min-w-0 flex-1 truncate">{l.msg}</span>
+              <span className="min-w-0 flex-1 break-all whitespace-pre-wrap">{l.msg}</span>
             </div>
           ))
         )}

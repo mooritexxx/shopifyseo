@@ -227,8 +227,7 @@ export function AppShell({ children }: PropsWithChildren) {
   });
   const syncStatus = syncStatusQuery.data;
   const { lines: eventLogLines, pushLine, clear: clearEventLog } = useSyncEventLog(
-    syncStatus?.current,
-    syncStatus?.active_scope || "",
+    syncStatus?.sync_events,
     Boolean(syncStatus?.running)
   );
   const syncScopeReady = settingsQuery.data?.sync_scope_ready;
@@ -493,7 +492,8 @@ export function AppShell({ children }: PropsWithChildren) {
             pct: syncPercent,
             title: activeStageLabel,
             subtitle: runningHeroSubtitle,
-            elapsed: elapsedLabel || "00:00"
+            elapsed: elapsedLabel || "00:00",
+            psiHttpCallsLast60s: syncStatus?.pagespeed_http_calls_last_60s ?? 0
           }
         : undefined,
     shopifyBreakdown,

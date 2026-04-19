@@ -10,10 +10,12 @@ import random
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from ..dashboard_actions._state import acquire_pagespeed_http_rate_slot
 from ..dashboard_http import HttpRequestError
 from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 from ._cache import (
@@ -1122,12 +1124,23 @@ def _pagespeed_transient_http_error(exc: HttpRequestError) -> bool:
     return status in (408, 429, 500, 502, 503, 504)
 
 
-def _fetch_run_pagespeed_with_retries(api_url: str, access_token: str) -> dict:
-    """Call runPagespeed with backoff — PSI often returns 5xx under load or for slow URLs."""
+def _fetch_run_pagespeed_with_retries(
+    api_url: str,
+    access_token: str,
+    *,
+    before_each_http: Callable[[], None] | None = None,
+) -> dict:
+    """Call runPagespeed with backoff — PSI often returns 5xx under load or for slow URLs.
+
+    ``before_each_http`` runs immediately before every HTTP attempt (including the first),
+    so callers can rate-limit **total** API calls including retries.
+    """
     max_attempts = 6
     last_exc: HttpRequestError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
+            if before_each_http is not None:
+                before_each_http()
             return google_api_get(api_url, access_token, timeout=120)
         except HttpRequestError as exc:
             last_exc = exc
@@ -1157,6 +1170,7 @@ def get_pagespeed(
     refresh: bool = False,
     object_type: str = "",
     object_handle: str = "",
+    before_each_run_pagespeed_http: Callable[[], None] | None = None,
 ) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     cache_key = f"{strategy}:{url}"
@@ -1177,8 +1191,19 @@ def get_pagespeed(
         "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?"
         + urlencode({"url": url, "strategy": strategy, "category": ["PERFORMANCE", "SEO"]}, doseq=True)
     )
+
+    def _before_each_run_pagespeed_http_effective() -> None:
+        if before_each_run_pagespeed_http is not None:
+            before_each_run_pagespeed_http()
+        else:
+            acquire_pagespeed_http_rate_slot(None)
+
     try:
-        payload = _fetch_run_pagespeed_with_retries(api_url, access_token)
+        payload = _fetch_run_pagespeed_with_retries(
+            api_url,
+            access_token,
+            before_each_http=_before_each_run_pagespeed_http_effective,
+        )
     except HttpRequestError as exc:
         if exc.status == 429:
             stale_payload, stale_meta = _load_cached_payload(conn, db_cache_key)

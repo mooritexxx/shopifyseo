@@ -1,49 +1,55 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type SyncLogLine = { t: string; tag: string; msg: string };
 
-const MAX = 48;
+export type SyncServerEvent = { at: number; tag: string; msg: string };
 
 function formatLogTime(d: Date) {
+  const h = String(d.getHours()).padStart(2, "0");
   const m = String(d.getMinutes()).padStart(2, "0");
   const s = String(d.getSeconds()).padStart(2, "0");
   const ds = String(Math.floor(d.getMilliseconds() / 100));
-  return `${m}:${s}.${ds}`;
+  return `${h}:${m}:${s}.${ds}`;
 }
 
-/** Append when `current` changes (poll ticks) to approximate the prototype event stream. */
-export function useSyncEventLog(current: string | undefined, activeScope: string, running: boolean) {
-  const [lines, setLines] = useState<SyncLogLine[]>([]);
-  const prevRef = useRef<string | null>(null);
+function formatServerEventAt(atSeconds: number) {
+  const d = new Date(atSeconds * 1000);
+  return formatLogTime(d);
+}
+
+/**
+ * Builds the drawer event stream from server ``sync_events`` (full history, no cap) plus optional
+ * client-only lines (e.g. error summary) from ``pushLine``.
+ */
+export function useSyncEventLog(serverEvents: SyncServerEvent[] | undefined, running: boolean) {
+  const [clientLines, setClientLines] = useState<SyncLogLine[]>([]);
+  const prevRunning = useRef(false);
 
   useEffect(() => {
-    if (!running) return;
-    const msg = (current || "").trim();
-    if (!msg) return;
-    if (prevRef.current === msg) return;
-    prevRef.current = msg;
-    const tag = (activeScope || "sync").slice(0, 12);
-    setLines((prev) => {
-      const next = [...prev, { t: formatLogTime(new Date()), tag, msg }];
-      return next.length > MAX ? next.slice(-MAX) : next;
-    });
-  }, [current, activeScope, running]);
-
-  useEffect(() => {
-    if (!running) {
-      prevRef.current = null;
+    if (running && !prevRunning.current) {
+      setClientLines([]);
     }
+    prevRunning.current = running;
   }, [running]);
 
-  /** Push a synthetic line (e.g. error summary) without requiring `running`. */
-  const pushLine = (tag: string, msg: string) => {
-    setLines((prev) => {
-      const next = [...prev, { t: formatLogTime(new Date()), tag, msg }];
-      return next.length > MAX ? next.slice(-MAX) : next;
-    });
-  };
+  const serverLines = useMemo(() => {
+    const rows = serverEvents ?? [];
+    return rows.map((e) => ({
+      t: formatServerEventAt(e.at),
+      tag: (e.tag || "sync").slice(0, 12),
+      msg: e.msg
+    }));
+  }, [serverEvents]);
 
-  const clear = () => setLines([]);
+  const lines = useMemo(() => [...serverLines, ...clientLines], [serverLines, clientLines]);
+
+  const pushLine = useCallback((tag: string, msg: string) => {
+    setClientLines((prev) => [...prev, { t: formatLogTime(new Date()), tag, msg }]);
+  }, []);
+
+  const clear = useCallback(() => {
+    setClientLines([]);
+  }, []);
 
   return { lines, pushLine, clear };
 }

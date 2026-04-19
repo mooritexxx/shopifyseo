@@ -676,7 +676,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
 
         {pagespeedErrorDetails.length > 0 ? (
           <div className="mt-[18px]">
-            <PageSpeedErrorStream items={pagespeedErrorDetails} accent={accent} />
+            <PageSpeedErrorStream items={pagespeedErrorDetails} />
           </div>
         ) : null}
 

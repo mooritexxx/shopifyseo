@@ -161,3 +161,105 @@ def test_pagespeed_bulk_max_inflight_tracks_rate_limit():
     assert _sync._pagespeed_bulk_max_inflight(60) == 16
     assert _sync._pagespeed_bulk_max_inflight(190) == 48
     assert _sync._pagespeed_bulk_max_inflight(400) == 64
+
+
+def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatch):
+    conn = _memory_cache_conn()
+    url = "https://example.com/p"
+    calls = {"slowdown": 0, "fetch": 0, "get": 0}
+
+    def _slowdown(_exc: HttpRequestError) -> None:
+        calls["slowdown"] += 1
+
+    def _fetch(*_a, **_k):
+        calls["fetch"] += 1
+        raise HttpRequestError("429", status=429, headers={"Retry-After": "2"})
+
+    def _get(*_a, **_k):
+        calls["get"] += 1
+        return {"lighthouseResult": {"categories": {"performance": {"score": 1.0}}}}
+
+    monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
+    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
+    monkeypatch.setattr(_gsc, "google_api_get", _get)
+    monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)
+
+    out = _gsc.get_pagespeed(
+        conn,
+        url,
+        "mobile",
+        refresh=True,
+        object_type="product",
+        object_handle="h",
+        hybrid_pagespeed_429_retry=True,
+        pagespeed_429_requeue_pass=0,
+        on_hybrid_429_slowdown=_slowdown,
+        hybrid_429_adaptive_wait_seconds=lambda: 0.0,
+    )
+    assert calls == {"slowdown": 1, "fetch": 1, "get": 1}
+    assert out.get("_cache", {}).get("requeue_429") is None
+    assert out.get("_cache", {}).get("rate_limited") is None
+
+
+def test_get_pagespeed_hybrid_429_requeue_marker_on_second_429(monkeypatch):
+    conn = _memory_cache_conn()
+    url = "https://example.com/p"
+    calls = {"get": 0}
+
+    def _fetch(*_a, **_k):
+        raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
+
+    def _get(*_a, **_k):
+        calls["get"] += 1
+        raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
+
+    monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
+    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
+    monkeypatch.setattr(_gsc, "google_api_get", _get)
+    monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)
+
+    out = _gsc.get_pagespeed(
+        conn,
+        url,
+        "mobile",
+        refresh=True,
+        hybrid_pagespeed_429_retry=True,
+        pagespeed_429_requeue_pass=0,
+        on_hybrid_429_slowdown=lambda _e: None,
+        hybrid_429_adaptive_wait_seconds=lambda: 0.0,
+    )
+    assert calls["get"] == 1
+    assert out["_cache"].get("requeue_429") is True
+
+
+def test_get_pagespeed_hybrid_429_final_pass_persists_rate_limit(monkeypatch):
+    conn = _memory_cache_conn()
+    url = "https://example.com/p"
+
+    def _fetch(*_a, **_k):
+        raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
+
+    def _get(*_a, **_k):
+        raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
+
+    monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
+    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
+    monkeypatch.setattr(_gsc, "google_api_get", _get)
+    monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)
+
+    out = _gsc.get_pagespeed(
+        conn,
+        url,
+        "mobile",
+        refresh=True,
+        hybrid_pagespeed_429_retry=True,
+        pagespeed_429_requeue_pass=1,
+        on_hybrid_429_slowdown=lambda _e: None,
+        hybrid_429_adaptive_wait_seconds=lambda: 0.0,
+    )
+    assert out["_cache"].get("rate_limited") is True
+    assert out["_cache"].get("hybrid_429_final") is True
+    assert out["_cache"].get("requeue_429") is None

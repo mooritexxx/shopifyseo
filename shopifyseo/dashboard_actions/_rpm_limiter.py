@@ -71,7 +71,6 @@ class AdaptiveMinuteRateLimiter:
         self._request_times: deque[float] = deque()
         self._cooldown_until = 0.0
         self._success_streak = 0
-        self._last_slowdown_at = 0.0
 
     @property
     def current_limit(self) -> int:
@@ -136,18 +135,4 @@ class AdaptiveMinuteRateLimiter:
             cooldown_seconds = retry_after_seconds if retry_after_seconds is not None else 0.0
             cooldown_seconds = min(max(float(cooldown_seconds), 5.0), 30.0)
             self._cooldown_until = max(self._cooldown_until, now + cooldown_seconds)
-            self._last_slowdown_at = now
-            return changed, self._limit
-
-    def note_transient_error(self) -> tuple[bool, int]:
-        with self._lock:
-            now = time.monotonic()
-            self._success_streak = 0
-            if now - self._last_slowdown_at < 10.0:
-                return False, self._limit
-            reduced = max(self.minimum_limit, int(self._limit * 0.9))
-            changed = reduced != self._limit
-            self._limit = reduced
-            self._cooldown_until = max(self._cooldown_until, now + 3.0)
-            self._last_slowdown_at = now
             return changed, self._limit

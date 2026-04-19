@@ -863,17 +863,18 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
     }
     try:
         if not force_refresh:
-            total_targets, queued_targets = _pagespeed_target_counts(conn)
+            total_targets, raw_queued = _pagespeed_target_counts(conn)
+            queued_targets = [(0.0, k, h, u, s, 0) for k, h, u, s in raw_queued]
         else:
             base = _all_object_targets(conn)
             total_targets = len(base)
             queued_targets = []
             for kind, handle, url in base:
-                queued_targets.append((kind, handle, url, "mobile"))
-                queued_targets.append((kind, handle, url, "desktop"))
+                queued_targets.append((0.0, kind, handle, url, "mobile", 0))
+                queued_targets.append((0.0, kind, handle, url, "desktop", 0))
         summary["considered"] = total_targets
         summary["queue_total"] = len(queued_targets)
-        pending_objects = len({(k, h) for k, h, _, _ in queued_targets})
+        pending_objects = len({(k, h) for _, k, h, _, _, _ in queued_targets})
         summary["skipped_recent"] = max(total_targets - pending_objects, 0)
         summary["skipped_fresh"] = summary["skipped_recent"]
         SYNC_STATE["pagespeed_phase"] = "queueing"
@@ -903,16 +904,31 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
             on_granted=record_pagespeed_http_api_call_at,
         )
         max_inflight = _pagespeed_bulk_max_inflight(PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE)
+        
+        def _current_max_inflight() -> int:
+            return min(max_inflight, _pagespeed_bulk_max_inflight(adaptive_limiter.current_limit))
+
         append_sync_event(
             "pagespeed",
             f"PageSpeed scheduler armed at {adaptive_limiter.current_limit}/min with up to {max_inflight} in flight",
         )
+
+        def _on_hybrid_429_slowdown(exc: HttpRequestError) -> None:
+            retry_after: float | None = None
+            try:
+                raw = (exc.headers or {}).get("Retry-After") or (exc.headers or {}).get("retry-after")
+                if raw not in (None, ""):
+                    retry_after = float(max(float(raw), 1.0))
+            except (TypeError, ValueError):
+                retry_after = None
+            adaptive_limiter.note_rate_limited(retry_after)
 
         def _run_pagespeed_target(
             kind: str,
             handle: str,
             url: str,
             strategy: str,
+            r429_pass: int,
             *,
             initial_slot_reserved: bool,
         ) -> dict:
@@ -937,8 +953,15 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     object_type=kind,
                     object_handle=handle,
                     before_each_run_pagespeed_http=_before_each_psi_http,
+                    hybrid_pagespeed_429_retry=True,
+                    pagespeed_429_requeue_pass=r429_pass,
+                    on_hybrid_429_slowdown=_on_hybrid_429_slowdown,
+                    hybrid_429_adaptive_wait_seconds=adaptive_limiter.wait_seconds,
+                    cancel_check=_raise_if_sync_cancelled,
                 )
                 refreshed_meta = refreshed.get("_cache") or {}
+                if refreshed_meta.get("requeue_429"):
+                    return {"status": "requeue_429"}
                 if refreshed_meta.get("rate_limited"):
                     retry_after_seconds = None
                     retry_after_at = refreshed_meta.get("retry_after_at")
@@ -947,7 +970,11 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                             retry_after_seconds = max(int(retry_after_at) - int(time.time()), 0)
                     except (TypeError, ValueError):
                         retry_after_seconds = None
-                    return {"status": "rate_limited", "retry_after_seconds": retry_after_seconds}
+                    return {
+                        "status": "rate_limited",
+                        "retry_after_seconds": retry_after_seconds,
+                        "skip_adaptive_note": bool(refreshed_meta.get("hybrid_429_final")),
+                    }
                 return {"status": "refreshed"}
             finally:
                 worker_conn.close()
@@ -955,13 +982,15 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
         def _submit_target(executor: ThreadPoolExecutor, future_to_target: dict) -> bool:
             if not pending_targets:
                 return False
-            if len(future_to_target) >= max_inflight:
+            if len(future_to_target) >= _current_max_inflight():
                 return False
             wait_seconds = adaptive_limiter.wait_seconds()
             if wait_seconds > 0.0:
                 return False
+            if pending_targets[0][0] > time.monotonic():
+                return False
             adaptive_limiter.acquire(_raise_if_sync_cancelled)
-            kind, handle, url, strategy = pending_targets.popleft()
+            _, kind, handle, url, strategy, r429_pass = pending_targets.popleft()
             with progress_lock:
                 summary["queue_inflight"] += 1
                 SYNC_STATE["pagespeed_queue_inflight"] = summary["queue_inflight"]
@@ -971,13 +1000,14 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 handle,
                 url,
                 strategy,
+                r429_pass,
                 initial_slot_reserved=True,
             )
-            future_to_target[future] = (kind, handle, url, strategy)
+            future_to_target[future] = (kind, handle, url, strategy, r429_pass)
             return True
 
         def _handle_finished_future(future, future_to_target: dict) -> None:
-            kind, handle, url, strategy = future_to_target.pop(future)
+            kind, handle, url, strategy, r429_pass = future_to_target.pop(future)
             with progress_lock:
                 summary["queue_inflight"] = max(summary["queue_inflight"] - 1, 0)
                 summary["queue_completed"] += 1
@@ -987,34 +1017,43 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 _sync_current(f"PageSpeed ({strategy}): {kind}:{handle}")
             try:
                 result = future.result()
-                if result["status"] == "rate_limited":
+                if result["status"] == "requeue_429":
+                    append_sync_event(
+                        "pagespeed",
+                        f"429 re-queue scheduled ({strategy}) {kind}:{handle}",
+                    )
+                    with progress_lock:
+                        summary["queue_total"] += 1
+                        SYNC_STATE["pagespeed_queue_total"] = summary["queue_total"]
+                    delay_seconds = min(max(adaptive_limiter.wait_seconds(), 5.0), 30.0)
+                    available_at = time.monotonic() + delay_seconds
+                    pending_targets.append((available_at, kind, handle, url, strategy, 1))
+                elif result["status"] == "rate_limited":
                     summary["rate_limited"] += 1
                     SYNC_STATE["pagespeed_rate_limited"] = summary["rate_limited"]
-                    changed, new_limit = adaptive_limiter.note_rate_limited(result.get("retry_after_seconds"))
-                    if changed:
-                        _record_pagespeed_limit_change("rate limit", new_limit)
+                    if not result.get("skip_adaptive_note"):
+                        changed, new_limit = adaptive_limiter.note_rate_limited(result.get("retry_after_seconds"))
+                        if changed:
+                            _record_pagespeed_limit_change("rate limit", new_limit)
                 else:
                     summary["refreshed"] += 1
                     SYNC_STATE["pagespeed_refreshed"] = summary["refreshed"]
                     changed, new_limit = adaptive_limiter.note_success()
                     if changed:
                         _record_pagespeed_limit_change("healthy responses", new_limit)
-                try:
-                    refresh_object_pagespeed_signal_data(conn, kind, handle)
-                except Exception:
-                    logger.warning(
-                        "Incremental PageSpeed denormalize failed (non-fatal)",
-                        exc_info=True,
-                        extra={"object_type": kind, "handle": handle},
-                    )
+                if result["status"] not in ("requeue_429",):
+                    try:
+                        refresh_object_pagespeed_signal_data(conn, kind, handle)
+                    except Exception:
+                        logger.warning(
+                            "Incremental PageSpeed denormalize failed (non-fatal)",
+                            exc_info=True,
+                            extra={"object_type": kind, "handle": handle},
+                        )
             except Exception as exc:
                 summary["errors"] += 1
                 SYNC_STATE["pagespeed_errors"] = summary["errors"]
                 _record_pagespeed_error(kind, handle, url, exc, strategy=strategy)
-                if isinstance(exc, HttpRequestError) and exc.status in (408, 500, 502, 503, 504):
-                    changed, new_limit = adaptive_limiter.note_transient_error()
-                    if changed:
-                        _record_pagespeed_limit_change("server errors", new_limit)
             _raise_if_sync_cancelled()
 
         pending_targets = deque(queued_targets)
@@ -1032,15 +1071,17 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
 
                 if future_to_target:
                     timeout = 1.0
-                    if pending_targets and len(future_to_target) < max_inflight:
-                        timeout = min(max(adaptive_limiter.wait_seconds(), 0.05), 1.0)
+                    if pending_targets and len(future_to_target) < _current_max_inflight():
+                        head_delay = max(0.0, pending_targets[0][0] - time.monotonic())
+                        timeout = min(max(adaptive_limiter.wait_seconds(), head_delay, 0.05), 1.0)
                     done, _ = wait(set(future_to_target), timeout=timeout, return_when=FIRST_COMPLETED)
                     for future in done:
                         _handle_finished_future(future, future_to_target)
                     continue
 
                 if pending_targets:
-                    time.sleep(min(max(adaptive_limiter.wait_seconds(), 0.05), 1.0))
+                    head_delay = max(0.0, pending_targets[0][0] - time.monotonic())
+                    time.sleep(min(max(adaptive_limiter.wait_seconds(), head_delay, 0.05), 1.0))
         _raise_if_sync_cancelled()
         SYNC_STATE["pagespeed_phase"] = "complete"
     finally:

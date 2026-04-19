@@ -23,7 +23,7 @@ cd "$ROOT"
 echo "Open http://127.0.0.1:8000/app/ — hard refresh (⌘⇧R) after UI changes."
 # StatReload restarts kill the background sync thread. Exclude .cursor (debug NDJSON, etc.) and
 # debounce rapid saves so long syncs are less likely to be interrupted during local dev.
-exec env PYTHONPATH=. uvicorn backend.app.main:app --reload \
+exec env PYTHONPATH=. python3 -m uvicorn backend.app.main:app --reload \
   --reload-delay 2 \
   --reload-exclude ".cursor/*" \
   --host 127.0.0.1 --port 8000

@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, ChevronRight, ClipboardCopy } from "lucide-react";
 import { cn } from "../../../lib/utils";
 
 /** Keep aligned with `PAGESPEED_ERROR_DETAILS_MAX` in `shopifyseo/dashboard_actions/_state.py`. */
 const PAGESPEED_ERROR_LOG_CAP = 500;
+
+/** Header pulse + HTTP / ERR tags — red so errors read clearly vs pipeline accent. */
+const ERROR_STREAM_RED = "#f87171";
 
 export type PagespeedErrorDetailItem = {
   object_type: string;
@@ -28,14 +31,58 @@ function pagespeedErrorSummaryText(error: string): string {
   return error.replace(/^HTTP \d+ for https?:\/\/\S+/i, "").trim() || error;
 }
 
+function formatErrorsForClipboard(items: PagespeedErrorDetailItem[]): string {
+  if (items.length === 0) {
+    return "No errors this run.";
+  }
+  return items
+    .map((item, i) => {
+      const parts = [
+        `--- ${i + 1} ---`,
+        `object: ${item.object_type}:${item.handle}`,
+        item.strategy ? `strategy: ${item.strategy}` : null,
+        `url: ${item.url}`,
+        item.seq != null ? `seq: ${item.seq}` : null,
+        item.http_status != null ? `http_status: ${item.http_status}` : null,
+        `error: ${item.error}`,
+        item.response_body ? `response_body:\n${item.response_body}` : null
+      ].filter((p): p is string => p != null && p !== "");
+      return parts.join("\n");
+    })
+    .join("\n\n");
+}
+
 type Props = {
   items: PagespeedErrorDetailItem[];
-  accent: string;
 };
 
-export function PageSpeedErrorStream({ items, accent }: Props) {
+export function PageSpeedErrorStream({ items }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [openSeqs, setOpenSeqs] = useState<Set<number>>(new Set());
+  const [collapsed, setCollapsed] = useState(false);
+  const [copyDone, setCopyDone] = useState(false);
+  const copyResetRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  const copyAllErrors = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(formatErrorsForClipboard(items));
+      if (copyResetRef.current != null) window.clearTimeout(copyResetRef.current);
+      setCopyDone(true);
+      copyResetRef.current = window.setTimeout(() => {
+        setCopyDone(false);
+        copyResetRef.current = null;
+      }, 2000);
+    } catch {
+      /* clipboard may be denied */
+    }
+  }, [items]);
+
+  useEffect(
+    () => () => {
+      if (copyResetRef.current != null) window.clearTimeout(copyResetRef.current);
+    },
+    []
+  );
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -53,30 +100,85 @@ export function PageSpeedErrorStream({ items, accent }: Props) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-black/30">
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45">
-        <span
-          className="h-1.5 w-1.5 shrink-0 rounded-full"
-          style={{
-            background: accent,
-            animation: "syncDrawerBlink 0.9s ease-in-out infinite"
-          }}
-        />
-        PageSpeed errors
-        <span className="flex-1" />
-        <span className="font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">
-          {items.length} {items.length === 1 ? "row" : "rows"}
-        </span>
-      </div>
-      <p className="border-b border-white/[0.06] px-3 py-1.5 text-[9.5px] leading-snug text-white/40">
-        Click a row for storefront URL, full message, and raw JSON. Up to {PAGESPEED_ERROR_LOG_CAP} rows per sync;
-        older rows roll off after that.
-      </p>
       <div
-        ref={scrollRef}
-        className="sync-event-stream-mono max-h-[min(42vh,320px)] overflow-y-auto px-0 py-0 text-[10.5px] leading-relaxed"
+        className={cn(
+          "flex items-stretch",
+          collapsed ? "" : "border-b border-white/[0.06]"
+        )}
       >
+        <button
+          type="button"
+          id="pagespeed-error-stream-header"
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45 transition-colors",
+            "hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
+          )}
+          aria-expanded={!collapsed}
+          aria-controls="pagespeed-error-stream-body"
+          onClick={() => setCollapsed((c) => !c)}
+        >
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{
+              background: ERROR_STREAM_RED,
+              animation: "syncDrawerBlink 0.9s ease-in-out infinite"
+            }}
+          />
+          Error Stream
+          <span className="flex-1" />
+          <span className="font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">
+            {items.length} {items.length === 1 ? "row" : "rows"}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "flex shrink-0 items-center justify-center px-1.5 py-2 text-white/35 transition-colors",
+            "hover:bg-white/[0.06] hover:text-white/55",
+            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
+          )}
+          aria-label={copyDone ? "Copied to clipboard" : "Copy all errors to clipboard"}
+          onClick={() => void copyAllErrors()}
+        >
+          {copyDone ? (
+            <Check className="h-3.5 w-3.5 text-[#91efbb]" strokeWidth={2.5} aria-hidden />
+          ) : (
+            <ClipboardCopy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+          )}
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "flex shrink-0 items-center pr-3 pl-0.5 py-2 text-white/35 transition-colors",
+            "hover:bg-white/[0.04] hover:text-white/50",
+            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25"
+          )}
+          aria-label={collapsed ? "Expand error stream" : "Collapse error stream"}
+          onClick={() => setCollapsed((c) => !c)}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          )}
+        </button>
+      </div>
+      <div
+        id="pagespeed-error-stream-body"
+        role="region"
+        aria-labelledby="pagespeed-error-stream-header"
+        hidden={collapsed}
+      >
+        <p className="border-b border-white/[0.06] px-3 py-1.5 text-[9.5px] leading-snug text-white/40">
+          Click a row for storefront URL, full message, and raw JSON. Up to {PAGESPEED_ERROR_LOG_CAP} rows per sync;
+          older rows roll off after that.
+        </p>
+        <div
+          ref={scrollRef}
+          className="sync-event-stream-mono max-h-[min(42vh,320px)] overflow-y-auto px-0 py-0 text-[10.5px] leading-relaxed"
+        >
         {items.length === 0 ? (
-          <div className="px-3 py-2 text-white/35">No PageSpeed errors this run.</div>
+          <div className="px-3 py-2 text-white/35">No errors this run.</div>
         ) : (
           items.map((item, index) => {
             const seq = item.seq ?? index;
@@ -104,7 +206,7 @@ export function PageSpeedErrorStream({ items, accent }: Props) {
                   />
                   <span
                     className="w-[72px] shrink-0 pt-px text-[9.5px] font-semibold uppercase tracking-[0.05em]"
-                    style={{ color: accent }}
+                    style={{ color: ERROR_STREAM_RED }}
                   >
                     {tag}
                   </span>
@@ -154,6 +256,7 @@ export function PageSpeedErrorStream({ items, accent }: Props) {
             );
           })
         )}
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,6 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { cn } from "../../../lib/utils";
 import type { SyncLogLine } from "./use-sync-event-log";
 
 type Props = {
@@ -13,6 +15,7 @@ export function SyncEventStream({ lines, accent }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** When true, new log lines keep the view pinned to the latest entry. */
   const stickToBottomRef = useRef(true);
+  const [collapsed, setCollapsed] = useState(false);
 
   const updateStickFromScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -31,7 +34,18 @@ export function SyncEventStream({ lines, accent }: Props) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-black/30">
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45">
+      <button
+        type="button"
+        id="sync-event-stream-header"
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45 transition-colors",
+          "hover:bg-white/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/25",
+          collapsed ? "" : "border-b border-white/[0.06]"
+        )}
+        aria-expanded={!collapsed}
+        aria-controls="sync-event-stream-body"
+        onClick={() => setCollapsed((c) => !c)}
+      >
         <span
           className="h-1.5 w-1.5 shrink-0 rounded-full"
           style={{
@@ -41,12 +55,21 @@ export function SyncEventStream({ lines, accent }: Props) {
         />
         Event stream
         <span className="flex-1" />
+        {collapsed ? (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/35" aria-hidden />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/35" aria-hidden />
+        )}
         <span className="font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">
           {lines.length} events
         </span>
-      </div>
+      </button>
       <div
+        id="sync-event-stream-body"
         ref={scrollRef}
+        role="region"
+        aria-labelledby="sync-event-stream-header"
+        hidden={collapsed}
         onScroll={updateStickFromScroll}
         className="sync-event-stream-mono max-h-[min(60vh,28rem)] overflow-y-auto px-3 py-1.5 text-[10.5px] leading-relaxed"
       >

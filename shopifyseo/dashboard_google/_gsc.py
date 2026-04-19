@@ -1146,6 +1146,102 @@ def _pagespeed_retry_after_seconds(exc: HttpRequestError, default_seconds: int =
         return default_seconds
 
 
+def _pagespeed_retry_after_header_float(exc: HttpRequestError) -> float:
+    """Numeric Retry-After in seconds when present; otherwise 0."""
+    if not exc.headers:
+        return 0.0
+    raw = exc.headers.get("Retry-After") or exc.headers.get("retry-after")
+    if raw in (None, ""):
+        return 0.0
+    try:
+        return max(float(raw), 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sleep_interruptible(seconds: float, cancel_check: Callable[[], None] | None) -> None:
+    """Sleep up to ``seconds`` wall time, calling ``cancel_check`` periodically."""
+    if seconds <= 0:
+        if cancel_check is not None:
+            cancel_check()
+        return
+    end = time.monotonic() + seconds
+    while True:
+        if cancel_check is not None:
+            cancel_check()
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.25))
+
+
+def _hybrid_429_post_slowdown_wait_seconds(
+    exc: HttpRequestError, adaptive_wait_seconds: Callable[[], float] | None
+) -> float:
+    """Wait after adaptive slowdown: at least 5s, cap 120s, max(header Retry-After, limiter wait)."""
+    hdr = _pagespeed_retry_after_header_float(exc)
+    adaptive = adaptive_wait_seconds() if adaptive_wait_seconds is not None else 0.0
+    return min(120.0, max(5.0, max(hdr, adaptive)))
+
+
+def _finalize_pagespeed_rate_limited(
+    conn: sqlite3.Connection,
+    *,
+    db_cache_key: str,
+    cache_key: str,
+    url: str,
+    strategy: str,
+    object_type: str,
+    object_handle: str,
+    exc: HttpRequestError,
+    hybrid_429_final: bool = False,
+) -> dict:
+    """Persist rate-limited placeholder + return merged payload (non-hybrid / final hybrid pass)."""
+    gsc_cache = _pkg().GSC_CACHE
+    cooldown_seconds = _pagespeed_retry_after_seconds(exc)
+    retry_after_at = int(time.time()) + cooldown_seconds
+    stale_payload, stale_meta = _load_cached_payload(conn, db_cache_key)
+    error_payload = {
+        "error": "pagespeed_rate_limited",
+        "status": 429,
+        "message": "PageSpeed Insights rate limit hit. Use cached data or retry later.",
+    }
+    payload = stale_payload or {}
+    payload = {
+        **payload,
+        "_error": error_payload,
+        "_meta": {
+            "rate_limited": True,
+            "retry_after_at": retry_after_at,
+        },
+    }
+    meta = {
+        **stale_meta,
+        "exists": True,
+        "stale": True,
+        "fetched_at": stale_meta.get("fetched_at"),
+        "expires_at": retry_after_at,
+        "rate_limited": True,
+        "status": 429,
+        "retry_after_at": retry_after_at,
+        "hybrid_429_final": hybrid_429_final,
+    }
+    _write_cache_payload(
+        conn,
+        cache_key=db_cache_key,
+        cache_type="pagespeed",
+        payload=payload,
+        ttl_seconds=cooldown_seconds,
+        object_type=object_type,
+        object_handle=object_handle,
+        url=url,
+        strategy=strategy,
+    )
+    merged = {**payload, "_cache": meta, "_error": error_payload}
+    gsc_cache["pagespeed"][cache_key] = merged
+    return merged
+
+
 def _fetch_run_pagespeed_with_retries(
     api_url: str,
     access_token: str,
@@ -1193,6 +1289,11 @@ def get_pagespeed(
     object_type: str = "",
     object_handle: str = "",
     before_each_run_pagespeed_http: Callable[[], None] | None = None,
+    hybrid_pagespeed_429_retry: bool = False,
+    pagespeed_429_requeue_pass: int = 0,
+    on_hybrid_429_slowdown: Callable[[HttpRequestError], None] | None = None,
+    hybrid_429_adaptive_wait_seconds: Callable[[], float] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     cache_key = f"{strategy}:{url}"
@@ -1228,48 +1329,42 @@ def get_pagespeed(
         )
     except HttpRequestError as exc:
         if exc.status == 429:
-            cooldown_seconds = _pagespeed_retry_after_seconds(exc)
-            retry_after_at = int(time.time()) + cooldown_seconds
-            stale_payload, stale_meta = _load_cached_payload(conn, db_cache_key)
-            error_payload = {
-                "error": "pagespeed_rate_limited",
-                "status": 429,
-                "message": "PageSpeed Insights rate limit hit. Use cached data or retry later.",
-            }
-            payload = stale_payload or {}
-            payload = {
-                **payload,
-                "_error": error_payload,
-                "_meta": {
-                    "rate_limited": True,
-                    "retry_after_at": retry_after_at,
-                },
-            }
-            meta = {
-                **stale_meta,
-                "exists": True,
-                "stale": True,
-                "fetched_at": stale_meta.get("fetched_at"),
-                "expires_at": retry_after_at,
-                "rate_limited": True,
-                "status": 429,
-                "retry_after_at": retry_after_at,
-            }
-            _write_cache_payload(
-                conn,
-                cache_key=db_cache_key,
-                cache_type="pagespeed",
-                payload=payload,
-                ttl_seconds=cooldown_seconds,
-                object_type=object_type,
-                object_handle=object_handle,
-                url=url,
-                strategy=strategy,
-            )
-            merged = {**payload, "_cache": meta, "_error": error_payload}
-            gsc_cache["pagespeed"][cache_key] = merged
-            return merged
-        raise
+            if not hybrid_pagespeed_429_retry or on_hybrid_429_slowdown is None:
+                return _finalize_pagespeed_rate_limited(
+                    conn,
+                    db_cache_key=db_cache_key,
+                    cache_key=cache_key,
+                    url=url,
+                    strategy=strategy,
+                    object_type=object_type,
+                    object_handle=object_handle,
+                    exc=exc,
+                )
+            # Bulk hybrid: slowdown first, one inline retry; then re-queue once or finalize.
+            on_hybrid_429_slowdown(exc)
+            wait_s = _hybrid_429_post_slowdown_wait_seconds(exc, hybrid_429_adaptive_wait_seconds)
+            _sleep_interruptible(wait_s, cancel_check)
+            try:
+                _before_each_run_pagespeed_http_effective()
+                payload = google_api_get(api_url, access_token, timeout=120)
+            except HttpRequestError as exc2:
+                if exc2.status == 429:
+                    if pagespeed_429_requeue_pass == 0:
+                        return {"_cache": {"requeue_429": True, "exists": False, "stale": True}}
+                    return _finalize_pagespeed_rate_limited(
+                        conn,
+                        db_cache_key=db_cache_key,
+                        cache_key=cache_key,
+                        url=url,
+                        strategy=strategy,
+                        object_type=object_type,
+                        object_handle=object_handle,
+                        exc=exc2,
+                        hybrid_429_final=True,
+                    )
+                raise
+        else:
+            raise
     meta = _write_cache_payload(
         conn,
         cache_key=db_cache_key,

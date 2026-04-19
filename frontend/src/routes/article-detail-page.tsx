@@ -622,7 +622,11 @@ export function ArticleDetailPage() {
     };
     const speedIndex = cards.findIndex((signal) => signal.step === "speed");
     if (speedIndex >= 0) {
-      cards.splice(speedIndex + 1, 0, opportunityCard);
+      let insertAt = speedIndex + 1;
+      if (cards[insertAt]?.step === "speed_desktop") {
+        insertAt += 1;
+      }
+      cards.splice(insertAt, 0, opportunityCard);
       return cards;
     }
     return [...cards, opportunityCard];

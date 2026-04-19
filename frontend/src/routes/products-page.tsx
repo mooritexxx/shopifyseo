@@ -26,7 +26,8 @@ const PRODUCT_SORT_KEYS = new Set([
   "ga4_sessions",
   "ga4_views",
   "body_length",
-  "pagespeed_performance"
+  "pagespeed_performance",
+  "pagespeed_desktop_performance"
 ]);
 
 const columns: Column[] = [
@@ -38,7 +39,8 @@ const columns: Column[] = [
   { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[9%]" },
   { key: "ga4_views", label: "Views", align: "center", widthClass: "w-[9%]" },
-  { key: "pagespeed_performance", label: "Speed", align: "center", widthClass: "w-[9%]" },
+  { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[7%]" },
+  { key: "pagespeed_desktop_performance", label: "Desktop", align: "center", widthClass: "w-[7%]" },
   { key: "score", label: "Score", align: "center", widthClass: "w-[9%]" }
 ];
 

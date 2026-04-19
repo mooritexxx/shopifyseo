@@ -63,17 +63,21 @@ function countsForService(
           (s.images_total || 0)
       };
     case "gsc": {
-      const done = (s.gsc_refreshed || 0) + (s.gsc_errors || 0);
-      const total = Math.max(s.total || 0, 1);
-      return { done: Math.min(done, total), total };
+      const doneRaw = (s.gsc_refreshed || 0) + (s.gsc_errors || 0);
+      const cap = Math.max(s.gsc_progress_total || s.gsc_eligible_total || 0, 1);
+      if (s.running) {
+        return { done: Math.min(doneRaw, cap), total: cap };
+      }
+      const total = Math.max(cap, doneRaw, 1);
+      return { done: Math.min(doneRaw, total), total };
     }
     case "ga4": {
       const rows = s.ga4_rows || 0;
       const stage = (s.stage || "").toLowerCase();
       const scope = (s.active_scope || "").toLowerCase();
       if (s.running && (stage === "refreshing_ga4" || scope === "ga4")) {
-        const total = Math.max(s.total || 0, 1);
-        const done = Math.min(s.done || 0, total);
+        const total = Math.max(s.ga4_progress_total || 0, 1);
+        const done = Math.min(s.ga4_progress_done || 0, total);
         return { done, total };
       }
       const refreshed = s.ga4_refreshed || 0;
@@ -88,9 +92,13 @@ function countsForService(
       return { done: 0, total: 0 };
     }
     case "index": {
-      const done = (s.index_refreshed || 0) + (s.index_errors || 0);
-      const total = Math.max(s.total || 0, 1);
-      return { done: Math.min(done, total), total };
+      const doneRaw = (s.index_refreshed || 0) + (s.index_errors || 0);
+      const cap = Math.max(s.index_progress_total || 0, 1);
+      if (s.running) {
+        return { done: Math.min(doneRaw, cap), total: cap };
+      }
+      const total = Math.max(cap, doneRaw, 1);
+      return { done: Math.min(doneRaw, total), total };
     }
     case "pagespeed": {
       const phase = (s.pagespeed_phase || "").toLowerCase();
@@ -102,15 +110,56 @@ function countsForService(
       if (phase === "complete") {
         return { done: 0, total: 0 };
       }
-      const t = s.pagespeed_scan_total || s.total || 0;
-      const d = s.pagespeed_scanned || s.done || 0;
+      const t = s.pagespeed_scan_total || 0;
+      const d = s.pagespeed_scanned || 0;
       return { done: d, total: t };
     }
-    case "structured":
-      return { done: s.done || 0, total: s.total || 0 };
+    case "structured": {
+      const st = Number(s.structured_total ?? 0);
+      const sd = Number(s.structured_done ?? 0);
+      return { done: sd, total: st };
+    }
     default:
-      return { done: s.done || 0, total: s.total || 0 };
+      return { done: 0, total: 0 };
   }
+}
+
+/** Main ring progress for the active pipeline step (not shared across phases). */
+export function heroProgressFromStatus(s: SyncStatusPayload | undefined): { done: number; total: number } {
+  if (!s?.running) return { done: 0, total: 0 };
+  const scope = (s.active_scope || "").toLowerCase();
+  const phase = (s.pagespeed_phase || "").toLowerCase();
+  if (scope === "pagespeed" && phase === "queueing") {
+    const t = s.pagespeed_queue_total || 0;
+    const d = s.pagespeed_queue_completed || 0;
+    return { done: d, total: t };
+  }
+  if (scopeBelongsToShopifyService(scope)) {
+    return { done: s.shopify_progress_done || 0, total: s.shopify_progress_total || 0 };
+  }
+  if (scope === "gsc") {
+    const done = (s.gsc_refreshed || 0) + (s.gsc_errors || 0);
+    const cap = Math.max(s.gsc_progress_total || s.gsc_eligible_total || 0, 1);
+    return { done: Math.min(done, cap), total: cap };
+  }
+  if (scope === "ga4") {
+    const total = Math.max(s.ga4_progress_total || 0, 1);
+    return { done: Math.min(s.ga4_progress_done || 0, total), total };
+  }
+  if (scope === "index") {
+    const done = (s.index_refreshed || 0) + (s.index_errors || 0);
+    const cap = Math.max(s.index_progress_total || 0, 1);
+    return { done: Math.min(done, cap), total: cap };
+  }
+  if (scope === "structured") {
+    const st = s.structured_total || 0;
+    const sd = s.structured_done || 0;
+    return { done: sd, total: Math.max(st, 1) };
+  }
+  if (scope === "pagespeed") {
+    return { done: s.pagespeed_scanned || 0, total: s.pagespeed_scan_total || 0 };
+  }
+  return { done: 0, total: 0 };
 }
 
 export function derivePipelineRows(args: {

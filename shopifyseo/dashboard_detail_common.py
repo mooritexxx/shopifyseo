@@ -130,7 +130,7 @@ def load_object_signals(kind: str, handle: str, *, conn: sqlite3.Connection, gsc
     except (RuntimeError, HttpRequestError, KeyError, ValueError):
         errors["ga4"] = "GA4 summary unavailable"
     try:
-        pagespeed_detail = dg.get_pagespeed(conn, url, refresh=False, object_type=kind, object_handle=handle)
+        pagespeed_detail = dg.get_pagespeed(conn, url, "mobile", refresh=False, object_type=kind, object_handle=handle)
     except (RuntimeError, HttpRequestError, KeyError, ValueError):
         errors["pagespeed"] = "PageSpeed unavailable"
     return {

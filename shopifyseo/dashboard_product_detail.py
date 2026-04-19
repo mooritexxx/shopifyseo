@@ -154,7 +154,8 @@ def render_product_detail(detail: dict, *, db_connect, verification: dict | None
   {_signal_card('GSC CTR', f"{float(product['gsc_ctr'] or 0)*100:.2f}%", 'Click-through rate (search)', timestamp=product['gsc_last_fetched_at'] or '', handle=product['handle'], step='gsc_ctr')}
   {_signal_card('Avg. position (GSC)', f"{float(product['gsc_position'] or 0):.1f}", 'Average position in Search', timestamp=product['gsc_last_fetched_at'] or '', handle=product['handle'], step='gsc_position')}
   {_signal_card('GA4', f"{int(product['ga4_views'] or 0)} views", f"{int(product['ga4_sessions'] or 0)} sessions · {float(product['ga4_avg_session_duration'] or 0):.0f}s avg" if (product['ga4_views'] or product['ga4_sessions']) else 'No GA4 data', timestamp=product['ga4_last_fetched_at'] or '', handle=product['handle'], step='ga4')}
-  {_signal_card('PageSpeed', f"{int(product['pagespeed_performance'] or 0)} perf" if product['pagespeed_performance'] is not None else 'No score', product['pagespeed_status'] or 'Never fetched', timestamp=product['pagespeed_last_fetched_at'] or '', handle=product['handle'], step='speed')}
+  {_signal_card('PageSpeed (mobile)', f"{int(product['pagespeed_performance'] or 0)} perf" if product['pagespeed_performance'] is not None else 'No score', product['pagespeed_status'] or 'Never fetched', timestamp=product['pagespeed_last_fetched_at'] or '', handle=product['handle'], step='speed')}
+  {_signal_card('PageSpeed (desktop)', f"{int(product['pagespeed_desktop_performance'] or 0)} perf" if product.get('pagespeed_desktop_performance') is not None else 'No score', product.get('pagespeed_desktop_status') or 'Never fetched', timestamp=product.get('pagespeed_desktop_last_fetched_at') or '', handle=product['handle'], step='speed_desktop')}
 </div>
 <div class='detail-grid editor-layout full-width'>
   <div class='card editor-card'>

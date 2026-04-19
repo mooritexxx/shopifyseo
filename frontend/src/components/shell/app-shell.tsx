@@ -42,9 +42,8 @@ import {
   syncSortScopesInPipelineOrder,
   type SyncServiceValue
 } from "./sync/constants";
-import { activeServiceKey, derivePipelineRows, scopeBelongsToShopifyService } from "./sync/pipeline-derive";
+import { activeServiceKey, derivePipelineRows, heroProgressFromStatus, scopeBelongsToShopifyService } from "./sync/pipeline-derive";
 import { useSyncEventLog } from "./sync/use-sync-event-log";
-import { useSmoothSyncEta } from "../../hooks/use-smooth-sync-eta";
 
 type NavItem = {
   to: string;
@@ -98,18 +97,6 @@ function formatElapsedTime(milliseconds: number) {
   }
 
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-/** Formats remaining ETA from server-provided whole seconds (sync drawer). */
-function formatEtaCountdown(totalSeconds: number) {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(s / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (hours > 0) {
-    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  }
-  return `${String(minutes).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
 function titleCaseLabel(value: string) {
@@ -307,14 +294,13 @@ export function AppShell({ children }: PropsWithChildren) {
     ? (syncRunning ? Math.max(0, elapsedNow - syncStartedAt) : Math.max(0, (syncFinishedAt || syncStartedAt) - syncStartedAt))
     : 0;
   const elapsedLabel = syncStartedAt ? formatElapsedTime(elapsedMs) : null;
-  const isPagespeedActive = effectiveActiveScope === "pagespeed";
   const pagespeedPhase = syncStatus?.pagespeed_phase || "";
-  const pagespeedScanTotal = syncStatus?.pagespeed_scan_total || 0;
-  const pagespeedScanned = syncStatus?.pagespeed_scanned || 0;
-  const pagespeedQueueTotal = syncStatus?.pagespeed_queue_total || 0;
-  const pagespeedQueueCompleted = syncStatus?.pagespeed_queue_completed || 0;
-  const progressTotal = isPagespeedActive && pagespeedPhase === "queueing" ? pagespeedQueueTotal : syncStatus?.total || 0;
-  const progressDone = isPagespeedActive && pagespeedPhase === "queueing" ? pagespeedQueueCompleted : syncStatus?.done || 0;
+  const runningProgress = useMemo(
+    () => heroProgressFromStatus(syncRunning ? syncStatus : undefined),
+    [syncRunning, syncStatus]
+  );
+  const progressTotal = runningProgress.total;
+  const progressDone = runningProgress.done;
   const syncPercent = progressTotal ? Math.max(0, Math.min(100, Math.round((progressDone / progressTotal) * 100))) : 0;
   const rawSyncError = (syncStatus?.last_error || "").trim();
   const syncErrorParts = useMemo(() => splitSyncError(rawSyncError), [rawSyncError]);
@@ -322,13 +308,6 @@ export function AppShell({ children }: PropsWithChildren) {
   const pagespeedErrorDetails = syncStatus?.pagespeed_error_details || [];
 
   const syncAccent = "oklch(0.62 0.18 262)";
-
-  const smoothEtaSeconds = useSmoothSyncEta(
-    syncRunning,
-    syncStatus?.eta_seconds,
-    syncStatus?.stage,
-    syncStatus?.active_scope
-  );
 
   const drawerMode: SyncDrawerMode = useMemo(() => {
     if (syncRunning) return "running";
@@ -514,16 +493,7 @@ export function AppShell({ children }: PropsWithChildren) {
             pct: syncPercent,
             title: activeStageLabel,
             subtitle: runningHeroSubtitle,
-            elapsed: elapsedLabel || "00:00",
-            eta:
-              smoothEtaSeconds != null
-                ? smoothEtaSeconds === 0 &&
-                    syncRunning &&
-                    syncStatus?.eta_seconds != null &&
-                    syncStatus.eta_seconds > 0
-                  ? "Finishing…"
-                  : formatEtaCountdown(smoothEtaSeconds)
-                : "--:--"
+            elapsed: elapsedLabel || "00:00"
           }
         : undefined,
     shopifyBreakdown,

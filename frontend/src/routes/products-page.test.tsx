@@ -47,9 +47,11 @@ describe("ProductsPage", () => {
               index_coverage: "",
               google_canonical: "",
               pagespeed_performance: 80,
+              pagespeed_desktop_performance: 92,
               pagespeed_status: "fresh",
               workflow_status: "Needs fix",
-              workflow_notes: ""
+              workflow_notes: "",
+              gsc_segment_flags: { has_dimensional: false }
             }
           ],
           total: 1,
@@ -104,9 +106,11 @@ describe("ProductsPage", () => {
           index_coverage: "",
           google_canonical: "",
           pagespeed_performance: 80,
+          pagespeed_desktop_performance: 90,
           pagespeed_status: "fresh",
           workflow_status: "Needs fix",
-          workflow_notes: ""
+          workflow_notes: "",
+          gsc_segment_flags: { has_dimensional: false }
         },
         {
           handle: "other-product",
@@ -132,9 +136,11 @@ describe("ProductsPage", () => {
           index_coverage: "",
           google_canonical: "",
           pagespeed_performance: null,
+          pagespeed_desktop_performance: null,
           pagespeed_status: "",
           workflow_status: "Needs fix",
-          workflow_notes: ""
+          workflow_notes: "",
+          gsc_segment_flags: { has_dimensional: false }
         }
       ],
       total: 2,

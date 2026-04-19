@@ -49,6 +49,7 @@ def _build_content_item(kind: str, fact: dict[str, Any], row: dict[str, Any]) ->
         "index_coverage": fact.get("index_coverage") or "",
         "google_canonical": fact.get("google_canonical") or "",
         "pagespeed_performance": fact.get("pagespeed_performance"),
+        "pagespeed_desktop_performance": fact.get("pagespeed_desktop_performance"),
         "pagespeed_status": fact.get("pagespeed_status") or "",
         "workflow_status": (fact.get("workflow") or {}).get("status") or "Needs fix",
         "workflow_notes": (fact.get("workflow") or {}).get("notes") or "",

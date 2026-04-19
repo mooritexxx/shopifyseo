@@ -19,7 +19,7 @@ describe("derivePipelineRows accurate counts", () => {
         gsc_refreshed: 2,
         gsc_errors: 0,
         gsc_skipped: 40,
-        total: 5
+        gsc_progress_total: 5
       } as never,
       activeScope: "gsc",
       ...runArgs
@@ -40,7 +40,7 @@ describe("derivePipelineRows accurate counts", () => {
         index_refreshed: 3,
         index_errors: 0,
         index_skipped: 200,
-        total: 10
+        index_progress_total: 10
       } as never,
       activeScope: "index",
       ...runArgs
@@ -69,5 +69,32 @@ describe("derivePipelineRows accurate counts", () => {
     const ps = rows.find((r) => r.key === "pagespeed");
     expect(ps?.count).toBe(4);
     expect(ps?.total).toBe(4);
+  });
+
+  it("after structured SEO, Search Console row still shows full refreshed count (not capped by structured total)", () => {
+    const rows = derivePipelineRows({
+      orderedScopes: ["gsc", "structured"],
+      syncStatus: {
+        running: false,
+        stage: "complete",
+        active_scope: "structured",
+        gsc_refreshed: 667,
+        gsc_errors: 0,
+        structured_total: 1,
+        structured_done: 1
+      } as never,
+      running: false,
+      hasError: false,
+      syncPercent: 100,
+      activeScope: "structured",
+      stepIndex: 2
+    });
+    const gsc = rows.find((r) => r.key === "gsc");
+    expect(gsc?.status).toBe("done");
+    expect(gsc?.count).toBe(667);
+    expect(gsc?.total).toBe(667);
+    const st = rows.find((r) => r.key === "structured");
+    expect(st?.count).toBe(1);
+    expect(st?.total).toBe(1);
   });
 });

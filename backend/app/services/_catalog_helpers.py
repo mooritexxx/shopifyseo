@@ -39,6 +39,9 @@ PRODUCT_SORTERS: dict[str, Any] = {
     "ga4_views": lambda item: item["ga4_views"],
     "body_length": lambda item: item["body_length"],
     "pagespeed_performance": lambda item: item["pagespeed_performance"] if item["pagespeed_performance"] is not None else -1,
+    "pagespeed_desktop_performance": lambda item: item["pagespeed_desktop_performance"]
+    if item["pagespeed_desktop_performance"] is not None
+    else -1,
 }
 
 CONTENT_SORTERS = PRODUCT_SORTERS
@@ -159,6 +162,7 @@ def serialize_opportunity(item: dict[str, Any]) -> dict[str, Any]:
         "gsc_position": float(item.get("gsc_position") or 0),
         "ga4_sessions": int(item.get("ga4_sessions") or 0),
         "pagespeed_performance": item.get("pagespeed_performance"),
+        "pagespeed_desktop_performance": item.get("pagespeed_desktop_performance"),
     }
 
 
@@ -298,10 +302,19 @@ def _signal_cards_for(
             "step": "ga4",
         },
         {
-            "label": "PageSpeed",
+            "label": "PageSpeed (mobile)",
             "value": f"{int(current['pagespeed_performance'] or 0)} perf" if current["pagespeed_performance"] is not None else "No score",
             "sublabel": current["pagespeed_status"] or "Never fetched",
             "updated_at": current["pagespeed_last_fetched_at"],
             "step": "speed",
+        },
+        {
+            "label": "PageSpeed (desktop)",
+            "value": f"{int(current['pagespeed_desktop_performance'] or 0)} perf"
+            if current.get("pagespeed_desktop_performance") is not None
+            else "No score",
+            "sublabel": current.get("pagespeed_desktop_status") or "Never fetched",
+            "updated_at": current.get("pagespeed_desktop_last_fetched_at"),
+            "step": "speed_desktop",
         },
     ]

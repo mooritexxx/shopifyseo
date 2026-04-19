@@ -40,15 +40,13 @@ function HeroRing({
   accent,
   label,
   sublabel,
-  elapsed,
-  eta
+  elapsed
 }: {
   pct: number;
   accent: string;
   label: string;
   sublabel: string;
   elapsed: string;
-  eta: string;
 }) {
   const r = 58;
   const c = 2 * Math.PI * r;
@@ -89,16 +87,9 @@ function HeroRing({
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">Live sync</div>
           <div className="text-balance text-[17px] font-semibold leading-snug text-white">{label}</div>
           <div className="mt-1 text-xs leading-snug text-white/55">{sublabel}</div>
-          <div className="mt-3 flex gap-3.5 text-[11px] text-white/60">
-            <div>
-              <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Elapsed</div>
-              <div className="sync-event-stream-mono text-[13px] text-white">{elapsed}</div>
-            </div>
-            <div className="w-px bg-white/[0.08]" />
-            <div>
-              <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">ETA</div>
-              <div className="sync-event-stream-mono text-[13px] text-white">{eta}</div>
-            </div>
+          <div className="mt-3 text-[11px] text-white/60">
+            <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Elapsed</div>
+            <div className="sync-event-stream-mono text-[13px] text-white">{elapsed}</div>
           </div>
         </div>
       </div>
@@ -344,7 +335,6 @@ export type SyncDrawerProps = {
     title: string;
     subtitle: string;
     elapsed: string;
-    eta: string;
   };
   doneHero?: {
     title: string;
@@ -497,7 +487,6 @@ export function SyncDrawer(props: SyncDrawerProps) {
             label={runningHero.title}
             sublabel={runningHero.subtitle}
             elapsed={runningHero.elapsed}
-            eta={runningHero.eta}
           />
         ) : null}
 

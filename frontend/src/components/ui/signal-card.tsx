@@ -9,6 +9,7 @@ const signalCardTones: Record<string, string> = {
   gsc: "border-[#f2d9cf] bg-[linear-gradient(135deg,#fff7f4_0%,#ffe7de_100%)]",
   ga4: "border-[#efe2bf] bg-[linear-gradient(135deg,#fffdf5_0%,#fff3cf_100%)]",
   speed: "border-[#d8e9e1] bg-[linear-gradient(135deg,#f8fffb_0%,#e3f7ee_100%)]",
+  speed_desktop: "border-[#d8e9e1] bg-[linear-gradient(135deg,#f8fffb_0%,#e3f7ee_100%)]",
   opportunity: "border-[#e1dbf5] bg-[linear-gradient(135deg,#fbf9ff_0%,#ede8ff_100%)]"
 };
 
@@ -34,7 +35,7 @@ function formatSignalCard(signal: {
     };
   }
 
-  if (signal.step === "speed") {
+  if (signal.step === "speed" || signal.step === "speed_desktop") {
     const perfMatch = signal.value.match(/(\d+)/);
     return {
       metric: perfMatch?.[1] ?? signal.value,

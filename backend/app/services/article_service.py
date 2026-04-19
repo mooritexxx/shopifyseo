@@ -41,6 +41,10 @@ _ARTICLE_SIGNAL_DEFAULTS: dict[str, Any] = {
     "pagespeed_seo": None,
     "pagespeed_status": "",
     "pagespeed_last_fetched_at": None,
+    "pagespeed_desktop_performance": None,
+    "pagespeed_desktop_seo": None,
+    "pagespeed_desktop_status": "",
+    "pagespeed_desktop_last_fetched_at": None,
 }
 
 
@@ -166,6 +170,7 @@ def list_all_articles() -> dict[str, Any]:
                 "index_coverage": str(fact.get("index_coverage") or ""),
                 "google_canonical": str(fact.get("google_canonical") or ""),
                 "pagespeed_performance": fact.get("pagespeed_performance"),
+                "pagespeed_desktop_performance": fact.get("pagespeed_desktop_performance"),
                 "pagespeed_status": str(fact.get("pagespeed_status") or ""),
                 "workflow_status": str(wf.get("status") or "Needs fix"),
                 "workflow_notes": str(wf.get("notes") or ""),

@@ -13,15 +13,19 @@ class SyncStatusPayload(BaseModel):
     started_at: int = 0
     finished_at: int = 0
     stage_started_at: int = 0
-    eta_segment_started_at: int = 0
-    eta_seconds: int | None = None
     stage: str = "idle"
     stage_label: str = ""
     active_scope: str = ""
     step_index: int = 0
     step_total: int = 0
-    total: int = 0
-    done: int = 0
+    shopify_progress_done: int = 0
+    shopify_progress_total: int = 0
+    gsc_progress_done: int = 0
+    gsc_progress_total: int = 0
+    ga4_progress_done: int = 0
+    ga4_progress_total: int = 0
+    index_progress_done: int = 0
+    index_progress_total: int = 0
     current: str = ""
     products_synced: int = 0
     products_total: int = 0
@@ -63,6 +67,8 @@ class SyncStatusPayload(BaseModel):
     pagespeed_queue_inflight: int = 0
     pagespeed_error_details: list[dict[str, Any]] = []
     cancel_requested: bool = False
+    structured_total: int = 0
+    structured_done: int = 0
 
 
 class AiStatusPayload(BaseModel):

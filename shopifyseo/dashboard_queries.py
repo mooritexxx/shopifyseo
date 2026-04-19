@@ -620,6 +620,8 @@ def build_seo_fact(
         "google_canonical": obj.get("google_canonical") or "",
         "pagespeed_performance": obj.get("pagespeed_performance"),
         "pagespeed_status": obj.get("pagespeed_status") or "",
+        "pagespeed_desktop_performance": obj.get("pagespeed_desktop_performance"),
+        "pagespeed_desktop_status": obj.get("pagespeed_desktop_status") or "",
         "workflow": dict(workflow) if workflow else {"status": "Needs fix", "notes": ""},
         "product_count": product_count,
     }

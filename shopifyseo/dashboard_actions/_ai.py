@@ -521,6 +521,7 @@ def refresh_object_signal_step(
                 pagespeed_payload = dg.get_pagespeed(
                     conn,
                     url,
+                    "mobile",
                     refresh=True,
                     object_type=kind,
                     object_handle=handle,
@@ -533,7 +534,30 @@ def refresh_object_signal_step(
                     return _step_result("warning", "PageSpeed rate limited. Stale cached data kept.")
                 if perf is None:
                     return _step_result("warning", "PageSpeed refreshed, but no Lighthouse score was returned.")
-                return _step_result("success", f"PageSpeed refreshed. Performance {int(perf * 100)}.")
+                return _step_result("success", f"PageSpeed (mobile) refreshed. Performance {int(perf * 100)}.")
+            except HttpRequestError as exc:
+                return _step_result("error", f"PageSpeed refresh failed: {exc}")
+            except Exception as exc:
+                return _step_result("error", f"PageSpeed refresh failed: {exc}")
+        if step == "speed_desktop":
+            try:
+                pagespeed_payload = dg.get_pagespeed(
+                    conn,
+                    url,
+                    "desktop",
+                    refresh=True,
+                    object_type=kind,
+                    object_handle=handle,
+                )
+                refresh_object_structured_seo_data(conn, kind, handle)
+                cache_meta = pagespeed_payload.get("_cache") or {}
+                cats = pagespeed_payload.get("lighthouseResult", {}).get("categories", {})
+                perf = cats.get("performance", {}).get("score")
+                if cache_meta.get("rate_limited"):
+                    return _step_result("warning", "PageSpeed rate limited. Stale cached data kept.")
+                if perf is None:
+                    return _step_result("warning", "PageSpeed refreshed, but no Lighthouse score was returned.")
+                return _step_result("success", f"PageSpeed (desktop) refreshed. Performance {int(perf * 100)}.")
             except HttpRequestError as exc:
                 return _step_result("error", f"PageSpeed refresh failed: {exc}")
             except Exception as exc:
@@ -559,7 +583,7 @@ def refresh_object_signal_step(
 def refresh_object_signals(
     db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = "mtd"
 ) -> dict:
-    ordered_steps = ("gsc", "index", "speed")
+    ordered_steps = ("gsc", "index", "speed", "speed_desktop")
     return {
         step: refresh_object_signal_step(db_connect, kind, handle, step, db_path=db_path, gsc_period=gsc_period)
         for step in ordered_steps

@@ -128,10 +128,17 @@ def gsc_url_report_window(period_mode: str = "mtd") -> tuple[date, date]:
 
 # -- Cache invalidation -------------------------------------------------------
 
-def invalidate_pagespeed_memory_cache(url: str, strategy: str = "mobile") -> None:
-    """Drop in-process PageSpeed cache for this URL so the next read loads from SQLite."""
-    cache_key = f"{strategy}:{url}"
-    _pkg().GSC_CACHE["pagespeed"].pop(cache_key, None)
+def invalidate_pagespeed_memory_cache(url: str, strategy: str | None = None) -> None:
+    """Drop in-process PageSpeed cache for this URL so the next read loads from SQLite.
+
+    If ``strategy`` is None, evict both mobile and desktop entries for ``url``.
+    """
+    bucket = _pkg().GSC_CACHE["pagespeed"]
+    if strategy:
+        bucket.pop(f"{strategy}:{url}", None)
+        return
+    for strat in ("mobile", "desktop"):
+        bucket.pop(f"{strat}:{url}", None)
 
 
 def delete_search_console_overview_cache(conn: sqlite3.Connection) -> None:

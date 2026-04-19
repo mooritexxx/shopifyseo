@@ -29,7 +29,6 @@ from shopifyseo.dashboard_actions import (
     start_ai_object_background,
     start_sync_background,
 )
-from shopifyseo.dashboard_actions.sync_eta import compute_sync_eta_seconds
 import shopifyseo.dashboard_queries as dq
 import shopifyseo.dashboard_ai as dai
 import shopifyseo.dashboard_google as dg
@@ -356,15 +355,7 @@ def get_dashboard_summary(
 # ---------------------------------------------------------------------------
 
 def get_sync_status() -> dict[str, Any]:
-    payload = dict(SYNC_STATE)
-    if payload.get("running"):
-        try:
-            payload["eta_seconds"] = compute_sync_eta_seconds(payload, str(DB_PATH))
-        except Exception:
-            payload["eta_seconds"] = None
-    else:
-        payload["eta_seconds"] = None
-    return payload
+    return dict(SYNC_STATE)
 
 
 def get_ai_status(job_id: str = "") -> dict[str, Any]:

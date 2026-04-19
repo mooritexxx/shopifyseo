@@ -27,6 +27,7 @@ class ContentListItem(BaseModel):
     index_coverage: str = ""
     google_canonical: str = ""
     pagespeed_performance: int | None = None
+    pagespeed_desktop_performance: int | None = None
     pagespeed_status: str = ""
     workflow_status: str = "Needs fix"
     workflow_notes: str = ""

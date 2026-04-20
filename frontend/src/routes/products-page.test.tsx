@@ -74,7 +74,7 @@ describe("ProductsPage", () => {
     renderWithProviders(<ProductsPage />);
 
     expect(await screen.findByText("Sample Product")).toBeInTheDocument();
-    expect(screen.getByText("Not Indexed")).toBeInTheDocument();
+    expect(screen.getByTitle("Not Indexed")).toBeInTheDocument();
     expect(screen.getByText("20")).toBeInTheDocument();
     expect(screen.getByText("135")).toBeInTheDocument();
   });

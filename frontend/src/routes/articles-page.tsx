@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Sparkles } from "lucide-react";
@@ -133,6 +133,10 @@ export function ArticlesPage() {
   const [draftForm, setDraftForm] = useState(emptyDraftForm);
   const [draftError, setDraftError] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
+  const [draftGenerating, setDraftGenerating] = useState(false);
+  const [draftProgressEvents, setDraftProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
+  const [draftRunKey, setDraftRunKey] = useState(0);
+  const [draftModalStep, setDraftModalStep] = useState<1 | 2>(1);
 
   const query = useQuery({
     queryKey: ["all-articles"],
@@ -145,10 +149,15 @@ export function ArticlesPage() {
     enabled: draftModalOpen
   });
 
-  const [draftGenerating, setDraftGenerating] = useState(false);
-  const [draftProgressEvents, setDraftProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
-  const [draftRunKey, setDraftRunKey] = useState(0);
-  const [draftModalStep, setDraftModalStep] = useState<1 | 2>(1);
+  useEffect(() => {
+    if (!draftModalOpen || draftModalStep !== 1) return;
+    const blogs = blogsQuery.data;
+    if (!blogs || blogs.length !== 1 || !blogs[0]?.id) return;
+    setDraftForm((f) => {
+      if (f.blog_id.trim()) return f;
+      return { ...f, blog_id: blogs[0].id, blog_handle: blogs[0].handle ?? "" };
+    });
+  }, [draftModalOpen, draftModalStep, blogsQuery.data]);
 
   async function submitDraftFromModal() {
     setDraftError("");

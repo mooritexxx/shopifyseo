@@ -81,10 +81,26 @@ def test_link_idea_to_article(conn: sqlite3.Connection, saved_idea_id: int):
     assert result is True
     ideas = fetch_article_ideas(conn)
     idea = next(i for i in ideas if i["id"] == saved_idea_id)
-    assert idea["status"] == "drafting"
+    assert idea["status"] == "idea"
     assert idea["linked_article_handle"] == "best-disposable-vapes-canada"
     assert idea["linked_blog_handle"] == "news"
     assert idea["shopify_article_id"] == "gid://shopify/OnlineStoreArticle/999"
+
+
+def test_link_idea_to_article_keeps_approved_status(conn: sqlite3.Connection, saved_idea_id: int):
+    assert update_article_idea_status(conn, saved_idea_id, "approved") is True
+    assert (
+        link_idea_to_article(
+            conn,
+            idea_id=saved_idea_id,
+            article_handle="best-disposable-vapes-canada",
+            blog_handle="news",
+            shopify_article_id="gid://shopify/OnlineStoreArticle/999",
+        )
+        is True
+    )
+    idea = next(i for i in fetch_article_ideas(conn) if i["id"] == saved_idea_id)
+    assert idea["status"] == "approved"
 
 
 def test_fetch_ideas_includes_new_fields_with_defaults(conn: sqlite3.Connection, saved_idea_id: int):

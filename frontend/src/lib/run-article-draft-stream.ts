@@ -22,6 +22,8 @@ export type ArticleDraftStreamPayload = {
   idea_id?: number;
   /** Optional angle label when generating multiple articles from one idea. */
   angle_label?: string;
+  /** If set, regenerate an existing article in place (same URL) instead of creating a new draft. */
+  regenerate_article_handle?: string;
 };
 
 /**

@@ -19,18 +19,19 @@ import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { RichBodyEditor } from "../components/ui/rich-body-editor";
 import { Textarea } from "../components/ui/textarea";
 import { AiRunningToastBody } from "../components/ui/ai-running-toast-body";
+import { ArticleDraftProgressPanel } from "../components/article-draft-progress-panel";
 import { Toast, type ToastVariant } from "../components/ui/toast";
 import { useAiJobStatus } from "../hooks/use-ai-job-status";
 import { useAiJobStepClock } from "../hooks/use-ai-job-step-clock";
-import { useAiStream } from "../hooks/use-ai-stream";
 import { detectToastVariant } from "../lib/toast-utils";
+import { runArticleDraftStream, type ArticleDraftProgressEvent } from "../lib/run-article-draft-stream";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { useSidekickBinding } from "../components/sidekick/sidekick-context";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, patchJson, postJson } from "../lib/api";
 import { useDashboardGscPeriodSync } from "../lib/gsc-period";
 import { cleanSeoTitle } from "../lib/utils";
-import { actionSchema, contentDetailSchema, keywordCoveragePayloadSchema, messageSchema, statusSchema, type KeywordCoveragePayload } from "../types/api";
+import { actionSchema, contentDetailSchema, keywordCoveragePayloadSchema, messageSchema, type KeywordCoveragePayload } from "../types/api";
 
 const emptyDraft = {
   title: "",
@@ -223,19 +224,31 @@ export function ArticleDetailPage() {
   const apiBase = `/api/articles/${encodeURIComponent(blogHandle)}/${encodeURIComponent(articleHandle)}`;
   const sidekickCompositeHandle = `${blogHandle}/${articleHandle}`;
   const detailQueryKey = ["article", blogHandle, articleHandle, gscPeriod] as const;
-  const [modalOpen, setModalOpen] = useState(false);
   const [fieldModalOpen, setFieldModalOpen] = useState(false);
   const [activeFieldRegeneration, setActiveFieldRegeneration] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [aiStartedAt, setAiStartedAt] = useState<number | null>(null);
   const [fieldStartedAt, setFieldStartedAt] = useState<number | null>(null);
-  const [aiJobId, setAiJobId] = useState("");
-  const aiStream = useAiStream(aiJobId);
   const [fieldJobId, setFieldJobId] = useState("");
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const [savedDraftBaseline, setSavedDraftBaseline] = useState(emptyDraft);
-  const aiStatusQuery = useAiJobStatus(aiJobId);
   const fieldStatusQuery = useAiJobStatus(fieldJobId);
+  const coverageQuery = useQuery({
+    queryKey: ["keyword-coverage", blogHandle, articleHandle],
+    queryFn: () =>
+      getJson(
+        `/api/articles/${encodeURIComponent(blogHandle)}/${encodeURIComponent(articleHandle)}/keyword-coverage`,
+        keywordCoveragePayloadSchema
+      ),
+    enabled: Boolean(blogHandle && articleHandle)
+  });
+  const [regenerateModalOpen, setRegenerateModalOpen] = useState(false);
+  const [regenerateModalStep, setRegenerateModalStep] = useState<1 | 2>(1);
+  const [regenForm, setRegenForm] = useState({ topic: "", keywords: "", author_name: "" });
+  const [regenGenerating, setRegenGenerating] = useState(false);
+  const [regenProgressEvents, setRegenProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
+  const [regenError, setRegenError] = useState("");
+  const [regenRunKey, setRegenRunKey] = useState(0);
+  const [articleImagePreviewOpen, setArticleImagePreviewOpen] = useState(false);
   const detailQuery = useQuery({
     queryKey: detailQueryKey,
     queryFn: () => getJson(`${apiBase}?gsc_period=${gscPeriod}`, contentDetailSchema),
@@ -305,19 +318,6 @@ export function ArticleDetailPage() {
     },
     onError: (error) => setToast((error as Error).message)
   });
-  const aiMutation = useMutation({
-    mutationFn: () => postJson(`${apiBase}/generate-ai`, actionSchema),
-    onSuccess: (data) => {
-      const jobId = typeof data.state?.job_id === "string" ? data.state.job_id : "";
-      setAiJobId(jobId);
-      setModalOpen(false); // Reset modal state on new generation
-    },
-    onError: (error) => {
-      setToast((error as Error).message);
-      setModalOpen(true); // Open modal for mutation errors
-    }
-  });
-
   const fieldRegenMutation = useMutation({
     mutationFn: ({ field, accepted_fields }: { field: string; accepted_fields: Record<string, string> }) =>
       postJson(`${apiBase}/regenerate-field/start`, actionSchema, { field, accepted_fields }),
@@ -337,20 +337,6 @@ export function ArticleDetailPage() {
       setFieldModalOpen(true); // Only open modal for errors
     },
   });
-  const stopAiMutation = useMutation({
-    mutationFn: (jobId: string) => postJson("/api/ai-stop", statusSchema, { job_id: jobId }),
-    onSuccess: async () => {
-      setToast("AI stop requested");
-      if (aiJobId) {
-        await aiStatusQuery.refetch();
-      }
-      if (fieldJobId) {
-        await fieldStatusQuery.refetch();
-      }
-    },
-    onError: (error) => setToast((error as Error).message)
-  });
-
   const publishMutation = useMutation({
     mutationFn: (isPublished: boolean) =>
       patchJson(`${apiBase}/publish`, messageSchema, { is_published: isPublished }),
@@ -385,104 +371,6 @@ export function ArticleDetailPage() {
     setDraft(incoming);
     setSavedDraftBaseline(incoming);
   }, [detailQuery.data, detailQuery.dataUpdatedAt, blogHandle, articleHandle]);
-
-  // Apply AI-generated fields as they arrive via SSE stream
-  const appliedFieldCountRef = useRef(0);
-  useEffect(() => {
-    if (!aiStream.fields.length) return;
-    const newFields = aiStream.fields.slice(appliedFieldCountRef.current);
-    if (!newFields.length) return;
-    appliedFieldCountRef.current = aiStream.fields.length;
-
-    setDraft((current) => {
-      const updates: Partial<typeof emptyDraft> = {};
-      let hasUpdates = false;
-
-      for (const { field, value: rawValue } of newFields) {
-        const value = field === "seo_title" ? cleanSeoTitle(rawValue) : rawValue;
-        if (!value.trim()) continue;
-        switch (field) {
-          case "title":
-            if (value !== current.title) {
-              updates.title = value;
-              hasUpdates = true;
-            }
-            break;
-          case "seo_title":
-            if (value !== current.seo_title) {
-              updates.seo_title = value;
-              hasUpdates = true;
-            }
-            break;
-          case "seo_description":
-            if (value !== current.seo_description) {
-              updates.seo_description = value;
-              hasUpdates = true;
-            }
-            break;
-          case "body":
-            if (value !== current.body_html) {
-              updates.body_html = value;
-              hasUpdates = true;
-            }
-            break;
-        }
-      }
-
-      return hasUpdates ? { ...current, ...updates } : current;
-    });
-  }, [aiStream.fields]);
-
-  // Show toast when SSE stream completes
-  useEffect(() => {
-    if (aiStream.done && !aiStream.error && appliedFieldCountRef.current > 0) {
-      setToast("AI fields applied — review and save when ready");
-    }
-  }, [aiStream.done, aiStream.error]);
-
-  // Reset applied count when job changes
-  useEffect(() => {
-    appliedFieldCountRef.current = 0;
-  }, [aiJobId]);
-
-  // Invalidate detail query when generation completes
-  useEffect(() => {
-    if (aiStream.done && !aiStream.error) {
-      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
-      void queryClient.invalidateQueries({ queryKey: ["summary"] });
-    }
-  }, [aiStream.done, aiStream.error, detailQueryKey, queryClient]);
-
-  // Auto-open error modal when status query detects an error
-  useEffect(() => {
-    const status = aiStatusQuery.data;
-    if (status?.last_error && !status.running && !aiMutation.isPending) {
-      setModalOpen(true);
-    }
-  }, [aiStatusQuery.data?.last_error, aiStatusQuery.data?.running, aiMutation.isPending]);
-
-  // Timer for full AI generation - updates elapsedNow every second
-  useEffect(() => {
-    const running = aiStatusQuery.data?.running === true;
-    const starting = aiMutation.isPending;
-    if (!aiStartedAt || (!running && !starting)) return undefined;
-    const intervalId = window.setInterval(() => setElapsedNow(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [aiStartedAt, aiStatusQuery.data?.running, aiMutation.isPending]);
-
-  // Track when AI generation starts
-  useEffect(() => {
-    if (aiMutation.isPending && !aiStartedAt) {
-      const startedAt = Date.now();
-      setAiStartedAt(startedAt);
-      setElapsedNow(startedAt);
-      return;
-    }
-
-    if (!aiStatusQuery.data?.running && !aiMutation.isPending && aiStartedAt) {
-      setElapsedNow(Date.now());
-    }
-  }, [aiMutation.isPending, aiStartedAt, aiStatusQuery.data?.running]);
 
   // Timer for field regeneration - updates elapsedNow every second
   useEffect(() => {
@@ -527,11 +415,6 @@ export function ArticleDetailPage() {
     ? null
     : (activeFieldStatus?.last_result && activeFieldStatus.last_result.field === activeFieldRegeneration ? activeFieldStatus.last_result : null);
 
-  const mainAiStepStartedAtMs = useAiJobStepClock(
-    Boolean(aiStatusQuery.data?.running),
-    aiStatusQuery.data?.step_index ?? 0,
-    aiStatusQuery.data?.stage ?? ""
-  );
   const fieldAiStepStartedAtMs = useAiJobStepClock(
     Boolean(activeFieldStatus?.running),
     activeFieldStatus?.step_index ?? 0,
@@ -570,12 +453,78 @@ export function ArticleDetailPage() {
     return field.replace(/_/g, " ");
   }
 
-  function startAiGeneration() {
-    const startedAt = Date.now();
-    setAiStartedAt(startedAt);
-    setElapsedNow(startedAt);
-    setModalOpen(false);
-    aiMutation.mutate();
+  function defaultKeywordsFromCoverage(data: KeywordCoveragePayload | undefined): string {
+    if (!data?.target_keywords?.length) return "";
+    return data.target_keywords
+      .map((t) => (typeof t.keyword === "string" ? t.keyword : "").trim())
+      .filter(Boolean)
+      .slice(0, 12)
+      .join(", ");
+  }
+
+  function openRegenerateModal() {
+    const cur = detailQuery.data;
+    const title = (cur?.draft?.title || "").trim() || articleHandle;
+    const author = String((cur?.current as Record<string, unknown>)?.author_name ?? "").trim();
+    setRegenForm({
+      topic: title,
+      keywords: defaultKeywordsFromCoverage(coverageQuery.data),
+      author_name: author
+    });
+    setRegenError("");
+    setRegenProgressEvents([]);
+    setRegenerateModalStep(1);
+    setRegenerateModalOpen(true);
+  }
+
+  async function submitRegenerateDraft() {
+    const cur = detailQuery.data;
+    if (!cur) return;
+    const blogId = String((cur.current as Record<string, unknown>).blog_shopify_id ?? "").trim();
+    if (!blogId) {
+      setRegenError("Missing blog id for this article. Sync blogs from Shopify and retry.");
+      return;
+    }
+    if (!regenForm.topic.trim()) {
+      setRegenError("Topic / working title is required.");
+      return;
+    }
+    setRegenError("");
+    setRegenRunKey((k) => k + 1);
+    setRegenProgressEvents([]);
+    setRegenerateModalStep(2);
+    setRegenGenerating(true);
+    try {
+      const keywords = regenForm.keywords
+        ? regenForm.keywords
+            .split(",")
+            .map((k) => k.trim())
+            .filter(Boolean)
+        : [];
+      await runArticleDraftStream(
+        {
+          blog_id: blogId,
+          blog_handle: blogHandle,
+          topic: regenForm.topic.trim(),
+          keywords,
+          author_name: regenForm.author_name.trim(),
+          slug_hint: articleHandle,
+          regenerate_article_handle: articleHandle
+        },
+        (evt) => setRegenProgressEvents((prev) => [...prev, evt])
+      );
+      setRegenerateModalOpen(false);
+      setRegenerateModalStep(1);
+      setRegenProgressEvents([]);
+      setToast("Article regenerated — draft engine updated Shopify.");
+      void queryClient.invalidateQueries({ queryKey: detailQueryKey });
+      void queryClient.invalidateQueries({ queryKey: ["all-articles"] });
+      void queryClient.invalidateQueries({ queryKey: ["keyword-coverage", blogHandle, articleHandle] });
+    } catch (err) {
+      setRegenError((err as Error).message || "Regeneration failed");
+    } finally {
+      setRegenGenerating(false);
+    }
   }
 
   const detail = detailQuery.data;
@@ -585,7 +534,6 @@ export function ArticleDetailPage() {
   if (detailQuery.error || !detail) {
     return <div className="rounded-[30px] border border-[#ffd2c5] bg-[#fff4ef] p-8 text-[#8f3e20] shadow-panel">{(detailQuery.error as Error)?.message || "Could not load detail."}</div>;
   }
-  const recommendation = detail.recommendation.details;
   const featuredImage = parseBlogArticleFeaturedImage(detail.current as Record<string, unknown>);
   const inlineBodyHero = firstInlineHeroFromBodyHtml(draft.body_html);
   const heroPreview = featuredImage ?? inlineBodyHero;
@@ -630,53 +578,6 @@ export function ArticleDetailPage() {
       return cards;
     }
     return [...cards, opportunityCard];
-  })();
-
-  // AI generation status toast (shows elapsed time for current step only)
-  const aiGenerationToast = (() => {
-    const status = aiStatusQuery.data;
-
-    if (aiMutation.isPending && !status?.running) {
-      const totalMs = aiStartedAt ? elapsedNow - aiStartedAt : 0;
-      return {
-        message: (
-          <AiRunningToastBody
-            headline="Starting AI generation…"
-            stepElapsedMs={totalMs}
-          />
-        ),
-        variant: "info" as ToastVariant,
-        duration: 0
-      };
-    }
-    if (status?.running) {
-      const stepLabel = status.stage_label || humanizeAiStage(status.stage || "");
-      const stepInfo = status.step_total
-        ? `Step ${Math.max(status.step_index || 0, 0)}/${status.step_total}: ${stepLabel}`
-        : stepLabel;
-      return {
-        message: (
-          <AiRunningToastBody
-            headline={stepInfo}
-            stepElapsedMs={elapsedNow - mainAiStepStartedAtMs}
-          />
-        ),
-        variant: "info" as ToastVariant,
-        duration: 0,
-        isRunning: true
-      };
-    }
-    if (aiJobId && !status?.running && !aiMutation.isPending) {
-      if (status?.last_error) {
-        return {
-          message: `AI generation failed: ${status.last_error}`,
-          variant: "error" as ToastVariant,
-          duration: 5000
-        };
-      }
-      return { message: "AI generation complete", variant: "success" as ToastVariant, duration: 3000 };
-    }
-    return null;
   })();
 
   // Field regeneration status toast
@@ -727,15 +628,6 @@ export function ArticleDetailPage() {
     <TooltipProvider>
       <div className="space-y-6 pb-10">
         {toast ? <Toast variant={detectToastVariant(toast)}>{toast}</Toast> : null}
-        {aiGenerationToast ? (
-          <Toast
-            variant={aiGenerationToast.variant}
-            duration={aiGenerationToast.duration}
-            customIcon={aiGenerationToast.isRunning ? <LoaderCircle className="animate-spin" size={18} /> : undefined}
-          >
-            {aiGenerationToast.message}
-          </Toast>
-        ) : null}
         {fieldRegenToast ? (
           <Toast
             variant={fieldRegenToast.variant}
@@ -769,31 +661,6 @@ export function ArticleDetailPage() {
         <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
-
-        {heroPreview && heroPreviewSource ? (
-          <section>
-            <Card className="overflow-hidden border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]">
-              <CardHeader className="pb-2">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Article image</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  {heroPreviewSource === "shopify_featured"
-                    ? "Shopify featured image (admin sidebar). Refreshed when you sync from Shopify."
-                    : "First image in the article HTML. Set a featured image in Shopify for blog cards and social previews."}
-                </p>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="overflow-hidden rounded-2xl border border-line bg-[#f7f9fc]">
-                  <img
-                    src={heroPreview.url}
-                    alt={heroPreview.alt}
-                    className="max-h-[min(420px,55vh)] w-full object-contain object-top"
-                    loading="lazy"
-                  />
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-        ) : null}
 
         <section className="space-y-0">
           <Card className="border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]">
@@ -830,9 +697,9 @@ export function ArticleDetailPage() {
                       Preview
                     </Button>
                   ) : null}
-                  <Button variant="secondary" onClick={startAiGeneration} disabled={aiMutation.isPending}>
+                  <Button variant="secondary" onClick={openRegenerateModal} disabled={regenGenerating}>
                     <Sparkles className="mr-2" size={16} />
-                    {aiMutation.isPending ? "Starting…" : "Generate AI"}
+                    Regenerate article
                   </Button>
                   <Button onClick={() => saveMutation.mutate(draft)} disabled={!isDirty || saveMutation.isPending}>
                     <Save className="mr-2" size={16} />
@@ -843,33 +710,74 @@ export function ArticleDetailPage() {
             </CardHeader>
 
             <CardContent className="space-y-6 pt-0">
-              <div className="grid gap-2">
-                <Label htmlFor="article-title">Title</Label>
-                <Input
-                  id="article-title"
-                  value={draft.title}
-                  onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
-                />
-              </div>
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+                <div className="flex w-full flex-col gap-2 lg:w-[220px] lg:max-w-[240px] lg:shrink-0">
+                  {heroPreview && heroPreviewSource ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setArticleImagePreviewOpen(true)}
+                        className="group mx-auto aspect-square w-full max-w-[240px] overflow-hidden rounded-xl border border-[#e2eaf4] bg-slate-50 text-left outline-none ring-offset-2 transition hover:border-[#b8cce4] focus-visible:ring-2 focus-visible:ring-[#2b6cb0]"
+                        aria-label="Open image preview"
+                      >
+                        <img
+                          src={heroPreview.url}
+                          alt={heroPreview.alt}
+                          className="h-full w-full object-contain object-center transition group-hover:opacity-95"
+                          loading="lazy"
+                        />
+                      </button>
+                      <p className="text-center text-[11px] text-slate-500">
+                        {heroPreviewSource === "shopify_featured"
+                          ? "Featured image · Shopify"
+                          : "Hero image · article body"}
+                        <span className="mt-0.5 block text-[10px] text-slate-400">
+                          {heroPreviewSource === "shopify_featured"
+                            ? "Sync from Shopify to refresh."
+                            : "Set a featured image in Shopify for cards and social previews."}
+                        </span>
+                      </p>
+                    </>
+                  ) : (
+                    <div className="mx-auto flex min-h-[160px] w-full max-w-[240px] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-[#d7e2f0] bg-[#fbfdff] px-3 py-6 text-center">
+                      <p className="text-xs font-medium text-slate-600">No article image</p>
+                      <p className="text-[11px] leading-snug text-slate-400">
+                        Set a featured image in Shopify Admin or add an image in the body, then sync from Shopify.
+                      </p>
+                    </div>
+                  )}
+                </div>
 
-              <Separator />
+                <div className="min-w-0 flex-1 space-y-6">
+                  <div className="grid gap-2">
+                    <Label htmlFor="article-title">Title</Label>
+                    <Input
+                      id="article-title"
+                      value={draft.title}
+                      onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))}
+                    />
+                  </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="article-seo-title">SEO title</Label>
-                <Input
-                  id="article-seo-title"
-                  value={draft.seo_title}
-                  onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
-                />
-                <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
-                <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-                  <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>{draft.seo_title.trim().length}/65 characters</span>
-                  <span className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
-                      <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
-                      {isRegeneratingField("seo_title") ? "Regenerating…" : "Regenerate"}
-                    </Button>
-                  </span>
+                  <Separator />
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="article-seo-title">SEO title</Label>
+                    <Input
+                      id="article-seo-title"
+                      value={draft.seo_title}
+                      onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
+                    />
+                    <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+                      <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>{draft.seo_title.trim().length}/65 characters</span>
+                      <span className="flex gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
+                          <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
+                          {isRegeneratingField("seo_title") ? "Regenerating…" : "Regenerate"}
+                        </Button>
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -962,21 +870,102 @@ export function ArticleDetailPage() {
           </Card>
         </section>
 
-      {/* Error modal - only show for actual errors */}
+      {heroPreview && heroPreviewSource ? (
+        <Modal
+          open={articleImagePreviewOpen}
+          onOpenChange={setArticleImagePreviewOpen}
+          title="Image preview"
+          description={
+            heroPreviewSource === "shopify_featured"
+              ? "Featured image from the Shopify article (admin sidebar)."
+              : "First image found in the article HTML body."
+          }
+          contentClassName="w-[min(960px,96vw)] max-h-[min(920px,92vh)] overflow-y-auto"
+        >
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex min-h-0 min-w-0 w-full flex-1 items-center justify-center rounded-2xl bg-slate-50 p-2">
+              <img
+                src={heroPreview.url}
+                alt={heroPreview.alt}
+                className="max-h-[min(72vh,720px)] w-full max-w-full object-contain"
+              />
+            </div>
+            {heroPreview.alt ? <p className="max-w-full text-center text-sm text-slate-600">{heroPreview.alt}</p> : null}
+          </div>
+        </Modal>
+      ) : null}
+
       <Modal
-        open={modalOpen && Boolean(aiStatusQuery.data?.last_error && !aiStatusQuery.data?.running)}
-        onOpenChange={setModalOpen}
-        title="AI generation error"
-        description="An error occurred during AI generation."
+        open={regenerateModalOpen}
+        onOpenChange={(open) => {
+          if (!regenGenerating) {
+            setRegenerateModalOpen(open);
+            if (!open) {
+              setRegenProgressEvents([]);
+              setRegenerateModalStep(1);
+            }
+          }
+        }}
+        title={regenerateModalStep === 2 ? "Regenerating article" : "Regenerate article"}
+        description={
+          regenerateModalStep === 2
+            ? "Running the full draft engine (content, SEO, images) and updating this post in Shopify. The URL handle stays the same."
+            : "Same pipeline as new article drafts and idea drafts — replaces body and meta in Shopify."
+        }
       >
         <div className="space-y-4">
-          <div className="rounded-2xl border border-[#ffd2c5] bg-[#fff4ef] px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#991b1b]">Error</p>
-            <p className="mt-1.5 text-sm text-[#8f3e20]">{aiStatusQuery.data?.last_error || "An unknown error occurred"}</p>
-          </div>
-          <p className="text-xs text-slate-500">
-            The generation process encountered an error and could not complete. Please try again.
-          </p>
+          {regenerateModalStep === 1 ? (
+            <>
+              <div className="grid gap-2">
+                <Label htmlFor="regen-topic">
+                  Topic / working title <span className="text-slate-400 font-normal">(required)</span>
+                </Label>
+                <Input
+                  id="regen-topic"
+                  value={regenForm.topic}
+                  onChange={(e) => setRegenForm((f) => ({ ...f, topic: e.target.value }))}
+                  placeholder="Article topic or working title"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="regen-keywords">Target keywords (optional, comma-separated)</Label>
+                <Textarea
+                  id="regen-keywords"
+                  rows={2}
+                  value={regenForm.keywords}
+                  onChange={(e) => setRegenForm((f) => ({ ...f, keywords: e.target.value }))}
+                  placeholder="keyword one, keyword two"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="regen-author">Author name (optional)</Label>
+                <Input
+                  id="regen-author"
+                  value={regenForm.author_name}
+                  onChange={(e) => setRegenForm((f) => ({ ...f, author_name: e.target.value }))}
+                  placeholder="Shown on the Shopify article"
+                />
+              </div>
+              {regenError ? <p className="text-sm text-red-600">{regenError}</p> : null}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" type="button" onClick={() => setRegenerateModalOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="button" onClick={() => void submitRegenerateDraft()} disabled={!regenForm.topic.trim()}>
+                  Start regeneration
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <ArticleDraftProgressPanel
+                events={regenProgressEvents}
+                isRunning={regenGenerating}
+                runKey={regenRunKey}
+              />
+              {regenError ? <p className="text-sm text-red-600">{regenError}</p> : null}
+            </>
+          )}
         </div>
       </Modal>
 

@@ -22,17 +22,6 @@ function columnButtonClass(align: "left" | "right" | "center") {
   return base;
 }
 
-function inspectStatusBadgeClass(value: string) {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "indexed") {
-    return "bg-[#e7f8ef] text-[#1c7a4b]";
-  }
-  if (normalized === "needs review") {
-    return "bg-[#fdecec] text-[#b34747]";
-  }
-  return "bg-[#f3f7fb] text-ink";
-}
-
 function isContentComplete(row: { seo_title?: string; seo_description?: string; body_length?: number }) {
   const hasMetaTitle = (row.seo_title ?? "").trim().length > 0;
   const hasMetaDescription = (row.seo_description ?? "").trim().length > 0;
@@ -219,17 +208,27 @@ export function DataTable({
                   );
                 }
                 if (column.key === "index_status") {
+                  const raw = String(row.index_status ?? "").trim() || "Unknown";
+                  const indexed = raw.toLowerCase() === "indexed";
                   return (
                     <TableCell
                       key={column.key}
-                      className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center text-[10px] text-slate-600 min-w-0`}
+                      className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+                      title={raw}
                     >
-                      <span
-                        className={`inline-flex max-w-full truncate rounded-full px-2 py-1 font-medium text-[9px] ${inspectStatusBadgeClass(String(row.index_status || "Unknown"))}`}
-                        title={String(row.index_status || "Unknown")}
-                      >
-                        {String(row.index_status || "Unknown")}
-                      </span>
+                      {indexed ? (
+                        <Check
+                          size={18}
+                          className="inline-block text-[#1c7a4b]"
+                          aria-label={`Indexed (${raw})`}
+                        />
+                      ) : (
+                        <AlertTriangle
+                          size={18}
+                          className="inline-block text-[#b34747]"
+                          aria-label={`Not indexed (${raw})`}
+                        />
+                      )}
                     </TableCell>
                   );
                 }

@@ -1,8 +1,10 @@
 import json
 import queue
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -26,6 +28,8 @@ from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.content import ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
+from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
+from shopifyseo.shopify_catalog_sync.blogs import sync_article
 from backend.app.services.article_service import (
     get_blog_article_detail,
     get_blog_article_inspection_link,
@@ -53,7 +57,7 @@ from shopifyseo.shopify_admin import (
     update_article_body_html,
     update_article_featured_image,
 )
-from shopifyseo.dashboard_live_updates import publish_article
+from shopifyseo.dashboard_live_updates import live_update_article, publish_article
 from shopifyseo.shopify_catalog_sync import upsert_blog_article_from_admin_create
 
 router = APIRouter(prefix="/api", tags=["blogs"])
@@ -129,40 +133,105 @@ def _sync_article_body_if_needed(article: dict, body_html: str, p: _ProgressFn) 
     return article
 
 
+def _lookup_idea_id_for_article(conn: sqlite3.Connection, blog_handle: str, article_handle: str) -> int | None:
+    row = conn.execute(
+        """
+        SELECT idea_id FROM idea_articles
+        WHERE blog_handle = ? AND article_handle = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (blog_handle, article_handle),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _idea_link_exists(conn: sqlite3.Connection, idea_id: int, blog_handle: str, article_handle: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM idea_articles
+        WHERE idea_id = ? AND blog_handle = ? AND article_handle = ?
+        LIMIT 1
+        """,
+        (idea_id, blog_handle, article_handle),
+    ).fetchone()
+    return row is not None
+
+
+def _load_article_target_keyword_strings(
+    conn: sqlite3.Connection, blog_handle: str, article_handle: str
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT keyword FROM article_target_keywords
+        WHERE blog_handle = ? AND article_handle = ?
+        ORDER BY is_primary DESC, keyword
+        """,
+        (blog_handle, article_handle),
+    ).fetchall()
+    return [str(r[0]) for r in rows if r[0]]
+
+
+def _first_matched_cluster_id_for_blog_article(
+    conn: sqlite3.Connection, blog_handle: str, article_handle: str
+) -> int | None:
+    composite = dq.blog_article_composite_handle(blog_handle, article_handle)
+    try:
+        from backend.app.services.keyword_clustering import load_clusters
+
+        clusters_data = load_clusters(conn)
+        for cluster in clusters_data.get("clusters") or []:
+            sm = cluster.get("suggested_match") or {}
+            if sm.get("match_handle") == composite and sm.get("match_type") == "blog_article":
+                cid = cluster.get("id")
+                if cid is not None:
+                    return int(cid)
+    except Exception:
+        pass
+    return None
+
+
 def _persist_article_locally(
     article: dict,
     payload: ArticleGenerateDraftRequest,
     generated: dict,
     p: _ProgressFn,
+    *,
+    skip_shopify_upsert: bool = False,
+    idea_id_for_persist: int | None = None,
+    skip_idea_link: bool = False,
 ) -> None:
     """Upsert the Shopify article into the local DB and link any pending idea."""
     p("Saving article to local database…", "local", "start")
     conn = open_db_connection()
     try:
-        upsert_blog_article_from_admin_create(
-            conn,
-            article,
-            blog_handle=payload.blog_handle,
-            seo_title=generated["seo_title"],
-            seo_description=generated["seo_description"],
-        )
-        if payload.idea_id is not None:
-            dq.link_idea_to_article(
+        if not skip_shopify_upsert:
+            upsert_blog_article_from_admin_create(
                 conn,
-                idea_id=payload.idea_id,
-                article_handle=article["handle"],
+                article,
                 blog_handle=payload.blog_handle,
-                shopify_article_id=article["id"],
-                angle_label=getattr(payload, "angle_label", ""),
+                seo_title=generated["seo_title"],
+                seo_description=generated["seo_description"],
             )
+        if idea_id_for_persist is not None:
+            if not skip_idea_link:
+                dq.link_idea_to_article(
+                    conn,
+                    idea_id=idea_id_for_persist,
+                    article_handle=article["handle"],
+                    blog_handle=payload.blog_handle,
+                    shopify_article_id=article["id"],
+                    angle_label=getattr(payload, "angle_label", ""),
+                )
             idea_row = conn.execute(
                 "SELECT primary_keyword, supporting_keywords FROM article_ideas WHERE id = ?",
-                (payload.idea_id,),
+                (idea_id_for_persist,),
             ).fetchone()
             if idea_row:
-                import json as _json
                 try:
-                    sup_kw = _json.loads(idea_row[1] or "[]")
+                    sup_kw = json.loads(idea_row[1] or "[]")
                 except (ValueError, TypeError):
                     sup_kw = []
                 dq.save_article_target_keywords(
@@ -172,6 +241,8 @@ def _persist_article_locally(
                     primary_keyword=idea_row[0] or "",
                     supporting_keywords=sup_kw if isinstance(sup_kw, list) else [],
                 )
+        composite = dq.blog_article_composite_handle(payload.blog_handle, article["handle"])
+        refresh_object_structured_seo_data(conn, "blog_article", composite)
         conn.commit()
     finally:
         conn.close()
@@ -183,7 +254,7 @@ def _run_generate_article_draft(
     *,
     on_progress: Callable[[dict], None] | None = None,
 ) -> ArticleGenerateDraftResult:
-    """AI draft → Shopify `articleCreate` → upsert local `blog_articles` so detail routes work."""
+    """AI draft → Shopify `articleCreate` or in-place update → local DB."""
 
     def p(message: str, phase: str | None = None, state: str | None = None, **extra: object) -> None:
         if not on_progress:
@@ -196,21 +267,49 @@ def _run_generate_article_draft(
         row.update(extra)
         on_progress(row)
 
+    reg_handle = (payload.regenerate_article_handle or "").strip()
+    is_regen = bool(reg_handle)
+
     conn = open_db_connection()
+    existing_row: sqlite3.Row | None = None
     try:
-        cluster_id = None
-        if payload.idea_id is not None:
+        if is_regen:
+            existing_row = conn.execute(
+                """
+                SELECT shopify_id, blog_shopify_id, handle, is_published, title
+                FROM blog_articles
+                WHERE blog_handle = ? AND handle = ?
+                """,
+                (payload.blog_handle, reg_handle),
+            ).fetchone()
+            if not existing_row:
+                raise RuntimeError("Article not found for regeneration")
+            if str(existing_row["handle"]) != reg_handle:
+                raise RuntimeError("Article handle mismatch")
+
+        effective_idea_id = payload.idea_id
+        if is_regen and effective_idea_id is None:
+            effective_idea_id = _lookup_idea_id_for_article(conn, payload.blog_handle, reg_handle)
+
+        keywords: list = list(payload.keywords or [])
+        if is_regen and not keywords:
+            keywords = _load_article_target_keyword_strings(conn, payload.blog_handle, reg_handle)
+
+        cluster_id: int | None = None
+        if effective_idea_id is not None:
             idea_row = conn.execute(
                 "SELECT linked_cluster_id FROM article_ideas WHERE id = ?",
-                (payload.idea_id,),
+                (effective_idea_id,),
             ).fetchone()
             if idea_row and idea_row[0] is not None:
                 cluster_id = int(idea_row[0])
+        if cluster_id is None and is_regen:
+            cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
 
         generated = generate_article_draft(
             conn,
             topic=payload.topic,
-            keywords=payload.keywords or [],
+            keywords=keywords,
             author_name=payload.author_name,
             linked_cluster_id=cluster_id,
             on_progress=on_progress,
@@ -245,12 +344,88 @@ def _run_generate_article_draft(
             p("Skipping inline body images (none generated).", "body", "skipped")
 
         body_html = ensure_link_titles(body_html, conn)
+    finally:
+        conn.close()
 
+    article: dict
+    skip_shopify_upsert = False
+    idea_id_for_persist: int | None = payload.idea_id
+    skip_idea_link = False
+
+    if is_regen:
+        assert existing_row is not None
+        shopify_id = str(existing_row["shopify_id"])
+        blog_title = ""
+        try:
+            conn2 = open_db_connection()
+            try:
+                br = conn2.execute(
+                    "SELECT title FROM blogs WHERE handle = ? LIMIT 1",
+                    (payload.blog_handle,),
+                ).fetchone()
+                if br and br[0]:
+                    blog_title = str(br[0])
+            finally:
+                conn2.close()
+        except Exception:
+            pass
+
+        p("Updating article in Shopify…", "shopify", "start")
+        try:
+            live_update_article(
+                DB_PATH,
+                shopify_id,
+                generated["title"],
+                generated["seo_title"],
+                generated["seo_description"],
+                body_html,
+            )
+        except SystemExit as exc:
+            raise RuntimeError(str(exc) or "Shopify request failed") from exc
+
+        article = {
+            "id": shopify_id,
+            "handle": reg_handle,
+            "title": generated["title"],
+            "body": body_html,
+            "isPublished": bool(existing_row["is_published"]),
+            "blog": {"id": str(existing_row["blog_shopify_id"]), "title": blog_title},
+        }
+        created_img_url = ""
+        if (featured_url or "").strip().startswith("https://"):
+            article = _attach_featured_image(
+                article, (featured_url or "").strip(), featured_alt or generated["title"], p
+            )
+            img = article.get("image") or {}
+            if isinstance(img, dict):
+                created_img_url = (img.get("url") or "").strip()
+        else:
+            p("No featured image URL — skipped attach.", "attach", "skipped")
+
+        if not created_img_url and (featured_url or "").strip().startswith("https://"):
+            p(
+                "Featured image may not appear on article until Shopify finishes processing.",
+                "attach",
+                "skipped",
+            )
+
+        article = _sync_article_body_if_needed(article, body_html, p)
+        p("Article updated in Shopify.", "shopify", "done")
+        # live_update_article syncs once; re-sync after optional featured/body fixes.
+        sync_article(Path(DB_PATH), shopify_id)
+        skip_shopify_upsert = True
+        idea_id_for_persist = effective_idea_id
+        if effective_idea_id is not None:
+            conn3 = open_db_connection()
+            try:
+                skip_idea_link = _idea_link_exists(conn3, effective_idea_id, payload.blog_handle, reg_handle)
+            finally:
+                conn3.close()
+    else:
         raw_slug = (payload.slug_hint or "").strip()
         if raw_slug:
             handle = slugify_article_handle(raw_slug)
         else:
-            # No slug hint — derive an SEO-optimised slug from the AI title + keywords
             kw_list = [
                 (k["keyword"] if isinstance(k, dict) else str(k))
                 for k in (payload.keywords or [])
@@ -281,9 +456,13 @@ def _run_generate_article_draft(
             raise RuntimeError("; ".join(e["message"] for e in errors))
 
         article = result["article"]
-        created_img_url = ((article.get("image") or {}) if isinstance(article.get("image"), dict) else {}).get("url", "").strip()
+        created_img_url = (
+            ((article.get("image") or {}) if isinstance(article.get("image"), dict) else {}).get("url", "").strip()
+        )
         if (featured_url or "").strip().startswith("https://") and not created_img_url:
-            article = _attach_featured_image(article, (featured_url or "").strip(), featured_alt or generated["title"], p)
+            article = _attach_featured_image(
+                article, (featured_url or "").strip(), featured_alt or generated["title"], p
+            )
         else:
             p(
                 "Featured image present on created article." if created_img_url else "No featured image for this draft.",
@@ -293,10 +472,16 @@ def _run_generate_article_draft(
 
         article = _sync_article_body_if_needed(article, body_html, p)
         p("Draft created in Shopify.", "shopify", "done")
-    finally:
-        conn.close()
 
-    _persist_article_locally(article, payload, generated, p)
+    _persist_article_locally(
+        article,
+        payload,
+        generated,
+        p,
+        skip_shopify_upsert=skip_shopify_upsert,
+        idea_id_for_persist=idea_id_for_persist,
+        skip_idea_link=skip_idea_link,
+    )
 
     return ArticleGenerateDraftResult(
         id=article["id"],

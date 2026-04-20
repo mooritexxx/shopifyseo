@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Lightbulb,
   RefreshCw,
@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
+  Info,
 } from "lucide-react";
 
 import { Button } from "../components/ui/button";
@@ -39,6 +40,7 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { getJson, patchJson, postJson } from "../lib/api";
+import { cn } from "../lib/utils";
 import { articleIdeasPayloadSchema, messageSchema } from "../types/api";
 
 // ---------------------------------------------------------------------------
@@ -52,17 +54,23 @@ const INTENT_LABELS: Record<string, { label: string; color: string }> = {
   navigational: { label: "Nav", color: "bg-orange-50 text-orange-700 border-orange-200" },
 };
 
-type StatusFilter = "all" | "idea" | "approved" | "published" | "rejected";
+type ArticleIdeaStatusTab = "approved" | "new" | "rejected";
+
+const STATUS_TABS: { id: ArticleIdeaStatusTab; label: string }[] = [
+  { id: "approved", label: "Approved" },
+  { id: "new", label: "New" },
+  { id: "rejected", label: "Rejected" },
+];
+
 type IntentFilter = "all" | "informational" | "commercial" | "transactional";
 type SourceFilter = "all" | "cluster_gap" | "competitor_gap" | "collection_gap" | "query_gap";
 
-const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "idea", label: "New" },
-  { value: "approved", label: "Approved" },
-  { value: "published", label: "Published" },
-  { value: "rejected", label: "Rejected" },
-];
+function ideaMatchesStatusTab(idea: { status: string }, tab: ArticleIdeaStatusTab): boolean {
+  const s = idea.status?.toLowerCase() ?? "idea";
+  if (tab === "new") return s === "idea";
+  if (tab === "rejected") return s === "rejected";
+  return s === "approved" || s === "published";
+}
 
 const INTENT_OPTIONS: { value: IntentFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -174,7 +182,7 @@ export function ArticleIdeasPage() {
 
   // Search & filters
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusTab, setStatusTab] = useState<ArticleIdeaStatusTab>("approved");
   const [intentFilter, setIntentFilter] = useState<IntentFilter>("all");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
@@ -215,10 +223,13 @@ export function ArticleIdeasPage() {
 
   const ideas = ideasQuery.data?.items ?? [];
 
+  const newIdeaCount = useMemo(
+    () => ideas.filter((i) => (i.status?.toLowerCase() ?? "idea") === "idea").length,
+    [ideas],
+  );
+
   const activeFilterCount =
-    (statusFilter !== "all" ? 1 : 0) +
-    (intentFilter !== "all" ? 1 : 0) +
-    (sourceFilter !== "all" ? 1 : 0);
+    (intentFilter !== "all" ? 1 : 0) + (sourceFilter !== "all" ? 1 : 0);
 
   const filtered = useMemo(() => {
     let list = ideas;
@@ -233,8 +244,7 @@ export function ArticleIdeasPage() {
       );
     }
 
-    if (statusFilter !== "all")
-      list = list.filter((i) => i.status === statusFilter);
+    list = list.filter((i) => ideaMatchesStatusTab(i, statusTab));
     if (intentFilter !== "all")
       list = list.filter((i) => i.search_intent === intentFilter);
     if (sourceFilter !== "all")
@@ -248,7 +258,7 @@ export function ArticleIdeasPage() {
       return 0;
     });
     return list;
-  }, [ideas, searchQuery, statusFilter, intentFilter, sourceFilter, sortKey, sortDir]);
+  }, [ideas, searchQuery, statusTab, intentFilter, sourceFilter, sortKey, sortDir]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -328,6 +338,31 @@ export function ArticleIdeasPage() {
           </Button>
         </div>
       </div>
+
+      {!ideasQuery.isLoading && ideas.length > 0 && newIdeaCount > 0 ? (
+        <div
+          className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+          role="status"
+        >
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-800" aria-hidden />
+          <div>
+            <p className="font-medium text-amber-950">
+              {newIdeaCount} article idea{newIdeaCount === 1 ? "" : "s"} waiting for review
+            </p>
+            <p className="mt-1 text-amber-950/90">
+              Open the New tab to approve or reject each suggestion. Approved ideas stay in your queue for drafting.
+            </p>
+            <Button
+              type="button"
+              variant="link"
+              className="mt-1 h-auto p-0 text-amber-950 underline-offset-4 hover:text-amber-900"
+              onClick={() => setStatusTab("new")}
+            >
+              Go to New tab
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Generation progress / error */}
       {isGenerating ? (
@@ -409,12 +444,6 @@ export function ArticleIdeasPage() {
 
             {/* Individual filter dropdowns */}
             <FilterDropdown
-              label="Status"
-              options={STATUS_OPTIONS}
-              value={statusFilter}
-              onChange={setStatusFilter}
-            />
-            <FilterDropdown
               label="Intent"
               options={INTENT_OPTIONS}
               value={intentFilter}
@@ -431,7 +460,6 @@ export function ArticleIdeasPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setStatusFilter("all");
                   setIntentFilter("all");
                   setSourceFilter("all");
                 }}
@@ -487,14 +515,39 @@ export function ArticleIdeasPage() {
             </span>
           </div>
 
+          {/* Status tabs — above table (same pattern as Target Keywords) */}
+          <div
+            className="flex items-stretch gap-0 border-b border-line/60 px-5"
+            role="tablist"
+            aria-label="Idea status"
+          >
+            {STATUS_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={statusTab === tab.id}
+                onClick={() => setStatusTab(tab.id)}
+                className={cn(
+                  "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                  statusTab === tab.id
+                    ? "border-ocean text-ocean"
+                    : "border-transparent text-slate-500 hover:text-slate-700",
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
           {/* ── Table ──────────────────────────────────────────────── */}
           {filtered.length === 0 ? (
             <div className="mx-5 my-6 flex min-h-[100px] items-center justify-center rounded-xl border-2 border-dashed border-slate-200 text-sm text-slate-400">
               {searchQuery.trim()
                 ? "No ideas match your search."
-                : statusFilter !== "all"
-                  ? `No ${STATUS_OPTIONS.find((o) => o.value === statusFilter)?.label?.toLowerCase() ?? statusFilter} ideas yet.`
-                  : "No ideas match the current filters."}
+                : activeFilterCount > 0
+                  ? "No ideas match the current filters."
+                  : `No ${STATUS_TABS.find((t) => t.id === statusTab)?.label.toLowerCase() ?? statusTab} ideas yet.`}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -615,10 +668,15 @@ export function ArticleIdeasPage() {
                       </TableCell>
                       <TableCell className="py-2.5 pr-3 text-right text-slate-600">
                         {idea.article_count > 0 ? (
-                          <span className="inline-flex items-center gap-1">
-                            <FileText size={12} className="text-slate-400" />
+                          <Link
+                            to={`/article-ideas/${idea.id}`}
+                            className="inline-flex items-center justify-end gap-1 font-medium text-ocean hover:underline"
+                            title="View linked articles on idea detail"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <FileText size={12} className="text-ocean/70" />
                             {idea.article_count}
-                          </span>
+                          </Link>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}

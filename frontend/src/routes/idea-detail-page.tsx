@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -43,6 +43,7 @@ import {
   type ArticleDraftProgressEvent,
 } from "../lib/run-article-draft-stream";
 import { defaultDraftSlugHint } from "../lib/seo-slug";
+import { useStoreInfo } from "../hooks/use-store-info";
 import {
   articleIdeasPayloadSchema,
   blogShopifyIdSchema,
@@ -89,6 +90,8 @@ export function IdeaDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const numericId = Number(ideaId);
+  const storeInfoQuery = useStoreInfo();
+  const authorFieldTouchedRef = useRef(false);
 
   // Fetch all ideas to find the one we need (lightweight — cached from list page)
   const ideasQuery = useQuery({
@@ -131,24 +134,47 @@ export function IdeaDetailPage() {
 
   function openDraftModal() {
     if (!idea) return;
+    authorFieldTouchedRef.current = false;
     setDraftProgressEvents([]);
     setDraftModalStep(1);
     const keywords = [idea.primary_keyword, ...idea.supporting_keywords]
       .filter(Boolean)
       .join(", ");
+    const defaultAuthor = storeInfoQuery.data?.store_name?.trim() ?? "";
     setDraftForm({
       blog_id: "",
       blog_handle: "",
       topic: idea.suggested_title,
       keywords,
       slug: defaultDraftSlugHint(idea.suggested_title, keywords),
-      author_name: "",
+      author_name: defaultAuthor,
       angle_label: "",
     });
     setSlugTouched(false);
     setDraftError("");
     setDraftModalOpen(true);
   }
+
+  // If store name loads after the modal opens, fill author once (until the user edits the field).
+  useEffect(() => {
+    if (!draftModalOpen || draftModalStep !== 1 || authorFieldTouchedRef.current) return;
+    const name = storeInfoQuery.data?.store_name?.trim();
+    if (!name) return;
+    setDraftForm((f) => {
+      if (f.author_name.trim() !== "") return f;
+      return { ...f, author_name: name };
+    });
+  }, [draftModalOpen, draftModalStep, storeInfoQuery.data?.store_name]);
+
+  useEffect(() => {
+    if (!draftModalOpen || draftModalStep !== 1) return;
+    const blogs = blogsQuery.data;
+    if (!blogs || blogs.length !== 1 || !blogs[0]?.id) return;
+    setDraftForm((f) => {
+      if (f.blog_id.trim()) return f;
+      return { ...f, blog_id: blogs[0].id, blog_handle: blogs[0].handle ?? "" };
+    });
+  }, [draftModalOpen, draftModalStep, blogsQuery.data]);
 
   async function submitDraft() {
     if (!idea) return;
@@ -757,11 +783,16 @@ export function IdeaDetailPage() {
                 </Label>
                 <Input
                   id="idea-draft-author"
-                  placeholder="Your brand"
-                  value={draftForm.author_name}
-                  onChange={(e) =>
-                    setDraftForm((f) => ({ ...f, author_name: e.target.value }))
+                  placeholder={
+                    storeInfoQuery.data?.store_name?.trim()
+                      ? `Defaults to ${storeInfoQuery.data.store_name.trim()}`
+                      : "Store name from settings"
                   }
+                  value={draftForm.author_name}
+                  onChange={(e) => {
+                    authorFieldTouchedRef.current = true;
+                    setDraftForm((f) => ({ ...f, author_name: e.target.value }));
+                  }}
                 />
               </div>
 

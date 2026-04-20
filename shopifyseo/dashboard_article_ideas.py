@@ -481,7 +481,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             """
             SELECT primary_keyword
             FROM article_ideas
-            WHERE status IN ('idea', 'approved', 'drafting', 'published')
+            WHERE status IN ('idea', 'approved', 'published')
               AND primary_keyword != ''
             ORDER BY created_at DESC
             LIMIT 50
@@ -729,13 +729,12 @@ def link_idea_to_article(
            VALUES (?, ?, ?, ?, ?, ?)""",
         (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, int(_time.time())),
     )
-    # Legacy columns: keep first article for backward compat; move lifecycle to drafting when linked
+    # Legacy columns: keep first article for backward compat. Do not change status — approved ideas stay approved.
     conn.execute(
         """UPDATE article_ideas
            SET linked_article_handle = CASE WHEN linked_article_handle = '' THEN ? ELSE linked_article_handle END,
                linked_blog_handle = CASE WHEN linked_blog_handle = '' THEN ? ELSE linked_blog_handle END,
-               shopify_article_id = CASE WHEN shopify_article_id = '' THEN ? ELSE shopify_article_id END,
-               status = 'drafting'
+               shopify_article_id = CASE WHEN shopify_article_id = '' THEN ? ELSE shopify_article_id END
            WHERE id = ?""",
         (article_handle, blog_handle, shopify_article_id, idea_id),
     )

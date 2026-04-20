@@ -9,8 +9,13 @@ from backend.app.services.keyword_research import (
     merge_with_existing,
     normalize_opportunity_scores,
 )
-from backend.app.services.keyword_research.keyword_db import TARGET_KEY, load_target_keywords
+from backend.app.services.keyword_research.keyword_db import (
+    TARGET_KEY,
+    load_approved_keywords,
+    load_target_keywords,
+)
 from shopifyseo.dashboard_google import get_service_setting
+from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 def test_compute_opportunity_low_difficulty_high_volume():
@@ -292,3 +297,113 @@ def test_load_target_keywords_null_blob_returns_empty():
     conn.commit()
     data = load_target_keywords(conn)
     assert data == {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+
+
+def _make_keyword_metrics_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+    return conn
+
+
+def _insert_keyword_metric(conn: sqlite3.Connection, **fields) -> None:
+    import json as _json
+    row = {
+        "keyword": "",
+        "volume": 0,
+        "difficulty": 0,
+        "traffic_potential": 0,
+        "cpc": 0.0,
+        "intent": "informational",
+        "content_type_label": "Blog / Guide",
+        "intent_raw": "{}",
+        "parent_topic": None,
+        "opportunity": 0.0,
+        "seed_keywords": "[]",
+        "ranking_status": "not_ranking",
+        "gsc_position": None,
+        "gsc_clicks": None,
+        "gsc_impressions": None,
+        "status": "new",
+        "updated_at": 0,
+        "cps": None,
+        "serp_features": None,
+        "content_format_hint": "",
+    }
+    row.update(fields)
+    for k in ("intent_raw", "seed_keywords", "serp_features"):
+        if row[k] is not None and not isinstance(row[k], str):
+            row[k] = _json.dumps(row[k])
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join("?" for _ in row)
+    conn.execute(
+        f"INSERT INTO keyword_metrics ({cols}) VALUES ({placeholders})",
+        tuple(row.values()),
+    )
+    conn.commit()
+
+
+def test_load_approved_keywords_filters_by_status():
+    conn = _make_keyword_metrics_db()
+    _insert_keyword_metric(conn, keyword="kw-new", status="new", volume=100)
+    _insert_keyword_metric(conn, keyword="kw-approved", status="approved", volume=200)
+    _insert_keyword_metric(conn, keyword="kw-dismissed", status="dismissed", volume=300)
+
+    items = load_approved_keywords(conn)
+
+    assert [i["keyword"] for i in items] == ["kw-approved"]
+    assert items[0]["volume"] == 200
+
+
+def test_load_approved_keywords_parses_json_columns():
+    conn = _make_keyword_metrics_db()
+    _insert_keyword_metric(
+        conn,
+        keyword="vape pen",
+        status="approved",
+        intent_raw={"commercial": True, "informational": False},
+        seed_keywords=["vape", "pen"],
+        serp_features={"featured_snippet": 1, "people_also_ask": 2},
+    )
+
+    items = load_approved_keywords(conn)
+    assert len(items) == 1
+    kw = items[0]
+    assert kw["intent_raw"] == {"commercial": True, "informational": False}
+    assert kw["seed_keywords"] == ["vape", "pen"]
+    assert kw["serp_features"] == {"featured_snippet": 1, "people_also_ask": 2}
+
+
+def test_load_approved_keywords_aliases_content_type_label():
+    """Clustering code expects `content_type`, DB column is `content_type_label`."""
+    conn = _make_keyword_metrics_db()
+    _insert_keyword_metric(
+        conn,
+        keyword="buy vape",
+        status="approved",
+        content_type_label="Product / Collection page",
+    )
+
+    items = load_approved_keywords(conn)
+    assert items[0]["content_type"] == "Product / Collection page"
+
+
+def test_load_approved_keywords_empty_db():
+    conn = _make_keyword_metrics_db()
+    assert load_approved_keywords(conn) == []
+
+
+def test_load_approved_keywords_survives_bad_json():
+    """Corrupt JSON in a column should not crash — keep the raw string."""
+    conn = _make_keyword_metrics_db()
+    conn.execute(
+        "INSERT INTO keyword_metrics (keyword, status, intent_raw, seed_keywords, serp_features) "
+        "VALUES (?, 'approved', ?, ?, ?)",
+        ("weird kw", "{not json", "[not json", "{also not json"),
+    )
+    conn.commit()
+
+    items = load_approved_keywords(conn)
+    assert len(items) == 1
+    # Bad JSON stays as string rather than raising
+    assert isinstance(items[0]["intent_raw"], str)

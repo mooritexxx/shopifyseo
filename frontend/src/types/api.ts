@@ -674,6 +674,24 @@ export const contentDetailSchema = z.object({
   gsc_queries: z.array(gscQueryRowSchema).default([])
 });
 
+/** Shared row shape for PageSpeed + multi-service sync queue tables (`*_queue_details`). */
+const syncQueueOutcomeSchema = z.enum(["downloaded", "skip_unchanged", "skip_304", "error"]);
+
+const syncQueueDetailRowSchema = z.object({
+  seq: z.coerce.number(),
+  object_type: z.string(),
+  handle: z.string(),
+  url: z.string(),
+  strategy: z.string().nullish().transform((s) => s ?? ""),
+  code: z.string(),
+  state: z.string(),
+  error: z.string().nullish().transform((s) => s ?? ""),
+  /** Catalog image warm only: worker fetch outcome. */
+  outcome: syncQueueOutcomeSchema.optional(),
+  http_status: z.number().optional(),
+  response_body: z.string().nullish().transform((s) => s ?? undefined)
+});
+
 export const statusSchema = z.object({
   job_id: z.string().optional().default(""),
   running: z.boolean(),
@@ -742,33 +760,29 @@ export const statusSchema = z.object({
   pagespeed_queue_inflight: z.number().optional().default(0),
   pagespeed_queue_baseline: z.number().optional().default(0),
   pagespeed_http_calls_last_60s: z.number().optional().default(0),
+  gsc_queue_details: z.array(syncQueueDetailRowSchema).optional().default([]),
+  ga4_queue_details: z.array(syncQueueDetailRowSchema).optional().default([]),
+  index_queue_details: z.array(syncQueueDetailRowSchema).optional().default([]),
+  shopify_queue_details: z.array(syncQueueDetailRowSchema).optional().default([]),
+  gsc_sync_slots_last_60s: z.number().optional().default(0),
+  ga4_sync_slots_last_60s: z.number().optional().default(0),
+  index_sync_slots_last_60s: z.number().optional().default(0),
   sync_events: z.array(z.object({
     at: z.number(),
     tag: z.string(),
     msg: z.string()
   })).optional().default([]),
   pagespeed_error_details: z.array(z.object({
-    seq: z.number().optional(),
+    seq: z.coerce.number().optional(),
     object_type: z.string(),
     handle: z.string(),
     url: z.string(),
-    strategy: z.string().optional().default(""),
-    error: z.string(),
+    strategy: z.string().nullish().transform((s) => s ?? ""),
+    error: z.string().nullish().transform((s) => s ?? ""),
     http_status: z.number().optional(),
-    response_body: z.string().optional()
+    response_body: z.string().nullish().transform((s) => s ?? undefined)
   })).optional().default([]),
-  pagespeed_queue_details: z.array(z.object({
-    seq: z.number(),
-    object_type: z.string(),
-    handle: z.string(),
-    url: z.string(),
-    strategy: z.string().optional().default(""),
-    code: z.string(),
-    state: z.string(),
-    error: z.string().optional().default(""),
-    http_status: z.number().optional(),
-    response_body: z.string().optional()
-  })).optional().default([]),
+  pagespeed_queue_details: z.array(syncQueueDetailRowSchema).optional().default([]),
   cancel_requested: z.boolean().optional().default(false),
   successes: z.number().optional().default(0),
   failures: z.number().optional().default(0),

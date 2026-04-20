@@ -40,6 +40,35 @@ def test_delete_search_console_overview_cache_clears_tier_a_types():
     assert conn.execute("SELECT COUNT(*) FROM google_api_cache").fetchone()[0] == 0
 
 
+def test_delete_search_console_overview_timeseries_only_keeps_tier_a_rows():
+    conn = sqlite3.connect(":memory:")
+    dg.ensure_google_cache_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO google_api_cache (
+          cache_key, cache_type, payload_json, fetched_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("ov-key", "search_console_overview", "{}", 1, 9_999_999_999),
+    )
+    conn.execute(
+        """
+        INSERT INTO google_api_cache (
+          cache_key, cache_type, payload_json, fetched_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        ("tier-key", "gsc_property_country", "{}", 1, 9_999_999_999),
+    )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM google_api_cache").fetchone()[0] == 2
+
+    dg.delete_search_console_overview_timeseries_only(conn)
+
+    assert conn.execute("SELECT COUNT(*) FROM google_api_cache").fetchone()[0] == 1
+    row = conn.execute("SELECT cache_type FROM google_api_cache").fetchone()
+    assert row[0] == "gsc_property_country"
+
+
 def test_refresh_gsc_property_breakdowns_for_site_skips_empty_url(monkeypatch):
     calls: list[str] = []
 

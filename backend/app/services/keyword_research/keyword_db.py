@@ -48,6 +48,34 @@ def load_target_keywords(conn: sqlite3.Connection) -> dict:
     return {**data, "items": clean, "total": len(clean)}
 
 
+_APPROVED_JSON_COLUMNS = ("intent_raw", "seed_keywords", "serp_features")
+
+
+def load_approved_keywords(conn: sqlite3.Connection) -> list[dict]:
+    """Return approved keywords from ``keyword_metrics`` as plain dicts.
+
+    Shape matches what the clustering pipeline consumes: JSON-encoded
+    columns are parsed back to Python objects, and ``content_type_label``
+    is aliased to ``content_type`` to match the JSON-blob vocabulary.
+    """
+    rows = conn.execute(
+        "SELECT * FROM keyword_metrics WHERE status = 'approved'"
+    ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        d = dict(row)
+        d["content_type"] = d.pop("content_type_label", None) or ""
+        for col in _APPROVED_JSON_COLUMNS:
+            val = d.get(col)
+            if isinstance(val, str) and val:
+                try:
+                    d[col] = json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        items.append(d)
+    return items
+
+
 def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: str) -> dict:
     data = load_target_keywords(conn)
     found = False

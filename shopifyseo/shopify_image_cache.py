@@ -125,16 +125,22 @@ class _WorkerOutcome:
     local_relpath: str | None = None
 
 
+CatalogImageFetchOutcome = _WorkerOutcome
+
+
 def _worker_fetch(
     image_id: str,
     url: str,
     norm_url: str,
     crow: dict[str, Any] | None,
     cache_root: Path,
+    *,
+    force_refresh: bool = False,
 ) -> _WorkerOutcome:
     session = requests.Session()
     try:
-        if crow:
+        # Force refresh: always re-download bytes (no HEAD etag short-circuit, no conditional GET).
+        if crow and not force_refresh:
             rel = crow["local_relpath"]
             path = cache_root / rel
             cr_etag = (crow.get("etag") or "").strip()
@@ -216,13 +222,27 @@ def warm_product_image_cache(
     *,
     max_workers: int = 6,
     progress_callback: Callable[[int, int], None] | None = None,
+    on_fetch_outcome: Callable[[CatalogImageFetchOutcome], None] | None = None,
+    queue_scope: str | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, int]:
     """After catalog sync: prune stale rows, then fetch/cache each distinct catalog image URL.
 
     Covers product gallery rows, collection/page/article images and inline HTML, and theme template URLs.
 
+    When ``force_refresh`` is true, every image is re-fetched with an unconditional GET (no ETag /
+    304 short paths). When false, unchanged remote files may be skipped via ``skip_unchanged`` /
+    ``skip_304``.
+
     ``progress_callback`` is invoked as ``(done, total)`` while network fetches complete
     (``done`` from 0 through ``total``). Also called once with ``(0, total)`` before fetches.
+
+    ``on_fetch_outcome``, when set, is called on the calling thread once per completed worker
+    fetch (including skips and errors), immediately after ``fut.result()`` — display hooks only.
+
+    When ``queue_scope`` is set (e.g. ``\"shopify\"``), the dashboard sync queue for that scope is
+    seeded with pending ``catalog_image`` rows and drained as each fetch completes (success rows
+    are removed; failures remain as errors).
 
     Returns counts: downloaded, skipped, errors, pruned.
     """
@@ -267,6 +287,15 @@ def warm_product_image_cache(
         conn.commit()
 
         total_fetch = len(work)
+        if queue_scope:
+            from shopifyseo.dashboard_actions import _sync_queue as _sq
+
+            _sq.sync_queue_reset(queue_scope)
+            if work:
+                _sq.sync_queue_seed(
+                    queue_scope,
+                    [("catalog_image", sid, norm) for sid, _, norm, _, _ in work],
+                )
         if progress_callback:
             progress_callback(0, total_fetch)
 
@@ -274,13 +303,22 @@ def warm_product_image_cache(
             item: tuple[str, str, str, dict[str, Any] | None, str],
         ) -> _WorkerOutcome:
             sid, url, norm, crow_d, root_s = item
-            return _worker_fetch(sid, url, norm, crow_d, Path(root_s))
+            return _worker_fetch(sid, url, norm, crow_d, Path(root_s), force_refresh=force_refresh)
 
         outcomes: list[_WorkerOutcome] = []
         with ThreadPoolExecutor(max_workers=max(1, max_workers)) as ex:
             futs = [ex.submit(run_one, w) for w in work]
             for fut in as_completed(futs):
-                outcomes.append(fut.result())
+                oc = fut.result()
+                outcomes.append(oc)
+                if queue_scope:
+                    rk = _sq.catalog_sync_row_key("catalog_image", oc.image_id, oc.norm_url)
+                    if oc.kind == "error":
+                        _sq.sync_queue_mark_done(queue_scope, rk, False, oc.error)
+                    else:
+                        _sq.sync_queue_mark_done(queue_scope, rk, True, pop_completed=True)
+                if on_fetch_outcome is not None:
+                    on_fetch_outcome(oc)
                 if progress_callback:
                     progress_callback(len(outcomes), total_fetch)
 

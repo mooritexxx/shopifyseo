@@ -7,7 +7,7 @@ import time
 from collections import deque
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,6 @@ from ._state import (
     IMAGE_CACHE_WORKERS,
     INDEX_SYNC_RATE_LIMIT_PER_MINUTE,
     INDEX_SYNC_WORKERS,
-    PAGESPEED_ERROR_DETAILS_MAX,
     PAGESPEED_RECENT_FETCH_WINDOW_SECONDS,
     PAGESPEED_SYNC_BATCH_PAUSE_SECONDS,
     PAGESPEED_SYNC_BATCH_SIZE,
@@ -53,8 +52,18 @@ from ._state import (
     clear_last_error,
     append_sync_event,
     clear_pagespeed_http_call_tracker,
+    clear_sync_rate_slot_trackers,
     record_last_error,
     record_pagespeed_http_api_call,
+    record_sync_rate_slot,
+)
+from ._sync_queue import (
+    catalog_sync_row_key,
+    sync_queue_mark_done,
+    sync_queue_mark_running,
+    sync_queue_reset,
+    sync_queue_reset_all,
+    sync_queue_seed,
 )
 from ..dashboard_http import HttpRequestError
 from ..exceptions import SyncCancelledError
@@ -164,6 +173,8 @@ def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: s
 def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -> None:
     started_at = int(time.time())
     clear_pagespeed_http_call_tracker()
+    clear_sync_rate_slot_trackers()
+    sync_queue_reset_all()
     SYNC_STATE.update(
         {
             "running": True,
@@ -226,6 +237,13 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "pagespeed_queue_completed": 0,
             "pagespeed_queue_inflight": 0,
             "pagespeed_http_calls_last_60s": 0,
+            "gsc_queue_details": [],
+            "ga4_queue_details": [],
+            "index_queue_details": [],
+            "shopify_queue_details": [],
+            "gsc_sync_slots_last_60s": 0,
+            "ga4_sync_slots_last_60s": 0,
+            "index_sync_slots_last_60s": 0,
             "sync_events": [],
             "pagespeed_error_details": [],
             "pagespeed_queue_details": [],
@@ -289,7 +307,13 @@ def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
             _sync_current(f"Shopify: catalog images {done}/{total}")
             _recompute_shopify_scoped_progress()
 
-        stats = warm_product_image_cache(Path(db_path), max_workers=IMAGE_CACHE_WORKERS, progress_callback=_progress)
+        stats = warm_product_image_cache(
+            Path(db_path),
+            max_workers=IMAGE_CACHE_WORKERS,
+            progress_callback=_progress,
+            queue_scope="shopify",
+            force_refresh=bool(SYNC_STATE.get("force_refresh")),
+        )
         return {
             "downloaded": int(stats.get("downloaded") or 0),
             "skipped": int(stats.get("skipped") or 0),
@@ -521,16 +545,25 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         gsc_pt = max(len(queue), 1)
         SYNC_STATE["gsc_progress_total"] = gsc_pt
         SYNC_STATE["gsc_progress_done"] = 0 if queue else gsc_pt
+        sync_queue_reset("gsc")
+        sync_queue_seed("gsc", queue)
         access_token = dg.get_google_access_token(conn)
-        rate_limiter = PerMinuteRateLimiter(GSC_SYNC_RATE_LIMIT_PER_MINUTE)
+        rate_limiter = PerMinuteRateLimiter(
+            GSC_SYNC_RATE_LIMIT_PER_MINUTE,
+            on_granted=lambda ts: record_sync_rate_slot("gsc", ts),
+        )
         progress_lock = threading.Lock()
 
         def _run_gsc_target(kind: str, handle: str, url: str) -> str:
             _raise_if_sync_cancelled()
+            rk = catalog_sync_row_key(kind, handle, url)
+            ok = False
+            err_msg: str | None = None
             worker_conn = _db_connect_for_actions(db_path)
             try:
                 rate_limiter.acquire(_raise_if_sync_cancelled)
                 _raise_if_sync_cancelled()
+                sync_queue_mark_running("gsc", rk)
                 dg.get_search_console_url_detail(
                     worker_conn,
                     url,
@@ -541,9 +574,14 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
                     access_token_override=access_token,
                     gsc_period="mtd",
                 )
+                ok = True
                 return "refreshed"
+            except Exception as exc:
+                err_msg = str(exc) or "request failed"
+                raise
             finally:
                 worker_conn.close()
+                sync_queue_mark_done("gsc", rk, ok, err_msg, pop_completed=ok)
 
         with ThreadPoolExecutor(max_workers=GSC_SYNC_WORKERS) as executor:
             future_to_target = {
@@ -571,6 +609,10 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         if touched_targets:
             refresh_gsc_signal_data_for_objects(conn, touched_targets)
     finally:
+        try:
+            dg.delete_search_console_overview_timeseries_only(conn)
+        except Exception:
+            logger.exception("Failed to invalidate GSC overview timeseries cache after bulk GSC sync")
         conn.close()
     return summary
 
@@ -624,14 +666,23 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         SYNC_STATE["ga4_progress_total"] = ga4_pt
         SYNC_STATE["ga4_progress_done"] = 0
 
-        rate_limiter = PerMinuteRateLimiter(GA4_SYNC_RATE_LIMIT_PER_MINUTE)
+        sync_queue_reset("ga4")
+        sync_queue_seed("ga4", queue)
+        rate_limiter = PerMinuteRateLimiter(
+            GA4_SYNC_RATE_LIMIT_PER_MINUTE,
+            on_granted=lambda ts: record_sync_rate_slot("ga4", ts),
+        )
 
         def _run_ga4_target(kind: str, handle: str, url: str) -> str:
             _raise_if_sync_cancelled()
+            rk = catalog_sync_row_key(kind, handle, url)
+            ok = False
+            err_msg: str | None = None
             worker_conn = _db_connect_for_actions(db_path)
             try:
                 rate_limiter.acquire(_raise_if_sync_cancelled)
                 _raise_if_sync_cancelled()
+                sync_queue_mark_running("ga4", rk)
                 try:
                     dg.get_ga4_url_detail(
                         worker_conn,
@@ -642,10 +693,13 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
                     )
                 except Exception as exc:
                     logger.warning("GA4 per-URL fetch failed for %s %s: %s", kind or "(path)", handle or url, exc)
+                    err_msg = str(exc) or "request failed"
                     return "error"
+                ok = True
                 return "refreshed"
             finally:
                 worker_conn.close()
+                sync_queue_mark_done("ga4", rk, ok, err_msg, pop_completed=ok)
 
         if qn == 0:
             SYNC_STATE["ga4_progress_done"] = 1
@@ -707,18 +761,34 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         idx_pt = max(len(targets), 1)
         SYNC_STATE["index_progress_total"] = idx_pt
         SYNC_STATE["index_progress_done"] = 0
-        rate_limiter = PerMinuteRateLimiter(INDEX_SYNC_RATE_LIMIT_PER_MINUTE)
+        sync_queue_reset("index")
+        sync_queue_seed("index", list(targets))
+        rate_limiter = PerMinuteRateLimiter(
+            INDEX_SYNC_RATE_LIMIT_PER_MINUTE,
+            on_granted=lambda ts: record_sync_rate_slot("index", ts),
+        )
         progress_lock = threading.Lock()
 
         def _run_index_target(kind: str, handle: str, url: str) -> None:
             _raise_if_sync_cancelled()
+            rk = catalog_sync_row_key(kind, handle, url)
+            ok = False
+            err_msg: str | None = None
+            worker_conn: sqlite3.Connection | None = None
             rate_limiter.acquire(_raise_if_sync_cancelled)
             _raise_if_sync_cancelled()
-            worker_conn = _db_connect_for_actions(db_path)
+            sync_queue_mark_running("index", rk)
             try:
+                worker_conn = _db_connect_for_actions(db_path)
                 dg.get_url_inspection(worker_conn, url, refresh=True, object_type=kind, object_handle=handle)
+                ok = True
+            except Exception as exc:
+                err_msg = str(exc) or "request failed"
+                raise
             finally:
-                worker_conn.close()
+                if worker_conn is not None:
+                    worker_conn.close()
+                sync_queue_mark_done("index", rk, ok, err_msg, pop_completed=ok)
 
         with ThreadPoolExecutor(max_workers=INDEX_SYNC_WORKERS) as executor:
             future_to_target = {
@@ -1163,7 +1233,7 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     row_d["response_body"] = rb
                 rows_out.append(row_d)
 
-            SYNC_STATE["pagespeed_queue_details"] = rows_out[:PAGESPEED_ERROR_DETAILS_MAX]
+            SYNC_STATE["pagespeed_queue_details"] = rows_out
 
         def _register_extra_queued_jobs(n: int) -> None:
             if n <= 0:
@@ -1412,14 +1482,28 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             )
             result["shopify"] = {}
             result["shopify"]["products"] = sync_products(
-                db_path, 50, progress_callback=_shopify_progress, products=disc.products
+                db_path,
+                50,
+                progress_callback=_shopify_progress,
+                products=disc.products,
+                queue_scope="shopify",
             )
             _raise_if_sync_cancelled()
             result["shopify"]["collections"] = sync_collections(
-                db_path, 50, progress_callback=_shopify_progress, collections=disc.collections
+                db_path,
+                50,
+                progress_callback=_shopify_progress,
+                collections=disc.collections,
+                queue_scope="shopify",
             )
             _raise_if_sync_cancelled()
-            result["shopify"]["pages"] = sync_pages(db_path, 50, progress_callback=_shopify_progress, pages=disc.pages)
+            result["shopify"]["pages"] = sync_pages(
+                db_path,
+                50,
+                progress_callback=_shopify_progress,
+                pages=disc.pages,
+                queue_scope="shopify",
+            )
             _raise_if_sync_cancelled()
             result["shopify"]["blogs"] = sync_blogs(
                 db_path,
@@ -1428,6 +1512,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 blogs=disc.blogs,
                 articles_by_blog_id=disc.articles_by_blog_id,
                 blog_articles_total_hint=disc.blog_articles_total,
+                queue_scope="shopify",
             )
             br = result["shopify"].get("blogs") or {}
             SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
@@ -1488,12 +1573,29 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
     return result
 
 
-def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None, force_refresh: bool = False) -> dict:
+def run_sync(
+    db_path: str,
+    scope: str,
+    selected_scopes: list[str] | None = None,
+    force_refresh: bool = False,
+    *,
+    already_prepared: bool = False,
+) -> dict:
+    """Run a dashboard sync.
+
+    ``already_prepared`` is used by the background worker: ``start_sync_background`` resets
+    ``SYNC_STATE`` (including ``running=True``) on the request thread *before* spawning the
+    worker so ``POST /api/sync`` can return a payload that already reflects an in-flight run.
+    """
     with SYNC_LOCK:
-        normalized_scope, normalized_selected_scopes = _normalize_sync_scopes(scope, selected_scopes)
-        _reset_sync_progress(_sync_label(normalized_scope, normalized_selected_scopes), normalized_selected_scopes)
-        SYNC_STATE["force_refresh"] = bool(force_refresh)
-        clear_last_error()
+        if not already_prepared:
+            normalized_scope, normalized_selected_scopes = _normalize_sync_scopes(scope, selected_scopes)
+            _reset_sync_progress(_sync_label(normalized_scope, normalized_selected_scopes), normalized_selected_scopes)
+            SYNC_STATE["force_refresh"] = bool(force_refresh)
+            clear_last_error()
+        else:
+            normalized_scope = scope
+            normalized_selected_scopes = list(selected_scopes or [])
         try:
             _raise_if_sync_cancelled()
             if normalized_scope == "products":
@@ -1505,13 +1607,20 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing product catalog snapshot",
                 )
-                result = {"products": sync_products(db_path, 50, progress_callback=lambda kind, done, total: (
-                    _raise_if_sync_cancelled(),
-                    SYNC_STATE.__setitem__("products_synced", done),
-                    SYNC_STATE.__setitem__("products_total", total),
-                    SYNC_STATE.__setitem__("current", f"Shopify products: {done}/{total}"),
-                    _recompute_shopify_scoped_progress(),
-                ))}
+                result = {
+                    "products": sync_products(
+                        db_path,
+                        50,
+                        progress_callback=lambda kind, done, total: (
+                            _raise_if_sync_cancelled(),
+                            SYNC_STATE.__setitem__("products_synced", done),
+                            SYNC_STATE.__setitem__("products_total", total),
+                            SYNC_STATE.__setitem__("current", f"Shopify products: {done}/{total}"),
+                            _recompute_shopify_scoped_progress(),
+                        ),
+                        queue_scope="shopify",
+                    )
+                }
                 SYNC_STATE["images_total"] = count_catalog_images_for_cache(Path(db_path))
                 SYNC_STATE["images_synced"] = 0
                 _recompute_shopify_scoped_progress()
@@ -1529,13 +1638,20 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing collection snapshot",
                 )
-                result = {"collections": sync_collections(db_path, 50, progress_callback=lambda kind, done, total: (
-                    _raise_if_sync_cancelled(),
-                    SYNC_STATE.__setitem__("collections_synced", done),
-                    SYNC_STATE.__setitem__("collections_total", total),
-                    SYNC_STATE.__setitem__("current", f"Shopify collections: {done}/{total}"),
-                    _recompute_shopify_scoped_progress(),
-                ))}
+                result = {
+                    "collections": sync_collections(
+                        db_path,
+                        50,
+                        progress_callback=lambda kind, done, total: (
+                            _raise_if_sync_cancelled(),
+                            SYNC_STATE.__setitem__("collections_synced", done),
+                            SYNC_STATE.__setitem__("collections_total", total),
+                            SYNC_STATE.__setitem__("current", f"Shopify collections: {done}/{total}"),
+                            _recompute_shopify_scoped_progress(),
+                        ),
+                        queue_scope="shopify",
+                    )
+                }
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             elif normalized_scope == "pages":
                 _set_sync_stage(
@@ -1546,13 +1662,20 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                     step_total=1,
                     current="Refreshing page snapshot",
                 )
-                result = {"pages": sync_pages(db_path, 50, progress_callback=lambda kind, done, total: (
-                    _raise_if_sync_cancelled(),
-                    SYNC_STATE.__setitem__("pages_synced", done),
-                    SYNC_STATE.__setitem__("pages_total", total),
-                    SYNC_STATE.__setitem__("current", f"Shopify pages: {done}/{total}"),
-                    _recompute_shopify_scoped_progress(),
-                ))}
+                result = {
+                    "pages": sync_pages(
+                        db_path,
+                        50,
+                        progress_callback=lambda kind, done, total: (
+                            _raise_if_sync_cancelled(),
+                            SYNC_STATE.__setitem__("pages_synced", done),
+                            SYNC_STATE.__setitem__("pages_total", total),
+                            SYNC_STATE.__setitem__("current", f"Shopify pages: {done}/{total}"),
+                            _recompute_shopify_scoped_progress(),
+                        ),
+                        queue_scope="shopify",
+                    )
+                }
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             elif normalized_scope == "blogs":
                 _set_sync_stage(
@@ -1576,7 +1699,14 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
                         _sync_current(f"Shopify blog articles: {done}/{total}")
                     _recompute_shopify_scoped_progress()
 
-                result = {"blogs": sync_blogs(db_path, 50, progress_callback=_blogs_only_progress)}
+                result = {
+                    "blogs": sync_blogs(
+                        db_path,
+                        50,
+                        progress_callback=_blogs_only_progress,
+                        queue_scope="shopify",
+                    )
+                }
                 br = result.get("blogs") or {}
                 SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
                 SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_total") or br.get("blog_articles_synced") or 0)
@@ -1660,12 +1790,23 @@ def run_sync(db_path: str, scope: str, selected_scopes: list[str] | None = None,
 
 
 def start_sync_background(db_path: str, scope: str, selected_scopes: list[str] | None = None, force_refresh: bool = False) -> bool:
-    if SYNC_STATE["running"]:
-        return False
+    with SYNC_LOCK:
+        if SYNC_STATE["running"]:
+            return False
+        normalized_scope, normalized_selected_scopes = _normalize_sync_scopes(scope, selected_scopes)
+        _reset_sync_progress(_sync_label(normalized_scope, normalized_selected_scopes), normalized_selected_scopes)
+        SYNC_STATE["force_refresh"] = bool(force_refresh)
+        clear_last_error()
 
     def worker():
         try:
-            run_sync(db_path, scope, selected_scopes, force_refresh=force_refresh)
+            run_sync(
+                db_path,
+                normalized_scope,
+                normalized_selected_scopes,
+                force_refresh,
+                already_prepared=True,
+            )
         except Exception:
             logger.exception("Background sync worker exited with an exception")
 

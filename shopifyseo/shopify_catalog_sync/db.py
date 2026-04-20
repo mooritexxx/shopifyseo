@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..shopify_admin import graphql_post, graphql_request
+from ..sqlite_utf8 import configure_sqlite_text_decode
 from .queries import (
     PRODUCTS_QUERY,
     PRODUCT_QUERY,
@@ -449,6 +450,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    configure_sqlite_text_decode(conn)
     ensure_schema(conn)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")

@@ -100,6 +100,7 @@ def sync_collections(
     progress_callback=None,
     *,
     collections: list[dict] | None = None,
+    queue_scope: str | None = None,
 ) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
@@ -114,33 +115,64 @@ def sync_collections(
         collection_count = 0
         metafield_count = 0
         membership_count = 0
-        for collection in collections:
-            metafield_count += upsert_collection(conn, collection, synced_at)
-            replace_collection_children(conn, "collection_products", collection["id"])
-            products = fetch_collection_products(collection["id"], 250)
-            conn.executemany(
-                """
-                INSERT INTO collection_products (
-                  collection_shopify_id,
-                  product_shopify_id,
-                  product_handle,
-                  product_title,
-                  synced_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
+
+        if queue_scope:
+            from shopifyseo.dashboard_actions import _sync_queue as _sq
+
+            _sq.sync_queue_seed(
+                queue_scope,
                 [
-                    (
-                        collection["id"],
-                        product["id"],
-                        product.get("handle") or "",
-                        product.get("title") or "",
-                        synced_at,
-                    )
-                    for product in products
+                    ("collection", str(c.get("id") or "").strip(), (c.get("handle") or "")[:200])
+                    for c in collections
+                    if str(c.get("id") or "").strip()
                 ],
             )
-            membership_count += len(products)
-            collection_count += 1
+
+        for collection in collections:
+            cid = str(collection.get("id") or "").strip()
+            rk = (
+                _sq.catalog_sync_row_key("collection", cid, (collection.get("handle") or "")[:200])
+                if queue_scope and cid
+                else ""
+            )
+            if queue_scope and cid:
+                _sq.sync_queue_mark_running(queue_scope, rk)
+            ok = True
+            err_msg: str | None = None
+            try:
+                metafield_count += upsert_collection(conn, collection, synced_at)
+                replace_collection_children(conn, "collection_products", collection["id"])
+                products = fetch_collection_products(collection["id"], 250)
+                conn.executemany(
+                    """
+                    INSERT INTO collection_products (
+                      collection_shopify_id,
+                      product_shopify_id,
+                      product_handle,
+                      product_title,
+                      synced_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            collection["id"],
+                            product["id"],
+                            product.get("handle") or "",
+                            product.get("title") or "",
+                            synced_at,
+                        )
+                        for product in products
+                    ],
+                )
+                membership_count += len(products)
+                collection_count += 1
+            except Exception as exc:
+                ok = False
+                err_msg = str(exc)
+                raise
+            finally:
+                if queue_scope and cid:
+                    _sq.sync_queue_mark_done(queue_scope, rk, ok, err_msg, pop_completed=ok)
             if progress_callback is not None:
                 progress_callback("collections", collection_count, len(collections))
         conn.commit()

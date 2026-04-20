@@ -33,6 +33,7 @@ import { cn, formatRelativeTimestamp } from "../../lib/utils";
 import { getJson, postJson } from "../../lib/api";
 import { settingsSchema, statusSchema, summarySchema } from "../../types/api";
 import { SyncDrawer, type SyncDrawerMode } from "./sync/sync-drawer";
+import { selectSyncQueueView } from "./sync/select-sync-queue-view";
 import { SyncPill } from "./sync/sync-pill";
 import {
   SYNC_PIPELINE_SUBTITLE,
@@ -305,7 +306,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const rawSyncError = (syncStatus?.last_error || "").trim();
   const syncErrorParts = useMemo(() => splitSyncError(rawSyncError), [rawSyncError]);
   const showSyncErrorPanel = !syncRunning && Boolean(rawSyncError);
-  const pagespeedQueueDetails = syncStatus?.pagespeed_queue_details || [];
+  const syncQueueView = useMemo(() => selectSyncQueueView(syncStatus ?? undefined), [syncStatus]);
 
   const syncAccent = "oklch(0.62 0.18 262)";
 
@@ -347,13 +348,15 @@ export function AppShell({ children }: PropsWithChildren) {
     if (!syncRunning || !syncStatus) return undefined;
     const scope = (effectiveActiveScope || "").toLowerCase();
     const stage = (syncStatus.stage || "").toLowerCase();
+    const selectedTouchesShopify = activeSelectedScopes.some((s) => scopeBelongsToShopifyService((s || "").toLowerCase()));
     const shopifyPhase =
       scopeBelongsToShopifyService(scope) ||
       stage === "syncing_shopify" ||
       stage === "syncing_products" ||
       stage === "syncing_collections" ||
       stage === "syncing_pages" ||
-      stage === "syncing_blogs";
+      stage === "syncing_blogs" ||
+      (stage === "starting" && selectedTouchesShopify);
     if (!shopifyPhase) return undefined;
     return [
       { label: "Products", synced: syncStatus.products_synced ?? 0, total: syncStatus.products_total ?? 0 },
@@ -363,7 +366,7 @@ export function AppShell({ children }: PropsWithChildren) {
       { label: "Articles", synced: syncStatus.blog_articles_synced ?? 0, total: syncStatus.blog_articles_total ?? 0 },
       { label: "Images", synced: syncStatus.images_synced ?? 0, total: syncStatus.images_total ?? 0 }
     ];
-  }, [syncRunning, syncStatus, effectiveActiveScope]);
+  }, [syncRunning, syncStatus, effectiveActiveScope, activeSelectedScopes]);
 
   const pipelineFraction = useMemo(() => {
     const n = Math.max(orderedScopes.length || selectedScopes.length, 1);
@@ -494,7 +497,8 @@ export function AppShell({ children }: PropsWithChildren) {
             title: activeStageLabel,
             subtitle: runningHeroSubtitle,
             elapsed: elapsedLabel || "00:00",
-            psiHttpCallsLast60s: syncStatus?.pagespeed_http_calls_last_60s ?? 0
+            throughputLast60s: syncQueueView.throughputLast60s,
+            throughputMetricTitle: syncQueueView.throughputMetricTitle
           }
         : undefined,
     shopifyBreakdown,
@@ -528,7 +532,8 @@ export function AppShell({ children }: PropsWithChildren) {
     eventLines: eventLogLines,
     showChangesGrid: drawerMode === "done",
     changeCards,
-    pagespeedQueueDetails,
+    activeQueueItems: syncQueueView.queueItems,
+    streamPanelResetKey: syncStatus?.started_at ?? 0,
     rawSyncError,
     errorSummary: syncErrorParts.summary || "",
     errorDetails: syncErrorParts.details,

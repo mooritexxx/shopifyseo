@@ -348,6 +348,7 @@ def sync_products(
     progress_callback=None,
     *,
     products: list[dict] | None = None,
+    queue_scope: str | None = None,
 ) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
@@ -386,24 +387,54 @@ def sync_products(
         image_count = 0
         metafield_count = 0
 
-        for product in products:
-            v_count, i_count, m_count = upsert_product(conn, product, synced_at)
-            product_count += 1
-            variant_count += v_count
-            image_count += i_count
-            metafield_count += m_count
-            resolve_product_metaobject_labels(
-                conn,
-                product["id"],
-                {
-                    "battery_type_refs_json": metafield_reference_json(product, "shopify", "battery-type"),
-                    "coil_connection_refs_json": metafield_reference_json(product, "shopify", "coil-connection"),
-                    "color_pattern_refs_json": metafield_reference_json(product, "shopify", "color-pattern"),
-                    "vaporizer_style_refs_json": metafield_reference_json(product, "shopify", "e-cigarette-vaporizer-style"),
-                    "e_liquid_flavor_refs_json": metafield_reference_json(product, "shopify", "e-liquid-flavor"),
-                    "vaping_style_refs_json": metafield_reference_json(product, "shopify", "vaping-style"),
-                },
+        if queue_scope:
+            from shopifyseo.dashboard_actions import _sync_queue as _sq
+
+            _sq.sync_queue_seed(
+                queue_scope,
+                [
+                    ("product", str(p.get("id") or "").strip(), (p.get("handle") or "")[:200])
+                    for p in products
+                    if str(p.get("id") or "").strip()
+                ],
             )
+
+        for product in products:
+            pid = str(product.get("id") or "").strip()
+            rk = (
+                _sq.catalog_sync_row_key("product", pid, (product.get("handle") or "")[:200])
+                if queue_scope and pid
+                else ""
+            )
+            if queue_scope and pid:
+                _sq.sync_queue_mark_running(queue_scope, rk)
+            ok = True
+            err_msg: str | None = None
+            try:
+                v_count, i_count, m_count = upsert_product(conn, product, synced_at)
+                product_count += 1
+                variant_count += v_count
+                image_count += i_count
+                metafield_count += m_count
+                resolve_product_metaobject_labels(
+                    conn,
+                    product["id"],
+                    {
+                        "battery_type_refs_json": metafield_reference_json(product, "shopify", "battery-type"),
+                        "coil_connection_refs_json": metafield_reference_json(product, "shopify", "coil-connection"),
+                        "color_pattern_refs_json": metafield_reference_json(product, "shopify", "color-pattern"),
+                        "vaporizer_style_refs_json": metafield_reference_json(product, "shopify", "e-cigarette-vaporizer-style"),
+                        "e_liquid_flavor_refs_json": metafield_reference_json(product, "shopify", "e-liquid-flavor"),
+                        "vaping_style_refs_json": metafield_reference_json(product, "shopify", "vaping-style"),
+                    },
+                )
+            except Exception as exc:
+                ok = False
+                err_msg = str(exc)
+                raise
+            finally:
+                if queue_scope and pid:
+                    _sq.sync_queue_mark_done(queue_scope, rk, ok, err_msg, pop_completed=ok)
             if progress_callback is not None:
                 progress_callback("products", product_count, len(products))
 

@@ -29,7 +29,7 @@ from shopifyseo.dashboard_actions import (
     start_ai_object_background,
     start_sync_background,
 )
-from shopifyseo.dashboard_actions._state import refresh_pagespeed_http_calls_window
+from shopifyseo.dashboard_actions._state import refresh_pagespeed_http_calls_window, refresh_sync_rate_slots_window
 import shopifyseo.dashboard_queries as dq
 import shopifyseo.dashboard_ai as dai
 import shopifyseo.dashboard_google as dg
@@ -357,6 +357,7 @@ def get_dashboard_summary(
 
 def get_sync_status() -> dict[str, Any]:
     refresh_pagespeed_http_calls_window()
+    refresh_sync_rate_slots_window()
     out = dict(SYNC_STATE)
     # Shallow copy can share the live ``sync_events`` list with mutating workers; snapshot for JSON.
     ev = out.get("sync_events")
@@ -365,6 +366,15 @@ def get_sync_status() -> dict[str, Any]:
     qd = out.get("pagespeed_queue_details")
     if isinstance(qd, list):
         out["pagespeed_queue_details"] = list(qd)
+    for key in (
+        "gsc_queue_details",
+        "ga4_queue_details",
+        "index_queue_details",
+        "shopify_queue_details",
+    ):
+        qx = out.get(key)
+        if isinstance(qx, list):
+            out[key] = list(qx)
     # Internal map for merging hints into queue rows; never expose to the client.
     out.pop("pagespeed_queue_meta", None)
     return out

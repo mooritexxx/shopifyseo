@@ -15,7 +15,7 @@ export function SyncEventStream({ lines, accent }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** When true, new log lines keep the view pinned to the latest entry. */
   const stickToBottomRef = useRef(true);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   const updateStickFromScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -43,7 +43,7 @@ export function SyncEventStream({ lines, accent }: Props) {
           collapsed ? "" : "border-b border-white/[0.06]"
         )}
         aria-expanded={!collapsed}
-        aria-controls="sync-event-stream-body"
+        aria-controls={collapsed ? undefined : "sync-event-stream-body"}
         onClick={() => setCollapsed((c) => !c)}
       >
         <span
@@ -64,32 +64,33 @@ export function SyncEventStream({ lines, accent }: Props) {
           {lines.length} events
         </span>
       </button>
-      <div
-        id="sync-event-stream-body"
-        ref={scrollRef}
-        role="region"
-        aria-labelledby="sync-event-stream-header"
-        hidden={collapsed}
-        onScroll={updateStickFromScroll}
-        className="sync-event-stream-mono max-h-[min(60vh,28rem)] overflow-y-auto px-3 py-1.5 text-[10.5px] leading-relaxed"
-      >
-        {lines.length === 0 ? (
-          <div className="py-1.5 text-white/35">waiting for events…</div>
-        ) : (
-          lines.map((l, i) => (
-            <div key={i} className="flex gap-2.5 text-white/75">
-              <span className="shrink-0 text-white/30">{l.t}</span>
-              <span
-                className="w-[70px] shrink-0 truncate pt-px text-[9.5px] font-semibold uppercase tracking-[0.05em]"
-                style={{ color: accent }}
-              >
-                {l.tag}
-              </span>
-              <span className="min-w-0 flex-1 break-all whitespace-pre-wrap">{l.msg}</span>
-            </div>
-          ))
-        )}
-      </div>
+      {!collapsed ? (
+        <div
+          id="sync-event-stream-body"
+          ref={scrollRef}
+          role="region"
+          aria-labelledby="sync-event-stream-header"
+          onScroll={updateStickFromScroll}
+          className="sync-event-stream-mono max-h-[min(60vh,28rem)] overflow-y-auto px-3 py-1.5 text-[10.5px] leading-relaxed"
+        >
+          {lines.length === 0 ? (
+            <div className="py-1.5 text-white/35">waiting for events…</div>
+          ) : (
+            lines.map((l, i) => (
+              <div key={i} className="flex gap-2.5 text-white/75">
+                <span className="shrink-0 text-white/30">{l.t}</span>
+                <span
+                  className="w-[70px] shrink-0 truncate pt-px text-[9.5px] font-semibold uppercase tracking-[0.05em]"
+                  style={{ color: accent }}
+                >
+                  {l.tag}
+                </span>
+                <span className="min-w-0 flex-1 break-all whitespace-pre-wrap">{l.msg}</span>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

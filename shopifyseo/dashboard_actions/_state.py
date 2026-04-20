@@ -8,6 +8,7 @@ import uuid
 from collections import deque
 
 from ..exceptions import AICancelledError, SyncCancelledError
+from ..sqlite_utf8 import configure_sqlite_text_decode
 
 from ._rpm_limiter import PerMinuteRateLimiter
 
@@ -119,6 +120,13 @@ SYNC_STATE = {
     "pagespeed_queue_completed": 0,
     "pagespeed_queue_inflight": 0,
     "pagespeed_http_calls_last_60s": 0,
+    "gsc_queue_details": [],
+    "ga4_queue_details": [],
+    "index_queue_details": [],
+    "shopify_queue_details": [],
+    "gsc_sync_slots_last_60s": 0,
+    "ga4_sync_slots_last_60s": 0,
+    "index_sync_slots_last_60s": 0,
     "sync_events": [],
     "pagespeed_error_details": [],
     "pagespeed_queue_details": [],
@@ -131,6 +139,12 @@ SYNC_STATE = {
 
 # Monotonic timestamps of each granted runPagespeed HTTP attempt (shared rate gate).
 _pagespeed_http_monotonic_times: deque[float] = deque()
+
+# Monotonic timestamps for GSC/GA4/Index per-minute limiter grants (display only).
+_sync_rate_slots_lock = threading.Lock()
+_gsc_rate_monotonic_times: deque[float] = deque()
+_ga4_rate_monotonic_times: deque[float] = deque()
+_index_rate_monotonic_times: deque[float] = deque()
 
 
 def _trim_pagespeed_http_times_unlocked(now: float) -> int:
@@ -165,6 +179,52 @@ def clear_pagespeed_http_call_tracker() -> None:
     with _pagespeed_http_times_lock:
         _pagespeed_http_monotonic_times.clear()
         SYNC_STATE["pagespeed_http_calls_last_60s"] = 0
+
+
+def _trim_rate_deque_unlocked(d: deque[float], now: float) -> int:
+    cutoff = now - PAGESPEED_HTTP_TRACK_WINDOW_SECONDS
+    while d and d[0] <= cutoff:
+        d.popleft()
+    return len(d)
+
+
+def record_sync_rate_slot(scope: str, monotonic_ts: float) -> None:
+    """Record one granted PerMinuteRateLimiter slot for sync status throughput (display only)."""
+    sc = (scope or "").strip().lower()
+    if sc not in ("gsc", "ga4", "index"):
+        return
+    with _sync_rate_slots_lock:
+        if sc == "gsc":
+            dq = _gsc_rate_monotonic_times
+            key = "gsc_sync_slots_last_60s"
+        elif sc == "ga4":
+            dq = _ga4_rate_monotonic_times
+            key = "ga4_sync_slots_last_60s"
+        else:
+            dq = _index_rate_monotonic_times
+            key = "index_sync_slots_last_60s"
+        _trim_rate_deque_unlocked(dq, monotonic_ts)
+        dq.append(monotonic_ts)
+        SYNC_STATE[key] = len(dq)
+
+
+def refresh_sync_rate_slots_window() -> None:
+    """Expire old rate-slot timestamps (call with sync-status reads)."""
+    now = time.monotonic()
+    with _sync_rate_slots_lock:
+        SYNC_STATE["gsc_sync_slots_last_60s"] = _trim_rate_deque_unlocked(_gsc_rate_monotonic_times, now)
+        SYNC_STATE["ga4_sync_slots_last_60s"] = _trim_rate_deque_unlocked(_ga4_rate_monotonic_times, now)
+        SYNC_STATE["index_sync_slots_last_60s"] = _trim_rate_deque_unlocked(_index_rate_monotonic_times, now)
+
+
+def clear_sync_rate_slot_trackers() -> None:
+    with _sync_rate_slots_lock:
+        _gsc_rate_monotonic_times.clear()
+        _ga4_rate_monotonic_times.clear()
+        _index_rate_monotonic_times.clear()
+        SYNC_STATE["gsc_sync_slots_last_60s"] = 0
+        SYNC_STATE["ga4_sync_slots_last_60s"] = 0
+        SYNC_STATE["index_sync_slots_last_60s"] = 0
 
 
 def append_sync_event(tag: str, msg: str) -> None:
@@ -298,6 +358,7 @@ def _raise_if_sync_cancelled() -> None:
 def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    configure_sqlite_text_decode(conn)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn

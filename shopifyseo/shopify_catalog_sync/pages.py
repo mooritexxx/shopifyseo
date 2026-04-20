@@ -62,6 +62,7 @@ def sync_pages(
     progress_callback=None,
     *,
     pages: list[dict] | None = None,
+    queue_scope: str | None = None,
 ) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
@@ -74,9 +75,36 @@ def sync_pages(
         if progress_callback is not None:
             progress_callback("pages", 0, len(pages))
         page_count = 0
+
+        if queue_scope:
+            from shopifyseo.dashboard_actions import _sync_queue as _sq
+
+            _sq.sync_queue_seed(
+                queue_scope,
+                [
+                    ("page", str(p.get("id") or "").strip(), (p.get("handle") or "")[:200])
+                    for p in pages
+                    if str(p.get("id") or "").strip()
+                ],
+            )
+
         for page in pages:
-            upsert_page(conn, page, synced_at)
-            page_count += 1
+            pid = str(page.get("id") or "").strip()
+            rk = _sq.catalog_sync_row_key("page", pid, (page.get("handle") or "")[:200]) if queue_scope and pid else ""
+            if queue_scope and pid:
+                _sq.sync_queue_mark_running(queue_scope, rk)
+            ok = True
+            err_msg: str | None = None
+            try:
+                upsert_page(conn, page, synced_at)
+                page_count += 1
+            except Exception as exc:
+                ok = False
+                err_msg = str(exc)
+                raise
+            finally:
+                if queue_scope and pid:
+                    _sq.sync_queue_mark_done(queue_scope, rk, ok, err_msg, pop_completed=ok)
             if progress_callback is not None:
                 progress_callback("pages", page_count, len(pages))
         enrich_pages_template_images(conn)

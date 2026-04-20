@@ -235,6 +235,7 @@ def sync_blogs(
     blogs: list[dict] | None = None,
     articles_by_blog_id: dict[str, list[dict]] | None = None,
     blog_articles_total_hint: int | None = None,
+    queue_scope: str | None = None,
 ) -> dict:
     conn = open_db(db_path)
     run_id = start_run(conn)
@@ -249,9 +250,55 @@ def sync_blogs(
         blog_count = 0
         article_count = 0
         t_meta_start = time.perf_counter()
+
+        if queue_scope:
+            from shopifyseo.dashboard_actions import _sync_queue as _sq
+
+            _sq.sync_queue_seed(
+                queue_scope,
+                [
+                    ("blog", str(b.get("id") or "").strip(), (b.get("handle") or "")[:200])
+                    for b in blogs
+                    if str(b.get("id") or "").strip()
+                ],
+            )
+
         for blog in blogs:
-            upsert_blog(conn, blog, synced_at)
-            replace_blog_articles(conn, blog["id"])
+            bid = str(blog.get("id") or "").strip()
+            bh = (blog.get("handle") or "")[:200]
+            rk_blog = _sq.catalog_sync_row_key("blog", bid, bh) if queue_scope and bid else ""
+            if queue_scope and bid:
+                _sq.sync_queue_mark_running(queue_scope, rk_blog)
+            ok_b = True
+            err_b: str | None = None
+            try:
+                upsert_blog(conn, blog, synced_at)
+                replace_blog_articles(conn, blog["id"])
+            except Exception as exc:
+                ok_b = False
+                err_b = str(exc)
+                raise
+            finally:
+                if queue_scope and bid:
+                    _sq.sync_queue_mark_done(queue_scope, rk_blog, ok_b, err_b, pop_completed=ok_b)
+
+        article_targets: list[tuple[str, str, str]] = []
+        for blog in blogs:
+            blog_handle = blog.get("handle") or ""
+            bid = str(blog.get("id") or "")
+            if articles_by_blog_id is not None:
+                articles = list(articles_by_blog_id.get(bid) or [])
+            else:
+                articles = fetch_all_articles_for_blog(blog["id"], page_size)
+            for article in articles:
+                aid = str(article.get("id") or "").strip()
+                if aid:
+                    article_targets.append(
+                        ("blog_article", aid, (article.get("title") or "")[:300])
+                    )
+        if queue_scope:
+            _sq.sync_queue_seed(queue_scope, article_targets)
+
         t_articles_start = time.perf_counter()
         for blog in blogs:
             blog_handle = blog.get("handle") or ""
@@ -267,8 +314,26 @@ def sync_blogs(
             if progress_callback is not None:
                 progress_callback("blog_articles", article_count, articles_total_known)
             for article in articles:
-                upsert_blog_article(conn, article, blog["id"], blog_handle, synced_at)
-                article_count += 1
+                aid = str(article.get("id") or "").strip()
+                rk_art = (
+                    _sq.catalog_sync_row_key("blog_article", aid, (article.get("title") or "")[:300])
+                    if queue_scope and aid
+                    else ""
+                )
+                if queue_scope and aid:
+                    _sq.sync_queue_mark_running(queue_scope, rk_art)
+                ok_a = True
+                err_a: str | None = None
+                try:
+                    upsert_blog_article(conn, article, blog["id"], blog_handle, synced_at)
+                    article_count += 1
+                except Exception as exc:
+                    ok_a = False
+                    err_a = str(exc)
+                    raise
+                finally:
+                    if queue_scope and aid:
+                        _sq.sync_queue_mark_done(queue_scope, rk_art, ok_a, err_a, pop_completed=ok_a)
                 if progress_callback is not None:
                     progress_callback("blog_articles", article_count, articles_total_known)
             blog_count += 1

@@ -5,15 +5,15 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Callable
 
-from shopifyseo.dashboard_google import get_service_setting
+from backend.app.services.keyword_research.keyword_db import load_approved_keywords
 from shopifyseo.dashboard_ai_engine_parts.generation import (
     _call_ai,
     _require_provider_credentials,
     ai_settings,
 )
 
+from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
-from ._storage import TARGET_KEY, load_clusters
 
 logger = logging.getLogger(__name__)
 
@@ -206,16 +206,9 @@ def generate_clusters(
         if on_progress:
             on_progress(msg)
 
-    # 1. Load approved target keywords
+    # 1. Load approved target keywords from keyword_metrics (source of truth).
     progress("Loading approved keywords…")
-    raw = get_service_setting(conn, TARGET_KEY, "{}")
-    try:
-        target_data = json.loads(raw)
-    except json.JSONDecodeError:
-        target_data = {}
-
-    all_items = target_data.get("items", [])
-    approved = [item for item in all_items if item.get("status") == "approved"]
+    approved = load_approved_keywords(conn)
 
     if not approved:
         raise RuntimeError("No approved keywords to cluster. Approve target keywords first.")
@@ -226,13 +219,23 @@ def generate_clusters(
     model = settings["generation_model"]
     _require_provider_credentials(settings, provider)
 
-    # 3. Group by parent_topic
-    groups, orphans = _group_by_parent_topic(approved)
+    # 3. Collapse embedding-similar near-duplicates into canonical+aliases so
+    #    the LLM sees a cleaner, smaller payload.
+    progress("Collapsing near-duplicate keywords…")
+    canonicals, alias_map = collapse_near_duplicates(approved, conn)
+    absorbed = sum(len(v) for v in alias_map.values())
+    if absorbed:
+        progress(
+            f"Collapsed {absorbed} alias(es) into {len(alias_map)} canonical(s)"
+        )
+
+    # 4. Group canonicals by parent_topic
+    groups, orphans = _group_by_parent_topic(canonicals)
     progress(
         f"Grouped by parent topic — {len(groups)} groups, {len(orphans)} orphans"
     )
 
-    # 4. Build prompt and call LLM
+    # 5. Build prompt and call LLM
     progress(f"Refining clusters with AI ({provider}/{model})…")
     from shopifyseo.market_context import get_primary_country_code, country_display_name
     _mkt_name = country_display_name(get_primary_country_code(conn))
@@ -251,11 +254,23 @@ def generate_clusters(
         stage="clustering",
     )
 
-    # 5. Compute stats per cluster
+    # 6. Compute stats per cluster, expanding aliases into each cluster's keywords.
     keywords_map = {item["keyword"].lower(): item for item in approved}
+    alias_map_lower = {k.lower(): v for k, v in alias_map.items()}
     clusters = []
     for raw_cluster in llm_result.get("clusters", []):
-        kw_list = [k for k in raw_cluster.get("keywords", []) if k.lower() in keywords_map]
+        kw_list: list[str] = []
+        seen: set[str] = set()
+        for k in raw_cluster.get("keywords", []):
+            kl = k.lower()
+            if kl in keywords_map and kl not in seen:
+                kw_list.append(k)
+                seen.add(kl)
+            for alias in alias_map_lower.get(kl, []):
+                al = alias.lower()
+                if al in keywords_map and al not in seen:
+                    kw_list.append(alias)
+                    seen.add(al)
         if not kw_list:
             continue
         stats = _compute_cluster_stats(

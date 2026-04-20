@@ -20,8 +20,8 @@ import { ToggleSwitch } from "../../ui/toggle-switch";
 import { cn } from "../../../lib/utils";
 import { SYNC_PIPELINE_SUBTITLE, syncServices, syncSelectionSummary, type SyncServiceValue } from "./constants";
 import type { PipelineRowModel } from "./pipeline-derive";
-import { PageSpeedQueueTable } from "./sync-pagespeed-queue-table";
-import type { PagespeedQueueDetailItem } from "./sync-pagespeed-queue-table";
+import { SyncQueueTable } from "./sync-queue-table";
+import type { SyncQueueDetailItem } from "./sync-queue-table";
 import { SyncEventStream } from "./sync-event-stream";
 import type { SyncLogLine } from "./use-sync-event-log";
 
@@ -41,15 +41,18 @@ function HeroRing({
   label,
   sublabel,
   elapsed,
-  psiHttpCallsLast60s
+  throughputLast60s,
+  throughputMetricTitle
 }: {
   pct: number;
   accent: string;
   label: string;
   sublabel: string;
   elapsed: string;
-  /** Rolling count of granted runPagespeed HTTP attempts in the last 60s (all refresh traffic); shown as “N / min”. */
-  psiHttpCallsLast60s?: number | null;
+  /** Rolling throughput for the active sync scope (e.g. PSI HTTP calls or limiter slots in the last 60s). */
+  throughputLast60s?: number | null;
+  /** Short label above the throughput value (e.g. “PSI HTTP calls (60s)”). */
+  throughputMetricTitle?: string;
 }) {
   const r = 58;
   const c = 2 * Math.PI * r;
@@ -95,11 +98,13 @@ function HeroRing({
               <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Elapsed</div>
               <div className="sync-event-stream-mono text-[13px] text-white">{elapsed}</div>
             </div>
-            {typeof psiHttpCallsLast60s === "number" ? (
+            {typeof throughputLast60s === "number" && throughputMetricTitle ? (
               <div>
-                <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">Speed</div>
+                <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-white/35">
+                  {throughputMetricTitle}
+                </div>
                 <div className="sync-event-stream-mono text-[13px] text-white">
-                  {psiHttpCallsLast60s}
+                  {throughputLast60s}
                   <span className="ml-1.5 text-[11px] font-medium tracking-normal text-white/45">/ min</span>
                 </div>
               </div>
@@ -136,16 +141,24 @@ function SyncScopeSettingsSection({
 }) {
   return (
     <div className={cn("text-left", className)}>
-      <button
-        type="button"
-        className="flex w-full items-center justify-between rounded-xl px-1 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55 hover:bg-white/[0.06]"
-        onClick={() => setSettingsExpanded(!settingsExpanded)}
-      >
-        Sync settings
-        <ChevronDown size={14} className={cn("transition-transform", settingsExpanded ? "rotate-180" : "")} />
-      </button>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          aria-label={settingsExpanded ? "Hide sync settings" : "Sync settings"}
+          aria-expanded={settingsExpanded}
+          className={cn(
+            "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/[0.1] bg-white/[0.04] text-white/55 transition-colors",
+            "hover:bg-white/[0.08] hover:text-white/85",
+            "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/30",
+            settingsExpanded && "border-white/[0.18] bg-white/[0.08] text-white/80"
+          )}
+          onClick={() => setSettingsExpanded(!settingsExpanded)}
+        >
+          <Settings2 size={18} strokeWidth={2} aria-hidden />
+        </button>
+      </div>
       {settingsExpanded ? (
-        <div className="mt-1 rounded-2xl border border-white/10 bg-white/5 p-3">
+        <div className="mt-2 rounded-2xl border border-white/10 bg-white/5 p-3">
           <p className="text-xs uppercase tracking-[0.18em] text-white/45">Services</p>
           <p className="mt-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/60">
             {syncSelectionSummary(selectedScopes)}
@@ -349,7 +362,8 @@ export type SyncDrawerProps = {
     title: string;
     subtitle: string;
     elapsed: string;
-    psiHttpCallsLast60s?: number | null;
+    throughputLast60s?: number | null;
+    throughputMetricTitle?: string;
   };
   doneHero?: {
     title: string;
@@ -374,7 +388,9 @@ export type SyncDrawerProps = {
   eventLines: SyncLogLine[];
   showChangesGrid: boolean;
   changeCards: { label: string; total: number; sub?: string }[];
-  pagespeedQueueDetails: PagespeedQueueDetailItem[];
+  activeQueueItems: SyncQueueDetailItem[];
+  /** Bump when a new sync run starts so event/queue panels remount collapsed. */
+  streamPanelResetKey: number;
   rawSyncError: string;
   errorSummary: string;
   errorDetails: string | null;
@@ -422,7 +438,8 @@ export function SyncDrawer(props: SyncDrawerProps) {
     eventLines,
     showChangesGrid,
     changeCards,
-    pagespeedQueueDetails,
+    activeQueueItems,
+    streamPanelResetKey,
     rawSyncError,
     errorSummary,
     errorDetails,
@@ -502,7 +519,8 @@ export function SyncDrawer(props: SyncDrawerProps) {
             label={runningHero.title}
             sublabel={runningHero.subtitle}
             elapsed={runningHero.elapsed}
-            psiHttpCallsLast60s={runningHero.psiHttpCallsLast60s}
+            throughputLast60s={runningHero.throughputLast60s}
+            throughputMetricTitle={runningHero.throughputMetricTitle}
           />
         ) : null}
 
@@ -624,7 +642,7 @@ export function SyncDrawer(props: SyncDrawerProps) {
           forceRefresh={forceRefresh}
           onForceRefresh={onForceRefresh}
           syncRunning={syncRunning}
-          className="mt-[18px] rounded-2xl border border-white/[0.08] bg-white/[0.02] px-3 py-1"
+          className="mt-[18px]"
         />
 
         {/* Pipeline — all modes */}
@@ -667,14 +685,9 @@ export function SyncDrawer(props: SyncDrawerProps) {
         </div>
 
         {showEventStream ? (
-          <div className="mt-[18px]">
-            <SyncEventStream lines={eventLines} accent={accent} />
-          </div>
-        ) : null}
-
-        {pagespeedQueueDetails.length > 0 ? (
-          <div className="mt-[18px]">
-            <PageSpeedQueueTable items={pagespeedQueueDetails} />
+          <div className="mt-[18px] space-y-[18px]">
+            <SyncEventStream key={`sync-events-${streamPanelResetKey}`} lines={eventLines} accent={accent} />
+            <SyncQueueTable key={`sync-queue-${streamPanelResetKey}`} title="Queue Stream" items={activeQueueItems} />
           </div>
         ) : null}
 

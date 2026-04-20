@@ -107,6 +107,7 @@ from ._gsc import (  # noqa: E402
     _top_bucket_impressions_pct_vs_prior,
     clear_google_caches,
     delete_search_console_overview_cache,
+    delete_search_console_overview_timeseries_only,
     fetch_gsc_url_query_second_dimension,
     fetch_search_console_summary,
     get_gsc_property_breakdowns_cached,

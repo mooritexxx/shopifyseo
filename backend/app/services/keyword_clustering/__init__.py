@@ -10,6 +10,7 @@ Internal layout:
 """
 
 from ._crud import get_cluster_detail, get_match_options, update_cluster_match
+from ._dedupe import collapse_near_duplicates
 from ._gaps import compute_seo_gaps, enrich_clusters_with_coverage
 from ._generation import generate_clusters
 from ._helpers import (
@@ -31,6 +32,7 @@ from ._storage import load_clusters
 __all__ = [
     # Public API
     "generate_clusters",
+    "collapse_near_duplicates",
     "load_clusters",
     "enrich_clusters_with_coverage",
     "compute_seo_gaps",

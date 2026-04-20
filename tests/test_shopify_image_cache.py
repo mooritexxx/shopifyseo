@@ -4,9 +4,11 @@ import hashlib
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from shopifyseo.product_image_seo import normalize_shopify_image_url
 from shopifyseo.shopify_image_cache import (
+    _worker_fetch,
     catalog_gallery_image_cached_locally,
     image_cache_root,
     invalidate_product_image_cache_entry,
@@ -33,6 +35,42 @@ def test_local_relpath_stable() -> None:
     assert a.endswith(".bin")
 
 
+def test_worker_fetch_force_refresh_skips_conditional_branch(tmp_path: Path) -> None:
+    """With force_refresh, do not use HEAD/If-None-Match path — one unconditional GET."""
+    root = tmp_path
+    rel = "aa/bb/cc.bin"
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"old")
+    crow = {"local_relpath": rel, "etag": '"same"', "last_modified": ""}
+
+    class FakeResp:
+        status_code = 200
+        content = b"new-bytes-here"
+        headers = {"Content-Type": "image/png", "ETag": '"new"'}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    fake_inst = MagicMock()
+    fake_inst.get.return_value = FakeResp()
+
+    with patch("shopifyseo.shopify_image_cache.requests.Session", return_value=fake_inst):
+        out = _worker_fetch(
+            "gid://shopify/MediaImage/1",
+            "https://cdn.shopify.com/x.png",
+            "https://cdn.shopify.com/x.png",
+            crow,
+            root,
+            force_refresh=True,
+        )
+    assert out.kind == "downloaded"
+    assert out.body == b"new-bytes-here"
+    fake_inst.get.assert_called_once()
+    _args, kwargs = fake_inst.get.call_args
+    assert "If-None-Match" not in (kwargs.get("headers") or {})
+
+
 def test_warm_empty_catalog_no_crash() -> None:
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "t.sqlite3"
@@ -43,7 +81,10 @@ def test_warm_empty_catalog_no_crash() -> None:
         conn.close()
         progress_calls: list[tuple[int, int]] = []
         stats = warm_product_image_cache(
-            db_path, max_workers=2, progress_callback=lambda d, t: progress_calls.append((d, t))
+            db_path,
+            max_workers=2,
+            progress_callback=lambda d, t: progress_calls.append((d, t)),
+            force_refresh=True,
         )
         assert stats["downloaded"] == 0
         assert stats["skipped"] == 0

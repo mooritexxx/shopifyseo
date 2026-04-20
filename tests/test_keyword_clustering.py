@@ -1520,3 +1520,332 @@ def test_get_matched_cluster_keywords_no_match():
     assert all_kws == []
     assert primary_kw == ""
     assert kw_map == {}
+
+
+def test_generate_clusters_reads_approved_from_db(monkeypatch):
+    """keyword_metrics is the source of truth for 'approved' — a stale
+    target_keywords JSON blob must not leak into the LLM prompt."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+    from shopifyseo.dashboard_store import ensure_dashboard_schema
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("db-approved-a", 100, 20, 50.0, "commercial", "Product / Collection page", "topic-x", "approved", now),
+            ("db-approved-b", 80, 15, 40.0, "commercial", "Product / Collection page", "topic-x", "approved", now),
+            ("db-dismissed", 90, 30, 30.0, "commercial", "Product / Collection page", "topic-x", "dismissed", now),
+            ("db-new", 70, 10, 20.0, "commercial", "Product / Collection page", "topic-x", "new", now),
+        ],
+    )
+    # Stale JSON blob: claims a totally different keyword is approved.
+    conn.execute(
+        "INSERT INTO service_settings (key, value) VALUES ('target_keywords', ?)",
+        (json.dumps({"items": [
+            {"keyword": "json-stale-kw", "status": "approved", "volume": 999,
+             "difficulty": 1, "opportunity": 100.0, "intent": "commercial",
+             "content_type": "Blog / Guide", "parent_topic": "topic-x"},
+        ]}),),
+    )
+    conn.commit()
+
+    captured: dict[str, list] = {}
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        captured.setdefault(stage, []).append(messages)
+        if stage == "clustering":
+            return {"clusters": [{
+                "name": "Test Cluster",
+                "content_type": "collection_page",
+                "primary_keyword": "db-approved-a",
+                "content_brief": "brief",
+                "keywords": ["db-approved-a", "db-approved-b"],
+            }]}
+        return {"matches": []}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    result = _generation.generate_clusters(conn)
+
+    assert len(result["clusters"]) == 1
+    assert "clustering" in captured, "LLM clustering call should have happened"
+
+    user_prompt = captured["clustering"][0][1]["content"]
+    assert "db-approved-a" in user_prompt
+    assert "db-approved-b" in user_prompt
+    assert "db-dismissed" not in user_prompt
+    assert "db-new" not in user_prompt
+    assert "json-stale-kw" not in user_prompt, (
+        "clustering must read from keyword_metrics, not the service_settings JSON blob"
+    )
+
+    cluster_rows = conn.execute("SELECT name FROM clusters").fetchall()
+    assert len(cluster_rows) == 1
+    assert cluster_rows[0][0] == "Test Cluster"
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: embedding-based near-duplicate collapse
+# ---------------------------------------------------------------------------
+
+
+def _make_dedupe_db() -> sqlite3.Connection:
+    """In-memory DB with the full dashboard schema (includes embeddings)."""
+    from shopifyseo.dashboard_store import ensure_dashboard_schema
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+    return conn
+
+
+def _insert_keyword_embedding(
+    conn: sqlite3.Connection,
+    keyword: str,
+    vec: list[float],
+) -> None:
+    """Insert a fake keyword embedding into the embeddings table."""
+    import struct
+    blob = struct.pack(f"{len(vec)}f", *vec)
+    conn.execute(
+        "INSERT INTO embeddings (object_type, object_handle, chunk_index, text_hash, "
+        "model_version, embedding, source_text_preview, token_count, updated_at) "
+        "VALUES ('keyword', ?, 0, 'h', 'test', ?, ?, 0, '2026-04-19T00:00:00Z')",
+        (keyword, blob, keyword),
+    )
+    conn.commit()
+
+
+def _kw(keyword: str, opportunity: float = 50.0, volume: int = 100, **extra) -> dict:
+    return {"keyword": keyword, "opportunity": opportunity, "volume": volume, **extra}
+
+
+def test_collapse_near_duplicates_under_two_passes_through():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    canonicals, aliases = collapse_near_duplicates([_kw("only")], conn)
+    assert [c["keyword"] for c in canonicals] == ["only"]
+    assert aliases == {}
+
+
+def test_collapse_near_duplicates_no_embeddings_passthrough():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    approved = [_kw("a"), _kw("b")]
+    canonicals, aliases = collapse_near_duplicates(approved, conn)
+    assert sorted(c["keyword"] for c in canonicals) == ["a", "b"]
+    assert aliases == {}
+
+
+def test_collapse_near_duplicates_similar_pair_collapses():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    # Nearly-parallel vectors — cosine ≈ 1.0
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "vape pens", [0.999, 0.001, 0.0, 0.0])
+
+    approved = [
+        _kw("vape pen", opportunity=90.0, volume=500),
+        _kw("vape pens", opportunity=60.0, volume=300),
+    ]
+    canonicals, aliases = collapse_near_duplicates(approved, conn, threshold=0.95)
+    assert [c["keyword"] for c in canonicals] == ["vape pen"]
+    assert aliases == {"vape pen": ["vape pens"]}
+
+
+def test_collapse_near_duplicates_distinct_pair_no_collapse():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    # Orthogonal vectors — cosine = 0
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 1.0, 0.0, 0.0])
+
+    approved = [_kw("vape pen"), _kw("protein bar")]
+    canonicals, aliases = collapse_near_duplicates(approved, conn, threshold=0.95)
+    assert sorted(c["keyword"] for c in canonicals) == ["protein bar", "vape pen"]
+    assert aliases == {}
+
+
+def test_collapse_near_duplicates_picks_highest_opportunity_canonical():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.999, 0.001])
+    _insert_keyword_embedding(conn, "c", [0.998, 0.002])
+
+    approved = [
+        _kw("a", opportunity=10.0),
+        _kw("b", opportunity=50.0),  # highest → canonical
+        _kw("c", opportunity=20.0),
+    ]
+    canonicals, aliases = collapse_near_duplicates(approved, conn, threshold=0.95)
+    assert [c["keyword"] for c in canonicals] == ["b"]
+    assert set(aliases["b"]) == {"a", "c"}
+
+
+def test_collapse_near_duplicates_canonical_tiebreak_by_volume():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.999, 0.001])
+
+    approved = [
+        _kw("a", opportunity=50.0, volume=100),
+        _kw("b", opportunity=50.0, volume=500),  # higher volume wins
+    ]
+    canonicals, _ = collapse_near_duplicates(approved, conn, threshold=0.95)
+    assert [c["keyword"] for c in canonicals] == ["b"]
+
+
+def test_collapse_near_duplicates_missing_embedding_stays_singleton():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.999, 0.001])
+    # "c" has no embedding — should pass through as its own canonical.
+
+    approved = [_kw("a"), _kw("b"), _kw("c")]
+    canonicals, aliases = collapse_near_duplicates(approved, conn, threshold=0.95)
+
+    names = sorted(c["keyword"] for c in canonicals)
+    assert "c" in names
+    # a and b collapse to one; c is its own entry → 2 canonicals total.
+    assert len(canonicals) == 2
+
+
+def test_collapse_near_duplicates_threshold_override_via_service_settings():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    from shopifyseo.dashboard_google import set_service_setting
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.85, 0.527])  # cosine ≈ 0.85
+
+    # Default threshold (0.95) wouldn't merge these; override to 0.80.
+    set_service_setting(conn, "clustering_dedupe_threshold", "0.80")
+
+    approved = [_kw("a", opportunity=70.0), _kw("b", opportunity=40.0)]
+    canonicals, aliases = collapse_near_duplicates(approved, conn)
+    assert [c["keyword"] for c in canonicals] == ["a"]
+    assert aliases == {"a": ["b"]}
+
+
+def test_collapse_near_duplicates_threshold_of_one_disables():
+    """Threshold ≥ 1.0 short-circuits; nothing collapses."""
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.999, 0.001])
+
+    approved = [_kw("a"), _kw("b")]
+    canonicals, aliases = collapse_near_duplicates(approved, conn, threshold=1.0)
+    assert sorted(c["keyword"] for c in canonicals) == ["a", "b"]
+    assert aliases == {}
+
+
+def test_collapse_near_duplicates_bad_setting_falls_back_to_default():
+    from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
+    from shopifyseo.dashboard_google import set_service_setting
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.999, 0.001])
+
+    set_service_setting(conn, "clustering_dedupe_threshold", "not-a-number")
+
+    approved = [_kw("a", opportunity=70.0), _kw("b", opportunity=40.0)]
+    canonicals, aliases = collapse_near_duplicates(approved, conn)
+    # Default (0.95) still collapses the near-identicals.
+    assert [c["keyword"] for c in canonicals] == ["a"]
+
+
+def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
+    """LLM sees only the canonical; the cluster's output keywords include aliases."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+
+    conn = _make_dedupe_db()
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
+        [
+            ("vape pen", 500, 20, 90.0, "commercial", "Product / Collection page", "vape", now),
+            ("vape pens", 300, 20, 60.0, "commercial", "Product / Collection page", "vape", now),
+            ("protein bar", 400, 30, 80.0, "commercial", "Product / Collection page", "nutrition", now),
+        ],
+    )
+    conn.commit()
+
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "vape pens", [0.999, 0.001, 0.0])
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
+
+    captured: dict[str, list] = {}
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        captured.setdefault(stage, []).append(messages)
+        if stage == "clustering":
+            return {"clusters": [
+                {
+                    "name": "Vape Pens",
+                    "content_type": "collection_page",
+                    "primary_keyword": "vape pen",
+                    "content_brief": "brief",
+                    "keywords": ["vape pen"],
+                },
+                {
+                    "name": "Protein Bars",
+                    "content_type": "collection_page",
+                    "primary_keyword": "protein bar",
+                    "content_brief": "brief",
+                    "keywords": ["protein bar"],
+                },
+            ]}
+        return {"matches": []}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    result = _generation.generate_clusters(conn)
+
+    clustering_user_prompt = captured["clustering"][0][1]["content"]
+    # LLM only saw the canonical, not the alias.
+    assert "vape pen" in clustering_user_prompt
+    assert "vape pens" not in clustering_user_prompt
+
+    vape_cluster = next(c for c in result["clusters"] if c["name"] == "Vape Pens")
+    assert set(k.lower() for k in vape_cluster["keywords"]) == {"vape pen", "vape pens"}
+
+    protein_cluster = next(c for c in result["clusters"] if c["name"] == "Protein Bars")
+    assert [k.lower() for k in protein_cluster["keywords"]] == ["protein bar"]
+
+    # Persisted cluster_keywords should also contain the alias.
+    rows = conn.execute(
+        "SELECT keyword FROM cluster_keywords "
+        "JOIN clusters ON clusters.id = cluster_keywords.cluster_id "
+        "WHERE clusters.name = 'Vape Pens' ORDER BY keyword"
+    ).fetchall()
+    assert [r[0] for r in rows] == ["vape pen", "vape pens"]
+    conn.close()

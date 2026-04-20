@@ -170,6 +170,19 @@ def delete_search_console_overview_cache(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def delete_search_console_overview_timeseries_only(conn: sqlite3.Connection) -> None:
+    """Drop only site-level GSC overview rollup rows (``search_console_overview``).
+
+    Tier A property breakdown caches (``gsc_property_*``) are left intact.
+    Used after a bulk Search Console sync so ``/api/summary`` Cache metadata
+    reflects the run; bulk sync refreshes ``search_console_summary`` and URL
+    caches but does not otherwise rewrite this cache type.
+    """
+    ensure_google_cache_schema(conn)
+    conn.execute("DELETE FROM google_api_cache WHERE cache_type = ?", ("search_console_overview",))
+    conn.commit()
+
+
 def clear_google_caches(conn: sqlite3.Connection | None = None) -> None:
     gsc_cache = _pkg().GSC_CACHE
     gsc_cache["summary"] = None

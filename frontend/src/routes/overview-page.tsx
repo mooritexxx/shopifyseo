@@ -319,7 +319,7 @@ export function OverviewPage() {
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Segment mix</p>
-                      <h3 className="mt-1 text-lg font-bold tracking-tight text-ink">Property splits (cached)</h3>
+                      <h3 className="mt-1 text-lg font-bold tracking-tight text-ink">Property splits</h3>
                       <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
                         <span className="font-medium text-slate-600">
                           {data.gsc_property_breakdowns.window.start_date} →{" "}
@@ -328,7 +328,9 @@ export function OverviewPage() {
                         {data.gsc_property_breakdowns.period_mode
                           ? ` · ${data.gsc_property_breakdowns.period_mode.replace(/_/g, " ")}`
                           : ""}
-                        . Highest-impression bucket per dimension from the Tier A GSC cache — no extra API call on load.
+                        . Highest-impression bucket per country, device, and search appearance for this window. Data is
+                        loaded from your dashboard store (updated when you run a Search Console sync); this block does
+                        not call Google on every page load.
                       </p>
                     </div>
                   </div>

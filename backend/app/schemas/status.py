@@ -67,6 +67,13 @@ class SyncStatusPayload(BaseModel):
     pagespeed_queue_inflight: int = 0
     pagespeed_queue_baseline: int = 0
     pagespeed_http_calls_last_60s: int = 0
+    gsc_queue_details: list[dict[str, Any]] = []
+    ga4_queue_details: list[dict[str, Any]] = []
+    index_queue_details: list[dict[str, Any]] = []
+    shopify_queue_details: list[dict[str, Any]] = []
+    gsc_sync_slots_last_60s: int = 0
+    ga4_sync_slots_last_60s: int = 0
+    index_sync_slots_last_60s: int = 0
     sync_events: list[dict[str, Any]] = []
     pagespeed_error_details: list[dict[str, Any]] = []
     pagespeed_queue_details: list[dict[str, Any]] = []

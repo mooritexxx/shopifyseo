@@ -244,6 +244,13 @@ def append_sync_event(tag: str, msg: str) -> None:
             del events[: len(events) - SYNC_EVENTS_MAX]
 
 
+def _sync_current(message: str) -> None:
+    """Set ``SYNC_STATE["current"]`` and append a matching sync event line."""
+    SYNC_STATE["current"] = message
+    tag = (SYNC_STATE.get("active_scope") or "sync")[:12]
+    append_sync_event(tag, message)
+
+
 AI_STATE = {
     "job_id": "",
     "running": False,

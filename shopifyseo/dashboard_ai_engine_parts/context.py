@@ -138,13 +138,32 @@ def _fetch_rag_context(conn: sqlite3.Connection, object_type: str, handle: str) 
     """Retrieve RAG context for an object. Returns empty dicts on failure."""
     result: dict = {"similar_objects": [], "semantic_keywords": [], "competitor_content": []}
     try:
+        from ..article_draft_retrieval import build_regen_retrieval_query, merge_embedding_rag_with_token_overlap
         from ..embedding_store import (
             retrieve_related_by_handle,
             find_semantic_keyword_matches,
             find_competitive_gaps,
         )
         quotas = _RAG_TYPE_QUOTAS.get(object_type, {"product": 2, "blog_article": 2, "collection": 1})
-        result["similar_objects"] = retrieve_related_by_handle(conn, object_type, handle, type_quotas=quotas)
+        raw_similar = retrieve_related_by_handle(conn, object_type, handle, type_quotas=quotas)
+        result["similar_objects"] = raw_similar
+        if raw_similar and object_type in ("blog_article", "page", "product", "collection"):
+            try:
+                q = build_regen_retrieval_query(conn, object_type, handle)
+                if (q or "").strip():
+                    result["similar_objects"] = merge_embedding_rag_with_token_overlap(
+                        conn,
+                        q,
+                        raw_similar,
+                        out_k=len(raw_similar),
+                    )
+            except Exception:
+                _log.debug(
+                    "Hybrid RAG merge failed for %s/%s; using embedding-only neighbors",
+                    object_type,
+                    handle,
+                    exc_info=True,
+                )
         result["semantic_keywords"] = find_semantic_keyword_matches(conn, object_type, handle, top_k=10)
         result["competitor_content"] = find_competitive_gaps(conn, object_type, handle, top_k=5)
     except Exception:

@@ -280,6 +280,9 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "competitor_position_kind": "TEXT",
             "is_local": "INTEGER DEFAULT 0",
             "content_format_hint": "TEXT DEFAULT ''",
+            "ads_avg_monthly_searches": "INTEGER",
+            "ads_competition": "TEXT",
+            "ads_competition_index": "INTEGER",
         },
     )
     _migrate_keyword_research_runs_table(conn)
@@ -417,6 +420,21 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "linked_article_handle": "TEXT NOT NULL DEFAULT ''",
             "linked_blog_handle": "TEXT NOT NULL DEFAULT ''",
             "shopify_article_id": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "article_ideas",
+        {
+            "primary_target_type": "TEXT NOT NULL DEFAULT ''",
+            "primary_target_handle": "TEXT NOT NULL DEFAULT ''",
+            "primary_target_title": "TEXT NOT NULL DEFAULT ''",
+            "primary_target_url": "TEXT NOT NULL DEFAULT ''",
+            "secondary_targets_json": "TEXT NOT NULL DEFAULT '[]'",
+            "audience_questions_json": "TEXT NOT NULL DEFAULT '[]'",
+            "top_ranking_pages_json": "TEXT NOT NULL DEFAULT '[]'",
+            "ai_overview_json": "TEXT NOT NULL DEFAULT '{}'",
+            "related_searches_json": "TEXT NOT NULL DEFAULT '[]'",
         },
     )
     conn.execute(

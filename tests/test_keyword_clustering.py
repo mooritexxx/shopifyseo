@@ -1801,22 +1801,25 @@ def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
     def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
         captured.setdefault(stage, []).append(messages)
         if stage == "clustering":
-            return {"clusters": [
-                {
+            prompt_text = messages[1]["content"]
+            out = []
+            if "vape pen" in prompt_text:
+                out.append({
                     "name": "Vape Pens",
                     "content_type": "collection_page",
                     "primary_keyword": "vape pen",
                     "content_brief": "brief",
                     "keywords": ["vape pen"],
-                },
-                {
+                })
+            if "protein bar" in prompt_text:
+                out.append({
                     "name": "Protein Bars",
                     "content_type": "collection_page",
                     "primary_keyword": "protein bar",
                     "content_brief": "brief",
                     "keywords": ["protein bar"],
-                },
-            ]}
+                })
+            return {"clusters": out}
         return {"matches": []}
 
     monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
@@ -1830,10 +1833,13 @@ def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
 
     result = _generation.generate_clusters(conn)
 
-    clustering_user_prompt = captured["clustering"][0][1]["content"]
+    # Phase 3 may split into multiple buckets; find the prompt that mentions vape.
+    vape_prompt = next(
+        msgs[1]["content"] for msgs in captured["clustering"]
+        if "vape pen" in msgs[1]["content"]
+    )
     # LLM only saw the canonical, not the alias.
-    assert "vape pen" in clustering_user_prompt
-    assert "vape pens" not in clustering_user_prompt
+    assert "vape pens" not in vape_prompt
 
     vape_cluster = next(c for c in result["clusters"] if c["name"] == "Vape Pens")
     assert set(k.lower() for k in vape_cluster["keywords"]) == {"vape pen", "vape pens"}
@@ -1848,4 +1854,542 @@ def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
         "WHERE clusters.name = 'Vape Pens' ORDER BY keyword"
     ).fetchall()
     assert [r[0] for r in rows] == ["vape pen", "vape pens"]
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: pre-clustering + parallel LLM chunking
+# ---------------------------------------------------------------------------
+
+
+def test_pre_cluster_under_two_returns_trivial():
+    from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
+    conn = _make_dedupe_db()
+    assert pre_cluster([], conn) == []
+    single = [_kw("only", **{"parent_topic": "vape"})]
+    assert pre_cluster(single, conn) == [single]
+
+
+def test_pre_cluster_groups_by_parent_topic_without_embeddings():
+    """With no embeddings, parent_topic groups become seed buckets + orphan bucket."""
+    from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
+    conn = _make_dedupe_db()
+    approved = [
+        _kw("vape pen", parent_topic="vape"),
+        _kw("vape mod", parent_topic="vape"),
+        _kw("protein bar", parent_topic="nutrition"),
+        _kw("random", parent_topic=""),  # orphan
+    ]
+    buckets = pre_cluster(approved, conn)
+    bucket_keywords = [sorted(k["keyword"] for k in b) for b in buckets]
+    # Expect 3 buckets: vape, nutrition, orphans
+    assert sorted(bucket_keywords) == [
+        ["protein bar"],
+        ["random"],
+        ["vape mod", "vape pen"],
+    ]
+
+
+def test_pre_cluster_assigns_orphan_to_best_centroid():
+    """An orphan that's embedding-similar to a seed bucket joins it."""
+    from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "vape mod", [0.95, 0.05, 0.0])
+    _insert_keyword_embedding(conn, "vape juice", [0.9, 0.1, 0.0])  # orphan, close to vape
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
+
+    approved = [
+        _kw("vape pen", parent_topic="vape"),
+        _kw("vape mod", parent_topic="vape"),
+        _kw("vape juice", parent_topic=""),
+        _kw("protein bar", parent_topic="nutrition"),
+    ]
+    buckets = pre_cluster(approved, conn, assign_threshold=0.7)
+    vape_bucket = next(b for b in buckets if any(k["keyword"] == "vape pen" for k in b))
+    assert {"vape juice", "vape mod", "vape pen"} <= {k["keyword"] for k in vape_bucket}
+
+
+def test_pre_cluster_merges_similar_orphans_into_new_bucket():
+    """Orphans that don't match any seed but are similar to each other cluster together."""
+    from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
+    conn = _make_dedupe_db()
+    # Seed bucket (nutrition) — intentionally distant from the orphans.
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
+    # Two orphans close to each other but far from "protein bar".
+    _insert_keyword_embedding(conn, "wicker basket", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "wicker hamper", [0.95, 0.05, 0.0])
+
+    approved = [
+        _kw("protein bar", parent_topic="nutrition"),
+        _kw("wicker basket", parent_topic=""),
+        _kw("wicker hamper", parent_topic=""),
+    ]
+    buckets = pre_cluster(approved, conn, assign_threshold=0.7, merge_threshold=0.7)
+    wicker_bucket = next(b for b in buckets if any(k["keyword"] == "wicker basket" for k in b))
+    assert {k["keyword"] for k in wicker_bucket} == {"wicker basket", "wicker hamper"}
+
+
+def test_pre_cluster_orphans_without_embeddings_fall_back_to_one_bucket():
+    """Embedding-less orphans land together in a fallback bucket (legacy behavior)."""
+    from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0])
+    # "stray-a" and "stray-b" have no embedding.
+    approved = [
+        _kw("vape pen", parent_topic="vape"),
+        _kw("stray-a", parent_topic=""),
+        _kw("stray-b", parent_topic=""),
+    ]
+    buckets = pre_cluster(approved, conn)
+    fallback = next(b for b in buckets if any(k["keyword"] == "stray-a" for k in b))
+    assert {k["keyword"] for k in fallback} == {"stray-a", "stray-b"}
+
+
+def test_generate_clusters_parallel_calls_llm_per_bucket(monkeypatch):
+    """Two parent_topic groups → two LLM clustering calls, each with its own payload."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+
+    conn = _make_dedupe_db()
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
+        [
+            ("vape pen", 500, 20, 90.0, "commercial", "collection_page", "vape", now),
+            ("vape mod", 300, 20, 60.0, "commercial", "collection_page", "vape", now),
+            ("protein bar", 400, 30, 80.0, "commercial", "collection_page", "nutrition", now),
+            ("protein powder", 200, 30, 50.0, "commercial", "collection_page", "nutrition", now),
+        ],
+    )
+    conn.commit()
+
+    captured_prompts: list[str] = []
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        if stage != "clustering":
+            return {"matches": []}
+        prompt_text = messages[1]["content"]
+        captured_prompts.append(prompt_text)
+        out = []
+        if "vape" in prompt_text:
+            out.append({
+                "name": "Vape",
+                "content_type": "collection_page",
+                "primary_keyword": "vape pen",
+                "content_brief": "brief",
+                "keywords": ["vape pen", "vape mod"],
+            })
+        if "protein" in prompt_text:
+            out.append({
+                "name": "Protein",
+                "content_type": "collection_page",
+                "primary_keyword": "protein bar",
+                "content_brief": "brief",
+                "keywords": ["protein bar", "protein powder"],
+            })
+        return {"clusters": out}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    result = _generation.generate_clusters(conn)
+
+    # Two buckets → two clustering calls.
+    assert len(captured_prompts) == 2
+    # Prompts should be disjoint — each bucket only sees its own keywords.
+    vape_prompt = next(p for p in captured_prompts if "vape pen" in p)
+    protein_prompt = next(p for p in captured_prompts if "protein bar" in p)
+    assert "protein bar" not in vape_prompt
+    assert "vape pen" not in protein_prompt
+
+    cluster_names = {c["name"] for c in result["clusters"]}
+    assert cluster_names == {"Vape", "Protein"}
+    conn.close()
+
+
+def test_generate_clusters_cross_bucket_dedupe_by_primary_keyword(monkeypatch):
+    """Same primary_keyword in two buckets → collapse, keeping higher-opportunity version."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+
+    conn = _make_dedupe_db()
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
+        [
+            ("vape pen", 500, 20, 90.0, "commercial", "collection_page", "topic-a", now),
+            ("vape mod", 300, 20, 60.0, "commercial", "collection_page", "topic-a", now),
+            ("shared primary", 400, 30, 80.0, "commercial", "collection_page", "topic-b", now),
+            ("other term", 200, 30, 50.0, "commercial", "collection_page", "topic-b", now),
+        ],
+    )
+    conn.commit()
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        if stage != "clustering":
+            return {"matches": []}
+        prompt_text = messages[1]["content"]
+        # Both buckets return a cluster with the SAME primary_keyword, different opportunity.
+        if "vape pen" in prompt_text:
+            return {"clusters": [{
+                "name": "Topic A",
+                "content_type": "collection_page",
+                "primary_keyword": "vape pen",  # higher opportunity wins
+                "content_brief": "brief",
+                "keywords": ["vape pen", "vape mod"],
+            }]}
+        if "shared primary" in prompt_text:
+            return {"clusters": [{
+                "name": "Topic B",
+                "content_type": "collection_page",
+                "primary_keyword": "vape pen",  # COLLISION with bucket A
+                "content_brief": "brief",
+                "keywords": ["shared primary", "other term"],
+            }]}
+        return {"clusters": []}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    result = _generation.generate_clusters(conn)
+
+    # Dedupe by primary_keyword (lowercased) — only one "vape pen" cluster survives.
+    primaries = [c["primary_keyword"].lower() for c in result["clusters"]]
+    assert primaries.count("vape pen") == 1
+    # Winner is the higher-opportunity cluster — avg_opportunity comes from keyword_metrics.
+    winner = next(c for c in result["clusters"] if c["primary_keyword"].lower() == "vape pen")
+    assert winner["avg_opportunity"] == 75.0  # mean(90, 60) from bucket A
+    conn.close()
+
+
+def test_generate_clusters_legacy_mode_single_llm_call(monkeypatch):
+    """clustering_mode=legacy falls back to one LLM call over all canonicals."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+    from shopifyseo.dashboard_google import set_service_setting
+
+    conn = _make_dedupe_db()
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
+        [
+            ("a", 500, 20, 90.0, "commercial", "collection_page", "t1", now),
+            ("b", 400, 30, 80.0, "commercial", "collection_page", "t2", now),
+        ],
+    )
+    conn.commit()
+
+    set_service_setting(conn, "clustering_mode", "legacy")
+
+    captured_prompts: list[str] = []
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        if stage != "clustering":
+            return {"matches": []}
+        captured_prompts.append(messages[1]["content"])
+        return {"clusters": [{
+            "name": "All",
+            "content_type": "collection_page",
+            "primary_keyword": "a",
+            "content_brief": "brief",
+            "keywords": ["a", "b"],
+        }]}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    _generation.generate_clusters(conn)
+
+    # Legacy mode: exactly one LLM call with both keywords in the same prompt.
+    assert len(captured_prompts) == 1
+    assert "a" in captured_prompts[0] and "b" in captured_prompts[0]
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Post-processing: merge near-duplicate clusters + fold singletons
+# ---------------------------------------------------------------------------
+
+
+def _cluster(name: str, primary: str, keywords: list[str], avg_opportunity: float = 50.0) -> dict:
+    return {
+        "name": name,
+        "primary_keyword": primary,
+        "content_type": "collection_page",
+        "content_brief": "",
+        "keywords": list(keywords),
+        "keyword_count": len(keywords),
+        "total_volume": 100 * len(keywords),
+        "avg_difficulty": 20.0,
+        "avg_opportunity": avg_opportunity,
+        "avg_cps": 0.0,
+        "dominant_serp_features": "",
+        "content_format_hints": "",
+    }
+
+
+def _km(keyword: str, opportunity: float = 50.0, volume: int = 100) -> dict:
+    return {
+        "keyword": keyword,
+        "opportunity": opportunity,
+        "volume": volume,
+        "difficulty": 20,
+    }
+
+
+def test_merge_similar_clusters_collapses_near_identical_primaries():
+    from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "geek bar", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "geek bars flavours", [0.99, 0.01, 0.0])
+    _insert_keyword_embedding(conn, "arizer solo", [0.0, 1.0, 0.0])
+
+    clusters = [
+        _cluster("Geek Bar A", "geek bar", ["geek bar", "geek bar flavors"], avg_opportunity=90.0),
+        _cluster("Geek Bar B", "geek bars flavours", ["geek bars flavours"], avg_opportunity=40.0),
+        _cluster("Arizer", "arizer solo", ["arizer solo"], avg_opportunity=50.0),
+    ]
+    keywords_map = {
+        "geek bar": _km("geek bar", 90.0),
+        "geek bar flavors": _km("geek bar flavors", 80.0),
+        "geek bars flavours": _km("geek bars flavours", 40.0),
+        "arizer solo": _km("arizer solo", 50.0),
+    }
+    out = merge_similar_clusters(clusters, conn, keywords_map, threshold=0.85)
+
+    # The two geek-bar clusters collapse into one winner (higher avg_opportunity).
+    names = {c["name"] for c in out}
+    assert "Geek Bar A" in names
+    assert "Geek Bar B" not in names
+    assert "Arizer" in names
+
+    winner = next(c for c in out if c["name"] == "Geek Bar A")
+    assert set(k.lower() for k in winner["keywords"]) == {
+        "geek bar", "geek bar flavors", "geek bars flavours"
+    }
+
+
+def test_merge_similar_clusters_leaves_distinct_primaries_alone():
+    from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
+
+    clusters = [
+        _cluster("Vape", "vape pen", ["vape pen"]),
+        _cluster("Protein", "protein bar", ["protein bar"]),
+    ]
+    keywords_map = {"vape pen": _km("vape pen"), "protein bar": _km("protein bar")}
+    out = merge_similar_clusters(clusters, conn, keywords_map, threshold=0.85)
+    assert {c["name"] for c in out} == {"Vape", "Protein"}
+
+
+def test_merge_similar_clusters_missing_embeddings_passthrough():
+    from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
+    conn = _make_dedupe_db()
+    # No embeddings inserted — cluster primaries have no vectors.
+    clusters = [
+        _cluster("A", "foo", ["foo"]),
+        _cluster("B", "foo 2", ["foo 2"]),
+    ]
+    keywords_map = {"foo": _km("foo"), "foo 2": _km("foo 2")}
+    out = merge_similar_clusters(clusters, conn, keywords_map, threshold=0.85)
+    assert {c["name"] for c in out} == {"A", "B"}
+
+
+def test_merge_similar_clusters_transitive_chain_merges_all():
+    """A~B, B~C, A not directly ~C → all three collapse via union-find."""
+    from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "b", [0.93, 0.37])
+    _insert_keyword_embedding(conn, "c", [0.75, 0.66])  # sim(a,c) < 0.85, sim(b,c) ≥ 0.85
+
+    clusters = [
+        _cluster("A", "a", ["a"], avg_opportunity=90.0),
+        _cluster("B", "b", ["b"], avg_opportunity=70.0),
+        _cluster("C", "c", ["c"], avg_opportunity=50.0),
+    ]
+    keywords_map = {k: _km(k) for k in ["a", "b", "c"]}
+    out = merge_similar_clusters(clusters, conn, keywords_map, threshold=0.85)
+    assert len(out) == 1
+    assert set(k.lower() for k in out[0]["keywords"]) == {"a", "b", "c"}
+
+
+def test_fold_singletons_folds_into_similar_cluster():
+    from backend.app.services.keyword_clustering._postprocess import fold_singletons
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "vape pens", [0.98, 0.02, 0.0])
+    _insert_keyword_embedding(conn, "vape mod", [0.95, 0.05, 0.0])
+    _insert_keyword_embedding(conn, "yoga mat", [0.0, 0.0, 1.0])
+
+    clusters = [
+        _cluster("Vapes", "vape pen", ["vape pen", "vape pens"]),  # size 2, target
+        _cluster("Solo Mod", "vape mod", ["vape mod"]),  # singleton, should fold
+        _cluster("Yoga", "yoga mat", ["yoga mat"]),  # singleton, no similar neighbor
+    ]
+    keywords_map = {k: _km(k) for k in ["vape pen", "vape pens", "vape mod", "yoga mat"]}
+    out = fold_singletons(clusters, conn, keywords_map, threshold=0.75)
+    names = {c["name"] for c in out}
+    assert "Vapes" in names
+    assert "Solo Mod" not in names  # absorbed
+    assert "Yoga" in names  # stays — no similar target
+
+    vapes = next(c for c in out if c["name"] == "Vapes")
+    assert set(k.lower() for k in vapes["keywords"]) == {"vape pen", "vape pens", "vape mod"}
+
+
+def test_fold_singletons_keeps_unique_singletons():
+    """Singleton with no similar non-singleton neighbor stays as-is."""
+    from backend.app.services.keyword_clustering._postprocess import fold_singletons
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "yoga mat", [0.0, 1.0])
+
+    clusters = [
+        _cluster("Vapes", "vape pen", ["vape pen", "other"]),  # size 2, target
+        _cluster("Yoga", "yoga mat", ["yoga mat"]),  # singleton, too far
+    ]
+    keywords_map = {k: _km(k) for k in ["vape pen", "other", "yoga mat"]}
+    out = fold_singletons(clusters, conn, keywords_map, threshold=0.75)
+    assert {c["name"] for c in out} == {"Vapes", "Yoga"}
+
+
+def test_fold_singletons_two_similar_singletons_no_target_both_stay():
+    """Two singletons similar to each other but no non-singleton target → neither folds."""
+    from backend.app.services.keyword_clustering._postprocess import fold_singletons
+    conn = _make_dedupe_db()
+    _insert_keyword_embedding(conn, "a", [1.0, 0.0])
+    _insert_keyword_embedding(conn, "a2", [0.99, 0.01])
+
+    clusters = [
+        _cluster("A", "a", ["a"]),
+        _cluster("A2", "a2", ["a2"]),
+    ]
+    keywords_map = {"a": _km("a"), "a2": _km("a2")}
+    out = fold_singletons(clusters, conn, keywords_map, threshold=0.75)
+    assert {c["name"] for c in out} == {"A", "A2"}
+
+
+def test_fold_singletons_missing_embedding_passthrough():
+    from backend.app.services.keyword_clustering._postprocess import fold_singletons
+    conn = _make_dedupe_db()
+    clusters = [
+        _cluster("A", "a", ["a", "a2"]),
+        _cluster("B", "b", ["b"]),
+    ]
+    keywords_map = {"a": _km("a"), "a2": _km("a2"), "b": _km("b")}
+    out = fold_singletons(clusters, conn, keywords_map, threshold=0.75)
+    assert {c["name"] for c in out} == {"A", "B"}
+
+
+def test_generate_clusters_runs_post_processing(monkeypatch):
+    """End-to-end: duplicate-primary + singleton both get cleaned up."""
+    import time as _time
+    from backend.app.services.keyword_clustering import _generation
+    from shopifyseo import market_context
+
+    conn = _make_dedupe_db()
+    now = int(_time.time())
+    conn.executemany(
+        "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
+        "intent, content_type_label, parent_topic, status, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', ?)",
+        [
+            ("vape pen", 500, 20, 90.0, "commercial", "collection_page", "t1", now),
+            ("vape pens", 300, 20, 80.0, "commercial", "collection_page", "t1", now),
+            ("vape mod", 200, 20, 40.0, "commercial", "collection_page", "t2", now),
+            ("protein bar", 400, 30, 70.0, "commercial", "collection_page", "t3", now),
+        ],
+    )
+    conn.commit()
+    # vape pen / vape pens sit above the 0.95 dedupe threshold → collapse together.
+    _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
+    _insert_keyword_embedding(conn, "vape pens", [0.99, 0.01, 0.0])
+    # vape mod sits ABOVE fold (0.75) but BELOW merge (0.85) and dedupe (0.95) vs vape pen.
+    _insert_keyword_embedding(conn, "vape mod", [0.80, 0.60, 0.0])
+    _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
+
+    def fake_call_ai(*, settings, provider, model, messages, timeout, json_schema, stage):
+        if stage != "clustering":
+            return {"matches": []}
+        prompt_text = messages[1]["content"]
+        out = []
+        # bucket t1 (vape pen / vape pens) returns a cluster
+        if "vape pen" in prompt_text:
+            out.append({
+                "name": "Vapes",
+                "content_type": "collection_page",
+                "primary_keyword": "vape pen",
+                "content_brief": "",
+                "keywords": ["vape pen", "vape pens"],
+            })
+        # bucket t2 (vape mod) returns a singleton with a near-duplicate primary
+        if "vape mod" in prompt_text:
+            out.append({
+                "name": "Vape Mod",
+                "content_type": "collection_page",
+                "primary_keyword": "vape mod",
+                "content_brief": "",
+                "keywords": ["vape mod"],
+            })
+        # bucket t3 (protein bar) — topically unrelated, stays alone
+        if "protein bar" in prompt_text:
+            out.append({
+                "name": "Protein",
+                "content_type": "collection_page",
+                "primary_keyword": "protein bar",
+                "content_brief": "",
+                "keywords": ["protein bar"],
+            })
+        return {"clusters": out}
+
+    monkeypatch.setattr(_generation, "_call_ai", fake_call_ai)
+    monkeypatch.setattr(
+        _generation, "ai_settings",
+        lambda c: {"generation_provider": "anthropic", "generation_model": "claude-x", "timeout": 60},
+    )
+    monkeypatch.setattr(_generation, "_require_provider_credentials", lambda s, p: None)
+    monkeypatch.setattr(market_context, "get_primary_country_code", lambda c: "CA")
+    monkeypatch.setattr(market_context, "country_display_name", lambda c: "Canadian")
+
+    result = _generation.generate_clusters(conn)
+    names = {c["name"] for c in result["clusters"]}
+
+    # "Vape Mod" singleton should be folded into the vape cluster.
+    assert "Vape Mod" not in names
+    # The vape cluster survives and now contains vape mod too.
+    vapes = next(c for c in result["clusters"] if "vape pen" in [k.lower() for k in c["keywords"]])
+    assert "vape mod" in [k.lower() for k in vapes["keywords"]]
+    # Protein (semantically distant) stays as its own cluster even though singleton.
+    assert "Protein" in names
     conn.close()

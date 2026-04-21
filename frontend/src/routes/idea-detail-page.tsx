@@ -5,13 +5,18 @@ import {
   ArrowLeft,
   BarChart2,
   BookOpen,
+  Bot,
   ExternalLink,
   FileText,
   Layers3,
+  ListOrdered,
+  MessagesSquare,
+  Search,
   Sparkles,
   Tag,
   TrendingUp,
   Zap,
+  RefreshCw,
 } from "lucide-react";
 import { z } from "zod";
 
@@ -37,7 +42,7 @@ import {
 } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
 import { ArticleDraftProgressPanel } from "../components/article-draft-progress-panel";
-import { getJson, patchJson } from "../lib/api";
+import { getJson, patchJson, postJson } from "../lib/api";
 import {
   runArticleDraftStream,
   type ArticleDraftProgressEvent,
@@ -46,6 +51,7 @@ import { defaultDraftSlugHint } from "../lib/seo-slug";
 import { useStoreInfo } from "../hooks/use-store-info";
 import {
   articleIdeasPayloadSchema,
+  refreshArticleIdeaSerpSchema,
   blogShopifyIdSchema,
   ideaPerformancePayloadSchema,
   messageSchema,
@@ -84,6 +90,180 @@ const emptyDraftForm = {
   author_name: "",
   angle_label: "",
 };
+
+type AiOverviewRef = {
+  title?: unknown;
+  link?: unknown;
+  snippet?: unknown;
+  source?: unknown;
+  index?: unknown;
+};
+
+function isNonEmptyAiOverview(raw: ArticleIdea["ai_overview"]): raw is Record<string, unknown> {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const o = raw as { text_blocks?: unknown; references?: unknown };
+  const tb = Array.isArray(o.text_blocks) ? o.text_blocks.length : 0;
+  const rf = Array.isArray(o.references) ? o.references.length : 0;
+  return tb > 0 || rf > 0;
+}
+
+function SerpAiOverviewSection({ overview }: { overview: Record<string, unknown> }) {
+  const blocks = Array.isArray(overview.text_blocks) ? overview.text_blocks : [];
+  const refsIn = Array.isArray(overview.references) ? overview.references : [];
+  const references = refsIn.filter(
+    (r): r is AiOverviewRef => r != null && typeof r === "object" && typeof (r as AiOverviewRef).link === "string",
+  );
+  const refByIndex = new Map<number, AiOverviewRef>();
+  for (const r of references) {
+    const idx = typeof r.index === "number" && !Number.isNaN(r.index) ? r.index : undefined;
+    if (idx !== undefined) refByIndex.set(idx, r);
+  }
+
+  const refSuperscripts = (indexes: unknown) => {
+    if (!Array.isArray(indexes) || indexes.length === 0) return null;
+    const nums = indexes.filter((x): x is number => typeof x === "number" && !Number.isNaN(x));
+    if (nums.length === 0) return null;
+    return (
+      <span className="ml-1 inline-flex flex-wrap items-baseline gap-0.5 align-top">
+        {nums.map((i) => {
+          const ref = refByIndex.get(i);
+          const label = String(i + 1);
+          const href = ref && typeof ref.link === "string" ? ref.link : "";
+          if (!href) {
+            return (
+              <sup key={`r-${i}`} className="text-[10px] text-slate-400 tabular-nums">
+                [{label}]
+              </sup>
+            );
+          }
+          return (
+            <a
+              key={`r-${i}-${href.slice(0, 24)}`}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] font-semibold text-blue-600 hover:text-blue-800 tabular-nums"
+            >
+              <sup className="underline-offset-2 hover:underline">[{label}]</sup>
+            </a>
+          );
+        })}
+      </span>
+    );
+  };
+
+  const sortedRefs = [...references].sort((a, b) => {
+    const ia = typeof a.index === "number" ? a.index : 999;
+    const ib = typeof b.index === "number" ? b.index : 999;
+    return ia - ib;
+  });
+
+  return (
+    <Card className="border-[#e2eaf4] bg-gradient-to-b from-violet-50/40 to-white">
+      <CardHeader className="px-6 pt-6 pb-0">
+        <div className="flex items-center gap-2">
+          <Bot size={18} className="text-violet-500" />
+          <h3 className="text-lg font-semibold text-ink">AI overview</h3>
+        </div>
+        <p className="mt-1 text-xs text-slate-400">
+          Summarized answer from the Google SERP when available (same SerpAPI search as related questions and top
+          pages). Inline numbers link to sources below.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-5 px-6 pb-6 pt-4">
+        {blocks.length > 0 ? (
+          <div className="space-y-4 text-sm leading-relaxed text-slate-800">
+            {blocks.map((block, bi) => {
+              if (!block || typeof block !== "object") return null;
+              const b = block as { type?: unknown; snippet?: unknown; list?: unknown; reference_indexes?: unknown };
+              if (b.type === "paragraph") {
+                const sn = typeof b.snippet === "string" ? b.snippet : "";
+                if (!sn && !Array.isArray(b.reference_indexes)) return null;
+                return (
+                  <p key={`p-${bi}`} className="whitespace-pre-wrap">
+                    {sn ? <span>{sn}</span> : null}
+                    {refSuperscripts(b.reference_indexes)}
+                  </p>
+                );
+              }
+              if (b.type === "list" && Array.isArray(b.list)) {
+                const listRefs = refSuperscripts(b.reference_indexes);
+                return (
+                  <div key={`l-${bi}`}>
+                    <ul className="list-disc space-y-2.5 pl-5 marker:text-slate-400">
+                      {b.list.map((item, li) => {
+                        if (!item || typeof item !== "object") return null;
+                        const row = item as { snippet?: unknown; snippet_latex?: unknown };
+                        const snippet = typeof row.snippet === "string" ? row.snippet : "";
+                        const latexArr = Array.isArray(row.snippet_latex)
+                          ? row.snippet_latex.filter((x): x is string => typeof x === "string" && x.trim() !== "")
+                          : [];
+                        if (!snippet && latexArr.length === 0) return null;
+                        return (
+                          <li key={`li-${bi}-${li}`} className="pl-0.5">
+                            {snippet ? <span className="whitespace-pre-wrap">{snippet}</span> : null}
+                            {latexArr.length > 0 ? (
+                              <div className="mt-1 space-y-0.5 font-mono text-xs text-slate-600">
+                                {latexArr.map((lx, ix) => (
+                                  <div key={`lx-${li}-${ix}`} className="rounded bg-slate-100/80 px-2 py-1">
+                                    {lx}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {listRefs ? <div className="mt-2">{listRefs}</div> : null}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
+        ) : null}
+
+        {sortedRefs.length > 0 ? (
+          <div className="rounded-lg border border-slate-200/80 bg-white/80 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sources</p>
+            <ol className="mt-3 space-y-3 text-sm">
+              {sortedRefs.map((ref, idx) => {
+                const title = typeof ref.title === "string" ? ref.title : "";
+                const link = typeof ref.link === "string" ? ref.link : "";
+                const source = typeof ref.source === "string" ? ref.source : "";
+                const snippet = typeof ref.snippet === "string" ? ref.snippet : "";
+                const n = typeof ref.index === "number" ? ref.index + 1 : idx + 1;
+                return (
+                  <li key={`${n}-${link.slice(0, 48)}`} className="leading-snug">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded bg-slate-100 px-1 text-[11px] font-semibold text-slate-600 tabular-nums">
+                        {n}
+                      </span>
+                      <a
+                        href={link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-ink hover:text-blue-700 inline-flex items-center gap-1 group min-w-0"
+                      >
+                        <span className="group-hover:underline break-words">{title || link}</span>
+                        <ExternalLink size={12} className="shrink-0 text-slate-400 group-hover:text-blue-600" />
+                      </a>
+                    </div>
+                    {source ? <p className="mt-0.5 pl-8 text-xs text-slate-500">{source}</p> : null}
+                    {snippet ? (
+                      <p className="mt-1 pl-8 text-xs text-slate-600 line-clamp-3">{snippet}</p>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 export function IdeaDetailPage() {
   const { ideaId } = useParams();
@@ -125,6 +305,23 @@ export function IdeaDetailPage() {
   const [draftProgressEvents, setDraftProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
   const [draftRunKey, setDraftRunKey] = useState(0);
   const [draftModalStep, setDraftModalStep] = useState<1 | 2>(1);
+  const [serpRefreshBanner, setSerpRefreshBanner] = useState<
+    null | { tone: "ok" | "err"; text: string }
+  >(null);
+
+  const refreshSerpMutation = useMutation({
+    mutationFn: () =>
+      postJson(`/api/article-ideas/${numericId}/refresh-serp`, refreshArticleIdeaSerpSchema, {}),
+    onMutate: () => setSerpRefreshBanner(null),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
+      setSerpRefreshBanner({ tone: "ok", text: "SERP data updated from SerpAPI." });
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : "Refresh failed.";
+      setSerpRefreshBanner({ tone: "err", text: msg || "Refresh failed." });
+    },
+  });
 
   const blogsQuery = useQuery({
     queryKey: ["blogs-shopify-ids"],
@@ -267,47 +464,78 @@ export function IdeaDetailPage() {
       </Link>
 
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Article Idea</p>
-          <h2 className="mt-2 text-3xl font-bold text-ink leading-snug">
-            {idea.suggested_title}
-          </h2>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            <span
-              className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${intent.color}`}
-            >
-              {intent.label}
-            </span>
-            <span
-              className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${source.color}`}
-            >
-              {source.label}
-            </span>
-            <span className="text-xs text-slate-400 self-center ml-1">Generated {date}</span>
+      <div className="space-y-2">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Article Idea</p>
+            <h2 className="mt-2 text-3xl font-bold text-ink leading-snug">
+              {idea.suggested_title}
+            </h2>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <span
+                className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${intent.color}`}
+              >
+                {intent.label}
+              </span>
+              <span
+                className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${source.color}`}
+              >
+                {source.label}
+              </span>
+              <span className="text-xs text-slate-400 self-center ml-1">Generated {date}</span>
+            </div>
           </div>
-        </div>
-        <div className="shrink-0 flex items-center gap-3 pt-2">
-          <Select
-            value={idea.status}
-            onValueChange={(value) =>
-              singleStatusMutation.mutate({ id: idea.id, status: value })
-            }
-          >
-            <SelectTrigger className="h-8 w-[130px] rounded-lg border-line bg-white px-3 py-1 text-sm text-ink">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="idea">New</SelectItem>
-              <SelectItem value="approved">Approved</SelectItem>
-              <SelectItem value="published">Published</SelectItem>
-              <SelectItem value="rejected">Rejected</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button onClick={openDraftModal}>
-            <Sparkles size={15} />
-            Draft Article
-          </Button>
+          <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end sm:pt-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Select
+                value={idea.status}
+                onValueChange={(value) =>
+                  singleStatusMutation.mutate({ id: idea.id, status: value })
+                }
+              >
+                <SelectTrigger className="h-8 w-[130px] rounded-lg border-line bg-white px-3 py-1 text-sm text-ink">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="idea">New</SelectItem>
+                  <SelectItem value="approved">Approved</SelectItem>
+                  <SelectItem value="published">Published</SelectItem>
+                  <SelectItem value="rejected">Rejected</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-slate-300 bg-white"
+                disabled={
+                  !idea.primary_keyword?.trim()
+                  || refreshSerpMutation.isPending
+                  || Number.isNaN(numericId)
+                  || numericId <= 0
+                }
+                onClick={() => refreshSerpMutation.mutate()}
+              >
+                <RefreshCw size={15} className={refreshSerpMutation.isPending ? "animate-spin" : ""} />
+                {refreshSerpMutation.isPending ? "Refreshing…" : "Refresh SERP data"}
+              </Button>
+              <Button onClick={openDraftModal}>
+                <Sparkles size={15} />
+                Draft Article
+              </Button>
+            </div>
+            {serpRefreshBanner ? (
+              <p
+                className={
+                  serpRefreshBanner.tone === "ok"
+                    ? "text-right text-sm text-emerald-700"
+                    : "text-right text-sm text-red-600"
+                }
+                role="status"
+              >
+                {serpRefreshBanner.text}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -338,36 +566,85 @@ export function IdeaDetailPage() {
             </div>
           ) : null}
 
-          {/* SERP Signals */}
-          {(idea.dominant_serp_features || idea.content_format_hints) ? (
-            <Card className="border-[#e2eaf4]">
-              <CardHeader className="px-6 pt-6 pb-0">
-                <h3 className="text-lg font-semibold text-ink">SERP Signals</h3>
-              </CardHeader>
-              <CardContent className="px-6 pb-6 pt-3 space-y-2">
-                {idea.dominant_serp_features ? (
-                  <div>
-                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Dominant SERP Features
-                    </p>
-                    <p className="mt-1 text-sm text-slate-700">
-                      {idea.dominant_serp_features}
-                    </p>
-                  </div>
-                ) : null}
-                {idea.content_format_hints ? (
-                  <div>
-                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Content Format Hints
-                    </p>
-                    <p className="mt-1 text-sm text-slate-700">
-                      {idea.content_format_hints}
-                    </p>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
+          {idea && isNonEmptyAiOverview(idea.ai_overview) ? (
+            <SerpAiOverviewSection overview={idea.ai_overview} />
           ) : null}
+
+          {/* Top organic results (same SerpAPI Google search as related questions) */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-6 pt-6 pb-0">
+              <div className="flex items-center gap-2">
+                <Search size={18} className="text-slate-400" />
+                <h3 className="text-lg font-semibold text-ink">Top Ranking Pages</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                Organic result titles and URLs from the Google SERP for the primary keyword (via SerpAPI at idea
+                generation or after a manual refresh). Useful for competitive context and outline benchmarking.
+              </p>
+            </CardHeader>
+            <CardContent className="px-6 pb-6 pt-3">
+              {idea.top_ranking_pages && idea.top_ranking_pages.length > 0 ? (
+                <ol className="list-decimal space-y-3 pl-4 text-sm leading-relaxed">
+                  {idea.top_ranking_pages.map((row, idx) => (
+                    <li key={`${idx}-${row.url.slice(0, 64)}`} className="pl-1 marker:text-slate-400">
+                      <a
+                        href={row.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-ink hover:text-blue-700 inline-flex items-center gap-1 group"
+                      >
+                        <span className="group-hover:underline">{row.title}</span>
+                        <ExternalLink size={13} className="shrink-0 text-slate-400 group-hover:text-blue-600" />
+                      </a>
+                      <p className="mt-0.5 text-xs text-slate-500 break-all font-normal">{row.url}</p>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No ranking pages stored. Save a SerpAPI key under Settings → Integrations, then generate new ideas —
+                  each idea captures the first-page organic list for its primary keyword.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Related questions (SerpAPI at generation time) */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-6 pt-6 pb-0">
+              <div className="flex items-center gap-2">
+                <MessagesSquare size={18} className="text-slate-400" />
+                <h3 className="text-lg font-semibold text-ink">Related questions</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                From SerpAPI (Google Search “People also ask”) when this idea was generated or after a manual refresh,
+                using the primary keyword. Each row stores the question and Google’s ``snippet`` preview from the SERP
+                JSON. Intended for headings, FAQ, and draft enrichment.
+              </p>
+            </CardHeader>
+            <CardContent className="px-6 pb-6 pt-3">
+              {idea.audience_questions && idea.audience_questions.length > 0 ? (
+                <ol className="list-decimal space-y-3 pl-4 text-sm text-slate-700 leading-relaxed">
+                  {idea.audience_questions.map((row, idx) => (
+                    <li
+                      key={`${idx}-${row.question.slice(0, 48)}`}
+                      className="pl-1 marker:text-slate-400"
+                    >
+                      <span className="font-medium text-ink">{row.question}</span>
+                      {row.snippet ? (
+                        <p className="mt-1 text-sm font-normal text-slate-600 whitespace-pre-wrap">{row.snippet}</p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No questions stored for this idea. Save a SerpAPI key under Settings → Integrations, then generate
+                  new ideas — each idea fetches related questions for its primary keyword via SerpAPI.
+                </p>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Linked articles table */}
           <Card className="border-[#e2eaf4]">
@@ -537,6 +814,82 @@ export function IdeaDetailPage() {
             </Card>
           ) : null}
 
+          {/* SERP signals (gap analysis + live SerpAPI block) */}
+          {(idea.dominant_serp_features || idea.content_format_hints) ? (
+            <Card className="border-[#e2eaf4]">
+              <CardHeader className="px-5 pt-5 pb-0">
+                <h4 className="text-sm font-semibold text-ink">SERP signals</h4>
+              </CardHeader>
+              <CardContent className="px-5 pb-5 pt-3 space-y-3">
+                {idea.dominant_serp_features ? (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Dominant SERP features
+                    </p>
+                    <p className="mt-1 text-sm text-slate-700 leading-relaxed">
+                      {idea.dominant_serp_features}
+                    </p>
+                  </div>
+                ) : null}
+                {idea.content_format_hints ? (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Content format hints
+                    </p>
+                    <p className="mt-1 text-sm text-slate-700 leading-relaxed">
+                      {idea.content_format_hints}
+                    </p>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {/* Related searches from SerpAPI */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-5 pt-5 pb-0">
+              <div className="flex items-center gap-2">
+                <ListOrdered size={15} className="text-slate-400" />
+                <h4 className="text-sm font-semibold text-ink">Related searches</h4>
+              </div>
+              <p className="mt-1 text-xs text-slate-500 leading-relaxed">
+                From the same Google SERP (SerpAPI). Position uses the API when present; otherwise order on the page
+                (1 = first).
+              </p>
+            </CardHeader>
+            <CardContent className="px-5 pb-5 pt-3">
+              {idea.related_searches && idea.related_searches.length > 0 ? (
+                <div className="overflow-x-auto rounded-lg border border-slate-200/80">
+                  <Table className="w-full text-xs">
+                    <TableHeader>
+                      <TableRow className="border-b border-line bg-slate-50/80 text-left font-medium text-slate-500">
+                        <TableHead className="w-14 px-2 py-1.5">#</TableHead>
+                        <TableHead className="px-2 py-1.5">Query</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody className="divide-y divide-line/60">
+                      {[...idea.related_searches]
+                        .sort((a, b) => a.position - b.position || a.query.localeCompare(b.query))
+                        .map((row) => (
+                          <TableRow key={`${row.position}-${row.query.slice(0, 48)}`} className="hover:bg-slate-50/50">
+                            <TableCell className="px-2 py-2 font-mono text-slate-500 tabular-nums">
+                              {row.position}
+                            </TableCell>
+                            <TableCell className="px-2 py-2 text-slate-800 leading-snug">{row.query}</TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  None stored yet. Use <span className="font-medium text-slate-600">Refresh SERP data</span> above when
+                  a SerpAPI key is saved, or generate a new idea.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Aggregate performance */}
           {perf?.aggregate && perf.articles && perf.articles.length > 0 ? (
             <Card className="border-emerald-200 bg-emerald-50/50">
@@ -629,6 +982,64 @@ export function IdeaDetailPage() {
                     </span>
                   ) : null}
                 </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {/* Interlink targets — authority page + related pages */}
+          {(idea.primary_target || (idea.secondary_targets && idea.secondary_targets.length > 0)) ? (
+            <Card className="border-[#e2eaf4]">
+              <CardHeader className="px-5 pt-5 pb-0">
+                <h4 className="text-sm font-semibold text-ink">Interlink Targets</h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  This article will link back to these pages to build topical authority.
+                </p>
+              </CardHeader>
+              <CardContent className="px-5 pb-5 pt-3 space-y-3">
+                {idea.primary_target ? (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      Primary authority page
+                    </div>
+                    <a
+                      href={idea.primary_target.url || "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs font-medium text-[#2e6be6] hover:bg-[#e3eeff]"
+                      title={idea.primary_target.url}
+                    >
+                      <span className="rounded bg-[#2e6be6] px-1 py-0.5 text-[10px] font-semibold text-white">
+                        {idea.primary_target.type}
+                      </span>
+                      <span className="truncate">{idea.primary_target.title || idea.primary_target.handle}</span>
+                    </a>
+                  </div>
+                ) : null}
+                {idea.secondary_targets && idea.secondary_targets.length > 0 ? (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      Related pages ({idea.secondary_targets.length})
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {idea.secondary_targets.map((t) => (
+                        <a
+                          key={`${t.type}:${t.handle}`}
+                          href={t.url || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                          title={`${t.url}${t.anchor_keyword ? ` — anchor: ${t.anchor_keyword}` : ""}`}
+                        >
+                          <span className="text-slate-400">{t.type}</span>
+                          <span className="truncate max-w-[180px]">{t.title || t.handle}</span>
+                          {t.anchor_keyword ? (
+                            <span className="text-slate-400">· {t.anchor_keyword}</span>
+                          ) : null}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           ) : null}

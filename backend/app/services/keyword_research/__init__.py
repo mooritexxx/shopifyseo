@@ -6,6 +6,7 @@ continue to work without modification.
 """
 
 from .dataforseo_client import validate_dataforseo_access
+from .google_ads_planner_metrics import refresh_google_ads_planner_metrics
 from .competitor_blocklist import (
     COMPETITOR_BLOCKLIST_KEY,
     COMPETITOR_DISMISSED_SNAPSHOTS_KEY,
@@ -72,6 +73,7 @@ _batch_seeds = batch_seeds
 __all__ = [
     # dataforseo_client
     "validate_dataforseo_access",
+    "refresh_google_ads_planner_metrics",
     # competitor_blocklist
     "COMPETITOR_BLOCKLIST_KEY",
     "COMPETITOR_DISMISSED_SNAPSHOTS_KEY",

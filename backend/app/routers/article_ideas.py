@@ -9,9 +9,11 @@ from backend.app.schemas.article_ideas import (
     ArticleIdeasPayload,
     BulkStatusRequest,
     IdeaPerformancePayload,
+    RefreshArticleIdeaSerpPayload,
     UpdateIdeaStatusRequest,
 )
 from backend.app.schemas.common import SuccessResponse, success_response
+from shopifyseo.audience_questions_api import enrich_article_ideas_with_audience_questions
 from shopifyseo.dashboard_ai_engine_parts.generation import generate_article_ideas
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ def generate_ideas():
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(exc),
             )
+        enrich_article_ideas_with_audience_questions(conn, ideas)
         dq.save_article_ideas(conn, ideas)
         try:
             from shopifyseo.embedding_store import sync_embeddings
@@ -117,6 +120,30 @@ def bulk_update_status(body: BulkStatusRequest):
     finally:
         conn.close()
     return success_response({"updated": count, "status": body.status})
+
+
+@router.post("/{idea_id}/refresh-serp", response_model=SuccessResponse[RefreshArticleIdeaSerpPayload])
+def refresh_idea_serp_snapshot(idea_id: int):
+    """Re-fetch SerpAPI related questions + top organic URLs for this idea's primary keyword (overwrites stored JSON)."""
+    conn = open_db_connection()
+    try:
+        try:
+            idea_dict = dq.refresh_article_idea_serp_snapshot(conn, idea_id)
+        except LookupError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Idea not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        try:
+            from shopifyseo.embedding_store import sync_embeddings
+
+            sync_embeddings(conn, object_type="article_idea")
+        except Exception:
+            logger.warning("Embedding sync failed after SERP refresh", exc_info=True)
+    finally:
+        conn.close()
+
+    item = ArticleIdeaItem.model_validate(idea_dict)
+    return success_response(RefreshArticleIdeaSerpPayload(idea=item))
 
 
 @router.get("/{idea_id}/performance", response_model=SuccessResponse[IdeaPerformancePayload])

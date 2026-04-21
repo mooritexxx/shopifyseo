@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Info } from "lucide-react";
 
@@ -37,9 +38,36 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]["id"];
 
+function tabFromQueryParam(raw: string | null): TabId {
+  if (raw === "seed" || raw === "competitors" || raw === "target" || raw === "clusters") {
+    return raw;
+  }
+  return "seed";
+}
+
 export function KeywordsPage() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<TabId>("seed");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab = useMemo(() => tabFromQueryParam(tabParam), [tabParam]);
+
+  const setActiveTab = useCallback(
+    (next: TabId) => {
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev);
+          if (next === "seed") {
+            p.delete("tab");
+          } else {
+            p.set("tab", next);
+          }
+          return p;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
 
   const [seedResearchStatus, setSeedResearchStatus] = useState<"idle" | "running" | "error">("idle");
   const [seedResearchProgress, setSeedResearchProgress] = useState("");

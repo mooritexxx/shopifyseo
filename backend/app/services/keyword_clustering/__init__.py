@@ -13,6 +13,8 @@ from ._crud import get_cluster_detail, get_match_options, update_cluster_match
 from ._dedupe import collapse_near_duplicates
 from ._gaps import compute_seo_gaps, enrich_clusters_with_coverage
 from ._generation import generate_clusters
+from ._postprocess import fold_singletons, merge_similar_clusters
+from ._pre_cluster import pre_cluster
 from ._helpers import (
     _build_clustering_prompt,
     _check_keyword_coverage,
@@ -33,6 +35,9 @@ __all__ = [
     # Public API
     "generate_clusters",
     "collapse_near_duplicates",
+    "pre_cluster",
+    "merge_similar_clusters",
+    "fold_singletons",
     "load_clusters",
     "enrich_clusters_with_coverage",
     "compute_seo_gaps",

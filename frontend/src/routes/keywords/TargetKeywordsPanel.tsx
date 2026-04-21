@@ -1,10 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, RefreshCw, Search, Sparkles, X } from "lucide-react";
+import { BarChart2, Check, Download, LoaderCircle, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
+import { AiRunningToastBody } from "../../components/ui/ai-running-toast-body";
+import { Toast } from "../../components/ui/toast";
 import {
   Select,
   SelectContent,
@@ -12,6 +15,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../../components/ui/tooltip";
 import { downloadGoogleAdsKeywordsCsv } from "../../lib/google-ads-keywords-csv";
 import { cn } from "../../lib/utils";
 import { getJson, patchJson, postJson } from "../../lib/api";
@@ -51,9 +60,123 @@ const STATUS_TABS: { id: TargetStatusTab; label: string }[] = [
   { id: "dismissed", label: "Dismissed" },
 ];
 
+const TIP_SELECT =
+  "Select rows for bulk actions. Selection is kept in this app only and is not sent to Shopify or external APIs.";
+
+const TIP_KEYWORD =
+  "The query string. Comes from manual entry, seed keyword research (DataForSEO Labs), or competitor keyword imports. Stored in this app.";
+
+const TIP_VOLUME =
+  "Monthly search volume from DataForSEO Labs (keyword overview: keyword_info.search_volume) for your configured market. Updated when you run Refresh metrics.";
+
+const TIP_KD =
+  "Keyword difficulty (0–100) from DataForSEO Labs (keyword_properties.keyword_difficulty). Updated when you run Refresh metrics.";
+
+const TIP_TRAFFIC_POT =
+  "DataForSEO Labs. For keyword overview / explorer-style rows this field is the same Labs search volume as Volume; for some competitor ranked-keyword imports it can use estimated organic traffic (ETV) from SERP data. Updated when you run Refresh metrics.";
+
+const TIP_CPC =
+  "Cost per click from DataForSEO Labs (keyword_info.cpc) for your market. Updated when you run Refresh metrics.";
+
+const TIP_ADS_SEARCHES =
+  "Average monthly searches from the Google Ads API (Keyword Planner: GenerateKeywordHistoricalMetrics). Populated when you run Check Ads API.";
+
+const TIP_ADS_IDX =
+  "Competition index (0–100) from the Google Ads Keyword Planner. Populated when you run Check Ads API.";
+
+const TIP_INTENT =
+  "Search intent label derived in this app from DataForSEO search_intent_info (main and secondary intents). Updated when you run Refresh metrics.";
+
+const TIP_CONTENT_TYPE =
+  "Suggested page type from this app’s intent mapping plus DataForSEO SERP feature signals. Updated when you run Refresh metrics.";
+
+const TIP_OPPORTUNITY =
+  "Opportunity score computed in this app from DataForSEO volume, traffic potential, and difficulty, then normalized across the full keyword list. Updated when you run Refresh metrics.";
+
+const TIP_GSC_POSITION =
+  "Average position from Google Search Console for queries matched to this keyword (exact or containment match). Populated when you run Cross-reference GSC.";
+
+const TIP_GSC_CLICKS =
+  "Clicks from Google Search Console for matched queries. Populated when you run Cross-reference GSC.";
+
+const TIP_GSC_IMP =
+  "Impressions from Google Search Console for matched queries. Populated when you run Cross-reference GSC.";
+
+const TIP_RANKING =
+  "Bucket such as Quick Win or Striking Distance, computed in this app from the matched GSC average position (and defaults to Not Ranking when there is no match). Updated when you run Cross-reference GSC.";
+
+const TIP_STATUS =
+  "Workflow state (New / Approved / Dismissed) stored in this app. Does not sync to Shopify or external APIs.";
+
+function KwSortHeader({
+  tip,
+  label,
+  sortKey,
+  activeSortKey,
+  sortDir,
+  buttonClassName,
+  spanClassName,
+  onSort,
+}: {
+  tip: string;
+  label: string;
+  sortKey: SortKey;
+  activeSortKey: SortKey;
+  sortDir: SortDir;
+  buttonClassName: string;
+  spanClassName: string;
+  onSort: (key: SortKey) => void;
+}) {
+  const ind = activeSortKey === sortKey ? (sortDir === "asc" ? " ↑" : " ↓") : null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" className={buttonClassName} onClick={() => onSort(sortKey)}>
+          <span className={spanClassName}>
+            {label}
+            {ind}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
+        {tip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function KwHeaderTip({
+  tip,
+  className,
+  children,
+}: {
+  tip: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          className={cn(
+            "cursor-help rounded px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-ocean/30",
+            className,
+          )}
+        >
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
+        {tip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** Shared grid for header + virtual rows so columns stay aligned with horizontal scroll. */
 const TARGET_KW_GRID_TEMPLATE =
-  "40px minmax(200px,2.2fr) 5rem 3.75rem 5.5rem 4.25rem 5.75rem minmax(7rem,1fr) 5.5rem 4rem 4rem 4rem 5.25rem 7rem";
+  "40px minmax(160px,2fr) minmax(4rem,0.75fr) minmax(2.5rem,auto) minmax(4.5rem,0.85fr) minmax(3.5rem,0.7fr) minmax(4.5rem,0.85fr) minmax(3rem,auto) minmax(7rem,1fr) minmax(10rem,1.5fr) minmax(4.5rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(4.5rem,auto) minmax(6.25rem,1fr)";
 
 export type TargetKeywordsPanelProps = {
   /** True while seed keyword research (SSE) is running from the Seed Keywords tab. */
@@ -135,6 +258,47 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
   });
 
   const items = query.data?.items ?? [];
+
+  const [adsPlannerStatus, setAdsPlannerStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [adsPlannerProgress, setAdsPlannerProgress] = useState("");
+  const [adsPlannerError, setAdsPlannerError] = useState("");
+  const [adsPlannerStartedAt, setAdsPlannerStartedAt] = useState<number | null>(null);
+  const [adsPlannerElapsed, setAdsPlannerElapsed] = useState(Date.now());
+  useEffect(() => {
+    if (adsPlannerStatus !== "running") return;
+    const id = window.setInterval(() => setAdsPlannerElapsed(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [adsPlannerStatus]);
+
+  function runAdsPlannerMetrics() {
+    const cached = queryClient.getQueryData<{ items: TargetKeyword[] }>(["target-keywords"]);
+    const kws = (cached?.items ?? []).map((i) => i.keyword);
+    if (!kws.length) return;
+    setAdsPlannerStatus("running");
+    setAdsPlannerProgress("");
+    setAdsPlannerError("");
+    setAdsPlannerStartedAt(Date.now());
+    setAdsPlannerElapsed(Date.now());
+    startKeywordResearchSse(
+      "/api/keywords/target/google-ads-planner-metrics",
+      {
+        onProgress: setAdsPlannerProgress,
+        onDone: () => {
+          setAdsPlannerStatus("done");
+          setAdsPlannerProgress("");
+          void queryClient.invalidateQueries({ queryKey: ["target-keywords"] });
+          window.setTimeout(() => setAdsPlannerStatus("idle"), 2200);
+        },
+        onError: (detail) => {
+          setAdsPlannerStatus("error");
+          setAdsPlannerError(detail);
+          setAdsPlannerProgress("");
+        },
+      },
+      { body: { keywords: kws } },
+    );
+  }
+
   const lastRun = query.data?.last_run ?? null;
 
   const approvedKeywords = useMemo(
@@ -237,10 +401,24 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     }
 
     list = [...list].sort((a, b) => {
-      const av = a[sortKey] ?? -Infinity;
-      const bv = b[sortKey] ?? -Infinity;
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      const rankEmpty = (v: unknown) =>
+        v === null ||
+        v === undefined ||
+        (typeof v === "string" && v.trim() === "") ||
+        (typeof v === "number" && Number.isNaN(v));
+      if (rankEmpty(av) && rankEmpty(bv)) return 0;
+      if (rankEmpty(av)) return 1;
+      if (rankEmpty(bv)) return -1;
+      if (typeof av === "string" && typeof bv === "string") {
+        const c = av.localeCompare(bv);
+        return sortDir === "asc" ? c : -c;
+      }
+      const an = typeof av === "number" ? av : Number(av);
+      const bn = typeof bv === "number" ? bv : Number(bv);
+      if (an < bn) return sortDir === "asc" ? -1 : 1;
+      if (an > bn) return sortDir === "asc" ? 1 : -1;
       return 0;
     });
 
@@ -277,11 +455,6 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     }
   }
 
-  function sortIndicator(key: SortKey) {
-    if (sortKey !== key) return null;
-    return sortDir === "asc" ? " ↑" : " ↓";
-  }
-
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((i) => selected.has(i.keyword));
 
@@ -313,7 +486,35 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
   const selectedList = Array.from(selected);
 
   return (
+    <TooltipProvider delayDuration={250}>
     <div className="rounded-[24px] border border-line/80 bg-white">
+      {typeof document !== "undefined" &&
+        (adsPlannerStatus === "running" ||
+          adsPlannerStatus === "done" ||
+          (adsPlannerStatus === "error" && adsPlannerError)) &&
+        createPortal(
+          <>
+            {adsPlannerStatus === "running" ? (
+              <Toast variant="info" duration={0} customIcon={<LoaderCircle className="animate-spin" size={18} />}>
+                <AiRunningToastBody
+                  headline={adsPlannerProgress || "Google Ads Keyword Planner…"}
+                  stepElapsedMs={adsPlannerStartedAt ? adsPlannerElapsed - adsPlannerStartedAt : 0}
+                />
+              </Toast>
+            ) : null}
+            {adsPlannerStatus === "done" ? (
+              <Toast variant="success" duration={5000} onClose={() => setAdsPlannerStatus("idle")}>
+                Google Ads planner metrics updated
+              </Toast>
+            ) : null}
+            {adsPlannerStatus === "error" && adsPlannerError ? (
+              <Toast variant="error" duration={8000} onClose={() => setAdsPlannerStatus("idle")}>
+                {adsPlannerError}
+              </Toast>
+            ) : null}
+          </>,
+          document.body,
+        )}
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3 px-5 pt-5">
         <div>
@@ -362,6 +563,16 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
             {refreshStatus === "running"
               ? "Refreshing…"
               : "Refresh metrics"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={adsPlannerStatus === "running" || items.length === 0}
+            onClick={runAdsPlannerMetrics}
+            title="Keyword Planner (Google Ads): avg monthly searches, competition, and competition index for your primary market. Large lists run in multiple parts automatically and may take several minutes."
+          >
+            <BarChart2 className={cn("mr-1.5 h-3.5 w-3.5", adsPlannerStatus === "running" && "animate-pulse")} />
+            {adsPlannerStatus === "running" ? "Ads API…" : "Check Ads API"}
           </Button>
         </div>
       </div>
@@ -594,83 +805,158 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
         <div className="overflow-x-auto">
           <div className="min-w-[1080px] text-sm">
             <div
-              className="grid border-b border-line bg-white text-left text-xs font-medium text-slate-400"
+              className="grid items-center gap-x-2 border-b border-line bg-white text-xs font-medium text-slate-400"
               style={{ gridTemplateColumns: TARGET_KW_GRID_TEMPLATE }}
             >
-              <div className="flex items-center py-2 pl-5 pr-2">
-                <Checkbox
-                  checked={allFilteredSelected}
-                  onCheckedChange={() => toggleAll()}
-                  className="h-4 w-4"
-                />
+              <div className="flex min-h-10 min-w-0 items-center justify-center px-0.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      tabIndex={0}
+                      className="inline-flex cursor-help rounded p-0.5 outline-none focus-visible:ring-2 focus-visible:ring-ocean/30"
+                    >
+                      <Checkbox
+                        checked={allFilteredSelected}
+                        onCheckedChange={() => toggleAll()}
+                        className="h-4 w-4"
+                      />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
+                    {TIP_SELECT}
+                  </TooltipContent>
+                </Tooltip>
               </div>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("keyword")}
-              >
-                Keyword{sortIndicator("keyword")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("volume")}
-              >
-                Volume{sortIndicator("volume")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("difficulty")}
-              >
-                KD{sortIndicator("difficulty")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("traffic_potential")}
-              >
-                Traffic Pot.{sortIndicator("traffic_potential")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("cpc")}
-              >
-                CPC{sortIndicator("cpc")}
-              </button>
-              <div className="whitespace-nowrap py-2 pr-2">Intent</div>
-              <div className="whitespace-nowrap py-2 pr-2">Content Type</div>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("opportunity")}
-              >
-                Opportunity{sortIndicator("opportunity")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("gsc_position")}
-              >
-                Position{sortIndicator("gsc_position")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("gsc_clicks")}
-              >
-                Clicks{sortIndicator("gsc_clicks")}
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer whitespace-nowrap py-2 pr-2 text-left hover:text-ink"
-                onClick={() => toggleSort("gsc_impressions")}
-              >
-                Imp.{sortIndicator("gsc_impressions")}
-              </button>
-              <div className="whitespace-nowrap py-2 pr-2">Ranking</div>
-              <div className="whitespace-nowrap py-2 pr-5">Status</div>
+              <KwSortHeader
+                tip={TIP_KEYWORD}
+                label="Keyword"
+                sortKey="keyword"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 text-left hover:text-ink"
+                spanClassName="block w-full truncate text-left"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_VOLUME}
+                label="Volume"
+                sortKey="volume"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_KD}
+                label="KD"
+                sortKey="difficulty"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-center tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_TRAFFIC_POT}
+                label="Traffic pot."
+                sortKey="traffic_potential"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_CPC}
+                label="CPC"
+                sortKey="cpc"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_ADS_SEARCHES}
+                label="Ads searches"
+                sortKey="ads_avg_monthly_searches"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_ADS_IDX}
+                label="Ads idx"
+                sortKey="ads_competition_index"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
+                <KwHeaderTip tip={TIP_INTENT} className="block w-full truncate text-center">
+                  Intent
+                </KwHeaderTip>
+              </div>
+              <div className="flex min-h-10 min-w-0 items-center justify-start py-2">
+                <KwHeaderTip tip={TIP_CONTENT_TYPE} className="block w-full truncate text-left">
+                  Content type
+                </KwHeaderTip>
+              </div>
+              <KwSortHeader
+                tip={TIP_OPPORTUNITY}
+                label="Opportunity"
+                sortKey="opportunity"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-center"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_GSC_POSITION}
+                label="Position"
+                sortKey="gsc_position"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_GSC_CLICKS}
+                label="Clicks"
+                sortKey="gsc_clicks"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <KwSortHeader
+                tip={TIP_GSC_IMP}
+                label="Imp."
+                sortKey="gsc_impressions"
+                activeSortKey={sortKey}
+                sortDir={sortDir}
+                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
+                spanClassName="block w-full truncate text-right tabular-nums"
+                onSort={toggleSort}
+              />
+              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
+                <KwHeaderTip tip={TIP_RANKING} className="block w-full truncate text-center">
+                  Ranking
+                </KwHeaderTip>
+              </div>
+              <div className="flex min-h-10 min-w-0 items-center justify-start py-2 pr-2">
+                <KwHeaderTip tip={TIP_STATUS} className="block w-full truncate text-left">
+                  Status
+                </KwHeaderTip>
+              </div>
             </div>
 
             <div
@@ -695,78 +981,107 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                       }}
                     >
                       <div
-                        className="grid items-center py-2.5 text-sm"
+                        className="grid items-center gap-x-2 py-2.5 text-sm"
                         style={{ gridTemplateColumns: TARGET_KW_GRID_TEMPLATE }}
                       >
-                        <div className="flex items-center pl-5 pr-2">
+                        <div className="flex min-h-8 min-w-0 items-center justify-center px-0.5">
                           <Checkbox
                             checked={selected.has(item.keyword)}
                             onCheckedChange={() => toggleOne(item.keyword)}
                             className="h-4 w-4"
                           />
                         </div>
-                        <div className="min-w-0 pr-2 font-medium">
+                        <div className="flex min-w-0 items-center justify-start font-medium">
                           <a
                             href={`https://www.google.com/search?q=${encodeURIComponent(item.keyword)}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="block truncate text-ink underline-offset-2 hover:text-ocean hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean/25"
+                            className="block min-w-0 max-w-full truncate text-left text-ink underline-offset-2 hover:text-ocean hover:underline focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ocean/25"
                             title={`Google: ${item.keyword}`}
                           >
                             {item.keyword}
                           </a>
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.volume !== null ? item.volume.toLocaleString() : "—"}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.volume !== null ? item.volume.toLocaleString() : "—"}
+                          </span>
                         </div>
-                        <div className="pr-2">
+                        <div className="flex min-w-0 items-center justify-center">
                           <DifficultyBadge kd={item.difficulty} />
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.traffic_potential !== null
-                            ? item.traffic_potential.toLocaleString()
-                            : "—"}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.traffic_potential !== null
+                              ? item.traffic_potential.toLocaleString()
+                              : "—"}
+                          </span>
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.cpc !== null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.cpc !== null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
+                          </span>
                         </div>
-                        <div className="pr-2">
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.ads_avg_monthly_searches != null
+                              ? item.ads_avg_monthly_searches.toLocaleString()
+                              : "—"}
+                          </span>
+                        </div>
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.ads_competition_index != null ? item.ads_competition_index : "—"}
+                          </span>
+                        </div>
+                        <div className="flex min-w-0 items-center justify-center">
                           <IntentBadge intent={item.intent} />
                         </div>
-                        <div className="min-w-0 pr-2 text-slate-600">
-                          {item.content_type ?? (
-                            <span className="text-slate-400">—</span>
-                          )}
+                        <div
+                          className="flex min-w-0 items-center justify-start text-xs leading-snug text-slate-600"
+                          title={item.content_type || undefined}
+                        >
+                          <span className="block w-full truncate text-left">
+                            {item.content_type ?? (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </span>
                         </div>
-                        <div className="pr-2">
+                        <div className="flex min-w-0 items-center justify-center">
                           <OpportunityBadge opp={item.opportunity} />
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.gsc_position !== null && item.gsc_position !== undefined ? (
-                            item.gsc_position.toFixed(1)
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.gsc_position !== null && item.gsc_position !== undefined ? (
+                              item.gsc_position.toFixed(1)
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </span>
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.gsc_clicks !== null && item.gsc_clicks !== undefined ? (
-                            item.gsc_clicks
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.gsc_clicks !== null && item.gsc_clicks !== undefined ? (
+                              item.gsc_clicks
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </span>
                         </div>
-                        <div className="pr-2 text-slate-600">
-                          {item.gsc_impressions !== null &&
-                          item.gsc_impressions !== undefined ? (
-                            item.gsc_impressions
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
+                        <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
+                          <span className="block w-full truncate text-right">
+                            {item.gsc_impressions !== null &&
+                            item.gsc_impressions !== undefined ? (
+                              item.gsc_impressions
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </span>
                         </div>
-                        <div className="pr-2">
+                        <div className="flex min-w-0 items-center justify-center">
                           <RankingBadge status={item.ranking_status} />
                         </div>
-                        <div className="pr-5">
+                        <div className="flex w-full min-w-0 items-center justify-start pr-2">
                           <Select
                             value={item.status}
                             onValueChange={(value) =>
@@ -776,7 +1091,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                               })
                             }
                           >
-                            <SelectTrigger className="h-7 rounded-lg border-line bg-white px-2 py-1 text-xs text-ink focus:border-ocean focus:ring-1 focus:ring-ocean">
+                            <SelectTrigger className="h-7 w-full min-w-0 max-w-full rounded-lg border-line bg-white px-2 py-1 text-xs text-ink focus:border-ocean focus:ring-1 focus:ring-ocean">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -806,5 +1121,6 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
         </div>
       )}
     </div>
+    </TooltipProvider>
   );
 }

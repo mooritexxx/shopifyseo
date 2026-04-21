@@ -1,0 +1,455 @@
+"""SerpAPI: Google Search snapshot for article idea primary keywords.
+
+Uses SerpAPI’s **Google Search** JSON API (`search.json`, ``engine=google``) once per
+keyword (no separate ``google_related_questions`` call). Passes **localization**
+from Settings → Primary market (``gl``, ``hl``, ``google_domain`` via
+``shopifyseo.market_context``) and reads:
+
+- ``related_questions`` (People Also Ask) → ``audience_questions`` as
+  ``[{question, snippet}, ...]`` using each item’s ``question`` and ``snippet``
+  only (the same preview text Google exposes on the first SERP).
+- ``organic_results`` → ``top_ranking_pages`` as ``[{title, url}, ...]``.
+- ``ai_overview`` (when present) → stored subset: ``text_blocks`` (paragraph / list)
+  plus ``references`` (title, link, snippet, source, index).
+- ``related_searches`` → ``[{query, position}, ...]`` using each item’s ``query`` and
+  ``position`` when SerpAPI provides it; otherwise position is the 1-based index in the list.
+
+Requires **SerpAPI API key** saved in Settings → Integrations → SerpAPI
+(service setting ``serpapi_api_key``).
+
+Optional: ``RELATED_QUESTIONS_DELAY_SEC`` — seconds to sleep between SerpAPI
+calls when generating a batch of ideas (rate limiting).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sqlite3
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+import shopifyseo.dashboard_google as dg
+import shopifyseo.market_context as mc
+
+logger = logging.getLogger(__name__)
+
+SERPAPI_SEARCH_JSON = "https://serpapi.com/search.json"
+
+# Fixed test query for Settings → Test connection (generic informational keyword).
+SERPAPI_SETTINGS_TEST_KEYWORD = "black coffee"
+
+# Cap organic rows stored per idea (first page only).
+_MAX_ORGANIC_RESULTS = 15
+
+# Cap ``related_searches`` rows per idea.
+_MAX_RELATED_SEARCHES = 40
+
+# Cap AI overview payload size (SerpAPI shape varies; keep JSON bounded).
+_MAX_AI_OVERVIEW_BLOCKS = 48
+_MAX_AI_OVERVIEW_LIST_ITEMS = 40
+_MAX_AI_OVERVIEW_REFS = 40
+_MAX_AI_SNIPPET_CHARS = 6000
+
+
+def _trim_str(value: Any, max_len: int = _MAX_AI_SNIPPET_CHARS) -> str:
+    if not isinstance(value, str):
+        return ""
+    s = value.strip()
+    return s if len(s) <= max_len else s[:max_len]
+
+
+def _safe_reference_indexes(raw: Any, cap: int = 48) -> list[int]:
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for x in raw:
+        try:
+            if isinstance(x, bool):
+                continue
+            if isinstance(x, int):
+                out.append(x)
+            elif isinstance(x, float) and x.is_integer():
+                out.append(int(x))
+            elif isinstance(x, str) and x.strip():
+                out.append(int(float(x)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _normalize_snippet_latex(raw: Any) -> list[str]:
+    if isinstance(raw, str) and raw.strip():
+        return [_trim_str(raw, 800)]
+    if isinstance(raw, list):
+        acc: list[str] = []
+        for x in raw:
+            if isinstance(x, str) and x.strip():
+                acc.append(_trim_str(x, 800))
+            if len(acc) >= 12:
+                break
+        return acc
+    return []
+
+
+def _ai_overview_text_block(item: dict[str, Any]) -> dict[str, Any] | None:
+    typ = item.get("type")
+    idxs = _safe_reference_indexes(item.get("reference_indexes"))
+    if typ == "paragraph":
+        sn = _trim_str(item.get("snippet"))
+        if not sn and not idxs:
+            return None
+        block: dict[str, Any] = {"type": "paragraph", "snippet": sn}
+        if idxs:
+            block["reference_indexes"] = idxs
+        return block
+    if typ == "list":
+        raw_list = item.get("list")
+        if not isinstance(raw_list, list):
+            return None
+        cleaned: list[dict[str, Any]] = []
+        for li in raw_list:
+            if not isinstance(li, dict):
+                continue
+            entry: dict[str, Any] = {"snippet": _trim_str(li.get("snippet"))}
+            latex = _normalize_snippet_latex(li.get("snippet_latex"))
+            if latex:
+                entry["snippet_latex"] = latex
+            if entry["snippet"] or entry.get("snippet_latex"):
+                cleaned.append(entry)
+            if len(cleaned) >= _MAX_AI_OVERVIEW_LIST_ITEMS:
+                break
+        if not cleaned and not idxs:
+            return None
+        block = {"type": "list", "list": cleaned}
+        if idxs:
+            block["reference_indexes"] = idxs
+        return block
+    return None
+
+
+def _ai_overview_from_payload(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy SerpAPI ``ai_overview`` text_blocks + references only; bounded size."""
+    aio = data.get("ai_overview")
+    if not isinstance(aio, dict):
+        return None
+    out_blocks: list[dict[str, Any]] = []
+    tbs = aio.get("text_blocks")
+    if isinstance(tbs, list):
+        for tb in tbs:
+            if not isinstance(tb, dict):
+                continue
+            block = _ai_overview_text_block(tb)
+            if block:
+                out_blocks.append(block)
+            if len(out_blocks) >= _MAX_AI_OVERVIEW_BLOCKS:
+                break
+    out_refs: list[dict[str, Any]] = []
+    refs = aio.get("references")
+    if isinstance(refs, list):
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            link = str(ref.get("link") or "").strip()
+            if not link:
+                continue
+            try:
+                ri = int(ref.get("index")) if ref.get("index") is not None else len(out_refs)
+            except (TypeError, ValueError):
+                ri = len(out_refs)
+            out_refs.append(
+                {
+                    "title": _trim_str(ref.get("title"), 500),
+                    "link": link[:2048],
+                    "snippet": _trim_str(ref.get("snippet"), 800),
+                    "source": _trim_str(ref.get("source"), 240),
+                    "index": ri,
+                }
+            )
+            if len(out_refs) >= _MAX_AI_OVERVIEW_REFS:
+                break
+    if not out_blocks and not out_refs:
+        return None
+    out: dict[str, Any] = {}
+    if out_blocks:
+        out["text_blocks"] = out_blocks
+    if out_refs:
+        out["references"] = out_refs
+    return out
+
+
+def _snippet_from_related_item(item: dict[str, Any]) -> str:
+    """PAA preview from SerpAPI ``related_questions`` item: Google Search ``snippet`` only."""
+    sn = item.get("snippet")
+    return sn.strip() if isinstance(sn, str) else ""
+
+
+def _qa_from_related_payload(data: dict[str, Any]) -> list[dict[str, str]]:
+    """Build ``[{question, snippet}, ...]`` from SerpAPI ``related_questions`` on the Google search JSON."""
+    out: list[dict[str, str]] = []
+    rq = data.get("related_questions")
+    if not isinstance(rq, list):
+        return out
+    for item in rq:
+        if isinstance(item, str) and item.strip():
+            out.append({"question": item.strip(), "snippet": ""})
+        elif isinstance(item, dict):
+            q = item.get("question")
+            if isinstance(q, str) and q.strip():
+                out.append({"question": q.strip(), "snippet": _snippet_from_related_item(item)})
+        if len(out) >= 80:
+            break
+    return out
+
+
+def _top_organic_pages_from_payload(data: dict[str, Any]) -> list[dict[str, str]]:
+    """Build ``[{title, url}, ...]`` from SerpAPI ``organic_results`` (``link`` → ``url``)."""
+    out: list[dict[str, str]] = []
+    org = data.get("organic_results")
+    if not isinstance(org, list):
+        return out
+    for item in org:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        link = item.get("link") or item.get("url") or ""
+        url = link.strip() if isinstance(link, str) else ""
+        if not url:
+            continue
+        if not title:
+            title = url if len(url) <= 120 else url[:117] + "…"
+        out.append({"title": title, "url": url})
+        if len(out) >= _MAX_ORGANIC_RESULTS:
+            break
+    return out
+
+
+def _related_search_position(entry: dict[str, Any], fallback: int) -> int:
+    """SerpAPI ``position`` on a related_searches item when present; else *fallback* (1-based index)."""
+    pos = entry.get("position")
+    if isinstance(pos, bool):
+        return fallback
+    if isinstance(pos, int):
+        return pos
+    if isinstance(pos, float) and pos.is_integer():
+        return int(pos)
+    if isinstance(pos, str) and pos.strip():
+        try:
+            return int(float(pos))
+        except ValueError:
+            pass
+    return fallback
+
+
+def _related_searches_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build ``[{query, position}, ...]`` from SerpAPI ``related_searches``."""
+    raw = data.get("related_searches")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for i, entry in enumerate(raw):
+        fallback = i + 1
+        if isinstance(entry, str):
+            q = entry.strip()
+            if q:
+                out.append({"query": q, "position": fallback})
+        elif isinstance(entry, dict):
+            q = str(entry.get("query") or "").strip()
+            if not q:
+                continue
+            out.append({"query": q, "position": _related_search_position(entry, fallback)})
+        if len(out) >= _MAX_RELATED_SEARCHES:
+            break
+    return out
+
+
+def _serpapi_fetch_google_serp_snapshot(
+    api_key: str,
+    keyword: str,
+    *,
+    localization: dict[str, str] | None = None,
+) -> tuple[
+    list[dict[str, str]],
+    list[dict[str, str]],
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    str | None,
+]:
+    """Call SerpAPI once; return ``(audience_qa, top_organic_pages, ai_overview|None, related_searches, error)``."""
+    kw = (keyword or "").strip()
+    key = (api_key or "").strip()
+    if not key:
+        return [], [], None, [], "SerpAPI API key is empty."
+    if not kw:
+        return [], [], None, [], "Keyword is empty."
+
+    params: dict[str, str] = {
+        "engine": "google",
+        "q": kw,
+        "api_key": key,
+    }
+    if localization:
+        for lk, lv in localization.items():
+            if isinstance(lv, str) and lv.strip():
+                params[lk] = lv.strip()
+    url = SERPAPI_SEARCH_JSON + "?" + urlencode(params)
+    req = Request(url, headers={"User-Agent": "ShopifySEO/1.0 (article-ideas)"}, method="GET")
+    try:
+        with urlopen(req, timeout=25) as resp:  # noqa: S310 — SerpAPI HTTPS
+            raw = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return [], [], None, [], "SerpAPI returned an unexpected JSON shape."
+        err = data.get("error")
+        if isinstance(err, str) and err.strip():
+            logger.warning("SerpAPI error for keyword %r: %s", kw, err.strip())
+            return [], [], None, [], err.strip()
+        aio = _ai_overview_from_payload(data)
+        rel = _related_searches_from_payload(data)
+        return (
+            _qa_from_related_payload(data),
+            _top_organic_pages_from_payload(data),
+            aio,
+            rel,
+            None,
+        )
+    except HTTPError as exc:
+        detail = f"HTTP {exc.code}"
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            err_obj = json.loads(body)
+            if isinstance(err_obj, dict):
+                em = err_obj.get("error")
+                if isinstance(em, str) and em.strip():
+                    return [], [], None, [], f"{detail}: {em.strip()}"
+        except Exception:
+            pass
+        reason = getattr(exc, "reason", None) or str(exc)
+        return [], [], None, [], f"SerpAPI request failed ({detail}: {reason})."
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("SerpAPI Google search request failed for keyword %r: %s", kw, exc)
+        return [], [], None, [], str(exc) or "SerpAPI request failed."
+
+
+def fetch_serpapi_primary_keyword_snapshot(conn: sqlite3.Connection, keyword: str) -> dict[str, Any]:
+    """Return SerpAPI Google search fields for one keyword; empty lists / None on skip/error."""
+    kw = (keyword or "").strip()
+    if not kw:
+        return {
+            "audience_questions": [],
+            "top_ranking_pages": [],
+            "ai_overview": None,
+            "related_searches": [],
+        }
+    api_key = (dg.get_service_setting(conn, "serpapi_api_key") or "").strip()
+    if not api_key:
+        return {
+            "audience_questions": [],
+            "top_ranking_pages": [],
+            "ai_overview": None,
+            "related_searches": [],
+        }
+    loc = mc.serpapi_google_search_params(conn)
+    qa, pages, aio, rel, err = _serpapi_fetch_google_serp_snapshot(api_key, kw, localization=loc)
+    if err:
+        logger.debug("SerpAPI snapshot skipped: %s", err)
+        return {
+            "audience_questions": [],
+            "top_ranking_pages": [],
+            "ai_overview": None,
+            "related_searches": [],
+        }
+    return {
+        "audience_questions": qa,
+        "top_ranking_pages": pages,
+        "ai_overview": aio,
+        "related_searches": rel,
+    }
+
+
+def fetch_related_questions_serpapi(conn: sqlite3.Connection, keyword: str) -> list[dict[str, str]]:
+    """Return ``[{question, snippet}, ...]`` only (same single Google search as full snapshot)."""
+    return fetch_serpapi_primary_keyword_snapshot(conn, keyword)["audience_questions"]
+
+
+def run_serpapi_connection_test(
+    conn: sqlite3.Connection,
+    *,
+    api_key_override: str = "",
+    test_keyword: str = SERPAPI_SETTINGS_TEST_KEYWORD,
+) -> dict[str, Any]:
+    """Settings UI: verify API key with a fixed test query.
+
+    Uses *api_key_override* when non-empty after strip; otherwise reads ``serpapi_api_key`` from DB.
+    """
+    key = (api_key_override or "").strip() or (dg.get_service_setting(conn, "serpapi_api_key") or "").strip()
+    kw = (test_keyword or SERPAPI_SETTINGS_TEST_KEYWORD).strip() or SERPAPI_SETTINGS_TEST_KEYWORD
+    loc = mc.serpapi_google_search_params(conn)
+    qa, pages, aio, rel, err = _serpapi_fetch_google_serp_snapshot(key, kw, localization=loc)
+    if err:
+        return {
+            "ok": False,
+            "detail": err,
+            "question_count": 0,
+            "organic_count": 0,
+            "has_ai_overview": False,
+            "related_search_count": 0,
+            "questions": [],
+            "items": [],
+            "organic_pages": [],
+        }
+    nq = len(qa)
+    no = len(pages)
+    nrel = len(rel)
+    has_ai = bool(aio and (aio.get("text_blocks") or aio.get("references")))
+    preview_qs = [x["question"] for x in qa[:3]]
+    preview = "; ".join(preview_qs) if preview_qs else "(no related questions in this response)"
+    organic_hint = f"{no} organic listing(s)" if no else "no organic block in this response"
+    rel_hint = f"{nrel} related search(es)" if nrel else "no related searches block"
+    return {
+        "ok": True,
+        "detail": f"SerpAPI OK — {nq} related question(s), {organic_hint}, {rel_hint}"
+        + (", AI overview present" if has_ai else ", no AI overview in this response")
+        + f' for test query “{kw}”. Questions: {preview}',
+        "question_count": nq,
+        "organic_count": no,
+        "has_ai_overview": has_ai,
+        "related_search_count": nrel,
+        "questions": [x["question"] for x in qa[:10]],
+        "items": qa[:10],
+        "organic_pages": pages[:10],
+        "related_searches": rel[:12],
+    }
+
+
+def enrich_article_ideas_with_audience_questions(
+    conn: sqlite3.Connection,
+    ideas: list[dict[str, Any]],
+) -> None:
+    """Mutate each idea with SerpAPI Google search fields (PAA, organics, AI overview, related searches)."""
+    try:
+        delay = float(os.environ.get("RELATED_QUESTIONS_DELAY_SEC") or "0")
+    except (TypeError, ValueError):
+        delay = 0.0
+
+    for i, idea in enumerate(ideas):
+        pk = str(idea.get("primary_keyword") or "").strip()
+        if not pk:
+            idea["audience_questions"] = []
+            idea["top_ranking_pages"] = []
+            idea["ai_overview"] = None
+            idea["related_searches"] = []
+        else:
+            snap = fetch_serpapi_primary_keyword_snapshot(conn, pk)
+            idea["audience_questions"] = snap["audience_questions"]
+            idea["top_ranking_pages"] = snap["top_ranking_pages"]
+            idea["ai_overview"] = snap.get("ai_overview")
+            idea["related_searches"] = snap.get("related_searches") or []
+        if delay > 0 and i + 1 < len(ideas):
+            time.sleep(delay)

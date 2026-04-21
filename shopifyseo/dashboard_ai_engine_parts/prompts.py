@@ -6,6 +6,13 @@ from .context import _slim_keyword_context, condensed_context, curated_primary_o
 _GSC_QUERY_HIGHLIGHTS_MAX = 3
 _GSC_QUERY_HIGHLIGHTS_JSON_CAP = 400
 
+# Body regeneration: steer internal links toward embedding-neighbor examples when allowlists are large.
+_RAG_INTERNAL_LINK_PREFERENCE = (
+    "When `related_content_examples` in <context> lists similar store content, prefer those destinations "
+    "(same `type` and `handle` in `approved_internal_link_targets`) when they fit the narrative over unrelated "
+    "URLs that appear only deeper in the allowlist. "
+)
+
 
 def _gsc_query_highlights_for_slim(full_context: dict) -> list[dict]:
     """Top few GSC queries for meta-description slim prompts (strict JSON size cap)."""
@@ -1011,7 +1018,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 "Output valid Shopify-compatible HTML only — no markdown fences, no plain text responses. "
                 f"Minimum {body_min} characters. Use question-based H2 or H3 headings. "
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
-                "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                + _RAG_INTERNAL_LINK_PREFERENCE
+                + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
                 "Return valid JSON only."
             )
@@ -1025,7 +1033,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 "Output valid Shopify-compatible HTML only — no markdown fences, no plain text responses. "
                 f"Minimum {body_min} characters. Use H2 or H3 headings for scannability. "
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
-                "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                + _RAG_INTERNAL_LINK_PREFERENCE
+                + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
                 "Return valid JSON only."
             )
@@ -1039,7 +1048,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 "Output valid Shopify-compatible HTML only — no markdown fences, no plain text responses. "
                 f"Minimum {body_min} characters. Use H2 or H3 headings where they help readers. "
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
-                "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                + _RAG_INTERNAL_LINK_PREFERENCE
+                + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
                 "Return valid JSON only."
             )
@@ -1053,7 +1063,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 "Output valid Shopify-compatible HTML only — no markdown fences, no plain text responses. "
                 f"Minimum {body_min} characters. Use H2 or H3 headings where they help readers. "
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
-                "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                + _RAG_INTERNAL_LINK_PREFERENCE
+                + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
                 "Return valid JSON only."
             )

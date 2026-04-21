@@ -83,6 +83,8 @@ def generate_article_draft(
     author_name: str = "",
     *,
     linked_cluster_id: int | None = None,
+    primary_target: dict | None = None,
+    secondary_targets: list[dict] | None = None,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Generate a brand-new blog article draft using AI.
@@ -202,16 +204,17 @@ def generate_article_draft(
     _rag_reference_lines: list[str] = []
     rag_results: list[dict] = []
     try:
-        from ..embedding_store import retrieve_related
+        from ..article_draft_retrieval import run_article_draft_rag
 
         api_key = settings.get("gemini_api_key") or ""
         if api_key:
-            rag_results = retrieve_related(
+            rag_results = run_article_draft_rag(
                 conn,
                 api_key,
-                topic,
+                topic=topic,
+                keywords=keywords,
+                linked_cluster_id=linked_cluster_id,
                 top_k=5,
-                object_types=["blog_article", "product", "collection"],
             ) or []
         if rag_results:
             for r in rag_results:
@@ -234,6 +237,41 @@ def generate_article_draft(
     _base_url = (_dq._base_store_url(conn) or "").strip().rstrip("/")
 
     link_targets, _, _ = _dq.build_store_internal_link_allowlist(conn, _base_url, rag_results=rag_results)
+
+    # Widen allowlist with primary/secondary interlink targets so sanitizer keeps them.
+    def _normalize_target_entry(t: dict) -> dict | None:
+        tt = (t.get("type") or "").strip()
+        th = (t.get("handle") or "").strip()
+        if not tt or not th:
+            return None
+        title = (t.get("title") or th).strip()
+        url = (t.get("url") or "").strip()
+        if not url:
+            url = _dq.object_url_with_base(_base_url, tt, th)
+        return {"type": tt, "handle": th, "title": title, "url": url}
+
+    _existing_keys = {(t.get("type"), t.get("handle")) for t in link_targets}
+    primary_normalized = _normalize_target_entry(primary_target) if primary_target else None
+    if primary_normalized and (primary_normalized["type"], primary_normalized["handle"]) not in _existing_keys:
+        link_targets.insert(0, primary_normalized)
+        _existing_keys.add((primary_normalized["type"], primary_normalized["handle"]))
+
+    secondary_normalized: list[dict] = []
+    for s in secondary_targets or []:
+        n = _normalize_target_entry(s)
+        if not n:
+            continue
+        if (n["type"], n["handle"]) in _existing_keys:
+            # Preserve anchor_keyword for the prompt even if already in allowlist.
+            n_with_anchor = dict(n)
+            n_with_anchor["anchor_keyword"] = (s.get("anchor_keyword") or "").strip()
+            secondary_normalized.append(n_with_anchor)
+            continue
+        link_targets.append(n)
+        _existing_keys.add((n["type"], n["handle"]))
+        n_with_anchor = dict(n)
+        n_with_anchor["anchor_keyword"] = (s.get("anchor_keyword") or "").strip()
+        secondary_normalized.append(n_with_anchor)
 
     path_to_canonical: dict[str, str] = {}
     for t in link_targets:
@@ -266,11 +304,47 @@ def generate_article_draft(
             "exactly (root-relative urls in the list). Never invent domains or paths not listed."
         )
 
+    # Primary + secondary interlink directive (authority page + related pages).
+    _authority_link_block = ""
+    if primary_normalized and primary_normalized.get("url"):
+        _primary_anchor_hint = (primary_normalized.get("title") or primary_normalized["handle"]).strip()
+        secondary_json_rows = [
+            {
+                "url": n["url"],
+                "type": n["type"],
+                "title": n["title"],
+                "anchor_keyword": n.get("anchor_keyword") or "",
+            }
+            for n in secondary_normalized
+            if n.get("url")
+        ]
+        _secondary_block = ""
+        if secondary_json_rows:
+            _secondary_block = (
+                "SECONDARY RELATED LINKS — include EACH of the following at least once in the body "
+                "with natural, keyword-rich SEO anchor text. When an 'anchor_keyword' is provided, "
+                "use it (or a close variation that fits the sentence) as the visible link text. "
+                "These reinforce topical relevance for the primary authority page.\n"
+                f"{json.dumps(secondary_json_rows, ensure_ascii=True)}\n"
+            )
+        _authority_link_block = (
+            "\n\nINTERLINK STRATEGY — topical authority building:\n"
+            f"PRIMARY AUTHORITY LINK (REQUIRED — the article MUST include exactly one prominent link to "
+            f"this URL within the opening section or first H2, using natural anchor text such as "
+            f"'{_primary_anchor_hint}' or a close variation): {primary_normalized['url']}\n"
+            f"{_secondary_block}"
+            "Use the canonical `url` strings verbatim — do not edit paths. "
+            "Spread interlinks naturally across the article; never cluster them in a single paragraph.\n"
+        )
+
     if link_targets:
         _allowlist_json = json.dumps(link_targets, ensure_ascii=True)
         _collection_link_block = (
             "\n\napproved_internal_link_targets (JSON array). "
             "MUST include 2–4 contextual internal links in the body where they help the reader. "
+            "When this list is long, prefer destinations that also appear in the \"Reference content from your store\" "
+            "section above (same product, collection, or post) when they fit the reader's context — avoid unrelated "
+            "catalog items that only appear deeper in the JSON list. "
             "Every storefront <a href> MUST use the `url` value from one of these objects "
             "character-for-character (copy the full string — no edits, no other hosts, no invented paths). "
             "Each <a> MUST also include a descriptive title attribute for accessibility and SEO: "
@@ -299,6 +373,8 @@ def generate_article_draft(
         "Do not fabricate statistics, specific study results, or invented data — if you need to reference evidence, "
         "use well-known industry patterns rather than invented figures. "
         "Write at a Grade 8–10 reading level. Be helpful, specific, and commercially relevant. "
+        "When choosing internal links, prefer store destinations that clearly match the article topic and any "
+        "reference list provided in the user message over unrelated catalog URLs. "
         f"{_link_scope}"
     )
     user_msg = (
@@ -326,6 +402,7 @@ def generate_article_draft(
         "Structure with H2 section headings and H3 sub-headings — every major section should have at least one H3 "
         "sub-heading to create a clear hierarchy. "
         "Open the first paragraph with the direct answer to the main question — no throat-clearing or generic intros. "
+        f"{_authority_link_block}"
         f"{_collection_link_block}"
         "At the very end of the body, add a complete Article JSON-LD structured data block using this template "
         "(replace the ALL-CAPS placeholders with actual values): "
@@ -398,6 +475,31 @@ def generate_article_draft(
         body_out = sanitize_article_internal_links(
             body_out, path_to_canonical=path_to_canonical, base_url=_base_url
         )
+
+    # Hard-fail if a primary authority target was supplied but absent from the body.
+    if primary_normalized and primary_normalized.get("url"):
+        primary_url = primary_normalized["url"]
+        primary_path = (urlparse(primary_url).path or "").rstrip("/") or "/"
+        body_lower = body_out.lower()
+        has_link = False
+        for m in _A_BODY_TAG_RE.finditer(body_out):
+            attrs = m.group(1) or ""
+            hm = re.search(r"""href\s*=\s*(["'])(.*?)\1""", attrs, re.I | re.DOTALL)
+            if not hm:
+                continue
+            href = (hm.group(2) or "").strip()
+            if href == primary_url:
+                has_link = True
+                break
+            href_path = (urlparse(href).path or "").rstrip("/") or "/"
+            if primary_path != "/" and href_path == primary_path:
+                has_link = True
+                break
+        if not has_link:
+            raise RuntimeError(
+                f"Draft missing required primary authority link to {primary_url}. "
+                f"Article must contextually link back to the cluster's target page."
+            )
 
     return {
         "title": str(result.get("title") or ""),

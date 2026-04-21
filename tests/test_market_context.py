@@ -11,6 +11,7 @@ from shopifyseo.market_context import (
     get_primary_country_code,
     language_region_code,
     market_context_dict,
+    serpapi_google_search_params,
     shipping_cue,
     spelling_variant,
     subnational_guidance,
@@ -96,6 +97,38 @@ def test_lang_de():
 
 def test_lang_unknown_fallback():
     assert language_region_code("XX") == "en-CA"
+
+
+# --- serpapi_google_search_params ---
+
+def test_serpapi_google_search_params_ca(conn):
+    _set_country(conn, "CA")
+    assert serpapi_google_search_params(conn) == {
+        "gl": "ca",
+        "hl": "en",
+        "google_domain": "google.ca",
+    }
+
+
+def test_serpapi_google_search_params_us(conn):
+    _set_country(conn, "US")
+    p = serpapi_google_search_params(conn)
+    assert p == {"gl": "us", "hl": "en", "google_domain": "google.com"}
+
+
+def test_serpapi_google_search_params_de(conn):
+    _set_country(conn, "DE")
+    assert serpapi_google_search_params(conn) == {
+        "gl": "de",
+        "hl": "de",
+        "google_domain": "google.de",
+    }
+
+
+def test_serpapi_google_search_params_no(conn):
+    _set_country(conn, "NO")
+    p = serpapi_google_search_params(conn)
+    assert p["gl"] == "no" and p["hl"] == "no" and p["google_domain"] == "google.no"
 
 
 # --- spelling_variant ---

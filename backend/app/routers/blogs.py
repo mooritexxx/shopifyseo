@@ -296,13 +296,37 @@ def _run_generate_article_draft(
             keywords = _load_article_target_keyword_strings(conn, payload.blog_handle, reg_handle)
 
         cluster_id: int | None = None
+        primary_target_dict: dict | None = None
+        secondary_targets_list: list[dict] = []
         if effective_idea_id is not None:
             idea_row = conn.execute(
-                "SELECT linked_cluster_id FROM article_ideas WHERE id = ?",
+                """
+                SELECT linked_cluster_id,
+                       COALESCE(primary_target_type, ''),
+                       COALESCE(primary_target_handle, ''),
+                       COALESCE(primary_target_title, ''),
+                       COALESCE(primary_target_url, ''),
+                       COALESCE(secondary_targets_json, '[]')
+                FROM article_ideas WHERE id = ?
+                """,
                 (effective_idea_id,),
             ).fetchone()
-            if idea_row and idea_row[0] is not None:
-                cluster_id = int(idea_row[0])
+            if idea_row:
+                if idea_row[0] is not None:
+                    cluster_id = int(idea_row[0])
+                if idea_row[1] and idea_row[2]:
+                    primary_target_dict = {
+                        "type": idea_row[1],
+                        "handle": idea_row[2],
+                        "title": idea_row[3],
+                        "url": idea_row[4],
+                    }
+                try:
+                    parsed_sec = json.loads(idea_row[5] or "[]")
+                    if isinstance(parsed_sec, list):
+                        secondary_targets_list = parsed_sec
+                except (json.JSONDecodeError, TypeError):
+                    secondary_targets_list = []
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
 
@@ -312,6 +336,8 @@ def _run_generate_article_draft(
             keywords=keywords,
             author_name=payload.author_name,
             linked_cluster_id=cluster_id,
+            primary_target=primary_target_dict,
+            secondary_targets=secondary_targets_list,
             on_progress=on_progress,
         )
 

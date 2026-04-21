@@ -18,6 +18,7 @@ import {
   fingerprintAiVision,
   fingerprintDataforseo,
   fingerprintGoogleAds,
+  fingerprintSerpapi,
   fingerprintShopify,
   loadConnectionStore,
   persistConnectionStore,
@@ -71,6 +72,8 @@ export function SettingsPage() {
   const [openRouterModels, setOpenRouterModels] = useState<string[]>([]);
   const [dfsStatus, setDfsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [dfsDetail, setDfsDetail] = useState("");
+  const [serpApiStatus, setSerpApiStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
+  const [serpApiDetail, setSerpApiDetail] = useState("");
   const [googleAdsStatus, setGoogleAdsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
   const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
@@ -234,6 +237,29 @@ export function SettingsPage() {
     } catch {
       setDfsStatus("error");
       setDfsDetail("Network error — could not reach the server.");
+    }
+  }
+
+  async function validateSerpapi() {
+    setSerpApiStatus("checking");
+    setSerpApiDetail("");
+    try {
+      const res = await postJson("/api/settings/serpapi-test", actionSchema, {
+        serpapi_api_key: valuesRef.current.serpapi_api_key || ""
+      });
+      setSerpApiStatus("ok");
+      setSerpApiDetail(res.message);
+      setConnectionStore((prev) => ({
+        ...prev,
+        serpapi: {
+          status: "live",
+          fingerprint: fingerprintSerpapi(valuesRef.current),
+          validatedAt: new Date().toISOString()
+        }
+      }));
+    } catch (e) {
+      setSerpApiStatus("error");
+      setSerpApiDetail((e as Error).message);
     }
   }
 
@@ -426,6 +452,9 @@ export function SettingsPage() {
     dfsStatus,
     dfsDetail,
     validateDataforseo,
+    serpApiStatus,
+    serpApiDetail,
+    validateSerpapi,
     googleAdsStatus,
     googleAdsDetail,
     validateGoogleAds,

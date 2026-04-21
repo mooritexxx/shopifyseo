@@ -1,4 +1,105 @@
-from pydantic import BaseModel, Field
+from typing import Annotated, Any
+
+from pydantic import BaseModel, BeforeValidator, Field
+
+
+class InterlinkTarget(BaseModel):
+    type: str
+    handle: str
+    title: str = ""
+    url: str = ""
+    anchor_keyword: str = ""
+    source: str = ""
+
+
+class AudienceQuestionItem(BaseModel):
+    question: str
+    snippet: str = ""
+
+
+def _coerce_audience_questions(v: Any) -> list[dict[str, str]]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in v:
+        if isinstance(item, str):
+            q = item.strip()
+            if q:
+                out.append({"question": q, "snippet": ""})
+        elif isinstance(item, dict):
+            q = str(item.get("question") or "").strip()
+            if not q:
+                continue
+            sn = item.get("snippet") if item.get("snippet") is not None else item.get("answer")
+            out.append({"question": q, "snippet": str(sn or "").strip()})
+        if len(out) >= 80:
+            break
+    return out
+
+
+AudienceQuestions = Annotated[list[AudienceQuestionItem], BeforeValidator(_coerce_audience_questions)]
+
+
+class TopRankingPageItem(BaseModel):
+    title: str
+    url: str
+
+
+def _coerce_top_ranking_pages(v: Any) -> list[dict[str, str]]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in v:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or item.get("link") or "").strip()
+        if not url:
+            continue
+        if not title:
+            title = url if len(url) <= 120 else url[:117] + "…"
+        out.append({"title": title, "url": url})
+        if len(out) >= 20:
+            break
+    return out
+
+
+TopRankingPages = Annotated[list[TopRankingPageItem], BeforeValidator(_coerce_top_ranking_pages)]
+
+
+class RelatedSearchItem(BaseModel):
+    query: str
+    position: int = 0
+
+
+def _coerce_related_searches(v: Any) -> list[dict[str, Any]]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(v):
+        if not isinstance(item, dict):
+            continue
+        q = str(item.get("query") or "").strip()
+        if not q:
+            continue
+        pos_raw = item.get("position", i + 1)
+        try:
+            pos = int(pos_raw) if not isinstance(pos_raw, bool) else i + 1
+        except (TypeError, ValueError):
+            pos = i + 1
+        out.append({"query": q, "position": pos})
+        if len(out) >= 40:
+            break
+    return out
+
+
+RelatedSearches = Annotated[list[RelatedSearchItem], BeforeValidator(_coerce_related_searches)]
 
 
 class ArticleIdeaItem(BaseModel):
@@ -32,11 +133,28 @@ class ArticleIdeaItem(BaseModel):
     agg_gsc_clicks: int = 0
     agg_gsc_impressions: int = 0
     coverage_pct: float | None = None
+    # Interlink targets for topical authority
+    primary_target: InterlinkTarget | None = None
+    secondary_targets: list[InterlinkTarget] = Field(default_factory=list)
+    # SerpAPI Google Search related_questions: question + snippet when serpapi_api_key is set
+    audience_questions: AudienceQuestions = Field(default_factory=list)
+    # Organic titles + URLs from the same SerpAPI Google search (primary keyword)
+    top_ranking_pages: TopRankingPages = Field(default_factory=list)
+    # Google AI overview (SerpAPI ``ai_overview``): text_blocks + references when present
+    ai_overview: dict[str, Any] | None = None
+    # Google related searches (SerpAPI ``related_searches``): query + position when present
+    related_searches: RelatedSearches = Field(default_factory=list)
 
 
 class ArticleIdeasPayload(BaseModel):
     items: list[ArticleIdeaItem]
     total: int
+
+
+class RefreshArticleIdeaSerpPayload(BaseModel):
+    """Response from ``POST /article-ideas/{id}/refresh-serp``."""
+
+    idea: ArticleIdeaItem
 
 
 class UpdateIdeaStatusRequest(BaseModel):

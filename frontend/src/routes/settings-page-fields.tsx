@@ -21,6 +21,7 @@ import {
   fingerprintAiVision,
   fingerprintDataforseo,
   fingerprintGoogleAds,
+  fingerprintSerpapi,
   fingerprintShopify,
   type ConnectionStatusStore
 } from "../lib/settings-connection-storage";
@@ -126,6 +127,9 @@ export type RenderSettingsTabSectionsProps = {
   dfsStatus: "idle" | "checking" | "ok" | "error";
   dfsDetail: string;
   validateDataforseo: () => void | Promise<void>;
+  serpApiStatus: "idle" | "checking" | "ok" | "error";
+  serpApiDetail: string;
+  validateSerpapi: () => void | Promise<void>;
   googleAdsStatus: "idle" | "checking" | "ok" | "error";
   googleAdsDetail: string;
   validateGoogleAds: () => void | Promise<void>;
@@ -155,6 +159,9 @@ export function renderSettingsTabSections({
   dfsStatus,
   dfsDetail,
   validateDataforseo,
+  serpApiStatus,
+  serpApiDetail,
+  validateSerpapi,
   googleAdsStatus,
   googleAdsDetail,
   validateGoogleAds,
@@ -190,6 +197,12 @@ export function renderSettingsTabSections({
         description:
           "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
         fields: ["dataforseo_api_login", "dataforseo_api_password"] as const
+      },
+      {
+        title: "SerpAPI",
+        description:
+          "Optional. When set, new article ideas call SerpAPI’s Google related questions engine for each idea’s primary keyword; only the questions are saved for drafting. Test connection runs a live request for the query “black coffee”.",
+        fields: ["serpapi_api_key"] as const
       }
     ],
     "ai-models": [
@@ -270,6 +283,9 @@ export function renderSettingsTabSections({
   const dfsFp = fingerprintDataforseo(values);
   const dfsLive =
     connectionStore.dataforseo?.status === "live" && connectionStore.dataforseo.fingerprint === dfsFp;
+  const serpApiFp = fingerprintSerpapi(values);
+  const serpApiLive =
+    connectionStore.serpapi?.status === "live" && connectionStore.serpapi.fingerprint === serpApiFp;
   const googleAdsFp = fingerprintGoogleAds(values);
   const googleAdsLive =
     connectionStore.googleAds?.status === "live" && connectionStore.googleAds.fingerprint === googleAdsFp;
@@ -318,6 +334,23 @@ export function renderSettingsTabSections({
                 )}
                 <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
                   {dfsStatus === "checking" ? "Checking…" : "Validate access"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "SerpAPI") {
+            const hasKey = !!values.serpapi_api_key?.trim();
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!hasKey ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : serpApiLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => void validateSerpapi()} disabled={serpApiStatus === "checking"}>
+                  {serpApiStatus === "checking" ? "Testing…" : "Test connection"}
                 </Button>
               </div>
             );
@@ -586,6 +619,13 @@ export function renderSettingsTabSections({
           className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${dfsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
         >
           {dfsDetail}
+        </div>
+      ) : null}
+      {section.title === "SerpAPI" && serpApiStatus !== "idle" && serpApiStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${serpApiStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {serpApiDetail}
         </div>
       ) : null}
       {section.title === "Google Ads" && googleAdsStatus !== "idle" && googleAdsStatus !== "checking" ? (

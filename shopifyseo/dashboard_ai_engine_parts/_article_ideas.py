@@ -521,6 +521,17 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         import json as _json
         linked_keywords_json = _json.dumps(cluster_meta.get("top_keywords") or [])
 
+        from shopifyseo.dashboard_article_ideas import resolve_idea_targets
+        linked_collection_handle = str(idea.get("linked_collection_handle") or "")
+        linked_collection_title = str(idea.get("linked_collection_title") or "")
+        primary_target, secondary_targets = resolve_idea_targets(
+            conn,
+            cluster_meta,
+            linked_collection_handle=linked_collection_handle,
+            linked_collection_title=linked_collection_title,
+            max_secondary=5,
+        )
+
         cleaned.append(
             {
                 "suggested_title": str(idea.get("suggested_title") or ""),
@@ -532,8 +543,8 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
                 "estimated_monthly_traffic": int(idea.get("estimated_monthly_traffic") or 0),
                 "linked_cluster_id": cid,
                 "linked_cluster_name": str(idea.get("linked_cluster_name") or ""),
-                "linked_collection_handle": str(idea.get("linked_collection_handle") or ""),
-                "linked_collection_title": str(idea.get("linked_collection_title") or ""),
+                "linked_collection_handle": linked_collection_handle,
+                "linked_collection_title": linked_collection_title,
                 "source_type": str(idea.get("source_type") or "cluster_gap"),
                 "gap_reason": str(idea.get("gap_reason") or ""),
                 # Snapshotted from cluster at generation time
@@ -543,6 +554,9 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
                 "dominant_serp_features": dominant_serp_features,
                 "content_format_hints": content_format_hints,
                 "linked_keywords_json": linked_keywords_json,
+                # Interlink targets — snapshot of cluster's authority page + related pages
+                "primary_target": primary_target,
+                "secondary_targets": secondary_targets,
             }
         )
     return cleaned

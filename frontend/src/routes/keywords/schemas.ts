@@ -27,7 +27,24 @@ export const targetKeywordSchema = z.object({
   gsc_clicks: z.number().nullable().optional(),
   gsc_impressions: z.number().nullable().optional(),
   ranking_status: z.string().nullable().optional(),
-  status: z.string()
+  status: z.string(),
+  /** Google Ads Keyword Planner — last ``GenerateKeywordHistoricalMetrics`` refresh. */
+  ads_avg_monthly_searches: z.number().nullable().optional(),
+  ads_competition: z.string().nullable().optional(),
+  ads_competition_index: z.number().nullable().optional()
+});
+
+export const googleAdsPlannerRefreshDataSchema = z.object({
+  updated: z.number(),
+  requested: z.number(),
+  planner_batches: z.number().optional(),
+  planner_parts: z.number().optional(),
+  matched_metrics: z.number(),
+  errors: z.array(z.string()),
+  items: z.array(targetKeywordSchema),
+  total: z.number(),
+  last_run: z.string().nullable().optional(),
+  unit_cost: z.number().nullable().optional()
 });
 
 export const targetPayloadSchema = z.object({

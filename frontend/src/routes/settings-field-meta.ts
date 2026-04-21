@@ -10,6 +10,7 @@ export type SettingsFieldKey =
   | "ollama_base_url"
   | "dataforseo_api_login"
   | "dataforseo_api_password"
+  | "serpapi_api_key"
   | "ai_generation_provider"
   | "ai_generation_model"
   | "ai_sidekick_provider"
@@ -53,6 +54,7 @@ const SETTINGS_SECRET_FIELD_KEYS_ARR = [
   "openrouter_api_key",
   "ollama_api_key",
   "dataforseo_api_password",
+  "serpapi_api_key",
   "shopify_client_secret",
   "google_client_secret",
   "google_ads_developer_token"
@@ -105,6 +107,12 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
     label: "DataForSEO API Password",
     hint: "HTTP Basic password from the same API Access page. Stored locally like other integration secrets.",
     detail: "Save settings, then use Validate access. Per-request charges apply on your DataForSEO account."
+  },
+  serpapi_api_key: {
+    label: "SerpAPI API Key",
+    hint: "From serpapi.com — used when generating article ideas (Google related questions for each primary keyword).",
+    detail:
+      "The app calls SerpAPI’s Google Search API once per primary keyword: it stores People Also Ask (question + snippet when present), the first-page organic titles and URLs, and uses that snapshot when generating ideas. Localization (google domain, country gl, language hl) follows your Primary market under Store profile. Leave blank to skip SerpAPI during idea generation. Use Test connection to verify the key with the query “black coffee”."
   },
   ai_generation_provider: {
     label: "Generation Provider",

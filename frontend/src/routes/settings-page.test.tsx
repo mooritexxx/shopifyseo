@@ -438,6 +438,7 @@ describe("SettingsPage", () => {
       anthropic_api_key: "",
       dataforseo_api_login: "",
       dataforseo_api_password: "",
+      serpapi_api_key: "",
       openrouter_api_key: "",
       ollama_api_key: "",
       ollama_base_url: "http://localhost:11434",

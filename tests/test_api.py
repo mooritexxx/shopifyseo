@@ -280,6 +280,38 @@ def test_settings_shopify_test_errors_without_credentials():
     assert "error" in body or "detail" in body
 
 
+def test_settings_serpapi_test_ok(monkeypatch):
+    import shopifyseo.audience_questions_api as aq_mod
+
+    def fake_run(conn, api_key_override="", test_keyword="black coffee"):
+        return {
+            "ok": True,
+            "detail": 'SerpAPI OK — 1 related question(s) for test query "black coffee". Sample: Is black coffee healthy?',
+            "question_count": 1,
+            "questions": ["Is black coffee healthy?"],
+        }
+
+    monkeypatch.setattr(aq_mod, "run_serpapi_connection_test", fake_run)
+    response = client.post("/api/settings/serpapi-test", json={"serpapi_api_key": "fake-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get("ok") is True
+    assert "SerpAPI OK" in (body.get("data") or {}).get("message", "")
+
+
+def test_settings_serpapi_test_returns_400_when_not_ok(monkeypatch):
+    import shopifyseo.audience_questions_api as aq_mod
+
+    def fake_run(conn, api_key_override="", test_keyword="black coffee"):
+        return {"ok": False, "detail": "Invalid API key.", "question_count": 0, "questions": []}
+
+    monkeypatch.setattr(aq_mod, "run_serpapi_connection_test", fake_run)
+    response = client.post("/api/settings/serpapi-test", json={"serpapi_api_key": "bad"})
+    assert response.status_code == 400
+    body = response.json()
+    assert body.get("ok") is False
+
+
 def test_operations_contract():
     settings_response = client.get("/api/settings")
     google_response = client.get("/api/google-signals")
@@ -291,6 +323,8 @@ def test_operations_contract():
     vals = data["values"]
     assert "dataforseo_api_login" in vals
     assert isinstance(vals["dataforseo_api_login"], str)
+    assert "serpapi_api_key" in vals
+    assert isinstance(vals["serpapi_api_key"], str)
     sr = data["sync_scope_ready"]
     for key in ("shopify", "gsc", "ga4", "index", "pagespeed"):
         assert key in sr

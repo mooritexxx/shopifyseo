@@ -1,3 +1,8 @@
+export type KeywordResearchSseOptions = {
+  /** JSON body for POST (e.g. `{ keywords: string[] }`). Omit for empty-body streams. */
+  body?: unknown;
+};
+
 /** POST an SSE research endpoint; invokes callbacks for progress / terminal states. */
 export function startKeywordResearchSse(
   url: string,
@@ -5,12 +10,19 @@ export function startKeywordResearchSse(
     onProgress: (message: string) => void;
     onDone: () => void;
     onError: (detail: string) => void;
-  }
+  },
+  options?: KeywordResearchSseOptions
 ): void {
   const { onProgress, onDone, onError } = callbacks;
   onProgress("Starting…");
 
-  fetch(url, { method: "POST" })
+  const init: RequestInit = { method: "POST" };
+  if (options?.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(options.body);
+  }
+
+  fetch(url, init)
     .then((res) => {
       if (!res.ok) {
         return res.text().then((text) => {

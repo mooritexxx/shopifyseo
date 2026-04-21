@@ -11,6 +11,105 @@ import time
 from typing import Any
 
 
+def normalize_audience_questions_json(value: Any) -> list[dict[str, str]]:
+    """Coerce ``audience_questions`` / DB JSON to ``[{question, snippet}, ...]`` (legacy: ``answer``, list of strings)."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if isinstance(item, str):
+            q = item.strip()
+            if q:
+                out.append({"question": q, "snippet": ""})
+        elif isinstance(item, dict):
+            q = str(item.get("question") or "").strip()
+            if not q:
+                continue
+            sn = item.get("snippet") if item.get("snippet") is not None else item.get("answer")
+            out.append({"question": q, "snippet": str(sn or "").strip()})
+        if len(out) >= 80:
+            break
+    return out
+
+
+def normalize_top_ranking_pages_json(value: Any) -> list[dict[str, str]]:
+    """Coerce ``top_ranking_pages`` / DB JSON to ``[{title, url}, ...]`` (accepts legacy ``link``)."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or item.get("link") or "").strip()
+        if not url:
+            continue
+        if not title:
+            title = url if len(url) <= 120 else url[:117] + "…"
+        out.append({"title": title, "url": url})
+        if len(out) >= 20:
+            break
+    return out
+
+
+def normalize_related_searches_json(value: Any) -> list[dict[str, Any]]:
+    """Coerce SerpAPI ``related_searches`` to ``[{query, position}, ...]`` (1-based position when missing)."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        q = str(item.get("query") or "").strip()
+        if not q:
+            continue
+        pos_raw = item.get("position", i + 1)
+        try:
+            if isinstance(pos_raw, bool):
+                pos_i = i + 1
+            elif isinstance(pos_raw, int):
+                pos_i = pos_raw
+            elif isinstance(pos_raw, float) and pos_raw.is_integer():
+                pos_i = int(pos_raw)
+            else:
+                pos_i = int(float(str(pos_raw).strip()))
+        except (TypeError, ValueError):
+            pos_i = i + 1
+        out.append({"query": q, "position": pos_i})
+        if len(out) >= 40:
+            break
+    return out
+
+
+def serialize_ai_overview_json(value: Any) -> str:
+    """Serialize SerpAPI ``ai_overview`` subset for SQLite; ``{}`` when absent."""
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        s = value.strip()
+        return s if s else "{}"
+    if isinstance(value, dict):
+        if not value.get("text_blocks") and not value.get("references"):
+            return "{}"
+        return json.dumps(value, ensure_ascii=False)
+    return "{}"
+
+
+def parse_ai_overview_json(raw: Any) -> dict[str, Any] | None:
+    """Load ``ai_overview`` for API; ``None`` when empty or invalid."""
+    if raw is None or raw == "":
+        return None
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if not obj.get("text_blocks") and not obj.get("references"):
+        return None
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Article Ideas — gap analysis + CRUD
 # ---------------------------------------------------------------------------
@@ -534,6 +633,153 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _lookup_object_title(
+    conn: sqlite3.Connection, object_type: str, object_handle: str
+) -> str:
+    """Return the display title for a store object, or empty string if unknown."""
+    h = (object_handle or "").strip()
+    if not h:
+        return ""
+    try:
+        if object_type == "collection":
+            row = conn.execute(
+                "SELECT title FROM collections WHERE handle = ?", (h,)
+            ).fetchone()
+        elif object_type == "product":
+            row = conn.execute(
+                "SELECT title FROM products WHERE handle = ?", (h,)
+            ).fetchone()
+        elif object_type == "page":
+            row = conn.execute(
+                "SELECT title FROM pages WHERE handle = ?", (h,)
+            ).fetchone()
+        elif object_type == "blog_article":
+            if "/" not in h:
+                return ""
+            bh, ah = h.split("/", 1)
+            row = conn.execute(
+                "SELECT title FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+                (bh, ah),
+            ).fetchone()
+        else:
+            return ""
+    except Exception:
+        return ""
+    if not row:
+        return ""
+    return (row[0] or "").strip()
+
+
+def resolve_idea_targets(
+    conn: sqlite3.Connection,
+    cluster_meta: dict[str, Any],
+    *,
+    linked_collection_handle: str = "",
+    linked_collection_title: str = "",
+    max_secondary: int = 5,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compute primary + secondary interlink targets for an article idea.
+
+    Primary (authority page): cluster's match_* → existing_page (best-ranking page
+    from keyword_page_map) → linked_collection fallback. All sources are
+    server-side, from data already loaded by fetch_article_idea_inputs.
+
+    Secondary (up to max_secondary, deduped against primary): top-ranking page per
+    cluster keyword from keyword_page_map; each entry carries `anchor_keyword`
+    so draft generation can use proper SEO anchor text.
+
+    Returns (primary_dict_or_empty, [secondary_dicts]). Primary may be an empty
+    dict when no page can be resolved.
+    """
+    from . import dashboard_queries as _dq
+
+    base_url = (_dq._base_store_url(conn) or "").strip().rstrip("/")
+
+    def _entry(obj_type: str, handle: str, title: str, anchor: str = "", source: str = "") -> dict[str, Any]:
+        url = _dq.object_url_with_base(base_url, obj_type, handle)
+        return {
+            "type": obj_type,
+            "handle": handle,
+            "title": title,
+            "url": url,
+            "anchor_keyword": anchor,
+            "source": source,
+        }
+
+    # ── Primary: prefer explicit cluster match, then existing_page, then linked_collection.
+    primary: dict[str, Any] = {}
+    mt = (cluster_meta.get("match_type") or "").strip()
+    mh = (cluster_meta.get("match_handle") or "").strip()
+    if mt and mt != "new" and mh:
+        title = (cluster_meta.get("match_title") or "").strip() or _lookup_object_title(conn, mt, mh) or mh
+        primary = _entry(mt, mh, title, source="cluster_match")
+
+    if not primary:
+        ep = cluster_meta.get("existing_page")
+        if ep and ep.get("object_type") and ep.get("object_handle"):
+            etype = ep["object_type"]
+            ehandle = ep["object_handle"]
+            etitle = _lookup_object_title(conn, etype, ehandle) or ehandle
+            primary = _entry(etype, ehandle, etitle, source="existing_page")
+
+    if not primary and linked_collection_handle:
+        ctitle = linked_collection_title or _lookup_object_title(conn, "collection", linked_collection_handle) or linked_collection_handle
+        primary = _entry("collection", linked_collection_handle, ctitle, source="linked_collection")
+
+    # ── Secondary: top-ranking page per cluster keyword from keyword_page_map.
+    secondary: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    if primary:
+        seen.add((primary["type"], primary["handle"]))
+
+    kpm_cols = {row[1] for row in conn.execute("PRAGMA table_info(keyword_page_map)").fetchall()}
+    if not kpm_cols:
+        return primary, secondary
+
+    keywords_ordered: list[str] = []
+    pk = (cluster_meta.get("primary_keyword") or "").strip()
+    if pk:
+        keywords_ordered.append(pk)
+    for kw in cluster_meta.get("top_keywords") or []:
+        k = (kw.get("keyword") or "").strip() if isinstance(kw, dict) else ""
+        if k and k.lower() not in {x.lower() for x in keywords_ordered}:
+            keywords_ordered.append(k)
+
+    for kw in keywords_ordered:
+        if len(secondary) >= max_secondary:
+            break
+        try:
+            row = conn.execute(
+                """
+                SELECT object_type, object_handle
+                FROM keyword_page_map
+                WHERE LOWER(keyword) = LOWER(?)
+                  AND object_type IN ('collection', 'product', 'page', 'blog_article')
+                  AND object_handle IS NOT NULL AND TRIM(object_handle) != ''
+                ORDER BY COALESCE(gsc_position, 999) ASC
+                LIMIT 1
+                """,
+                (kw,),
+            ).fetchone()
+        except Exception:
+            continue
+        if not row:
+            continue
+        otype, ohandle = row[0], (row[1] or "").strip()
+        if not otype or not ohandle:
+            continue
+        key = (otype, ohandle)
+        if key in seen:
+            continue
+        title = _lookup_object_title(conn, otype, ohandle)
+        if not title:
+            continue
+        seen.add(key)
+        secondary.append(_entry(otype, ohandle, title, anchor=kw, source="keyword_page_map"))
+
+    return primary, secondary
+
+
 def _linked_keywords_json_for_db(value: Any) -> str:
     """Serialize linked keyword rows for SQLite (list or JSON string from AI pipeline)."""
     if value is None or value == "":
@@ -549,6 +795,17 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
     ids = []
     for idea in ideas:
         supporting = json.dumps(idea.get("supporting_keywords") or [], ensure_ascii=False)
+        primary_target = idea.get("primary_target") or {}
+        secondary_targets = idea.get("secondary_targets") or []
+        aq = idea.get("audience_questions")
+        audience_json = json.dumps(normalize_audience_questions_json(aq), ensure_ascii=False)
+        trp = idea.get("top_ranking_pages")
+        top_pages_json = json.dumps(normalize_top_ranking_pages_json(trp), ensure_ascii=False)
+        aio = serialize_ai_overview_json(idea.get("ai_overview"))
+        rs_json = json.dumps(
+            normalize_related_searches_json(idea.get("related_searches")),
+            ensure_ascii=False,
+        )
         cur = conn.execute(
             """
             INSERT INTO article_ideas
@@ -558,8 +815,11 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
                  gap_reason, status, created_at,
                  content_format, estimated_monthly_traffic, source_type,
                  total_volume, avg_difficulty, opportunity_score,
-                 dominant_serp_features, content_format_hints, linked_keywords_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 dominant_serp_features, content_format_hints, linked_keywords_json,
+                 primary_target_type, primary_target_handle, primary_target_title,
+                 primary_target_url, secondary_targets_json, audience_questions_json,
+                 top_ranking_pages_json, ai_overview_json, related_searches_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 idea.get("suggested_title", ""),
@@ -582,6 +842,15 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
                 idea.get("dominant_serp_features", ""),
                 idea.get("content_format_hints", ""),
                 _linked_keywords_json_for_db(idea.get("linked_keywords_json")),
+                str(primary_target.get("type") or ""),
+                str(primary_target.get("handle") or ""),
+                str(primary_target.get("title") or ""),
+                str(primary_target.get("url") or ""),
+                json.dumps(secondary_targets, ensure_ascii=False),
+                audience_json,
+                top_pages_json,
+                aio,
+                rs_json,
             ),
         )
         ids.append(cur.lastrowid)
@@ -611,7 +880,16 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                COALESCE(ai.shopify_article_id, '')         AS shopify_article_id,
                COUNT(ia.id)                                AS article_count,
                SUM(COALESCE(ba.gsc_clicks, 0))            AS agg_gsc_clicks,
-               SUM(COALESCE(ba.gsc_impressions, 0))       AS agg_gsc_impressions
+               SUM(COALESCE(ba.gsc_impressions, 0))       AS agg_gsc_impressions,
+               COALESCE(ai.primary_target_type, '')        AS primary_target_type,
+               COALESCE(ai.primary_target_handle, '')      AS primary_target_handle,
+               COALESCE(ai.primary_target_title, '')       AS primary_target_title,
+               COALESCE(ai.primary_target_url, '')         AS primary_target_url,
+               COALESCE(ai.secondary_targets_json, '[]')   AS secondary_targets_json,
+               COALESCE(ai.audience_questions_json, '[]')  AS audience_questions_json,
+               COALESCE(ai.top_ranking_pages_json, '[]')   AS top_ranking_pages_json,
+               COALESCE(ai.ai_overview_json, '{}')         AS ai_overview_json,
+               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json
         FROM article_ideas ai
         LEFT JOIN idea_articles ia ON ia.idea_id = ai.id
         LEFT JOIN blog_articles ba
@@ -640,7 +918,16 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                COALESCE(ai.shopify_article_id, '')         AS shopify_article_id,
                0  AS article_count,
                0  AS agg_gsc_clicks,
-               0  AS agg_gsc_impressions
+               0  AS agg_gsc_impressions,
+               COALESCE(ai.primary_target_type, '')        AS primary_target_type,
+               COALESCE(ai.primary_target_handle, '')      AS primary_target_handle,
+               COALESCE(ai.primary_target_title, '')       AS primary_target_title,
+               COALESCE(ai.primary_target_url, '')         AS primary_target_url,
+               COALESCE(ai.secondary_targets_json, '[]')   AS secondary_targets_json,
+               COALESCE(ai.audience_questions_json, '[]')  AS audience_questions_json,
+               COALESCE(ai.top_ranking_pages_json, '[]')   AS top_ranking_pages_json,
+               COALESCE(ai.ai_overview_json, '{}')         AS ai_overview_json,
+               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json
         FROM article_ideas ai
         ORDER BY ai.created_at DESC, ai.id DESC
     """
@@ -661,6 +948,54 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             linked_kw_rows = []
         if not isinstance(linked_kw_rows, list):
             linked_kw_rows = []
+
+        primary_target_type = (r[28] or "").strip()
+        primary_target_handle = (r[29] or "").strip()
+        primary_target_title = (r[30] or "").strip()
+        primary_target_url = (r[31] or "").strip()
+        primary_target: dict | None
+        if primary_target_type and primary_target_handle:
+            primary_target = {
+                "type": primary_target_type,
+                "handle": primary_target_handle,
+                "title": primary_target_title,
+                "url": primary_target_url,
+            }
+        else:
+            primary_target = None
+
+        raw_stj = r[32] or "[]"
+        try:
+            secondary_targets = json.loads(raw_stj) if isinstance(raw_stj, str) else raw_stj
+        except (json.JSONDecodeError, TypeError):
+            secondary_targets = []
+        if not isinstance(secondary_targets, list):
+            secondary_targets = []
+
+        raw_aq = r[33] or "[]"
+        try:
+            raw_list = json.loads(raw_aq) if isinstance(raw_aq, str) else raw_aq
+        except (json.JSONDecodeError, TypeError):
+            raw_list = []
+        audience_questions = normalize_audience_questions_json(raw_list)
+
+        raw_trp = r[34] or "[]"
+        try:
+            raw_pages = json.loads(raw_trp) if isinstance(raw_trp, str) else raw_trp
+        except (json.JSONDecodeError, TypeError):
+            raw_pages = []
+        top_ranking_pages = normalize_top_ranking_pages_json(raw_pages)
+
+        raw_aio = r[35] or "{}"
+        ai_overview = parse_ai_overview_json(raw_aio)
+
+        raw_rs = r[36] or "[]"
+        try:
+            raw_rs_list = json.loads(raw_rs) if isinstance(raw_rs, str) else raw_rs
+        except (json.JSONDecodeError, TypeError):
+            raw_rs_list = []
+        related_searches = normalize_related_searches_json(raw_rs_list)
+
         result.append(
             {
                 "id": r[0],
@@ -691,9 +1026,63 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "article_count": int(r[25] or 0),
                 "agg_gsc_clicks": int(r[26] or 0),
                 "agg_gsc_impressions": int(r[27] or 0),
+                "primary_target": primary_target,
+                "secondary_targets": secondary_targets,
+                "audience_questions": audience_questions,
+                "top_ranking_pages": top_ranking_pages,
+                "ai_overview": ai_overview,
+                "related_searches": related_searches,
             }
         )
     return result
+
+
+def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -> dict[str, Any]:
+    """Run one SerpAPI Google search for the idea's primary keyword; overwrite PAA, organic, AI overview, and related searches JSON.
+
+    Raises:
+        LookupError: No ``article_ideas`` row for ``idea_id``.
+        ValueError: Missing primary keyword or SerpAPI API key in settings.
+    """
+    from shopifyseo import dashboard_google as dg
+    from shopifyseo.audience_questions_api import fetch_serpapi_primary_keyword_snapshot
+
+    row = conn.execute(
+        "SELECT id, primary_keyword FROM article_ideas WHERE id = ?",
+        (idea_id,),
+    ).fetchone()
+    if not row:
+        raise LookupError("Article idea not found.")
+    pk = (str(row[1] or "")).strip()
+    if not pk:
+        raise ValueError("This idea has no primary keyword — nothing to search on Google.")
+
+    if not (dg.get_service_setting(conn, "serpapi_api_key") or "").strip():
+        raise ValueError(
+            "Add a SerpAPI API key under Settings → Integrations to refresh SERP snapshot data."
+        )
+
+    snap = fetch_serpapi_primary_keyword_snapshot(conn, pk)
+    aq_json = json.dumps(normalize_audience_questions_json(snap["audience_questions"]), ensure_ascii=False)
+    trp_json = json.dumps(normalize_top_ranking_pages_json(snap["top_ranking_pages"]), ensure_ascii=False)
+    aio_json = serialize_ai_overview_json(snap.get("ai_overview"))
+    rs_json = json.dumps(
+        normalize_related_searches_json(snap.get("related_searches")),
+        ensure_ascii=False,
+    )
+    cur = conn.execute(
+        "UPDATE article_ideas SET audience_questions_json = ?, top_ranking_pages_json = ?, "
+        "ai_overview_json = ?, related_searches_json = ? WHERE id = ?",
+        (aq_json, trp_json, aio_json, rs_json, idea_id),
+    )
+    conn.commit()
+    if cur.rowcount < 1:
+        raise LookupError("Article idea not found.")
+
+    for loaded in fetch_article_ideas(conn):
+        if loaded["id"] == idea_id:
+            return loaded
+    raise LookupError("Article idea not found.")
 
 
 def delete_article_idea(conn: sqlite3.Connection, idea_id: int) -> bool:
@@ -711,6 +1100,102 @@ def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: s
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def update_article_idea_targets(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    primary_target: dict[str, Any] | None,
+    secondary_targets: list[dict[str, Any]],
+    *,
+    allowed_keys: set[tuple[str, str]] | None = None,
+) -> dict[str, Any] | None:
+    """Update an idea's primary + secondary interlink targets.
+
+    When ``allowed_keys`` is provided, every (type, handle) pair submitted must
+    appear in it — otherwise we raise ``ValueError``. Targets with unknown
+    (type, handle) would bypass the store internal-link allowlist and let the
+    drafter emit invented URLs. Empty primary is allowed (clears the authority
+    target). Returns the refreshed idea dict or ``None`` when the row is gone.
+    """
+    row = conn.execute(
+        "SELECT status FROM article_ideas WHERE id = ?", (idea_id,)
+    ).fetchone()
+    if not row:
+        return None
+    status = (row[0] or "idea").strip()
+    if status not in {"idea", "approved"}:
+        raise ValueError(
+            f"Cannot edit targets on an idea with status '{status}'. "
+            "Only 'idea' or 'approved' ideas can be retargeted."
+        )
+
+    def _clean_entry(entry: dict[str, Any]) -> dict[str, str] | None:
+        otype = str(entry.get("type") or "").strip()
+        ohandle = str(entry.get("handle") or "").strip()
+        if not otype or not ohandle:
+            return None
+        if allowed_keys is not None and (otype, ohandle) not in allowed_keys:
+            raise ValueError(
+                f"Target {otype}:{ohandle} is not a known store page. "
+                "Only pages that exist in the store can be interlink targets."
+            )
+        title = str(entry.get("title") or "").strip() or _lookup_object_title(conn, otype, ohandle) or ohandle
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            from . import dashboard_queries as _dq
+            base = (_dq._base_store_url(conn) or "").strip().rstrip("/")
+            url = _dq.object_url_with_base(base, otype, ohandle)
+        return {
+            "type": otype,
+            "handle": ohandle,
+            "title": title,
+            "url": url,
+            "anchor_keyword": str(entry.get("anchor_keyword") or "").strip(),
+            "source": str(entry.get("source") or "user_override").strip() or "user_override",
+        }
+
+    primary_clean: dict[str, str] | None = None
+    if primary_target:
+        primary_clean = _clean_entry(primary_target)
+
+    secondary_clean: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    if primary_clean:
+        seen.add((primary_clean["type"], primary_clean["handle"]))
+    for entry in secondary_targets or []:
+        c = _clean_entry(entry)
+        if not c:
+            continue
+        key = (c["type"], c["handle"])
+        if key in seen:
+            continue
+        seen.add(key)
+        secondary_clean.append(c)
+        if len(secondary_clean) >= 5:
+            break
+
+    conn.execute(
+        """UPDATE article_ideas
+           SET primary_target_type = ?, primary_target_handle = ?,
+               primary_target_title = ?, primary_target_url = ?,
+               secondary_targets_json = ?
+           WHERE id = ?""",
+        (
+            primary_clean["type"] if primary_clean else "",
+            primary_clean["handle"] if primary_clean else "",
+            primary_clean["title"] if primary_clean else "",
+            primary_clean["url"] if primary_clean else "",
+            json.dumps(secondary_clean, ensure_ascii=False),
+            idea_id,
+        ),
+    )
+    conn.commit()
+
+    for loaded in fetch_article_ideas(conn):
+        if loaded["id"] == idea_id:
+            return loaded
+    return None
 
 
 def link_idea_to_article(

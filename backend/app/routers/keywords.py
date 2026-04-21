@@ -19,6 +19,7 @@ from backend.app.services.keyword_research import (
     load_dismissed_snapshots,
     load_target_keywords,
     norm_competitor_domain,
+    refresh_google_ads_planner_metrics,
     refresh_target_keyword_metrics,
     remove_competitor_from_blocklist,
     run_competitor_research,
@@ -63,6 +64,12 @@ class KeywordStatusRequest(BaseModel):
 class BulkStatusRequest(BaseModel):
     keywords: list[str]
     status: str
+
+
+class GoogleAdsPlannerRefreshRequest(BaseModel):
+    """Keywords must exist in the current target list (all statuses)."""
+
+    keywords: list[str]
 
 
 def _load_seeds(conn: sqlite3.Connection) -> list[dict]:
@@ -706,6 +713,56 @@ def validate_dataforseo_credentials(payload: DataforseoValidatePayload | None = 
         return {"ok": True, "detail": "DataForSEO API access confirmed."}
     finally:
         conn.close()
+
+
+@router.post("/target/google-ads-planner-metrics")
+def google_ads_planner_metrics_stream(payload: GoogleAdsPlannerRefreshRequest):
+    """Stream Google Ads Keyword Planner progress via SSE; persist metrics on completion."""
+    q: queue.Queue[str | None] = queue.Queue()
+    keyword_list = list(payload.keywords)
+
+    def on_progress(msg: str) -> None:
+        q.put(msg)
+
+    result_holder: dict = {}
+    error_holder: list[str] = []
+
+    def worker() -> None:
+        conn = open_db_connection()
+        try:
+            data = refresh_google_ads_planner_metrics(conn, keyword_list, on_progress=on_progress)
+            # Omit ``items`` from the terminal SSE payload (large); client refetches via GET /target.
+            result_holder["data"] = {k: v for k, v in data.items() if k != "items"}
+        except RuntimeError as exc:
+            error_holder.append(str(exc))
+        except Exception as exc:
+            logger.exception("Google Ads planner metrics refresh failed")
+            error_holder.append(str(exc).strip() or "Unexpected error during Google Ads planner refresh.")
+        finally:
+            conn.close()
+            q.put(None)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    def event_stream():
+        while True:
+            msg = q.get()
+            if msg is None:
+                break
+            yield f"event: progress\ndata: {json.dumps({'message': msg})}\n\n"
+        if error_holder:
+            yield f"event: error\ndata: {json.dumps({'detail': error_holder[0]})}\n\n"
+        elif "data" in result_holder:
+            yield f"event: done\ndata: {json.dumps({'ok': True, 'data': result_holder['data']})}\n\n"
+        else:
+            yield (
+                "event: error\ndata: "
+                + json.dumps({"detail": "Google Ads planner refresh did not complete — check server logs."})
+                + "\n\n"
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/target/gsc-crossref", response_model=dict)

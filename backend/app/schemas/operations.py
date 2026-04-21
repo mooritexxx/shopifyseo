@@ -70,6 +70,7 @@ class SettingsValuesPayload(BaseModel):
     shopify_client_secret: str = ""
     dataforseo_api_login: str = ""
     dataforseo_api_password: str = ""
+    serpapi_api_key: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
     search_console_site: str = ""
@@ -164,6 +165,14 @@ class GoogleAdsTestPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     google_ads_developer_token: str = ""
+
+
+class SerpapiTestPayload(BaseModel):
+    """Optional key from the form; when empty, the server uses the saved ``serpapi_api_key``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    serpapi_api_key: str = ""
 
 
 class ShopifyTestPayload(BaseModel):

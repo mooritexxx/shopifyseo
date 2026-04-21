@@ -140,9 +140,11 @@ def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
                 serp_features, word_count, first_seen, serp_last_update,
                 source_endpoint, competitor_domain, competitor_position,
                 competitor_url, competitor_position_kind,
-                is_local, content_format_hint
+                is_local, content_format_hint,
+                ads_avg_monthly_searches, ads_competition, ads_competition_index
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?)
             ON CONFLICT(keyword) DO UPDATE SET
                 volume = excluded.volume,
                 difficulty = excluded.difficulty,
@@ -174,7 +176,10 @@ def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
                 competitor_url = COALESCE(excluded.competitor_url, keyword_metrics.competitor_url),
                 competitor_position_kind = COALESCE(excluded.competitor_position_kind, keyword_metrics.competitor_position_kind),
                 is_local = COALESCE(excluded.is_local, keyword_metrics.is_local),
-                content_format_hint = COALESCE(excluded.content_format_hint, keyword_metrics.content_format_hint)
+                content_format_hint = COALESCE(excluded.content_format_hint, keyword_metrics.content_format_hint),
+                ads_avg_monthly_searches = excluded.ads_avg_monthly_searches,
+                ads_competition = excluded.ads_competition,
+                ads_competition_index = excluded.ads_competition_index
             """,
             (
                 item.get("keyword", ""),
@@ -209,6 +214,9 @@ def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
                 item.get("competitor_position_kind"),
                 item.get("is_local", 0),
                 item.get("content_format_hint", ""),
+                item.get("ads_avg_monthly_searches"),
+                item.get("ads_competition"),
+                item.get("ads_competition_index"),
             ),
         )
     conn.commit()

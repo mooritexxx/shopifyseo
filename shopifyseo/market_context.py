@@ -38,6 +38,48 @@ SUPPORTED_COUNTRIES: dict[str, str] = {
 
 _DEFAULT_CODE = "CA"
 
+# SerpAPI Google Search (`engine=google`) — align with primary market in Settings.
+# https://serpapi.com/google-localization
+_GOOGLE_DOMAIN_BY_COUNTRY: dict[str, str] = {
+    "CA": "google.ca",
+    "US": "google.com",
+    "GB": "google.co.uk",
+    "AU": "google.com.au",
+    "NZ": "google.co.nz",
+    "IE": "google.ie",
+    "ZA": "google.co.za",
+    "IN": "google.co.in",
+    "SG": "google.com.sg",
+    "AE": "google.ae",
+    "DE": "google.de",
+    "FR": "google.fr",
+    "IT": "google.it",
+    "ES": "google.es",
+    "NL": "google.nl",
+    "SE": "google.se",
+    "NO": "google.no",
+    "DK": "google.dk",
+    "FI": "google.fi",
+    "JP": "google.co.jp",
+    "BR": "google.com.br",
+    "MX": "google.com.mx",
+}
+
+
+def serpapi_google_search_params(conn: sqlite3.Connection) -> dict[str, str]:
+    """Localization query params for SerpAPI ``engine=google`` (``gl``, ``hl``, ``google_domain``)."""
+    code = get_primary_country_code(conn)
+    c = code.upper()
+    gl = c.lower()
+    google_domain = _GOOGLE_DOMAIN_BY_COUNTRY.get(c, "google.com")
+    lr = language_region_code(c)
+    if c == "NO":
+        hl = "no"
+    else:
+        hl = lr.split("-", 1)[0] if "-" in lr else (lr or "en")
+    return {"gl": gl, "hl": hl, "google_domain": google_domain}
+
+
 # ---------------------------------------------------------------------------
 # Core lookups
 # ---------------------------------------------------------------------------

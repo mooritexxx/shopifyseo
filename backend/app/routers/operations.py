@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, status
 
+from backend.app.db import open_db_connection
 from backend.app.schemas.common import SuccessResponse, success_response
 from backend.app.schemas.operations import (
     ActionMessagePayload,
@@ -15,6 +16,7 @@ from backend.app.schemas.operations import (
     OllamaModelsRequestPayload,
     SettingsAiTestPayload,
     GoogleAdsTestPayload,
+    SerpapiTestPayload,
     ShopifyShopInfoPayload,
     ShopifyTestPayload,
     SettingsPayload,
@@ -111,6 +113,23 @@ def settings_google_ads_test(payload: GoogleAdsTestPayload):
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     return success_response({"message": "Google Ads API connection OK", "result": result})
+
+
+@router.post("/settings/serpapi-test", response_model=SuccessResponse[ActionMessagePayload])
+def settings_serpapi_test(payload: SerpapiTestPayload):
+    from shopifyseo.audience_questions_api import run_serpapi_connection_test
+
+    conn = open_db_connection()
+    try:
+        result = run_serpapi_connection_test(conn, api_key_override=payload.serpapi_api_key)
+    finally:
+        conn.close()
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(result.get("detail") or "SerpAPI test failed"),
+        )
+    return success_response({"message": str(result.get("detail") or "SerpAPI OK"), "result": result})
 
 
 @router.get("/settings/shopify-shop-info", response_model=SuccessResponse[ShopifyShopInfoPayload])

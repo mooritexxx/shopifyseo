@@ -12,6 +12,7 @@ export type AiFlowKey = "generation" | "sidekick" | "review" | "image" | "vision
 
 export type ConnectionStatusStore = {
   dataforseo?: LiveEntry;
+  serpapi?: LiveEntry;
   googleAds?: LiveEntry;
   shopify?: LiveEntry;
   ai?: Partial<Record<AiFlowKey, LiveEntry>>;
@@ -26,6 +27,12 @@ export function fingerprintDataforseo(values: Record<string, string>): string {
   return stableFingerprint({
     dataforseo_api_login: (values.dataforseo_api_login || "").trim(),
     dataforseo_api_password: (values.dataforseo_api_password || "").trim()
+  });
+}
+
+export function fingerprintSerpapi(values: Record<string, string>): string {
+  return stableFingerprint({
+    serpapi_api_key: (values.serpapi_api_key || "").trim()
   });
 }
 

@@ -326,7 +326,123 @@ def _build_article_idea_text(row: dict) -> str:
     supporting = _json_list_values(row.get("supporting_keywords"))
     if supporting:
         parts.append(", ".join(supporting))
+    raw_q = row.get("audience_questions_json")
+    if raw_q:
+        try:
+            qlist = json.loads(raw_q) if isinstance(raw_q, str) else raw_q
+        except (json.JSONDecodeError, TypeError):
+            qlist = []
+        if isinstance(qlist, list) and qlist:
+            bits: list[str] = []
+            for q in qlist:
+                if isinstance(q, dict):
+                    qq = str(q.get("question") or "").strip()
+                    sn = str(q.get("snippet") or q.get("answer") or "").strip()
+                    if qq and sn:
+                        bits.append(f"{qq} {sn}")
+                    elif qq:
+                        bits.append(qq)
+                else:
+                    s = str(q).strip()
+                    if s:
+                        bits.append(s)
+            qs = " ".join(bits)
+            if qs:
+                parts.append(qs)
+    raw_p = row.get("top_ranking_pages_json")
+    if raw_p:
+        try:
+            plist = json.loads(raw_p) if isinstance(raw_p, str) else raw_p
+        except (json.JSONDecodeError, TypeError):
+            plist = []
+        if isinstance(plist, list) and plist:
+            obits: list[str] = []
+            for p in plist:
+                if isinstance(p, dict):
+                    t = str(p.get("title") or "").strip()
+                    u = str(p.get("url") or p.get("link") or "").strip()
+                    if t and u:
+                        obits.append(f"{t} {u}")
+                    elif u:
+                        obits.append(u)
+                else:
+                    s = str(p).strip()
+                    if s:
+                        obits.append(s)
+            organic_txt = " ".join(obits)
+            if organic_txt:
+                parts.append(organic_txt)
+    raw_rs = row.get("related_searches_json")
+    if raw_rs:
+        try:
+            rslist = json.loads(raw_rs) if isinstance(raw_rs, str) else raw_rs
+        except (json.JSONDecodeError, TypeError):
+            rslist = []
+        if isinstance(rslist, list) and rslist:
+            rqbits: list[str] = []
+            for x in rslist:
+                if isinstance(x, dict):
+                    q = str(x.get("query") or "").strip()
+                    if q:
+                        rqbits.append(q)
+                elif isinstance(x, str) and x.strip():
+                    rqbits.append(x.strip())
+            rs_txt = " ".join(rqbits)
+            if rs_txt:
+                parts.append(rs_txt)
+    raw_aio = row.get("ai_overview_json")
+    if raw_aio:
+        aio_txt = _flatten_ai_overview_json_for_embed(raw_aio)
+        if aio_txt:
+            parts.append(aio_txt)
     return " | ".join(p for p in parts if p)[:MAX_INPUT_CHARS]
+
+
+def _flatten_ai_overview_json_for_embed(raw: Any) -> str:
+    """Join AI overview snippets/titles for semantic search text."""
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+    bits: list[str] = []
+    tbs = obj.get("text_blocks")
+    if isinstance(tbs, list):
+        for tb in tbs:
+            if not isinstance(tb, dict):
+                continue
+            if tb.get("type") == "paragraph":
+                sn = str(tb.get("snippet") or "").strip()
+                if sn:
+                    bits.append(sn)
+            elif tb.get("type") == "list":
+                lst = tb.get("list")
+                if isinstance(lst, list):
+                    for li in lst:
+                        if not isinstance(li, dict):
+                            continue
+                        sn = str(li.get("snippet") or "").strip()
+                        latex = li.get("snippet_latex")
+                        if isinstance(latex, list):
+                            sn = (sn + " " + " ".join(str(x) for x in latex if isinstance(x, str))).strip()
+                        elif isinstance(latex, str) and latex.strip():
+                            sn = (sn + " " + latex.strip()).strip()
+                        if sn:
+                            bits.append(sn)
+    refs = obj.get("references")
+    if isinstance(refs, list):
+        for r in refs:
+            if not isinstance(r, dict):
+                continue
+            t = str(r.get("title") or "").strip()
+            sn = str(r.get("snippet") or "").strip()
+            chunk = " ".join(x for x in (t, sn) if x)
+            if chunk:
+                bits.append(chunk)
+    return " ".join(bits)
 
 
 def _build_competitor_page_text(row: dict) -> str:

@@ -1,4 +1,5 @@
 """AI-driven cluster generation and page-matching."""
+import concurrent.futures
 import json
 import logging
 import sqlite3
@@ -11,9 +12,15 @@ from shopifyseo.dashboard_ai_engine_parts.generation import (
     _require_provider_credentials,
     ai_settings,
 )
+from shopifyseo.dashboard_google import get_service_setting
 
 from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
+from ._postprocess import fold_singletons, merge_similar_clusters
+from ._pre_cluster import pre_cluster
+
+CLUSTERING_MODE_KEY = "clustering_mode"
+CLUSTERING_MAX_WORKERS = 4
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +85,16 @@ MATCHING_SCHEMA = {
         "additionalProperties": False,
     },
 }
+
+
+def _bucket_to_prompt(bucket: list[dict], country_name: str) -> tuple[str, str]:
+    """Format a single pre-cluster bucket as a clustering-prompt payload."""
+    if not bucket:
+        return _build_clustering_prompt({}, [], country_name=country_name)
+    topics = {(kw.get("parent_topic") or "").strip() for kw in bucket}
+    if len(topics) == 1 and next(iter(topics)):
+        return _build_clustering_prompt({next(iter(topics)): bucket}, [], country_name=country_name)
+    return _build_clustering_prompt({}, bucket, country_name=country_name)
 
 
 def _match_clusters_to_pages(
@@ -229,36 +246,73 @@ def generate_clusters(
             f"Collapsed {absorbed} alias(es) into {len(alias_map)} canonical(s)"
         )
 
-    # 4. Group canonicals by parent_topic
-    groups, orphans = _group_by_parent_topic(canonicals)
-    progress(
-        f"Grouped by parent topic — {len(groups)} groups, {len(orphans)} orphans"
-    )
-
-    # 5. Build prompt and call LLM
-    progress(f"Refining clusters with AI ({provider}/{model})…")
+    # 4. Split canonicals into buckets (parallel mode) or keep as one (legacy).
     from shopifyseo.market_context import get_primary_country_code, country_display_name
     _mkt_name = country_display_name(get_primary_country_code(conn))
-    system_prompt, user_prompt = _build_clustering_prompt(groups, orphans, country_name=_mkt_name)
 
-    llm_result = _call_ai(
-        settings=settings,
-        provider=provider,
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        timeout=settings["timeout"],
-        json_schema=CLUSTERING_SCHEMA,
-        stage="clustering",
-    )
+    mode = (get_service_setting(conn, CLUSTERING_MODE_KEY, "") or "parallel").strip().lower()
+    if mode == "legacy":
+        groups, orphans = _group_by_parent_topic(canonicals)
+        progress(
+            f"Legacy mode — {len(groups)} parent-topic groups, {len(orphans)} orphans, 1 LLM call"
+        )
+        buckets: list[list[dict]] = [canonicals]
+        sys_p, user_p = _build_clustering_prompt(groups, orphans, country_name=_mkt_name)
+        bucket_prompts: list[tuple[str, str]] = [(sys_p, user_p)]
+    else:
+        buckets = pre_cluster(canonicals, conn)
+        progress(f"Pre-clustered into {len(buckets)} bucket(s)")
+        bucket_prompts = [_bucket_to_prompt(b, _mkt_name) for b in buckets]
+
+    # 5. Call LLM per bucket — in parallel when we have more than one bucket.
+    progress(f"Refining clusters with AI ({provider}/{model})…")
+
+    def _call_one(idx: int, messages: list[dict]) -> tuple[int, dict]:
+        return idx, _call_ai(
+            settings=settings,
+            provider=provider,
+            model=model,
+            messages=messages,
+            timeout=settings["timeout"],
+            json_schema=CLUSTERING_SCHEMA,
+            stage="clustering",
+        )
+
+    raw_clusters: list[dict] = []
+    messages_by_idx = [
+        [
+            {"role": "system", "content": sp},
+            {"role": "user", "content": up},
+        ]
+        for sp, up in bucket_prompts
+    ]
+
+    if len(messages_by_idx) == 1:
+        _, llm_result = _call_one(0, messages_by_idx[0])
+        raw_clusters.extend(llm_result.get("clusters", []))
+    else:
+        max_workers = min(len(messages_by_idx), CLUSTERING_MAX_WORKERS)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futs = {
+                pool.submit(_call_one, i, msgs): i
+                for i, msgs in enumerate(messages_by_idx)
+            }
+            for fut in concurrent.futures.as_completed(futs):
+                i = futs[fut]
+                try:
+                    _, llm_result = fut.result()
+                    bucket_clusters = llm_result.get("clusters", [])
+                    raw_clusters.extend(bucket_clusters)
+                    progress(f"Bucket {i + 1}/{len(messages_by_idx)} clustered ({len(bucket_clusters)} clusters)")
+                except Exception:
+                    logger.exception("Clustering LLM call failed for bucket %d", i + 1)
 
     # 6. Compute stats per cluster, expanding aliases into each cluster's keywords.
     keywords_map = {item["keyword"].lower(): item for item in approved}
     alias_map_lower = {k.lower(): v for k, v in alias_map.items()}
-    clusters = []
-    for raw_cluster in llm_result.get("clusters", []):
+    clusters: list[dict] = []
+    by_primary: dict[str, dict] = {}
+    for raw_cluster in raw_clusters:
         kw_list: list[str] = []
         seen: set[str] = set()
         for k in raw_cluster.get("keywords", []):
@@ -276,16 +330,35 @@ def generate_clusters(
         stats = _compute_cluster_stats(
             [k.lower() for k in kw_list], keywords_map
         )
-        clusters.append({
+        cluster = {
             "name": raw_cluster.get("name", "Unnamed Cluster"),
             "content_type": raw_cluster.get("content_type", "blog_post"),
             "primary_keyword": raw_cluster.get("primary_keyword", kw_list[0]),
             "content_brief": raw_cluster.get("content_brief", ""),
             "keywords": kw_list,
             **stats,
-        })
+        }
+        # Cross-bucket dedupe: same primary_keyword → keep higher avg_opportunity.
+        pk = (cluster["primary_keyword"] or "").strip().lower()
+        if pk and pk in by_primary:
+            existing = by_primary[pk]
+            if cluster.get("avg_opportunity", 0.0) > existing.get("avg_opportunity", 0.0):
+                clusters.remove(existing)
+                clusters.append(cluster)
+                by_primary[pk] = cluster
+            continue
+        if pk:
+            by_primary[pk] = cluster
+        clusters.append(cluster)
 
-    # 6. Sort by total opportunity descending
+    # 6b. Post-process: merge cos-similar duplicates, then fold 1-keyword clusters.
+    before = len(clusters)
+    clusters = merge_similar_clusters(clusters, conn, keywords_map)
+    clusters = fold_singletons(clusters, conn, keywords_map)
+    if len(clusters) < before:
+        progress(f"Post-processed clusters — {before} → {len(clusters)}")
+
+    # 7. Sort by total opportunity descending
     clusters.sort(key=lambda c: c.get("avg_opportunity", 0), reverse=True)
 
     # 7. Match clusters to existing pages

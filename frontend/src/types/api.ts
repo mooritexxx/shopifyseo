@@ -522,6 +522,88 @@ export const clusterSchema = z.object({
 
 export type Cluster = z.infer<typeof clusterSchema>;
 
+const audienceQuestionItemSchema = z.object({
+  question: z.string(),
+  snippet: z.string().default("")
+});
+
+const topRankingPageItemSchema = z.object({
+  title: z.string(),
+  url: z.string()
+});
+
+const relatedSearchItemSchema = z.object({
+  query: z.string(),
+  position: z.number().int()
+});
+
+function coerceRelatedSearches(val: unknown): { query: string; position: number }[] {
+  if (!Array.isArray(val)) return [];
+  const out: { query: string; position: number }[] = [];
+  for (let i = 0; i < val.length; i++) {
+    const item = val[i];
+    if (!item || typeof item !== "object") continue;
+    const o = item as { query?: unknown; position?: unknown };
+    const q = typeof o.query === "string" ? o.query.trim() : "";
+    if (!q) continue;
+    let pos = i + 1;
+    if (typeof o.position === "number" && Number.isFinite(o.position)) {
+      pos = Math.trunc(o.position);
+    } else if (typeof o.position === "string" && o.position.trim() !== "") {
+      const n = Number(o.position);
+      if (Number.isFinite(n)) pos = Math.trunc(n);
+    }
+    out.push({ query: q, position: pos });
+  }
+  return out;
+}
+
+function coerceTopRankingPages(val: unknown): { title: string; url: string }[] {
+  if (!Array.isArray(val)) return [];
+  const out: { title: string; url: string }[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as { title?: unknown; url?: unknown; link?: unknown };
+    const rawUrl = o.url ?? o.link;
+    const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    if (!url) continue;
+    let title = typeof o.title === "string" ? o.title.trim() : "";
+    if (!title) title = url.length <= 120 ? url : `${url.slice(0, 117)}…`;
+    out.push({ title, url });
+  }
+  return out;
+}
+
+function coerceAudienceQuestions(val: unknown): { question: string; snippet: string }[] {
+  if (!Array.isArray(val)) return [];
+  const out: { question: string; snippet: string }[] = [];
+  for (const item of val) {
+    if (typeof item === "string") {
+      const q = item.trim();
+      if (q) out.push({ question: q, snippet: "" });
+    } else if (item && typeof item === "object") {
+      const o = item as { question?: unknown; answer?: unknown; snippet?: unknown };
+      if (typeof o.question !== "string") continue;
+      const q = o.question.trim();
+      if (!q) continue;
+      const rawS = o.snippet !== undefined && o.snippet !== null ? o.snippet : o.answer;
+      const s = typeof rawS === "string" ? rawS.trim() : "";
+      out.push({ question: q, snippet: s });
+    }
+  }
+  return out;
+}
+
+export const interlinkTargetSchema = z.object({
+  type: z.string(),
+  handle: z.string(),
+  title: z.string().default(""),
+  url: z.string().default(""),
+  anchor_keyword: z.string().default(""),
+  source: z.string().default(""),
+});
+export type InterlinkTarget = z.infer<typeof interlinkTargetSchema>;
+
 export const articleIdeaSchema = z.object({
   id: z.number(),
   suggested_title: z.string(),
@@ -554,8 +636,37 @@ export const articleIdeaSchema = z.object({
   agg_gsc_clicks: z.number().default(0),
   agg_gsc_impressions: z.number().default(0),
   coverage_pct: z.number().nullable().optional(),
+  /** Primary authority page this article is written to support (topical authority SEO) */
+  primary_target: interlinkTargetSchema.nullable().optional(),
+  /** Related pages from the cluster's keywords, to be interlinked with SEO anchor text */
+  secondary_targets: z.array(interlinkTargetSchema).default([]),
+  /** Related questions + SerpAPI ``snippet`` from Google Search ``related_questions`` when a SerpAPI key is saved */
+  audience_questions: z.preprocess(coerceAudienceQuestions, z.array(audienceQuestionItemSchema)).default([]),
+  /** Organic result titles + URLs from the same SerpAPI Google search */
+  top_ranking_pages: z.preprocess(coerceTopRankingPages, z.array(topRankingPageItemSchema)).default([]),
+  /** Google AI overview from SerpAPI when the SERP includes it (text_blocks + references) */
+  ai_overview: z
+    .preprocess((val: unknown) => {
+      if (val == null) return null;
+      if (typeof val !== "object" || Array.isArray(val)) return null;
+      const o = val as { text_blocks?: unknown; references?: unknown };
+      const tb = Array.isArray(o.text_blocks) ? o.text_blocks.length : 0;
+      const rf = Array.isArray(o.references) ? o.references.length : 0;
+      if (tb === 0 && rf === 0) return null;
+      return val;
+    }, z.record(z.string(), z.unknown()).nullable())
+    .optional(),
+  /** Google ``related_searches`` from the same SerpAPI response (query + SERP position when provided) */
+  related_searches: z.preprocess(coerceRelatedSearches, z.array(relatedSearchItemSchema)).default([]),
 });
 export type ArticleIdea = z.infer<typeof articleIdeaSchema>;
+export type RelatedSearchItem = z.infer<typeof relatedSearchItemSchema>;
+export type AudienceQuestionItem = z.infer<typeof audienceQuestionItemSchema>;
+export type TopRankingPageItem = z.infer<typeof topRankingPageItemSchema>;
+
+export const refreshArticleIdeaSerpSchema = z.object({
+  idea: articleIdeaSchema
+});
 
 export const articleIdeasPayloadSchema = z.object({
   items: z.array(articleIdeaSchema),
@@ -820,6 +931,7 @@ export const settingsSchema = z.object({
     anthropic_api_key: z.string().default(""),
     dataforseo_api_login: z.string().default(""),
     dataforseo_api_password: z.string().default(""),
+    serpapi_api_key: z.string().default(""),
     openrouter_api_key: z.string().default(""),
     ollama_api_key: z.string().default(""),
     ollama_base_url: z.string().default(""),

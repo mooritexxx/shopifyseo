@@ -23,11 +23,12 @@ def test_related_searches_sorted_by_position_in_appendix():
         ],
         "ai_overview": None,
     }
-    appendix, boost = build_serp_appendix_and_retrieval_boost(
+    appendix, boost, paa_n = build_serp_appendix_and_retrieval_boost(
         topic="Main topic",
         keywords=["pods"],
         idea_serp_context=ctx,
     )
+    assert paa_n == 0
     i2 = appendix.index("(position 2)")
     i1 = appendix.index("(position 1)")
     i3 = appendix.index("(position 3)")
@@ -51,11 +52,12 @@ def test_top_titles_have_no_urls_only_optional_host():
         "related_searches": [],
         "ai_overview": None,
     }
-    appendix, _ = build_serp_appendix_and_retrieval_boost(
+    appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(
         topic="Pods topic",
         keywords=["x"],
         idea_serp_context=ctx,
     )
+    assert paa_n == 0
     assert "https://" not in appendix.lower()
     assert "competitor.example.com" not in appendix.lower()
     assert "Competitor guide" in appendix
@@ -75,7 +77,8 @@ def test_style_examples_when_tier_one_related_exists():
         "related_searches": [{"query": "pods vs disposables", "position": 1}],
         "ai_overview": None,
     }
-    appendix, _ = build_serp_appendix_and_retrieval_boost(topic="Kits", keywords=[], idea_serp_context=ctx)
+    appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(topic="Kits", keywords=[], idea_serp_context=ctx)
+    assert paa_n == 0
     assert "Style examples (do not copy" in appendix
     assert "Comparison shape" in appendix
     assert "How-to shape" in appendix
@@ -96,9 +99,10 @@ def test_empty_context_yields_empty_appendix():
         "related_searches": [],
         "ai_overview": None,
     }
-    appendix, boost = build_serp_appendix_and_retrieval_boost(topic="Only topic", keywords=[], idea_serp_context=ctx)
+    appendix, boost, paa_n = build_serp_appendix_and_retrieval_boost(topic="Only topic", keywords=[], idea_serp_context=ctx)
     assert appendix == ""
     assert boost == []
+    assert paa_n == 0
 
 
 def test_appendix_truncation_marker_when_over_budget():
@@ -115,14 +119,55 @@ def test_appendix_truncation_marker_when_over_budget():
         "related_searches": [{"query": f"q{n}", "position": n} for n in range(1, 25)],
         "ai_overview": {"text_blocks": [{"type": "paragraph", "snippet": "z" * 2000}]},
     }
-    appendix, _ = build_serp_appendix_and_retrieval_boost(
+    appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(
         topic="T",
         keywords=["kw"],
         idea_serp_context=ctx,
         max_appendix_chars=1200,
     )
+    assert paa_n > 0
     assert len(appendix) <= 1200
     assert "truncated" in appendix.lower()
+
+
+def test_paa_shown_count_matches_appended_questions():
+    qs = [{"question": f"Q{i}?", "snippet": ""} for i in range(25)]
+    ctx = {
+        "suggested_title": "",
+        "brief": "",
+        "primary_keyword": "k",
+        "supporting_keywords": [],
+        "gap_reason": "",
+        "dominant_serp_features": "",
+        "content_format_hints": "",
+        "audience_questions": qs,
+        "top_ranking_pages": [],
+        "related_searches": [],
+        "ai_overview": None,
+    }
+    from shopifyseo.dashboard_ai_engine_parts.serp_draft_context import MAX_PAA_QUESTIONS
+
+    appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(topic="T", keywords=[], idea_serp_context=ctx)
+    assert paa_n == MAX_PAA_QUESTIONS
+    assert appendix.count("Q") >= MAX_PAA_QUESTIONS
+
+
+def test_tier_one_related_block_includes_heading_requirement():
+    ctx = {
+        "suggested_title": "",
+        "brief": "",
+        "primary_keyword": "k",
+        "supporting_keywords": [],
+        "gap_reason": "",
+        "dominant_serp_features": "",
+        "content_format_hints": "",
+        "audience_questions": [],
+        "top_ranking_pages": [],
+        "related_searches": [{"query": "alpha query", "position": 1}],
+        "ai_overview": None,
+    }
+    appendix, _, _ = build_serp_appendix_and_retrieval_boost(topic="T", keywords=[], idea_serp_context=ctx)
+    assert "position 1, 2, or 3" in appendix
 
 
 def test_paa_numbered_and_snippet_capped():
@@ -141,6 +186,7 @@ def test_paa_numbered_and_snippet_capped():
         "related_searches": [],
         "ai_overview": None,
     }
-    appendix, _ = build_serp_appendix_and_retrieval_boost(topic="P topic", keywords=[], idea_serp_context=ctx)
+    appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(topic="P topic", keywords=[], idea_serp_context=ctx)
+    assert paa_n == 1
     assert "1. Is this safe?" in appendix
     assert appendix.count("S") < 400

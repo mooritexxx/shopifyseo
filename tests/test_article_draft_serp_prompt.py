@@ -27,8 +27,15 @@ def db_conn():
 
 
 def _filler_body(url: str) -> str:
-    link = f'<p><a href="{url}">pods</a></p>'
-    return link + "<p>" + ("word " * 5000) + "</p>"
+    """Passes compliance: length, primary keyword phrase, FAQPage JSON-LD, primary href."""
+    faq = (
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":['
+        '{"@type":"Question","name":"Q","acceptedAnswer":{"@type":"Answer","text":"A"}}]}'
+        "</script>"
+    )
+    link = f'<p><a href="{url}">pod kits</a> and more about pod kits here.</p>'
+    return link + faq + "<p>" + ("word " * 5000) + "</p>"
 
 
 def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, monkeypatch):
@@ -80,7 +87,8 @@ def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, m
     )
 
     assert len(captured) >= 2
-    user_content = next(m["content"] for m in captured if m.get("role") == "user")
+    user_messages = [m["content"] for m in captured if m.get("role") == "user"]
+    user_content = user_messages[0]
     system_content = next(m["content"] for m in captured if m.get("role") == "system")
 
     assert "SERP-informed research" in user_content
@@ -92,3 +100,66 @@ def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, m
 
     assert "SERP research appendix" in system_content or "information gain" in system_content.lower()
     assert "FAQPage JSON-LD" in user_content
+    assert "Pre-output compliance" in user_content
+
+
+def test_compliance_retry_calls_ai_twice(db_conn, monkeypatch):
+    """First body fails FAQ check; second body passes (PAA + idea primary keyword)."""
+    calls = 0
+    pad = "<p>" + ("word " * 5000) + "</p>"
+    faq = (
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[]}'
+        "</script>"
+    )
+    good_body = (
+        f'<h2>Intro</h2><p><a href="https://example.com/collections/pods">pod kits</a> for pod kits.</p>'
+        + faq
+        + pad
+    )
+    bad_body = "<h2>Intro</h2><p>pod kits text only, no FAQ script yet.</p>" + pad
+
+    def fake_call_ai(settings, provider, model, messages, timeout, *, json_schema=None, stage=""):
+        nonlocal calls
+        calls += 1
+        body = bad_body if calls == 1 else good_body
+        return {
+            "title": "Pod Kits Compared For Everyday Buyers",
+            "seo_title": "Pod Kits Compared For Everyday Buyers Long Enough Here",
+            "seo_description": (
+                "This is a meta description that is within the 135 to 155 character bound required "
+                "by the schema. Concrete, specific, click-worthy."
+            ),
+            "body": body,
+        }
+
+    monkeypatch.setattr(_article_draft, "_call_ai", fake_call_ai)
+
+    idea_ctx = {
+        "suggested_title": "Pod kits guide",
+        "brief": "Brief",
+        "primary_keyword": "pod kits",
+        "supporting_keywords": [],
+        "gap_reason": "",
+        "dominant_serp_features": "",
+        "content_format_hints": "",
+        "audience_questions": [{"question": "Which pod kit?", "snippet": ""}],
+        "top_ranking_pages": [],
+        "related_searches": [],
+        "ai_overview": None,
+    }
+
+    generate_article_draft(
+        db_conn,
+        topic="Pod kits guide",
+        keywords=["pod kits"],
+        primary_target={
+            "type": "collection",
+            "handle": "pods",
+            "title": "Pod Kits",
+            "url": "https://example.com/collections/pods",
+        },
+        secondary_targets=[],
+        idea_serp_context=idea_ctx,
+    )
+    assert calls == 2

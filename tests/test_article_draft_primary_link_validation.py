@@ -26,12 +26,23 @@ def db_conn():
 
 
 def _body_with_link(url: str) -> str:
-    # Body is required to be >=14000 chars by the JSON schema, but the schema is
-    # enforced by the AI provider, not by our Python code, so in unit tests we
-    # can return anything — the validator only inspects <a> tags.
-    filler = "<p>" + ("Padding paragraph. " * 50) + "</p>"
-    link_block = f'<h2>Intro</h2><p>See our <a href="{url}">collection</a>.</p>'
+    """Meet post-draft compliance minimum length (14k+ HTML chars) for unit tests."""
+    link_block = f'<h2>Intro</h2><p>See our <a href="{url}">collection</a> for disposable vapes.</p>'
+    filler = "<p>" + ("Padding paragraph. " * 950) + "</p>"
     return link_block + filler
+
+
+def _long_body_wrong_link() -> str:
+    """Long enough for compliance but links to a different path than the required primary."""
+    return (
+        "<h2>Intro</h2><p>We discuss disposable vapes and link to the wrong place: "
+        '<a href="https://example.com/collections/wrong-handle">wrong</a>.</p>'
+        + "<p>" + ("More disposable vapes content. " * 950) + "</p>"
+    )
+
+
+def _long_body_no_links() -> str:
+    return "<h2>Intro</h2><p>No links here.</p>" + "<p>" + ("Plain text padding. " * 950) + "</p>"
 
 
 def _fake_call_factory(body: str):
@@ -77,11 +88,10 @@ def test_draft_hard_fails_when_primary_link_missing(db_conn, monkeypatch):
         "title": "Disposable Vapes",
         "url": "https://example.com/collections/disposable-vapes",
     }
-    # AI returns body with no primary link (just filler).
     monkeypatch.setattr(
         _article_draft,
         "_call_ai",
-        _fake_call_factory("<h2>Intro</h2><p>" + ("Padding. " * 500) + "</p>"),
+        _fake_call_factory(_long_body_wrong_link()),
     )
     with pytest.raises(RuntimeError, match="missing required primary authority link"):
         generate_article_draft(
@@ -98,7 +108,7 @@ def test_draft_skips_validation_when_no_primary_target(db_conn, monkeypatch):
     monkeypatch.setattr(
         _article_draft,
         "_call_ai",
-        _fake_call_factory("<h2>Intro</h2><p>No links here.</p>"),
+        _fake_call_factory(_long_body_no_links()),
     )
     result = generate_article_draft(
         db_conn,

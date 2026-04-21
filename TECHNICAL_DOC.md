@@ -152,6 +152,23 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
 
+#### Linking legacy `article_ideas` rows to a cluster (maintainer SQL)
+
+Article drafts read `linked_cluster_id` to inject cluster keyword gaps into the AI prompt. Older `article_ideas` rows
+may have `linked_cluster_id` **NULL**. The app does not auto-guess clusters; fix data deliberately.
+
+1. Find the correct `clusters.id` (e.g. from the Keywords / Clusters UI or `SELECT id, name, primary_keyword FROM clusters WHERE …`).
+2. Update the idea row(s), for example:
+
+```sql
+-- Example: attach idea 21 to cluster 941 (replace IDs after verifying).
+UPDATE article_ideas SET linked_cluster_id = 941 WHERE id = 21;
+```
+
+3. Re-open the idea in the dashboard; the “Cluster not linked” banner should disappear once `linked_cluster_id` is set.
+
+Never bulk-update without verifying `clusters.id` matches the intended gap analysis row.
+
 
 ### Keywords & clusters
 

@@ -539,6 +539,19 @@ export function IdeaDetailPage() {
         </div>
       </div>
 
+      {idea.linked_cluster_id == null ? (
+        <div
+          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+          role="status"
+        >
+          <span className="font-semibold">Cluster not linked.</span>{" "}
+          This idea has no <code className="rounded bg-amber-100/80 px-1">linked_cluster_id</code>, so AI drafts will
+          not receive cluster SEO keyword gaps from the database—only the keywords you enter here, SERP data on the
+          idea, and interlink targets. Link the idea to a cluster (see maintainer docs / SQL) to restore full cluster
+          gap coverage in drafts.
+        </div>
+      ) : null}
+
       {/* Two-column layout: Brief + Sidebar info */}
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Main content — 2/3 */}

@@ -166,8 +166,12 @@ def build_serp_appendix_and_retrieval_boost(
     keywords: list[str | dict] | None,
     idea_serp_context: dict[str, Any],
     max_appendix_chars: int = DEFAULT_SERP_APPENDIX_MAX_CHARS,
-) -> tuple[str, list[str]]:
-    """Return (serp_appendix, retrieval_boost_terms) from normalized idea SERP fields."""
+) -> tuple[str, list[str], int]:
+    """Return (serp_appendix, retrieval_boost_terms, paa_shown_count) from normalized idea SERP fields.
+
+    ``paa_shown_count`` is the number of PAA questions actually written into the appendix
+    (same cap as ``MAX_PAA_QUESTIONS``), for FAQ JSON-LD pair targets in the draft prompt.
+    """
     corpus = _corpus_from_topic_keywords(topic, keywords)
 
     suggested_title = str(idea_serp_context.get("suggested_title") or "").strip()
@@ -228,6 +232,7 @@ def build_serp_appendix_and_retrieval_boost(
 
     # --- (2) PAA ---
     paa_lines: list[str] = []
+    paa_shown_count = 0
     total_paa = len(audience_questions)
     for i, row in enumerate(audience_questions[:MAX_PAA_QUESTIONS], start=1):
         if not isinstance(row, dict):
@@ -243,6 +248,7 @@ def build_serp_appendix_and_retrieval_boost(
         if sn:
             line += f"\n   Snippet: {sn}"
         paa_lines.append(line)
+        paa_shown_count += 1
     if paa_lines:
         extra = total_paa - len(paa_lines)
         tail = f"\n(+ {extra} further PAA-style questions in cluster — cover as many as fit naturally.)" if extra > 0 else ""
@@ -275,6 +281,8 @@ def build_serp_appendix_and_retrieval_boost(
             "=== SERP: Related searches — tiers 1–3 (strong refinements / close information gaps) ===\n"
             "Treat each as a candidate for a dedicated H2 or H3 whose title closely matches the query when it reads naturally.\n"
             "Prefer comparison tables, pros/cons, definitions with criteria, or short procedures when the query implies them.\n"
+            "Each query with position 1, 2, or 3 above must have a matching H2 or H3 in your article (light paraphrase allowed for grammar); "
+            "do not skip all tier-1 refinements without a heading that reflects them.\n"
             + "\n".join(lines_h)
         )
     if tier_low:
@@ -365,7 +373,7 @@ def build_serp_appendix_and_retrieval_boost(
         if stem:
             _add_boost(stem)
 
-    return appendix, boost
+    return appendix, boost, paa_shown_count
 
 
 def parse_idea_serp_row_from_db(

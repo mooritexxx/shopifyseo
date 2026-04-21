@@ -529,7 +529,7 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
             cluster_meta,
             linked_collection_handle=linked_collection_handle,
             linked_collection_title=linked_collection_title,
-            max_secondary=5,
+            max_secondary=3,
         )
 
         cleaned.append(

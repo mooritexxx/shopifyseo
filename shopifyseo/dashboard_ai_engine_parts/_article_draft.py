@@ -98,6 +98,8 @@ def generate_article_draft(
     Raises RuntimeError on AI failure.
     """
     settings = ai_settings(conn)
+    from .serp_draft_context import MAX_PAA_QUESTIONS
+
     provider = settings["generation_provider"]
     model = settings["generation_model"]
     timeout = settings["timeout"]
@@ -182,10 +184,11 @@ def generate_article_draft(
 
     serp_appendix = ""
     retrieval_boost_terms: list[str] = []
+    paa_shown_count = 0
     if idea_serp_context is not None:
         from .serp_draft_context import build_serp_appendix_and_retrieval_boost
 
-        serp_appendix, retrieval_boost_terms = build_serp_appendix_and_retrieval_boost(
+        serp_appendix, retrieval_boost_terms, paa_shown_count = build_serp_appendix_and_retrieval_boost(
             topic=topic,
             keywords=keywords,
             idea_serp_context=idea_serp_context,
@@ -209,13 +212,19 @@ def generate_article_draft(
 
     _paa_rows = (idea_serp_context or {}).get("audience_questions") or []
     _has_serp_paa = bool(isinstance(_paa_rows, list) and len(_paa_rows) > 0)
+    _n_visible_paa_for_faq = (
+        paa_shown_count
+        if paa_shown_count > 0
+        else (min(len(_paa_rows), MAX_PAA_QUESTIONS) if _has_serp_paa else 0)
+    )
+    _faq_pair_target = min(6, _n_visible_paa_for_faq) if _n_visible_paa_for_faq > 0 else 0
     _paa_faq_instruction = (
         "People Also Ask (PAA) signals are included below for this topic. Map those questions to explicit H2/H3 "
-        "coverage where they fit the outline; if the list is long, address at least the highest-priority questions "
-        "first, then cover additional ones where they add reader value. "
-        "At the end of the body, add FAQPage JSON-LD (Question + acceptedAnswer) aligned to the clearest reader "
-        "questions you answered in the article (at least 6 pairs when the SERP appendix lists that many distinct questions).\n"
-        if _has_serp_paa and not _is_faq
+        "coverage where they fit the outline; address the highest-priority questions first. "
+        "At the end of the body, add FAQPage JSON-LD (Question + acceptedAnswer) aligned to the reader questions "
+        f"you answer in the article — include **{_faq_pair_target}** Question/acceptedAnswer pairs (match the "
+        "wording of your `<h3>` FAQ-style questions in the body; do not invent questions you did not cover).\n"
+        if _has_serp_paa and not _is_faq and _faq_pair_target > 0
         else ""
     )
 
@@ -364,20 +373,37 @@ def generate_article_draft(
 
     if link_targets:
         _allowlist_json = json.dumps(link_targets, ensure_ascii=True)
-        _collection_link_block = (
-            "\n\napproved_internal_link_targets (JSON array). "
-            "MUST include 2–4 contextual internal links in the body where they help the reader. "
-            "When this list is long, prefer destinations that also appear in the \"Reference content from your store\" "
-            "section above (same product, collection, or post) when they fit the reader's context — avoid unrelated "
-            "catalog items that only appear deeper in the JSON list. "
-            "Every storefront <a href> MUST use the `url` value from one of these objects "
-            "character-for-character (copy the full string — no edits, no other hosts, no invented paths). "
-            "Each <a> MUST also include a descriptive title attribute for accessibility and SEO: "
-            f"for type collection use 'Shop {{title}} — {_brand}', for product use '{{title}} — {_brand}', "
-            f"for page use '{{title}} — {_brand}', for blog_article use 'Read {{title}} — {_brand}'. "
-            "Use natural anchor text describing the destination — never use the raw handle as link text.\n"
-            f"{_allowlist_json}\n"
-        )
+        if secondary_normalized:
+            _internal_link_instruction = (
+                "\n\napproved_internal_link_targets (JSON array). "
+                "You MUST already satisfy the primary + EACH secondary URL from INTERLINK STRATEGY above. "
+                "You MAY add up to **two** more internal links from this list when they clearly help the reader "
+                '(prefer handles that also appear in "Reference content from your store"). '
+                "Target **at most eight** total storefront `<a href>` links including primary and all secondaries; "
+                "do not pad links only to increase count. "
+                "Every storefront <a href> MUST use the `url` value from one of these objects "
+                "character-for-character (copy the full string — no edits, no other hosts, no invented paths). "
+                "Each <a> MUST also include a descriptive title attribute for accessibility and SEO: "
+                f"for type collection use 'Shop {{title}} — {_brand}', for product use '{{title}} — {_brand}', "
+                f"for page use '{{title}} — {_brand}', for blog_article use 'Read {{title}} — {_brand}'. "
+                "Use natural anchor text describing the destination — never use the raw handle as link text.\n"
+            )
+        else:
+            _internal_link_instruction = (
+                "\n\napproved_internal_link_targets (JSON array). "
+                "MUST include 2–4 contextual internal links in the body where they help the reader. "
+                "When this list is long, prefer destinations that also appear in the \"Reference content from your store\" "
+                "section above (same product, collection, or post) when they fit the reader's context — avoid unrelated "
+                "catalog items that only appear deeper in the JSON list. "
+                "Target at most eight total storefront `<a href>` links unless the article truly needs more for clarity. "
+                "Every storefront <a href> MUST use the `url` value from one of these objects "
+                "character-for-character (copy the full string — no edits, no other hosts, no invented paths). "
+                "Each <a> MUST also include a descriptive title attribute for accessibility and SEO: "
+                f"for type collection use 'Shop {{title}} — {_brand}', for product use '{{title}} — {_brand}', "
+                f"for page use '{{title}} — {_brand}', for blog_article use 'Read {{title}} — {_brand}'. "
+                "Use natural anchor text describing the destination — never use the raw handle as link text.\n"
+            )
+        _collection_link_block = _internal_link_instruction + f"{_allowlist_json}\n"
     else:
         _collection_link_block = (
             "\n\napproved_internal_link_targets is empty (catalog not synced or no handles). "
@@ -390,6 +416,58 @@ def generate_article_draft(
         if _base_url
         else f"\"publisher\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}}"
     )
+
+    def _first_plain_keyword() -> str:
+        if not keywords:
+            return ""
+        raw = keywords[0]
+        if isinstance(raw, dict):
+            return str(raw.get("keyword") or "").strip()
+        return str(raw).strip()
+
+    def _has_tier1_related_searches(ctx: dict[str, Any] | None) -> bool:
+        if not ctx:
+            return False
+        rel = ctx.get("related_searches") or []
+        if not isinstance(rel, list):
+            return False
+        for x in rel:
+            if not isinstance(x, dict):
+                continue
+            if not str(x.get("query") or "").strip():
+                continue
+            try:
+                pos = int(x.get("position", 99))
+            except (TypeError, ValueError):
+                continue
+            if pos <= 3:
+                return True
+        return False
+
+    _pk_checklist = (str((idea_serp_context or {}).get("primary_keyword") or "").strip() or _first_plain_keyword())
+    _pre_output_lines = [
+        "\n\n=== Pre-output compliance (verify before you return JSON) ===\n",
+        "- Body HTML length is at least 14,000 characters (excluding this checklist).\n",
+    ]
+    if _is_faq or _has_serp_paa:
+        _pre_output_lines.append(
+            "- FAQPage: include a `<script type=\"application/ld+json\">` block with @type FAQPage; "
+            "each Question name should align with the reader questions you answer (match your FAQ `<h3>` text).\n"
+        )
+    if secondary_normalized:
+        _pre_output_lines.append(
+            "- Every secondary URL from INTERLINK STRATEGY must appear verbatim as an `<a href>` in the body.\n"
+        )
+    if _pk_checklist:
+        _pre_output_lines.append(
+            f"- Primary keyword for this draft: include {_pk_checklist!r} naturally at least once in body text.\n"
+        )
+    if _has_tier1_related_searches(idea_serp_context):
+        _pre_output_lines.append(
+            "- SERP tier 1–3 related searches: each position 1–3 query from the SERP appendix must have a matching "
+            "H2 or H3 (light paraphrase allowed for grammar).\n"
+        )
+    _pre_output_checklist = "".join(_pre_output_lines)
 
     _serp_system_extra = ""
     if idea_serp_context is not None:
@@ -430,6 +508,7 @@ def generate_article_draft(
         f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
+        f"{_pre_output_checklist}"
         "Return a JSON object with exactly these four fields:\n"
         f"- title: The H1 article headline (20–70 characters). Keyword-led, specific. {spelling_variant(_market_code)} "
         "No ALL CAPS. No filler suffixes like 'A Simple FAQ', 'A Complete Guide', '(2026 Update)', or '(Full Guide)'. "
@@ -509,6 +588,34 @@ def generate_article_draft(
         if on_progress:
             on_progress({"message": message, "phase": phase, "state": state})
 
+    from .article_draft_compliance import (
+        build_compliance_retry_user_message,
+        validate_article_draft_compliance,
+    )
+
+    secondary_urls_for_compliance = [n["url"] for n in secondary_normalized if (n.get("url") or "").strip()]
+    primary_kw_for_compliance = (
+        str((idea_serp_context or {}).get("primary_keyword") or "").strip() or None
+    )
+    require_faqpage_ld = bool(_is_faq or _has_serp_paa)
+
+    def _sanitize_body(raw_html: str) -> str:
+        out = str(raw_html or "")
+        if "<a " in out.lower():
+            out = sanitize_article_internal_links(
+                out, path_to_canonical=path_to_canonical, base_url=_base_url
+            )
+        return out
+
+    def _compliance_gaps(body_html: str) -> list[str]:
+        return validate_article_draft_compliance(
+            body_html=body_html,
+            require_faqpage_ld=require_faqpage_ld,
+            secondary_urls=secondary_urls_for_compliance,
+            primary_keyword_for_body=primary_kw_for_compliance,
+            path_to_canonical=path_to_canonical,
+        )
+
     _emit("Preparing article prompt and keyword context…", phase="content", state="start")
     _emit("Sending request to AI — writing full article (often 1–3 minutes)…", phase="content", state="waiting")
 
@@ -519,11 +626,21 @@ def generate_article_draft(
 
     _emit("Article content received — validating JSON fields…", phase="content", state="done")
 
-    body_out = str(result.get("body") or "")
-    if "<a " in body_out.lower():
-        body_out = sanitize_article_internal_links(
-            body_out, path_to_canonical=path_to_canonical, base_url=_base_url
-        )
+    body_out = _sanitize_body(str(result.get("body") or ""))
+    gaps = _compliance_gaps(body_out)
+    if gaps:
+        messages.append({"role": "user", "content": build_compliance_retry_user_message(gaps)})
+        _emit("Draft needs compliance fixes — one automatic retry…", phase="content", state="waiting")
+        try:
+            result = _call_ai(settings, provider, model, messages, timeout, json_schema=json_schema, stage="article_draft")
+        except AIProviderRequestError as exc:
+            raise RuntimeError(str(exc)) from exc
+        body_out = _sanitize_body(str(result.get("body") or ""))
+        gaps = _compliance_gaps(body_out)
+    if gaps:
+        raise RuntimeError("Article draft failed compliance after one retry: " + " | ".join(gaps))
+
+    _emit("Article content passed compliance checks…", phase="content", state="done")
 
     # Hard-fail if a primary authority target was supplied but absent from the body.
     if primary_normalized and primary_normalized.get("url"):

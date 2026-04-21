@@ -41,6 +41,21 @@ def test_build_article_draft_retrieval_query_includes_keywords_and_cluster():
     assert "pod kits" in lowered or "pods overview" in lowered
 
 
+def test_build_article_draft_retrieval_query_appends_extra_terms_within_budget():
+    q = build_article_draft_retrieval_query(
+        topic="Disposable vapes guide",
+        keywords=["nicotine pouches"],
+        linked_cluster_id=None,
+        conn=None,
+        extra_terms=["long-tail related query one", "long-tail related query two"],
+    )
+    lowered = q.lower()
+    assert "disposable" in lowered
+    assert "nicotine" in lowered
+    assert "long-tail related query one" in lowered
+    assert "long-tail related query two" in lowered
+
+
 def test_merge_embedding_rag_boosts_on_topic_product_over_higher_cosine_noise():
     """Embedding-only leader with no token overlap loses to weaker cosine + strong overlap."""
     conn = sqlite3.connect(":memory:")

@@ -33,6 +33,7 @@ def build_article_draft_retrieval_query(
     linked_cluster_id: int | None = None,
     conn: sqlite3.Connection | None = None,
     max_chars: int = ARTICLE_DRAFT_RETRIEVAL_MAX_CHARS,
+    extra_terms: list[str] | None = None,
 ) -> str:
     """Single string for ``retrieve_related`` (topic + keywords + optional cluster fields)."""
     parts: list[str] = []
@@ -58,6 +59,11 @@ def build_article_draft_retrieval_query(
                 v = (str(r.get(key) or "")).strip()
                 if v and v.lower() not in {p.lower() for p in parts}:
                     parts.append(v)
+    if extra_terms:
+        for term in extra_terms:
+            k = (term or "").strip()
+            if k and k.lower() not in {p.lower() for p in parts}:
+                parts.append(k)
     while len(parts) > 1 and len(" | ".join(parts)) > max_chars:
         parts.pop()
     blob = " | ".join(parts)
@@ -343,6 +349,7 @@ def run_article_draft_rag(
     keywords: list[str | dict] | None,
     linked_cluster_id: int | None,
     top_k: int = 5,
+    retrieval_extra_terms: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Wide embedding retrieval on a rich query, then hybrid merge down to *top_k*."""
     from shopifyseo.embedding_store import retrieve_related
@@ -352,6 +359,7 @@ def run_article_draft_rag(
         keywords=keywords,
         linked_cluster_id=linked_cluster_id,
         conn=conn,
+        extra_terms=retrieval_extra_terms,
     )
     if not (api_key or "").strip():
         return []

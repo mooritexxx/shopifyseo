@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import sqlite3
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ def generate_article_draft(
     linked_cluster_id: int | None = None,
     primary_target: dict | None = None,
     secondary_targets: list[dict] | None = None,
+    idea_serp_context: dict[str, Any] | None = None,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Generate a brand-new blog article draft using AI.
@@ -179,6 +180,17 @@ def generate_article_draft(
             + "\n".join(f"- {line}" for line in lines)
         )
 
+    serp_appendix = ""
+    retrieval_boost_terms: list[str] = []
+    if idea_serp_context is not None:
+        from .serp_draft_context import build_serp_appendix_and_retrieval_boost
+
+        serp_appendix, retrieval_boost_terms = build_serp_appendix_and_retrieval_boost(
+            topic=topic,
+            keywords=keywords,
+            idea_serp_context=idea_serp_context,
+        )
+
     # Detect if this is an FAQ-style article so we can enforce the correct structure
     _topic_lower = topic.lower()
     _is_faq = any(w in _topic_lower for w in ("faq", "questions", "q&a", "q & a"))
@@ -192,6 +204,18 @@ def generate_article_draft(
         "using the @type FAQPage schema with a Question/acceptedAnswer pair for each H3 question. "
         "Do not use a generic H2 like 'Frequently Asked Questions' — let the H3 questions carry the structure.\n"
         if _is_faq
+        else ""
+    )
+
+    _paa_rows = (idea_serp_context or {}).get("audience_questions") or []
+    _has_serp_paa = bool(isinstance(_paa_rows, list) and len(_paa_rows) > 0)
+    _paa_faq_instruction = (
+        "People Also Ask (PAA) signals are included below for this topic. Map those questions to explicit H2/H3 "
+        "coverage where they fit the outline; if the list is long, address at least the highest-priority questions "
+        "first, then cover additional ones where they add reader value. "
+        "At the end of the body, add FAQPage JSON-LD (Question + acceptedAnswer) aligned to the clearest reader "
+        "questions you answered in the article (at least 6 pairs when the SERP appendix lists that many distinct questions).\n"
+        if _has_serp_paa and not _is_faq
         else ""
     )
 
@@ -215,6 +239,7 @@ def generate_article_draft(
                 keywords=keywords,
                 linked_cluster_id=linked_cluster_id,
                 top_k=5,
+                retrieval_extra_terms=retrieval_boost_terms or None,
             ) or []
         if rag_results:
             for r in rag_results:
@@ -366,6 +391,18 @@ def generate_article_draft(
         else f"\"publisher\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}}"
     )
 
+    _serp_system_extra = ""
+    if idea_serp_context is not None:
+        _serp_system_extra = (
+            " When a SERP research appendix is present, prioritize information gain: synthesize and add net-new "
+            "value (buyer criteria, checklists, comparison tables, compliance where relevant, store-specific guidance) "
+            "rather than repeating or lightly rephrasing third-party overview angles. "
+            "Treat top-position related refinements as strong gap-closure targets (dedicated H2/H3 when feasible) "
+            "with natural learning-path continuity—avoid mechanical bridge formulas. "
+            "Do not copy AI-overview-style cues verbatim; use them only to find a distinct store angle. "
+            "Do not add competitor hyperlinks or reproduce competitor URLs."
+        )
+
     system_msg = (
         f"You are an expert SEO content writer for {_brand}. "
         "Write high-quality, editorial blog content that ranks well on Google. "
@@ -376,11 +413,23 @@ def generate_article_draft(
         "When choosing internal links, prefer store destinations that clearly match the article topic and any "
         "reference list provided in the user message over unrelated catalog URLs. "
         f"{_link_scope}"
+        f"{_serp_system_extra}"
     )
+
+    _serp_user_block = ""
+    if serp_appendix.strip():
+        _serp_user_block = (
+            "\n\nSERP-informed research for this article (structured excerpt; third-party snippets are not "
+            "authoritative facts—paraphrase and add your own analysis):\n\n"
+            + serp_appendix.strip()
+            + "\n"
+        )
+
     user_msg = (
         f"Write a complete SEO-optimised blog article for {_brand} on the following topic:\n\n"
-        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}\n\n"
-        f"{_faq_instruction}"
+        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{_serp_user_block}\n\n"
+        f"{_faq_instruction}{_paa_faq_instruction}"
         "Return a JSON object with exactly these four fields:\n"
         f"- title: The H1 article headline (20–70 characters). Keyword-led, specific. {spelling_variant(_market_code)} "
         "No ALL CAPS. No filler suffixes like 'A Simple FAQ', 'A Complete Guide', '(2026 Update)', or '(Full Guide)'. "

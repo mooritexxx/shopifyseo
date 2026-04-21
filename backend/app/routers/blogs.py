@@ -50,6 +50,7 @@ from shopifyseo.dashboard_ai_engine_parts.generation import (
     inject_article_body_images,
     try_prepare_article_images_bundle,
 )
+from shopifyseo.dashboard_ai_engine_parts.serp_draft_context import parse_idea_serp_row_from_db
 from shopifyseo.seo_slug import seo_article_slug, slugify_article_handle
 from shopifyseo.shopify_admin import (
     create_article,
@@ -298,6 +299,7 @@ def _run_generate_article_draft(
         cluster_id: int | None = None
         primary_target_dict: dict | None = None
         secondary_targets_list: list[dict] = []
+        idea_serp_context: dict | None = None
         if effective_idea_id is not None:
             idea_row = conn.execute(
                 """
@@ -306,27 +308,41 @@ def _run_generate_article_draft(
                        COALESCE(primary_target_handle, ''),
                        COALESCE(primary_target_title, ''),
                        COALESCE(primary_target_url, ''),
-                       COALESCE(secondary_targets_json, '[]')
+                       COALESCE(secondary_targets_json, '[]'),
+                       suggested_title,
+                       brief,
+                       COALESCE(primary_keyword, ''),
+                       COALESCE(supporting_keywords, '[]'),
+                       COALESCE(gap_reason, ''),
+                       COALESCE(dominant_serp_features, ''),
+                       COALESCE(content_format_hints, ''),
+                       COALESCE(audience_questions_json, '[]'),
+                       COALESCE(top_ranking_pages_json, '[]'),
+                       COALESCE(related_searches_json, '[]'),
+                       COALESCE(ai_overview_json, '{}')
                 FROM article_ideas WHERE id = ?
                 """,
                 (effective_idea_id,),
             ).fetchone()
             if idea_row:
-                if idea_row[0] is not None:
-                    cluster_id = int(idea_row[0])
-                if idea_row[1] and idea_row[2]:
+                if idea_row["linked_cluster_id"] is not None:
+                    cluster_id = int(idea_row["linked_cluster_id"])
+                pt = idea_row["primary_target_type"] or ""
+                ph = idea_row["primary_target_handle"] or ""
+                if pt and ph:
                     primary_target_dict = {
-                        "type": idea_row[1],
-                        "handle": idea_row[2],
-                        "title": idea_row[3],
-                        "url": idea_row[4],
+                        "type": pt,
+                        "handle": ph,
+                        "title": idea_row["primary_target_title"] or "",
+                        "url": idea_row["primary_target_url"] or "",
                     }
                 try:
-                    parsed_sec = json.loads(idea_row[5] or "[]")
+                    parsed_sec = json.loads(idea_row["secondary_targets_json"] or "[]")
                     if isinstance(parsed_sec, list):
                         secondary_targets_list = parsed_sec
                 except (json.JSONDecodeError, TypeError):
                     secondary_targets_list = []
+                idea_serp_context = parse_idea_serp_row_from_db(idea_row)
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
 
@@ -338,6 +354,7 @@ def _run_generate_article_draft(
             linked_cluster_id=cluster_id,
             primary_target=primary_target_dict,
             secondary_targets=secondary_targets_list,
+            idea_serp_context=idea_serp_context,
             on_progress=on_progress,
         )
 

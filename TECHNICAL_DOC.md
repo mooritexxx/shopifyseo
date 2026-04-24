@@ -218,6 +218,8 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 | POST   | `/api/image-seo/suggest-alt`                                    | Body                              | `{ ok, data }` | Vision-based alt suggestion                |
 | POST   | `/api/image-seo/product-images/draft`                           | Body                              | `{ ok, data }` | Draft optimization steps                   |
 | POST   | `/api/image-seo/product-images/optimize`                        | Body                              | `{ ok, data }` | Apply optimization to Shopify              |
+| POST   | `/api/image-seo/collection-images/draft`                        | Body                              | `{ ok, data }` | Draft collection featured-image optimization |
+| POST   | `/api/image-seo/collection-images/optimize`                     | Body                              | `{ ok, data }` | Apply collection featured-image optimization |
 | POST   | `/api/sidekick/chat`                                            | Body: resource context + messages | `{ ok, data }` | Sidekick SEO chat + optional field updates |
 | GET    | `/api/google-ads-lab/context`                                   | —                                 | `{ ok, data }` | Lab UI context                             |
 | POST   | `/api/google-ads-lab/invoke`                                    | Body: RPC name + payload          | `{ ok, data }` | Proxy Keyword Planner–style Ads RPCs       |
@@ -261,7 +263,7 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Google Ads lab                              | `backend/app/services/google_ads_lab_service.py` | Lab context + Ads REST proxy                                                                                                  | `dashboard_google`, `dashboard_config`, `dashboard_http`                                                                                    |
 | Keyword research                            | `backend/app/services/keyword_research/`         | Seeds, competitor discovery/research, DataForSEO, targets, metrics refresh. Modules: `__init__` (public API), `research_runner` (seed + competitor + gap flows), `dataforseo_client`, `keyword_db`, `keyword_utils`, `competitor_blocklist` | `dashboard_google`, `dashboard_http`, `embedding_store`, `api_usage`, etc.                                                                  |
 | Keyword clustering                          | `backend/app/services/keyword_clustering/`       | Cluster storage, AI generation, match overrides. Modules: `_crud`, `_storage`, `_generation`, `_context`, `_gaps`, `_helpers` | `dashboard_queries`, `dashboard_google`, `dashboard_ai_engine_parts`, `embedding_store`                                                     |
-| Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, draft/apply. Modules: `__init__`, `_catalog`, `_optimizer`                                            | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
+| Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, product gallery + collection featured draft/apply. Modules: `__init__`, `_catalog`, `_optimizer`       | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
 
 
 **Middleware:** none registered; auth is OAuth-only for Google (no global API auth middleware).
@@ -306,7 +308,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | IdeaDetailPage       | `/article-ideas/:ideaId`                 | Idea detail                      | `/api/article-ideas/...`                        |
 | GoogleAdsLabPage     | `/google-ads-lab`                        | Ads Keyword Planner lab          | `/api/google-ads-lab/*`                         |
 | EmbeddingsPage       | `/embeddings`                            | Embeddings tools                 | `/api/embeddings/*`                             |
-| ImageSeoPage         | `/image-seo`                             | Product image SEO                | `/api/image-seo/*`                              |
+| ImageSeoPage         | `/image-seo`                             | Product gallery + collection featured image SEO | `/api/image-seo/*`                              |
 | ApiUsagePage         | `/api-usage`                             | Usage / cost                     | `/api/usage/summary`                            |
 | SettingsPage         | `/settings`                              | Integrations + models            | `/api/settings`, tests, `/api/google-signals`   |
 

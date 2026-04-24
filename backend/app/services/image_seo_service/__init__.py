@@ -12,7 +12,9 @@ from ._catalog import (
     suggest_catalog_image_alt_vision,
 )
 from ._optimizer import (
+    draft_optimize_collection_image,
     draft_optimize_product_image,
+    optimize_collection_image,
     optimize_product_image,
 )
 
@@ -21,6 +23,8 @@ __all__ = [
     "list_catalog_image_seo_rows",
     "list_product_image_seo_rows",
     "suggest_catalog_image_alt_vision",
+    "draft_optimize_collection_image",
     "draft_optimize_product_image",
+    "optimize_collection_image",
     "optimize_product_image",
 ]

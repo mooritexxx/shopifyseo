@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 from backend.app.schemas.common import SuccessResponse, success_response
 from backend.app.schemas.image_seo import (
     CatalogImageSeoRow,
+    CollectionImageSeoDraftRequest,
+    CollectionImageSeoOptimizeRequest,
     ImageSeoSummary,
     ImageSeoSuggestAltRequest,
     ImageSeoSuggestAltResult,
@@ -13,8 +15,10 @@ from backend.app.schemas.image_seo import (
     ProductImageSeoOptimizeResult,
 )
 from backend.app.services.image_seo_service import (
+    draft_optimize_collection_image,
     draft_optimize_product_image,
     list_product_image_seo_rows,
+    optimize_collection_image,
     optimize_product_image,
     suggest_catalog_image_alt_vision,
 )
@@ -107,6 +111,34 @@ def post_product_image_draft(payload: ProductImageSeoDraftRequest):
 def post_optimize_product_image(payload: ProductImageSeoOptimizeRequest):
     try:
         raw = optimize_product_image(payload.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc) or "Optimize failed",
+        ) from exc
+
+    if not raw.get("ok"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=raw.get("message") or "Request failed",
+        )
+    result = ProductImageSeoOptimizeResult.model_validate(raw)
+    return success_response(result.model_dump())
+
+
+@router.post("/collection-images/draft", response_model=SuccessResponse[ProductImageSeoDraftResult])
+def post_collection_image_draft(payload: CollectionImageSeoDraftRequest):
+    raw = draft_optimize_collection_image(payload.model_dump())
+    result = ProductImageSeoDraftResult.model_validate(raw)
+    return success_response(result.model_dump())
+
+
+@router.post("/collection-images/optimize", response_model=SuccessResponse[ProductImageSeoOptimizeResult])
+def post_optimize_collection_image(payload: CollectionImageSeoOptimizeRequest):
+    try:
+        raw = optimize_collection_image(payload.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception as exc:

@@ -76,7 +76,7 @@ export function BatchOptimizeModal({
                 {entry.row.resource_title}
               </p>
               <p className="truncate text-xs text-muted-foreground">
-                {entry.row.product_handle}
+                {entry.row.product_handle || entry.row.resource_handle}
                 {entry.row.position != null ? ` · #${entry.row.position}` : ""}
               </p>
               {entry.status === "error" && entry.message ? (

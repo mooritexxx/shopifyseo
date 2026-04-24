@@ -265,7 +265,7 @@ def product_image_seo_suggested_filename(
     suf = (collision_suffix or random_product_file_suffix(2))[:2]
 
     pos = gallery_position if gallery_position is not None else 1
-    needs_pos = pos > 1 or role == "variant"
+    needs_pos = pos > 1
 
     vslug = ""
     if role == "variant" and (variant_label or "").strip():

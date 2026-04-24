@@ -25,7 +25,7 @@ class CatalogImageSeoRow(BaseModel):
     optimize_supported: bool = False
     local_file_cached: bool | None = Field(
         default=None,
-        description="Product gallery only: True if post-sync image cache has bytes on disk for this catalog URL.",
+        description="True if post-sync image cache has bytes on disk for this catalog URL.",
     )
     image_width: int | None = Field(default=None, description="Pixel width when known (catalog or API).")
     image_height: int | None = Field(default=None, description="Pixel height when known (catalog or API).")
@@ -35,7 +35,7 @@ class CatalogImageSeoRow(BaseModel):
     )
     file_size_bytes: int | None = Field(
         default=None,
-        description="File size in bytes from the local cache (product gallery only).",
+        description="File size in bytes from the local cache.",
     )
     flags: dict[str, bool]
 
@@ -72,6 +72,14 @@ class ProductImageSeoDraftRequest(BaseModel):
     auto_vision_alt: bool = True
 
 
+class CollectionImageSeoDraftRequest(BaseModel):
+    collection_shopify_id: str
+    image_row_id: str = ""
+    apply_suggested_filename: bool = False
+    convert_webp: bool = False
+    auto_vision_alt: bool = True
+
+
 class ProductImageSeoDraftResult(BaseModel):
     ok: bool = True
     message: str
@@ -88,6 +96,16 @@ class ProductImageSeoDraftResult(BaseModel):
 class ProductImageSeoOptimizeRequest(BaseModel):
     product_shopify_id: str
     image_shopify_id: str
+    apply_suggested_alt: bool = False
+    apply_suggested_filename: bool = False
+    convert_webp: bool = False
+    alt_override: str | None = None
+    dry_run: bool = False
+
+
+class CollectionImageSeoOptimizeRequest(BaseModel):
+    collection_shopify_id: str
+    image_row_id: str = ""
     apply_suggested_alt: bool = False
     apply_suggested_filename: bool = False
     convert_webp: bool = False

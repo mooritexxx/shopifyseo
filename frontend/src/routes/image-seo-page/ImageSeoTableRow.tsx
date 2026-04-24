@@ -210,7 +210,7 @@ export function ImageSeoTableRow({ row, selected, onToggleSelect, onView }: Imag
         ) : (
           <span
             className="inline-block text-xs text-muted-foreground"
-            title="View is available for product gallery images only."
+            title="View is available for optimizable product and collection images only."
           >
             —
           </span>
@@ -243,6 +243,7 @@ export function ImageSeoTableRow({ row, selected, onToggleSelect, onView }: Imag
               {[
                 row.flags.missing_or_weak_alt && "Weak or missing alt",
                 row.flags.weak_filename && "Weak filename",
+                row.flags.seo_filename_mismatch && "SEO filename mismatch",
                 row.flags.not_webp && "Not WebP",
               ]
                 .filter(Boolean)

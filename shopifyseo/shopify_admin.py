@@ -330,6 +330,51 @@ def upload_image_bytes_and_get_url(
     )
 
 
+def update_collection_featured_image(collection_id: str, image_url: str, image_alt: str) -> dict:
+    """Attach/update a collection featured image from a Shopify CDN URL."""
+    mutation = """
+    mutation UpdateCollectionFeaturedImage($input: CollectionInput!) {
+      collectionUpdate(input: $input) {
+        collection {
+          id
+          handle
+          title
+          image {
+            id
+            url
+            altText
+            width
+            height
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    u = (image_url or "").strip()
+    if not u.startswith("https://"):
+        raise ValueError("Collection image URL must be HTTPS")
+    data = graphql_request(
+        mutation,
+        {
+            "input": {
+                "id": collection_id,
+                "image": {
+                    "src": u,
+                    "altText": (image_alt or "Collection image")[:512],
+                },
+            }
+        },
+    )
+    result = data["data"]["collectionUpdate"]
+    if result["userErrors"]:
+        raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
+    return result
+
+
 def print_json(data: dict) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=True))
 

@@ -99,6 +99,31 @@ def test_suggested_filename_multi_image_uniqueness():
     assert all(x.endswith(".webp") for x in (a, b, c))
 
 
+def test_suggested_filename_variant_omits_position_for_first_image():
+    name = product_image_seo_suggested_filename(
+        product_handle="acme-x200-starter-kit",
+        role="variant",
+        gallery_position=1,
+        variant_label="Mint Green",
+        collision_suffix="zzzz",
+        ext=".webp",
+    )
+    assert name == "acme-x200-starter-kit-mint-green-zz.webp"
+    assert "product" not in name
+    assert "featured" not in name
+
+
+def test_suggested_filename_collection_shape():
+    name = product_image_seo_suggested_filename(
+        product_handle="disposable-vapes",
+        role="featured",
+        gallery_position=1,
+        collision_suffix="k4x9",
+        ext=".webp",
+    )
+    assert name == "disposable-vapes-k4.webp"
+
+
 def test_build_image_optimizer_vision_instruction_includes_context():
     s = build_image_optimizer_vision_instruction(
         resource_type="product",

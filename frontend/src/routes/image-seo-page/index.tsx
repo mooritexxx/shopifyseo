@@ -361,6 +361,55 @@ export function ImageSeoPage() {
     setAltEdit(alt);
   }
 
+  function draftEndpointFor(row: CatalogImageSeoRow) {
+    return row.resource_type === "collection"
+      ? "/api/image-seo/collection-images/draft"
+      : "/api/image-seo/product-images/draft";
+  }
+
+  function optimizeEndpointFor(row: CatalogImageSeoRow) {
+    return row.resource_type === "collection"
+      ? "/api/image-seo/collection-images/optimize"
+      : "/api/image-seo/product-images/optimize";
+  }
+
+  function imageOptimizePayload(
+    row: CatalogImageSeoRow,
+    options: {
+      applyFilename: boolean;
+      convertWebp: boolean;
+      autoVisionAlt?: boolean;
+      applySuggestedAlt?: boolean;
+      altOverride?: string;
+      dryRun?: boolean;
+    }
+  ) {
+    const base = {
+      image_row_id: row.image_row_id,
+      apply_suggested_filename: options.applyFilename,
+      convert_webp: options.convertWebp,
+    };
+    if (row.resource_type === "collection") {
+      return {
+        ...base,
+        collection_shopify_id: row.resource_shopify_id,
+        auto_vision_alt: options.autoVisionAlt ?? true,
+        apply_suggested_alt: options.applySuggestedAlt ?? false,
+        alt_override: options.altOverride,
+        dry_run: options.dryRun ?? false,
+      };
+    }
+    return {
+      ...base,
+      product_shopify_id: row.product_shopify_id,
+      image_shopify_id: row.image_shopify_id,
+      auto_vision_alt: options.autoVisionAlt ?? true,
+      apply_suggested_alt: options.applySuggestedAlt ?? false,
+      alt_override: options.altOverride,
+      dry_run: options.dryRun ?? false,
+    };
+  }
+
   async function runOptimizePipeline() {
     if (!modalRow?.optimize_supported) return;
     const rowSnapshot = modalRow;
@@ -373,13 +422,15 @@ export function ImageSeoPage() {
     setOptimizeErrorMsg(null);
     setPipelinePhase("draft");
     try {
-      const draft = await postJson("/api/image-seo/product-images/draft", productImageSeoDraftResultSchema, {
-        product_shopify_id: rowSnapshot.product_shopify_id,
-        image_shopify_id: rowSnapshot.image_shopify_id,
-        apply_suggested_filename: optimizeActions.applyFilename,
-        convert_webp: optimizeActions.convertWebp,
-        auto_vision_alt: true
-      });
+      const draft = await postJson(
+        draftEndpointFor(rowSnapshot),
+        productImageSeoDraftResultSchema,
+        imageOptimizePayload(rowSnapshot, {
+          applyFilename: optimizeActions.applyFilename,
+          convertWebp: optimizeActions.convertWebp,
+          autoVisionAlt: true
+        })
+      );
       if (!draft.ok) {
         setOptimizeErrorMsg(draft.message);
         setImageModalPhase("error");
@@ -392,15 +443,17 @@ export function ImageSeoPage() {
       const finalAlt = currentAlt === baseline ? draft.draft_alt : currentAlt;
 
       setPipelinePhase("shopify");
-      const opt = await postJson("/api/image-seo/product-images/optimize", productImageSeoOptimizeResultSchema, {
-        product_shopify_id: rowSnapshot.product_shopify_id,
-        image_shopify_id: rowSnapshot.image_shopify_id,
-        apply_suggested_alt: true,
-        apply_suggested_filename: optimizeActions.applyFilename,
-        convert_webp: optimizeActions.convertWebp,
-        alt_override: finalAlt,
-        dry_run: false
-      });
+      const opt = await postJson(
+        optimizeEndpointFor(rowSnapshot),
+        productImageSeoOptimizeResultSchema,
+        imageOptimizePayload(rowSnapshot, {
+          applyFilename: optimizeActions.applyFilename,
+          convertWebp: optimizeActions.convertWebp,
+          applySuggestedAlt: true,
+          altOverride: finalAlt,
+          dryRun: false
+        })
+      );
       if (!opt.ok) {
         setOptimizeErrorMsg(opt.message);
         setImageModalPhase("error");
@@ -442,7 +495,7 @@ export function ImageSeoPage() {
 
     const productGroups = new Map<string, typeof batchQueue>();
     for (const entry of batchQueue) {
-      const key = entry.row.product_shopify_id;
+      const key = `${entry.row.resource_type}:${entry.row.product_shopify_id || entry.row.resource_shopify_id}`;
       if (!productGroups.has(key)) productGroups.set(key, []);
       productGroups.get(key)!.push(entry);
     }
@@ -469,13 +522,15 @@ export function ImageSeoPage() {
       const convertWebp = Boolean(f.not_webp);
 
       try {
-        const draft = await postJson("/api/image-seo/product-images/draft", productImageSeoDraftResultSchema, {
-          product_shopify_id: r.product_shopify_id,
-          image_shopify_id: r.image_shopify_id,
-          apply_suggested_filename: applyFn,
-          convert_webp: convertWebp,
-          auto_vision_alt: true
-        });
+        const draft = await postJson(
+          draftEndpointFor(r),
+          productImageSeoDraftResultSchema,
+          imageOptimizePayload(r, {
+            applyFilename: applyFn,
+            convertWebp,
+            autoVisionAlt: true
+          })
+        );
         if (!draft.ok) {
           setBatchQueue((prev) =>
             prev.map((e, i) => (i === idx ? { ...e, status: "error", message: draft.message } : e))
@@ -488,15 +543,17 @@ export function ImageSeoPage() {
           await sleep(pauseUntilRef.current - now2);
         }
 
-        const opt = await postJson("/api/image-seo/product-images/optimize", productImageSeoOptimizeResultSchema, {
-          product_shopify_id: r.product_shopify_id,
-          image_shopify_id: r.image_shopify_id,
-          apply_suggested_alt: true,
-          apply_suggested_filename: applyFn,
-          convert_webp: convertWebp,
-          alt_override: draft.draft_alt,
-          dry_run: false
-        });
+        const opt = await postJson(
+          optimizeEndpointFor(r),
+          productImageSeoOptimizeResultSchema,
+          imageOptimizePayload(r, {
+            applyFilename: applyFn,
+            convertWebp,
+            applySuggestedAlt: true,
+            altOverride: draft.draft_alt,
+            dryRun: false
+          })
+        );
 
         setBatchQueue((prev) =>
           prev.map((e, i) =>

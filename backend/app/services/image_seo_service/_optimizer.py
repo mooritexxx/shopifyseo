@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -16,6 +17,7 @@ from shopifyseo.dashboard_ai_engine_parts.images import (
 )
 from shopifyseo.dashboard_ai_engine_parts.settings import ai_settings
 from shopifyseo.dashboard_store import DB_PATH
+from shopifyseo.catalog_image_work import catalog_url_cache_key_from_norm
 from shopifyseo.product_image_seo import (
     infer_image_format_from_bytes,
     is_probably_webp_url,
@@ -23,7 +25,8 @@ from shopifyseo.product_image_seo import (
     product_image_seo_suggested_filename,
     stable_seo_filename_suffix,
 )
-from shopifyseo.shopify_catalog_sync import sync_product
+from shopifyseo.shopify_admin import update_collection_featured_image, upload_image_bytes_and_get_url
+from shopifyseo.shopify_catalog_sync import sync_collection, sync_product
 from shopifyseo.shopify_image_cache import (
     cache_product_image_bytes,
     invalidate_product_image_cache_entry,
@@ -91,6 +94,18 @@ def _bytes_passthrough_ext_mime(raw: bytes, header_mime: str) -> tuple[str, str]
     return ext, _mime_for_ext(ext)
 
 
+def _catalog_url_cache_key(url: str) -> str:
+    return catalog_url_cache_key_from_norm(normalize_shopify_image_url(url))
+
+
+def _read_cached_catalog_url_image(
+    conn: sqlite3.Connection,
+    url: str,
+) -> tuple[bytes, str] | None:
+    cache_id = _catalog_url_cache_key(url)
+    return read_cached_product_image(Path(DB_PATH), conn, cache_id, url)
+
+
 def _product_image_replace_output(
     raw: bytes,
     url: str,
@@ -120,6 +135,238 @@ def _product_image_replace_output(
         return normalized, inferred[0], inferred[1], None
     ext, mime = _bytes_passthrough_ext_mime(normalized, header_mime)
     return normalized, ext, mime, None
+
+
+def _collection_featured_seo_suffix_seed(collection_shopify_id: str) -> str:
+    return f"{collection_shopify_id}|featured"
+
+
+def _collection_featured_row(
+    conn: sqlite3.Connection,
+    collection_shopify_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT shopify_id, handle, title, image_json
+        FROM collections
+        WHERE shopify_id = ?
+        """,
+        (collection_shopify_id,),
+    ).fetchone()
+    if not row:
+        return None
+    raw = (row["image_json"] or "").strip()
+    if not raw:
+        return None
+    try:
+        image = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(image, dict):
+        return None
+    url = (image.get("url") or "").strip()
+    if not url:
+        return None
+    return {
+        "collection_shopify_id": row["shopify_id"],
+        "handle": (row["handle"] or "").strip(),
+        "title": (row["title"] or "").strip(),
+        "url": url,
+        "alt_text": (image.get("altText") or image.get("alt") or "").strip(),
+        "image_shopify_id": (image.get("id") or "").strip(),
+    }
+
+
+def draft_optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build a local draft for a collection featured image (no Shopify writes)."""
+    collection_shopify_id = (payload.get("collection_shopify_id") or "").strip()
+    auto_vision = bool(payload.get("auto_vision_alt", True))
+
+    steps: list[dict[str, Any]] = []
+    if not collection_shopify_id:
+        return {"ok": False, "message": "collection_shopify_id is required", "steps": steps}
+
+    conn = open_db_connection()
+    try:
+        return _draft_optimize_collection_image_impl(
+            conn,
+            collection_shopify_id,
+            auto_vision=auto_vision,
+            steps=steps,
+        )
+    finally:
+        conn.close()
+
+
+def _draft_optimize_collection_image_impl(
+    conn: sqlite3.Connection,
+    collection_shopify_id: str,
+    *,
+    auto_vision: bool,
+    steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    row = _collection_featured_row(conn, collection_shopify_id)
+    if not row:
+        return {"ok": False, "message": "Collection featured image not found in catalog (run Shopify sync).", "steps": steps}
+
+    url = row["url"]
+    handle = row["handle"] or "collection"
+    title = row["title"] or handle
+
+    cached = _read_cached_catalog_url_image(conn, url)
+    if cached:
+        raw, mime = cached
+        orig_size = len(raw)
+        steps.append(
+            {
+                "id": "download",
+                "label": "Download original",
+                "status": "ok",
+                "detail": f"{_fmt_bytes(orig_size)} (local cache)",
+            }
+        )
+    else:
+        try:
+            raw, mime = download_image_bytes(url)
+        except Exception as exc:
+            steps.append(
+                {
+                    "id": "download",
+                    "label": "Download original",
+                    "status": "error",
+                    "detail": str(exc) or "Download failed",
+                }
+            )
+            return {"ok": False, "message": f"Could not download image: {exc}", "steps": steps}
+        orig_size = len(raw)
+        steps.append(
+            {
+                "id": "download",
+                "label": "Download original",
+                "status": "ok",
+                "detail": _fmt_bytes(orig_size),
+            }
+        )
+
+    draft_alt = (row.get("alt_text") or "").strip()
+    if auto_vision:
+        settings = ai_settings(conn)
+        prov = (settings.get("vision_provider") or "").strip().lower()
+        if prov in {"openai", "gemini", "openrouter"}:
+            vision_out = vision_suggest_catalog_image_alt(
+                settings,
+                image_bytes=raw,
+                mime=mime,
+                resource_type="collection",
+                resource_title=title,
+                resource_handle=handle,
+                role_hint="featured",
+                variant_labels=None,
+            )
+            if vision_out:
+                draft_alt = vision_out.strip()[:_MAX_ALT_TEXT_LENGTH]
+                preview_alt = draft_alt if len(draft_alt) <= 100 else draft_alt[:97] + "..."
+                steps.append(
+                    {
+                        "id": "alt",
+                        "label": "AI alt text (vision)",
+                        "status": "ok",
+                        "detail": preview_alt,
+                    }
+                )
+            else:
+                steps.append(
+                    {
+                        "id": "alt",
+                        "label": "AI alt text (vision)",
+                        "status": "warning",
+                        "detail": "No suggestion — kept existing catalog alt.",
+                    }
+                )
+        else:
+            steps.append(
+                {
+                    "id": "alt",
+                    "label": "AI alt text (vision)",
+                    "status": "skipped",
+                    "detail": "Set Vision to OpenAI, Gemini, or OpenRouter in Settings to auto-generate alt.",
+                }
+            )
+    else:
+        steps.append(
+            {
+                "id": "alt",
+                "label": "Alt text",
+                "status": "skipped",
+                "detail": "Using catalog alt (auto vision off).",
+            }
+        )
+
+    suffix = stable_seo_filename_suffix(_collection_featured_seo_suffix_seed(collection_shopify_id))
+    draft_filename = product_image_seo_suggested_filename(
+        product_handle=handle,
+        role="featured",
+        gallery_position=1,
+        ext=".webp",
+        collision_suffix=suffix,
+    )
+    steps.append(
+        {
+            "id": "filename",
+            "label": "SEO filename",
+            "status": "ok",
+            "detail": draft_filename,
+        }
+    )
+
+    out_bytes, _out_ext, out_mime, webp_err = _product_image_replace_output(
+        raw,
+        url,
+        mime,
+        convert_webp_flag=True,
+    )
+    if webp_err:
+        steps.append(
+            {
+                "id": "webp",
+                "label": "Convert to WebP",
+                "status": "error",
+                "detail": webp_err,
+            }
+        )
+        return {
+            "ok": False,
+            "message": f"WebP conversion failed for this image: {webp_err}",
+            "steps": steps,
+        }
+    steps.append(
+        {
+            "id": "webp",
+            "label": "Convert to WebP",
+            "status": "ok",
+            "detail": f"{_fmt_bytes(orig_size)} -> {_fmt_bytes(len(out_bytes))}",
+        }
+    )
+
+    preview_b64: str | None = None
+    preview_omitted = False
+    if len(out_bytes) <= _DRAFT_PREVIEW_MAX_BYTES:
+        preview_b64 = base64.b64encode(out_bytes).decode("ascii")
+    else:
+        preview_omitted = True
+
+    return {
+        "ok": True,
+        "message": "Draft ready — review and save to Shopify.",
+        "steps": steps,
+        "original_size_bytes": orig_size,
+        "draft_size_bytes": len(out_bytes),
+        "draft_alt": draft_alt[:_MAX_ALT_TEXT_LENGTH],
+        "draft_filename": draft_filename,
+        "draft_mime": out_mime,
+        "preview_base64": preview_b64,
+        "preview_omitted": preview_omitted,
+    }
 
 
 def draft_optimize_product_image(payload: dict[str, Any]) -> dict[str, Any]:
@@ -419,6 +666,151 @@ def optimize_product_image(payload: dict[str, Any]) -> dict[str, Any]:
         )
     finally:
         conn.close()
+
+
+def optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
+    collection_shopify_id = (payload.get("collection_shopify_id") or "").strip()
+    apply_alt = bool(payload.get("apply_suggested_alt"))
+    apply_fn = bool(payload.get("apply_suggested_filename"))
+    convert_webp = bool(payload.get("convert_webp"))
+    raw_alt_override = payload.get("alt_override")
+    dry_run = bool(payload.get("dry_run"))
+
+    if not collection_shopify_id:
+        return {"ok": False, "message": "collection_shopify_id is required", "dry_run": dry_run}
+
+    conn = open_db_connection()
+    try:
+        return _optimize_collection_image_impl(
+            conn,
+            collection_shopify_id,
+            apply_alt=apply_alt,
+            apply_fn=apply_fn,
+            convert_webp=convert_webp,
+            raw_alt_override=raw_alt_override,
+            dry_run=dry_run,
+        )
+    finally:
+        conn.close()
+
+
+def _optimize_collection_image_impl(
+    conn: sqlite3.Connection,
+    collection_shopify_id: str,
+    *,
+    apply_alt: bool,
+    apply_fn: bool,
+    convert_webp: bool,
+    raw_alt_override: Any,
+    dry_run: bool,
+) -> dict[str, Any]:
+    row = _collection_featured_row(conn, collection_shopify_id)
+    if not row:
+        return {
+            "ok": False,
+            "message": "Collection featured image not found in catalog (run Shopify sync).",
+            "dry_run": dry_run,
+        }
+
+    url = row["url"]
+    handle = row["handle"] or "collection"
+    current_alt = (row.get("alt_text") or "")[:_MAX_ALT_TEXT_LENGTH]
+    final_alt = (
+        str(raw_alt_override).strip()[:_MAX_ALT_TEXT_LENGTH]
+        if apply_alt and raw_alt_override is not None
+        else current_alt
+    )
+
+    suffix = stable_seo_filename_suffix(_collection_featured_seo_suffix_seed(collection_shopify_id))
+    fname = product_image_seo_suggested_filename(
+        product_handle=handle,
+        role="featured",
+        gallery_position=1,
+        ext=".webp",
+        collision_suffix=suffix,
+    )
+
+    do_replace = apply_fn or convert_webp
+    if not apply_alt and not do_replace:
+        return {"ok": False, "message": "Select at least one action.", "dry_run": dry_run}
+
+    if dry_run:
+        return {
+            "ok": True,
+            "message": "Dry run — no changes sent to Shopify.",
+            "dry_run": True,
+            "applied_alt": final_alt if (apply_alt or do_replace) else None,
+            "applied_filename": fname if do_replace else None,
+            "details": {"would_upload": do_replace},
+        }
+
+    if not do_replace:
+        update_collection_featured_image(collection_shopify_id, url, final_alt)
+        sync_collection(Path(DB_PATH), collection_shopify_id)
+        return {
+            "ok": True,
+            "message": "Collection image alt text updated in Shopify.",
+            "applied_alt": final_alt,
+            "dry_run": False,
+        }
+
+    cached = _read_cached_catalog_url_image(conn, url)
+    if cached:
+        raw, mime = cached
+    else:
+        raw, mime = download_image_bytes(url)
+
+    out_bytes, out_ext, _, webp_err = _product_image_replace_output(
+        raw,
+        url,
+        mime,
+        convert_webp_flag=True,
+    )
+    if webp_err:
+        return {
+            "ok": False,
+            "message": f"WebP conversion failed for this image: {webp_err}",
+            "dry_run": False,
+        }
+
+    if out_ext != ".webp":
+        out_ext = ".webp"
+    out_mime = _mime_for_ext(out_ext)
+    if not (final_alt or "").strip():
+        final_alt = current_alt
+
+    new_url = upload_image_bytes_and_get_url(
+        out_bytes,
+        fname,
+        out_mime,
+        alt=final_alt,
+    )
+    details = update_collection_featured_image(collection_shopify_id, new_url, final_alt)
+    sync_collection(Path(DB_PATH), collection_shopify_id)
+
+    if new_url and out_bytes:
+        try:
+            cache_product_image_bytes(
+                Path(DB_PATH),
+                conn,
+                _catalog_url_cache_key(new_url),
+                new_url,
+                out_bytes,
+                out_mime,
+            )
+        except Exception:
+            logger.exception("Auto-cache after collection optimize failed for %s", collection_shopify_id)
+
+    return {
+        "ok": True,
+        "message": "Collection image replaced in Shopify.",
+        "applied_alt": final_alt,
+        "applied_filename": fname,
+        "new_image_url": new_url,
+        "new_media_id": None,
+        "details": details,
+        "dry_run": False,
+    }
 
 
 def _optimize_product_image_impl(

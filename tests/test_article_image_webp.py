@@ -4,7 +4,10 @@ from io import BytesIO
 
 import pytest
 
-from shopifyseo.dashboard_ai_engine_parts.images import try_encode_image_bytes_as_webp
+from shopifyseo.dashboard_ai_engine_parts.images import (
+    resize_image_bytes_to_dimensions,
+    try_encode_image_bytes_as_webp,
+)
 
 
 def _tiny_png() -> bytes:
@@ -49,3 +52,14 @@ def test_try_encode_image_bytes_as_webp_first_frame_of_animated_gif():
     assert err is None
     assert webp is not None
     assert webp[8:12] == b"WEBP"
+
+
+def test_resize_image_bytes_to_dimensions_exact_size():
+    from PIL import Image
+
+    resized, err = resize_image_bytes_to_dimensions(_tiny_png(), 1200, 800)
+
+    assert err is None
+    assert resized is not None
+    im = Image.open(BytesIO(resized))
+    assert im.size == (1200, 800)

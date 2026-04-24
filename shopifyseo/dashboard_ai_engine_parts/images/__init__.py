@@ -33,6 +33,7 @@ from ._encoding import (
     _pillow_relax_max_pixels,
     _try_encode_image_bytes_as_webp,
     normalize_product_image_bytes,
+    resize_image_bytes_to_dimensions,
     try_encode_image_bytes_as_webp,
 )
 from ._filenames import (
@@ -83,6 +84,7 @@ __all__ = [
     "inject_article_body_images",
     "normalize_product_image_bytes",
     "parse_h2_sections",
+    "resize_image_bytes_to_dimensions",
     "test_image_model",
     "test_vision_model",
     "try_encode_image_bytes_as_webp",

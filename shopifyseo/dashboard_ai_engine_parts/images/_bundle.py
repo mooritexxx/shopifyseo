@@ -7,7 +7,11 @@ from typing import Callable
 
 from ..settings import ai_settings
 from ._alt_text import _build_featured_alt, _build_section_alt
-from ._encoding import _mime_to_file_extension, _try_encode_image_bytes_as_webp
+from ._encoding import (
+    _mime_to_file_extension,
+    _try_encode_image_bytes_as_webp,
+    resize_image_bytes_to_dimensions,
+)
 from ._filenames import _seo_blog_asset_filename
 from ._html import extract_first_paragraph_plain_text, parse_h2_sections
 from ._providers import _generate_article_image_bytes
@@ -16,6 +20,10 @@ from ._vision import _vision_alt_for_article_image
 logger = logging.getLogger(__name__)
 
 _MAX_BODY_IMAGES = 8  # upper bound on section images (cost / latency control)
+_ARTICLE_COVER_SIZE = (1600, 900)
+_ARTICLE_INLINE_SIZE = (1200, 800)
+_ARTICLE_COVER_ASPECT_RATIO = "16:9"
+_ARTICLE_INLINE_ASPECT_RATIO = "3:2"
 
 
 def try_prepare_article_images_bundle(
@@ -101,10 +109,14 @@ def try_prepare_article_images_bundle(
 
     _webp_fallback_logged = False
 
-    def prepare_shopify_upload(raw: bytes, raw_mime: str) -> tuple[bytes, str, str]:
-        """Prefer WebP for new article images; fall back to the provider's format if conversion fails."""
+    def prepare_shopify_upload(raw: bytes, raw_mime: str, target_size: tuple[int, int]) -> tuple[bytes, str, str]:
+        """Resize article images to their target dimensions and prefer WebP for Shopify uploads."""
         nonlocal _webp_fallback_logged
-        webp, _err = _try_encode_image_bytes_as_webp(raw)
+        resized, resize_err = resize_image_bytes_to_dimensions(raw, target_size[0], target_size[1])
+        source = resized if resized is not None else raw
+        if resize_err and not resized:
+            progress.append(f"Image resize skipped — uploading original dimensions: {resize_err}")
+        webp, _err = _try_encode_image_bytes_as_webp(source)
         if webp is not None:
             return webp, "image/webp", ".webp"
         if not _webp_fallback_logged:
@@ -127,7 +139,11 @@ def try_prepare_article_images_bundle(
     progress.append("Generating featured cover image (blog / OG style)…")
     try:
         feat_bytes, feat_mime = _generate_article_image_bytes(
-            settings, provider=prov, model=model_raw, prompt=featured_prompt
+            settings,
+            provider=prov,
+            model=model_raw,
+            prompt=featured_prompt,
+            aspect_ratio=_ARTICLE_COVER_ASPECT_RATIO,
         )
     except RuntimeError as exc:
         progress.append(f"Featured image skipped: {exc}")
@@ -144,7 +160,7 @@ def try_prepare_article_images_bundle(
         feat_alt = _build_featured_alt(headline, seed)
         progress.append("Featured image alt text from article title (vision unavailable).")
     emit("Encoding images as WebP for Shopify (Pillow)…", "encode", "start")
-    feat_upload, feat_upload_mime, feat_ext = prepare_shopify_upload(feat_bytes, feat_mime)
+    feat_upload, feat_upload_mime, feat_ext = prepare_shopify_upload(feat_bytes, feat_mime, _ARTICLE_COVER_SIZE)
     feat_fname = _seo_blog_asset_filename(alt_text=feat_alt, headline=headline, topic=seed, ext=feat_ext)
     try:
         featured_url = upload_image_bytes_and_get_url(
@@ -191,7 +207,11 @@ def try_prepare_article_images_bundle(
         prompt = _build_section_prompt(sec, idx)
         try:
             img_bytes, img_mime = _generate_article_image_bytes(
-                settings, provider=prov, model=model_raw, prompt=prompt
+                settings,
+                provider=prov,
+                model=model_raw,
+                prompt=prompt,
+                aspect_ratio=_ARTICLE_INLINE_ASPECT_RATIO,
             )
         except RuntimeError as exc:
             logger.warning("Section %d image generation failed: %s", idx + 1, exc)
@@ -201,7 +221,7 @@ def try_prepare_article_images_bundle(
             settings, img_bytes, img_mime,
             article_title=headline, section_heading=sec["heading"], role="section",
         ) or _build_section_alt(sec["heading"], headline)
-        upload_bytes, upload_mime, upload_ext = prepare_shopify_upload(img_bytes, img_mime)
+        upload_bytes, upload_mime, upload_ext = prepare_shopify_upload(img_bytes, img_mime, _ARTICLE_INLINE_SIZE)
         fname = _seo_blog_asset_filename(alt_text=alt, headline=headline, topic=seed, ext=upload_ext)
         try:
             url = upload_image_bytes_and_get_url(upload_bytes, fname, upload_mime, alt=alt)

@@ -28,7 +28,7 @@ def _fallback_alt_from_image_prompt(generation_prompt: str, *, max_len: int = 12
     p = re.sub(r"\s+", " ", (generation_prompt or "").strip())
     # Strip boilerplate prefixes used in image generation prompts
     _prefix_patterns = [
-        r"^Wide blog cover photograph for a \w[\w\s]* online e-commerce retail article\.\s*",
+        r"^Wide blog cover photograph for a \w[\w\s]* online (?:e-commerce|vape) retail article\.\s*",
         r"^Close, in-article editorial photograph for the opening section only[^.]*\.\s*",
         r"^In-article editorial photograph for the section titled '[^']*'\.\s*",
     ]

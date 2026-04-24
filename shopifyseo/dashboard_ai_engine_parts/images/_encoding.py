@@ -115,6 +115,44 @@ def normalize_product_image_bytes(data: bytes, target: int = _PRODUCT_IMAGE_TARG
         return None, str(exc).strip() or type(exc).__name__
 
 
+def resize_image_bytes_to_dimensions(data: bytes, width: int, height: int) -> tuple[bytes | None, str | None]:
+    """Center-crop and resize raw image bytes to exact dimensions. Returns PNG bytes."""
+    if not data:
+        return None, "empty image data"
+    if width <= 0 or height <= 0:
+        return None, "invalid target dimensions"
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageOps
+    except ImportError:
+        return None, "Pillow is not installed"
+
+    try:
+        with _pillow_relax_max_pixels():
+            im = Image.open(BytesIO(data))
+            im.load()
+            if getattr(im, "n_frames", 1) > 1:
+                im.seek(0)
+                im = im.copy()
+            if im.mode == "P":
+                im = im.convert("RGBA")
+            elif im.mode in ("LA", "PA"):
+                im = im.convert("RGBA")
+            elif im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+
+            im = _flatten_alpha_to_white(im)
+            im = ImageOps.fit(im, (width, height), method=Image.LANCZOS, centering=(0.5, 0.5))
+
+            out = BytesIO()
+            im.save(out, format="PNG")
+            return out.getvalue(), None
+    except Exception as exc:
+        logger.exception("Image resize failed (input %d bytes, target %dx%d)", len(data), width, height)
+        return None, str(exc).strip() or type(exc).__name__
+
+
 def _try_encode_image_bytes_as_webp(data: bytes) -> tuple[bytes | None, str | None]:
     """Lossy WebP (quality 88) for smaller Shopify uploads."""
     if not data:

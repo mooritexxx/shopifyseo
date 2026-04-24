@@ -37,7 +37,14 @@ def _openai_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> 
     raise RuntimeError("OpenAI image response had no URL or base64 payload")
 
 
-def _gemini_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> tuple[bytes, str]:
+def _gemini_image_bytes(
+    api_key: str,
+    model: str,
+    prompt: str,
+    timeout: int,
+    *,
+    aspect_ratio: str | None = None,
+) -> tuple[bytes, str]:
     """Use configured Gemini image model (generateContent + image modalities)."""
     if not (api_key or "").strip():
         raise RuntimeError("Gemini API key is missing")
@@ -45,11 +52,15 @@ def _gemini_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> 
     if not m:
         raise RuntimeError("Gemini image model is empty")
     model_path = m if m.startswith("models/") else f"models/{m}"
+    generation_config: dict = {
+        "responseModalities": ["TEXT", "IMAGE"],
+    }
+    ar = (aspect_ratio or "").strip()
+    if ar:
+        generation_config["imageConfig"] = {"aspectRatio": ar}
     payload: dict = {
         "contents": [{"role": "user", "parts": [{"text": (prompt or "").strip()}]}],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-        },
+        "generationConfig": generation_config,
     }
     try:
         response = request_json(
@@ -191,13 +202,26 @@ def _openrouter_caption_image_alt(
     return None
 
 
-def _generate_article_image_bytes(settings: dict, *, provider: str, model: str, prompt: str) -> tuple[bytes, str]:
+def _generate_article_image_bytes(
+    settings: dict,
+    *,
+    provider: str,
+    model: str,
+    prompt: str,
+    aspect_ratio: str | None = None,
+) -> tuple[bytes, str]:
     prov = (provider or "").strip().lower()
     timeout = int(settings["timeout"])
     if prov == "openai":
         return _openai_image_bytes(settings["openai_api_key"], model, prompt, timeout)
     if prov == "gemini":
-        return _gemini_image_bytes(settings["gemini_api_key"], model, prompt, timeout)
+        return _gemini_image_bytes(
+            settings["gemini_api_key"],
+            model,
+            prompt,
+            timeout,
+            aspect_ratio=aspect_ratio,
+        )
     if prov == "openrouter":
         return _openrouter_image_bytes(settings["openrouter_api_key"], model, prompt, timeout)
     raise RuntimeError(f"Unsupported image provider: {provider}")

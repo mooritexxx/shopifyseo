@@ -492,12 +492,10 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 
 | Source                                                | Role                                                                                                                                       |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `.env.example` (repo root)                            | Documents `SHOPIFY_`*, `GOOGLE_*`, AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `GSC_DIMENSIONAL_FETCH`, `OVERVIEW_GOAL_*`, etc. |
+| `.env.example` (repo root)                            | Documents `SHOPIFY_`*, `GOOGLE_*`, AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `OVERVIEW_GOAL_*`, etc. |
 | `service_settings` + `shopifyseo/dashboard_config.py` | DB-stored settings; `apply_runtime_settings` mirrors selected keys into `os.environ`                                                       |
 | `SHOPIFY_CATALOG_DB_PATH`                             | SQLite file path override                                                                                                                  |
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |
-| `GSC_DIMENSIONAL_FETCH`                               | Dimensional GSC fetch toggle (`shopifyseo/dashboard_store.py`)                                                                             |
-
 
 ---
 

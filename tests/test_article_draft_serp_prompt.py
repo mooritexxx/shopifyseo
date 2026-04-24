@@ -9,6 +9,17 @@ from shopifyseo.dashboard_ai_engine_parts._article_draft import generate_article
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
+@pytest.fixture(autouse=True)
+def _disable_phased_article_draft(monkeypatch):
+    from shopifyseo.dashboard_ai_engine_parts import settings as _dash_settings
+
+    def _ai(conn, overrides=None):
+        d = _dash_settings.ai_settings(conn, overrides)
+        return {**d, "article_draft_phased": False}
+
+    monkeypatch.setattr(_article_draft, "ai_settings", _ai)
+
+
 @pytest.fixture
 def db_conn():
     conn = sqlite3.connect(":memory:")
@@ -28,14 +39,18 @@ def db_conn():
 
 def _filler_body(url: str) -> str:
     """Passes compliance: length, primary keyword phrase, FAQPage JSON-LD, primary href."""
+    qtext = "Which pod kit is best for beginners?"
     faq = (
         '<script type="application/ld+json">'
         '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":['
-        '{"@type":"Question","name":"Q","acceptedAnswer":{"@type":"Answer","text":"A"}}]}'
+        '{"@type":"Question","name":"' + qtext.replace('"', '\\"') + '",'
+        '"acceptedAnswer":{"@type":"Answer","text":"Start with a simple refillable kit."}}]}'
         "</script>"
     )
     link = f'<p><a href="{url}">pod kits</a> and more about pod kits here.</p>'
-    return link + faq + "<p>" + ("word " * 5000) + "</p>"
+    serp_h2 = "<h2>Pod kits vs disposable vapes</h2>"
+    visible = f"<h3>{qtext}</h3><p>Start with a simple refillable kit.</p>"
+    return link + serp_h2 + visible + faq + "<p>" + ("word " * 5000) + "</p>"
 
 
 def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, monkeypatch):
@@ -101,19 +116,25 @@ def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, m
     assert "SERP research appendix" in system_content or "information gain" in system_content.lower()
     assert "FAQPage JSON-LD" in user_content
     assert "Pre-output compliance" in user_content
+    assert "Length plan" in user_content
+    assert "len(body)" in system_content
 
 
 def test_compliance_retry_calls_ai_twice(db_conn, monkeypatch):
     """First body fails FAQ check; second body passes (PAA + idea primary keyword)."""
     calls = 0
     pad = "<p>" + ("word " * 5000) + "</p>"
+    fq = "Pod kits FAQ for beginners?"
     faq = (
         '<script type="application/ld+json">'
-        '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[]}'
+        '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":['
+        '{"@type":"Question","name":"' + fq.replace('"', '\\"') + '",'
+        '"acceptedAnswer":{"@type":"Answer","text":"See intro below."}}]}'
         "</script>"
     )
     good_body = (
-        f'<h2>Intro</h2><p><a href="https://example.com/collections/pods">pod kits</a> for pod kits.</p>'
+        f'<h2>Intro</h2><h3>{fq}</h3><p>See intro below.</p>'
+        f'<p><a href="https://example.com/collections/pods">pod kits</a> for pod kits.</p>'
         + faq
         + pad
     )

@@ -1003,6 +1003,11 @@ export const messageSchema = z.object({
   message: z.string().optional().default("ok"),
 });
 
+/** Response from ``POST /api/article-ideas/bulk-delete``. */
+export const articleIdeasBulkDeleteResponseSchema = z.object({
+  deleted: z.number(),
+});
+
 export const actionSchema = z.object({
   message: z.string(),
   state: z.record(z.any()).nullable().optional(),
@@ -1071,7 +1076,7 @@ export const catalogImageSeoRowSchema = z.object({
   variant_labels: z.array(z.string()),
   suggested_filename_webp: z.string(),
   optimize_supported: z.boolean(),
-  /** Product gallery only: post-sync `shopify_image_cache` has file for this URL. */
+  /** Post-sync `shopify_image_cache` has file for this URL. */
   local_file_cached: z.boolean().nullable().optional(),
   image_width: z.number().nullable().optional(),
   image_height: z.number().nullable().optional(),

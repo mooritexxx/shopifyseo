@@ -57,9 +57,8 @@ export function GscSearchSegmentsSection({ summary }: { summary?: GscSegmentSumm
           ) : null}
         </div>
         <p className="text-xs text-slate-500">
-          Query performance split by device, country, and search appearance. Enable{" "}
-          <code className="rounded bg-slate-100 px-1 py-0.5 text-[11px]">GSC_DIMENSIONAL_FETCH</code> and refresh
-          Search Console for this URL to populate.
+          Query performance split by device, country, and search appearance. This loads automatically when Search
+          Console metrics are refreshed for this URL.
         </p>
       </CardHeader>
       <CardContent className="space-y-6 pt-0">

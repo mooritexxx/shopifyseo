@@ -13,10 +13,19 @@ import {
   ChevronUp,
   Search,
   Info,
+  Trash2,
 } from "lucide-react";
 
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,7 +50,11 @@ import {
 } from "../components/ui/table";
 import { getJson, patchJson, postJson } from "../lib/api";
 import { cn } from "../lib/utils";
-import { articleIdeasPayloadSchema, messageSchema } from "../types/api";
+import {
+  articleIdeasBulkDeleteResponseSchema,
+  articleIdeasPayloadSchema,
+  messageSchema,
+} from "../types/api";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -191,6 +204,7 @@ export function ArticleIdeasPage() {
 
   // Selection
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   // Queries & mutations
   const ideasQuery = useQuery({
@@ -218,6 +232,18 @@ export function ArticleIdeasPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
       setSelected(new Set());
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) =>
+      postJson("/api/article-ideas/bulk-delete", articleIdeasBulkDeleteResponseSchema, {
+        idea_ids: ids,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
+      setSelected(new Set());
+      setDeleteDialogOpen(false);
     },
   });
 
@@ -311,6 +337,42 @@ export function ArticleIdeasPage() {
 
   return (
     <div className="space-y-6 pb-12">
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="sm:max-w-md" onClick={(e) => e.stopPropagation()}>
+          <DialogHeader>
+            <DialogTitle>Delete article ideas?</DialogTitle>
+            <DialogDescription>
+              This permanently removes {selectedList.length} selected idea
+              {selectedList.length === 1 ? "" : "s"} from the database, including any
+              article links for those ideas. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {bulkDeleteMutation.isError ? (
+            <p className="text-sm text-red-600">
+              {(bulkDeleteMutation.error as Error)?.message}
+            </p>
+          ) : null}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={bulkDeleteMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={bulkDeleteMutation.isPending}
+              onClick={() => bulkDeleteMutation.mutate(selectedList)}
+            >
+              {bulkDeleteMutation.isPending ? "Deleting…" : "Delete permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Page header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -506,6 +568,16 @@ export function ArticleIdeasPage() {
                   <X className="mr-1 h-3.5 w-3.5" />
                   Reject
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800"
+                  disabled={bulkDeleteMutation.isPending || bulkStatusMutation.isPending}
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  Delete
+                </Button>
               </div>
             ) : null}
 
@@ -626,7 +698,7 @@ export function ArticleIdeasPage() {
                         const target = e.target as HTMLElement;
                         if (
                           target.closest(
-                            "button, [role='combobox'], [role='listbox'], input, label",
+                            "button, [role='combobox'], [role='listbox'], [role='checkbox'], input, label",
                           )
                         )
                           return;

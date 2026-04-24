@@ -837,11 +837,6 @@ def _refresh_object_pagespeed_into_blog_article(conn: sqlite3.Connection, compos
     )
 
 
-def gsc_dimensional_fetch_enabled() -> bool:
-    """When true, bulk/per-URL GSC refresh also fetches query×country/device/searchAppearance (3× API per URL)."""
-    return (os.getenv("GSC_DIMENSIONAL_FETCH") or "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _refresh_gsc_query_dimensions_into_table(
     conn: sqlite3.Connection,
     object_type: str,
@@ -852,8 +847,6 @@ def _refresh_gsc_query_dimensions_into_table(
     gsc_detail: dict | None = None,
     gsc_period: str = "mtd",
 ) -> None:
-    if not gsc_dimensional_fetch_enabled():
-        return
     site_url = (dg.get_service_setting(conn, "search_console_site") or "").strip()
     if not site_url:
         return

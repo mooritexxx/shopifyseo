@@ -7,6 +7,7 @@ from backend.app.db import open_db_connection
 from backend.app.schemas.article_ideas import (
     ArticleIdeaItem,
     ArticleIdeasPayload,
+    BulkDeleteRequest,
     BulkStatusRequest,
     IdeaPerformancePayload,
     RefreshArticleIdeaSerpPayload,
@@ -120,6 +121,23 @@ def bulk_update_status(body: BulkStatusRequest):
     finally:
         conn.close()
     return success_response({"updated": count, "status": body.status})
+
+
+@router.post("/bulk-delete", response_model=SuccessResponse[dict])
+def bulk_delete_ideas(body: BulkDeleteRequest):
+    """Permanently delete multiple article ideas. Linked idea_articles rows cascade."""
+    conn = open_db_connection()
+    try:
+        count = dq.bulk_delete_article_ideas(conn, body.idea_ids)
+        try:
+            from shopifyseo.embedding_store import sync_embeddings
+
+            sync_embeddings(conn, object_type="article_idea")
+        except Exception:
+            logger.warning("Failed to sync embeddings after bulk idea delete", exc_info=True)
+    finally:
+        conn.close()
+    return success_response({"deleted": count})
 
 
 @router.post("/{idea_id}/refresh-serp", response_model=SuccessResponse[RefreshArticleIdeaSerpPayload])

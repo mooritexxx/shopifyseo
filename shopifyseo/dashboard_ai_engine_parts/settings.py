@@ -56,6 +56,9 @@ def ai_settings(conn: sqlite3.Connection, overrides: dict[str, str] | None = Non
             generation_model if vision_provider == generation_provider else default_model_for_provider(vision_provider)
         )
     review_model = (setting_with_override("ai_review_model", DEFAULT_REVIEW_MODEL) or DEFAULT_REVIEW_MODEL).strip()
+    _phased_raw = setting_with_override("article_draft_phased", "1")
+    _phased_norm = str(_phased_raw or "1").strip().lower()
+    article_draft_phased = _phased_norm not in ("0", "false", "no", "off", "")
     return {
         "api_key": setting_with_override("openai_api_key"),
         "openai_api_key": setting_with_override("openai_api_key"),
@@ -81,6 +84,7 @@ def ai_settings(conn: sqlite3.Connection, overrides: dict[str, str] | None = Non
         "ai_max_retries": str(retries),
         "timeout": timeout,
         "max_retries": retries,
+        "article_draft_phased": article_draft_phased,
     }
 
 

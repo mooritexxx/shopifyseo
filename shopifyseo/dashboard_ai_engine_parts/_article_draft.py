@@ -99,6 +99,15 @@ def generate_article_draft(
     """
     settings = ai_settings(conn)
     from .serp_draft_context import MAX_PAA_QUESTIONS
+    from .article_draft_compliance import (
+        COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
+        MIN_ARTICLE_BODY_HTML_CHARS,
+        build_compliance_retry_user_message,
+        collect_tier_related_queries,
+        length_only_article_compliance_gaps,
+        mixed_length_and_serp_compliance_gaps,
+        validate_article_draft_compliance,
+    )
 
     provider = settings["generation_provider"]
     model = settings["generation_model"]
@@ -445,14 +454,18 @@ def generate_article_draft(
         return False
 
     _pk_checklist = (str((idea_serp_context or {}).get("primary_keyword") or "").strip() or _first_plain_keyword())
+
     _pre_output_lines = [
         "\n\n=== Pre-output compliance (verify before you return JSON) ===\n",
-        "- Body HTML length is at least 14,000 characters (excluding this checklist).\n",
+        f"- Body HTML length is at least {MIN_ARTICLE_BODY_HTML_CHARS:,} characters (excluding this checklist). "
+        "The server counts the full JSON `body` string with Python `len(body)` after normalizing internal store links "
+        "(same rule as automated checks).\n",
     ]
     if _is_faq or _has_serp_paa:
         _pre_output_lines.append(
             "- FAQPage: include a `<script type=\"application/ld+json\">` block with @type FAQPage; "
-            "each Question name should align with the reader questions you answer (match your FAQ `<h3>` text).\n"
+            "each Question `name` must match visible on-page FAQ text (same wording in an `<h3>` or paragraph — "
+            "validators reject schema-only questions).\n"
         )
     if secondary_normalized:
         _pre_output_lines.append(
@@ -464,8 +477,9 @@ def generate_article_draft(
         )
     if _has_tier1_related_searches(idea_serp_context):
         _pre_output_lines.append(
-            "- SERP tier 1–3 related searches: each position 1–3 query from the SERP appendix must have a matching "
-            "H2 or H3 (light paraphrase allowed for grammar).\n"
+            "- SERP tier 1–3 related searches: each position 1–3 query from the SERP appendix must appear in an "
+            "on-page <h2>, <h3>, <h4> heading or in normal paragraph text (light paraphrase allowed for grammar) — "
+            "automated checks validate this.\n"
         )
     _pre_output_checklist = "".join(_pre_output_lines)
 
@@ -481,15 +495,45 @@ def generate_article_draft(
             "Do not add competitor hyperlinks or reproduce competitor URLs."
         )
 
+    _body_aim_chars = MIN_ARTICLE_BODY_HTML_CHARS + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
+
     system_msg = (
         f"You are an expert SEO content writer for {_brand}. "
         "Write high-quality, editorial blog content that ranks well on Google. "
+        f"A machine validator rejects drafts unless the JSON `body` string is at least "
+        f"{MIN_ARTICLE_BODY_HTML_CHARS:,} characters (Python `len(body)` including every HTML tag and space); "
+        f"aim for {_body_aim_chars:,}+ so edits still pass. "
         f"{spelling_variant(_market_code)} "
         "Do not fabricate statistics, specific study results, or invented data — if you need to reference evidence, "
         "use well-known industry patterns rather than invented figures. "
         "Write at a Grade 8–10 reading level. Be helpful, specific, and commercially relevant. "
         "When choosing internal links, prefer store destinations that clearly match the article topic and any "
         "reference list provided in the user message over unrelated catalog URLs. "
+        f"{_link_scope}"
+        f"{_serp_system_extra}"
+    )
+
+    system_outline = (
+        f"You are an expert SEO content strategist for {_brand}. "
+        "Phase 1 returns JSON only: article title, meta fields, and a detailed section outline (headings + beats). "
+        "Later phases write full HTML in batches from your outline — beats must be actionable for a writer. "
+        f"{spelling_variant(_market_code)} "
+        "Do not fabricate statistics, specific study results, or invented data. "
+        f"{_link_scope}"
+        f"{_serp_system_extra}"
+    )
+
+    system_section = (
+        f"You are an expert SEO content writer for {_brand}. "
+        "The article is produced in phased HTML batches. Each response must be valid JSON with a `html_blocks` array "
+        "of HTML fragment strings that the server concatenates in order with prior batches. "
+        "Do not wrap fragments in `<html>`, `<head>`, or `<body>`. Do not output an `<h1>` (the article title is separate). "
+        "Do not repeat or rewrite sections that earlier batches already shipped. "
+        f"The assembled article must eventually clear ~{_body_aim_chars:,}+ characters of HTML before automated checks; "
+        "write each assigned fragment generously with multiple `<p>` paragraphs and optional lists or small tables. "
+        f"{spelling_variant(_market_code)} "
+        "Do not fabricate statistics, specific study results, or invented data. "
+        "Write at a Grade 8–10 reading level. "
         f"{_link_scope}"
         f"{_serp_system_extra}"
     )
@@ -509,6 +553,12 @@ def generate_article_draft(
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
         f"{_pre_output_checklist}"
+        "\n**Length plan (mandatory):** Plan for a long first draft. Use **at least 9–12 `<h2>` sections**; "
+        "each section should include **at least two `<p>` paragraphs** of substantive prose (not one-liners) "
+        "plus optional `<ul>`/`<ol>` lists or small tables where they help. "
+        f"Target **`body` ≥ {_body_aim_chars:,} characters** so the final HTML clears the "
+        f"{MIN_ARTICLE_BODY_HTML_CHARS:,}-character floor after headings, lists, and JSON-LD blocks. "
+        "If you are unsure, add another full H2 section with buyer-focused detail rather than tightening copy.\n\n"
         "Return a JSON object with exactly these four fields:\n"
         f"- title: The H1 article headline (20–70 characters). Keyword-led, specific. {spelling_variant(_market_code)} "
         "No ALL CAPS. No filler suffixes like 'A Simple FAQ', 'A Complete Guide', '(2026 Update)', or '(Full Guide)'. "
@@ -525,8 +575,10 @@ def generate_article_draft(
         "NEVER use generic trailing CTAs like 'today', 'now', 'Upgrade your experience today', 'Shop now', or 'Order today'. "
         "Instead end with something concrete like 'See our top 5 picks' or 'Compare specs and prices'. "
         "Count every character including spaces.\n"
-        "- body: Full article HTML. CRITICAL: target 2,000+ WORDS of actual content (at least 14,000 characters of HTML). "
-        "Do not stop before 2,000 words — articles under 1,800 words will be rejected. Write thorough, detailed sections. "
+        f"- body: Full article HTML. CRITICAL: target **2,400+ words** of reader-visible text across the article "
+        f"(excluding HTML tags) **and** at least {_body_aim_chars:,} characters in the raw `body` string "
+        f"(including tags) so automated checks on the {MIN_ARTICLE_BODY_HTML_CHARS:,}-character minimum pass reliably. "
+        "Do not stop at a 'complete' short article — keep adding sections until the length plan is clearly satisfied. "
         "Structure with H2 section headings and H3 sub-headings — every major section should have at least one H3 "
         "sub-heading to create a clear hierarchy. "
         "Open the first paragraph with the direct answer to the main question — no throat-clearing or generic intros. "
@@ -542,6 +594,71 @@ def generate_article_draft(
         f"\"inLanguage\":\"{_lang_code}\","
         "\"datePublished\":\"DATE_ISO8601\"}"
         f"</script> — TITLE = the article headline, SEO_DESCRIPTION = the meta description, DATE_ISO8601 = today's date which is {datetime.date.today().isoformat()}."
+    )
+
+    _article_ld_instruction = (
+        "At the very end of the **last** HTML fragment in the final batch, add a complete Article JSON-LD structured data block using this template "
+        "(replace the ALL-CAPS placeholders with actual values): "
+        "<script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Article\","
+        "\"headline\":\"TITLE\","
+        "\"description\":\"SEO_DESCRIPTION\","
+        f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}},"
+        f"{_publisher_ld},"
+        f"\"inLanguage\":\"{_lang_code}\","
+        "\"datePublished\":\"DATE_ISO8601\"}"
+        f"</script> — TITLE = the article headline, SEO_DESCRIPTION = the meta description, DATE_ISO8601 = today's date which is {datetime.date.today().isoformat()}."
+    )
+
+    _outline_checklist_lines = [
+        "\n\n=== Pre-output compliance (outline — verify before JSON) ===\n",
+        f"- Plan for a final merged HTML body of at least {MIN_ARTICLE_BODY_HTML_CHARS:,} characters (Python len on the full HTML string).\n",
+        f"- Aim the written phases at {_body_aim_chars:,}+ so small undershoots still pass.\n",
+    ]
+    if _is_faq or _has_serp_paa:
+        _outline_checklist_lines.append(
+            "- FAQPage: later batches must include visible `<h3>` FAQ-style questions and a matching FAQPage JSON-LD block.\n"
+        )
+    if secondary_normalized:
+        _outline_checklist_lines.append(
+            "- Every secondary URL from INTERLINK STRATEGY must be coverable across the planned sections.\n"
+        )
+    if _pk_checklist:
+        _outline_checklist_lines.append(
+            f"- Primary keyword for this draft: plan natural inclusion of {_pk_checklist!r} in on-page copy.\n"
+        )
+    if _has_tier1_related_searches(idea_serp_context):
+        _outline_checklist_lines.append(
+            "- SERP tier 1–3 related searches: plan headings or body coverage for each position 1–3 query from the appendix.\n"
+        )
+    _outline_checklist = "".join(_outline_checklist_lines)
+
+    user_outline_msg = (
+        f"Plan a long-form SEO blog article for {_brand} on:\n\n"
+        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{_serp_user_block}\n\n"
+        f"{_faq_instruction}{_paa_faq_instruction}"
+        f"{_outline_checklist}"
+        f"{_authority_link_block}"
+        f"{_collection_link_block}"
+        "\n\nReturn JSON for **Phase 1 (outline + meta only)** with exactly these fields:\n"
+        "- `title`: Same headline rules as full-article generation (20–70 characters, keyword-led, no banned prefixes).\n"
+        f"- `seo_title`: Meta title tag (45–65 characters), distinct from the H1, end with ' | {_brand}' when it fits.\n"
+        "- `seo_description`: Meta description (135–155 characters) with the same opening/ending rules as full-article generation.\n"
+        "- `sections`: **8–14** objects in reading order. Each object has `heading` (plain text), `level` (`h2` or `h3`), "
+        "and `beats` (3–10 sentences: subtopics, proof points, comparisons, objections, where internal links should appear — name destinations, do not invent URLs).\n"
+        "The first planned section after the opening HTML batch should usually be the first major `h2`. "
+        "Do not output full article HTML in this response.\n"
+    )
+
+    _shared_grounding = (
+        f"Topic and research inputs for {_brand}:\n\n"
+        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{_serp_user_block}\n\n"
+        f"{_faq_instruction}{_paa_faq_instruction}"
+        f"{_authority_link_block}"
+        f"{_collection_link_block}"
+        f"\n\n**Merged-body length target:** All HTML batches concatenated must reach **{_body_aim_chars:,}+** characters "
+        f"(hard floor {MIN_ARTICLE_BODY_HTML_CHARS:,} after validation). Write each fragment with generous depth.\n"
     )
 
     json_schema = {
@@ -570,8 +687,15 @@ def generate_article_draft(
                 },
                 "body": {
                     "type": "string",
-                    "description": "Full article HTML, minimum 14000 characters (approx 2000+ words). Do not stop early.",
-                    "minLength": 14000,
+                    "description": (
+                        f"Full article HTML. HARD REQUIREMENT (validated server-side): this string's length must be "
+                        f">= {MIN_ARTICLE_BODY_HTML_CHARS} characters — count every character in the JSON value "
+                        f"(all HTML tags, attributes, whitespace, scripts). Aim for >= {_body_aim_chars} so small "
+                        "losses still pass. Failure mode: models often stop at ~12–13k characters; avoid that by "
+                        "planning 9+ H2 sections each with 2+ substantive <p> paragraphs plus lists or tables where "
+                        "helpful, FAQPage JSON-LD if required by the user prompt, and the Article JSON-LD block."
+                    ),
+                    "minLength": MIN_ARTICLE_BODY_HTML_CHARS,
                 },
             },
             "required": ["title", "seo_title", "seo_description", "body"],
@@ -579,25 +703,61 @@ def generate_article_draft(
         },
     }
 
-    messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": user_msg},
-    ]
+    outline_schema = {
+        "name": "article_draft_outline",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": f"H1 article headline, 20–70 characters, keyword-led. {spelling_variant(_market_code)}",
+                    "minLength": 20,
+                    "maxLength": 70,
+                },
+                "seo_title": {
+                    "type": "string",
+                    "description": "Meta title tag, 45–65 characters.",
+                    "minLength": 45,
+                    "maxLength": 65,
+                },
+                "seo_description": {
+                    "type": "string",
+                    "description": "Meta description, 135–155 characters.",
+                    "minLength": 135,
+                    "maxLength": 155,
+                },
+                "sections": {
+                    "type": "array",
+                    "minItems": 8,
+                    "maxItems": 14,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "heading": {"type": "string", "minLength": 4, "maxLength": 200},
+                            "level": {"type": "string", "enum": ["h2", "h3"]},
+                            "beats": {"type": "string", "minLength": 30, "maxLength": 1600},
+                        },
+                        "required": ["heading", "level", "beats"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["title", "seo_title", "seo_description", "sections"],
+            "additionalProperties": False,
+        },
+    }
 
     def _emit(message: str, *, phase: str, state: str) -> None:
         if on_progress:
             on_progress({"message": message, "phase": phase, "state": state})
-
-    from .article_draft_compliance import (
-        build_compliance_retry_user_message,
-        validate_article_draft_compliance,
-    )
 
     secondary_urls_for_compliance = [n["url"] for n in secondary_normalized if (n.get("url") or "").strip()]
     primary_kw_for_compliance = (
         str((idea_serp_context or {}).get("primary_keyword") or "").strip() or None
     )
     require_faqpage_ld = bool(_is_faq or _has_serp_paa)
+    _tier_queries = collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3)
 
     def _sanitize_body(raw_html: str) -> str:
         out = str(raw_html or "")
@@ -614,33 +774,224 @@ def generate_article_draft(
             secondary_urls=secondary_urls_for_compliance,
             primary_keyword_for_body=primary_kw_for_compliance,
             path_to_canonical=path_to_canonical,
+            tier1_related_queries=_tier_queries,
         )
 
-    _emit("Preparing article prompt and keyword context…", phase="content", state="start")
-    _emit("Sending request to AI — writing full article (often 1–3 minutes)…", phase="content", state="waiting")
-
-    try:
-        result = _call_ai(settings, provider, model, messages, timeout, json_schema=json_schema, stage="article_draft")
-    except AIProviderRequestError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    _emit("Article content received — validating JSON fields…", phase="content", state="done")
-
-    body_out = _sanitize_body(str(result.get("body") or ""))
-    gaps = _compliance_gaps(body_out)
-    if gaps:
-        messages.append({"role": "user", "content": build_compliance_retry_user_message(gaps)})
-        _emit("Draft needs compliance fixes — one automatic retry…", phase="content", state="waiting")
+    def _single_shot_with_retries() -> tuple[dict, str]:
+        messages_local: list[dict] = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+        _emit("Preparing article prompt and keyword context…", phase="content", state="start")
+        _emit("Sending request to AI — writing full article (often 1–3 minutes)…", phase="content", state="waiting")
         try:
-            result = _call_ai(settings, provider, model, messages, timeout, json_schema=json_schema, stage="article_draft")
+            res = _call_ai(
+                settings, provider, model, messages_local, timeout, json_schema=json_schema, stage="article_draft"
+            )
         except AIProviderRequestError as exc:
             raise RuntimeError(str(exc)) from exc
-        body_out = _sanitize_body(str(result.get("body") or ""))
-        gaps = _compliance_gaps(body_out)
-    if gaps:
-        raise RuntimeError("Article draft failed compliance after one retry: " + " | ".join(gaps))
+        _emit("Article content received — validating JSON fields…", phase="content", state="done")
+        body_local = _sanitize_body(str(res.get("body") or ""))
+        gaps_local = _compliance_gaps(body_local)
+        if gaps_local:
+            messages_local.append({"role": "user", "content": build_compliance_retry_user_message(gaps_local)})
+            _emit("Draft needs compliance fixes — automatic retry…", phase="content", state="waiting")
+            try:
+                res = _call_ai(
+                    settings, provider, model, messages_local, timeout, json_schema=json_schema, stage="article_draft"
+                )
+            except AIProviderRequestError as exc:
+                raise RuntimeError(str(exc)) from exc
+            body_local = _sanitize_body(str(res.get("body") or ""))
+            gaps_local = _compliance_gaps(body_local)
+        if gaps_local and (
+            length_only_article_compliance_gaps(gaps_local) or mixed_length_and_serp_compliance_gaps(gaps_local)
+        ):
+            messages_local.append({"role": "user", "content": build_compliance_retry_user_message(gaps_local)})
+            _emit(
+                "Draft still needs compliance fixes (body length and/or SERP related searches) — one more attempt…",
+                phase="content",
+                state="waiting",
+            )
+            try:
+                res = _call_ai(
+                    settings, provider, model, messages_local, timeout, json_schema=json_schema, stage="article_draft"
+                )
+            except AIProviderRequestError as exc:
+                raise RuntimeError(str(exc)) from exc
+            body_local = _sanitize_body(str(res.get("body") or ""))
+            gaps_local = _compliance_gaps(body_local)
+        if gaps_local:
+            raise RuntimeError(
+                "Article draft failed compliance after automatic retries: " + " | ".join(gaps_local)
+            )
+        _emit("Article content passed compliance checks…", phase="content", state="done")
+        return res, body_local
 
-    _emit("Article content passed compliance checks…", phase="content", state="done")
+    def _section_batch_schema(n_items: int, min_len: int) -> dict:
+        max_len = min(24000, max(8000, min_len * 24))
+        return {
+            "name": "article_draft_section_batch",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "html_blocks": {
+                        "type": "array",
+                        "minItems": n_items,
+                        "maxItems": n_items,
+                        "items": {"type": "string", "minLength": min_len, "maxLength": max_len},
+                    },
+                },
+                "required": ["html_blocks"],
+                "additionalProperties": False,
+            },
+        }
+
+    def _try_phased() -> tuple[dict, str] | None:
+        _intro_beats = (
+            "Opening only: 1–2 sentences that directly answer the reader's main question, then 2–4 `<p>` paragraphs "
+            f"with practical context for {_market_name}. Include **exactly one** prominent `<a href>` to the PRIMARY "
+            "authority URL from INTERLINK STRATEGY with natural anchor text in this opening fragment. "
+            "Do not include an `<h2>` here — section headings start in later fragments."
+        )
+        try:
+            _emit("Generating article outline (phase 1)…", phase="content", state="waiting")
+            outline_messages = [
+                {"role": "system", "content": system_outline},
+                {"role": "user", "content": user_outline_msg},
+            ]
+            outline = _call_ai(
+                settings,
+                provider,
+                model,
+                outline_messages,
+                timeout,
+                json_schema=outline_schema,
+                stage="article_draft_outline",
+            )
+        except AIProviderRequestError as exc:
+            logger.warning("Article phased outline failed: %s", exc)
+            return None
+        sections_raw = outline.get("sections")
+        if not isinstance(sections_raw, list) or not (8 <= len(sections_raw) <= 14):
+            logger.warning("Article phased outline had invalid sections count: %r", sections_raw)
+            return None
+        work_items: list[dict[str, str]] = [
+            {"kind": "intro", "heading": "", "level": "", "beats": _intro_beats},
+        ]
+        for sec in sections_raw:
+            if not isinstance(sec, dict):
+                return None
+            heading = str(sec.get("heading") or "").strip()
+            level = str(sec.get("level") or "").strip().lower()
+            beats = str(sec.get("beats") or "").strip()
+            if level not in ("h2", "h3") or not heading or len(beats) < 10:
+                logger.warning("Article phased outline section invalid: %r", sec)
+                return None
+            work_items.append({"kind": "section", "heading": heading, "level": level, "beats": beats})
+
+        n_work = len(work_items)
+        min_frag = max(450, min(1400, _body_aim_chars // max(n_work, 6)))
+        batch_size = 3
+        batches: list[list[dict[str, str]]] = [
+            work_items[i : i + batch_size] for i in range(0, n_work, batch_size)
+        ]
+        outline_title = str(outline.get("title") or "").strip()
+        outline_digest = json.dumps(
+            [{"heading": it.get("heading") or "(intro)", "level": it.get("level") or "", "beats": it.get("beats")} for it in work_items],
+            ensure_ascii=True,
+        )
+        html_parts: list[str] = []
+        n_batches = len(batches)
+        for bi, batch in enumerate(batches):
+            is_last = bi == n_batches - 1
+            _emit(
+                f"Writing article HTML — batch {bi + 1} of {n_batches}…",
+                phase="content",
+                state="waiting",
+            )
+            frag_lines: list[str] = [
+                _shared_grounding,
+                "\n\n=== Locked outline (Phase 1) ===\n",
+                f"title: {outline_title}\n",
+                f"sections_json: {outline_digest}\n",
+                f"\n=== Batch {bi + 1} of {n_batches} ===\n",
+                f"Return JSON with `html_blocks` array of exactly **{len(batch)}** HTML strings in this order:\n",
+            ]
+            for j, it in enumerate(batch):
+                frag_lines.append(f"\n--- Fragment {j + 1} of {len(batch)} in this batch ---\n")
+                if it.get("kind") == "intro":
+                    frag_lines.append(it["beats"] + "\n")
+                else:
+                    frag_lines.append(
+                        f"Render a `{it['level']}` heading with text: {it['heading']!r} and full section HTML per beats:\n"
+                        f"{it['beats']}\n"
+                    )
+            if is_last:
+                frag_lines.append(
+                    "\n**Final batch — last `html_blocks` element must end with:**\n"
+                    "- All required FAQPage JSON-LD (if the topic rules require it), aligned to visible FAQ `<h3>` "
+                    "wording from the merged article.\n"
+                    f"- {_article_ld_instruction}\n"
+                )
+            user_batch = "".join(frag_lines)
+            batch_messages = [
+                {"role": "system", "content": system_section},
+                {"role": "user", "content": user_batch},
+            ]
+            schema_b = _section_batch_schema(len(batch), min_frag)
+            try:
+                batch_out = _call_ai(
+                    settings,
+                    provider,
+                    model,
+                    batch_messages,
+                    timeout,
+                    json_schema=schema_b,
+                    stage="article_draft_section",
+                )
+            except AIProviderRequestError as exc:
+                logger.warning("Article phased section batch %s failed: %s", bi + 1, exc)
+                return None
+            blocks = batch_out.get("html_blocks")
+            if not isinstance(blocks, list) or len(blocks) != len(batch):
+                logger.warning("Article phased batch %s html_blocks invalid: %r", bi + 1, blocks)
+                return None
+            for k, frag in enumerate(blocks):
+                if not isinstance(frag, str) or not frag.strip():
+                    logger.warning("Article phased batch %s fragment %s empty", bi + 1, k)
+                    return None
+            html_parts.extend(blocks)
+        raw_body = "".join(html_parts)
+        body_merged = _sanitize_body(raw_body)
+        gaps_phased = _compliance_gaps(body_merged)
+        if gaps_phased:
+            logger.warning("Phased article assembly failed compliance; falling back to single-pass. Gaps: %s", gaps_phased)
+            return None
+        _emit("Phased article assembly passed compliance checks…", phase="content", state="done")
+        meta = {
+            "title": outline.get("title"),
+            "seo_title": outline.get("seo_title"),
+            "seo_description": outline.get("seo_description"),
+        }
+        return meta, body_merged
+
+    use_phased = bool(settings.get("article_draft_phased", True))
+    if use_phased:
+        _emit("Using phased generation (outline + HTML batches)…", phase="content", state="start")
+        phased_pair = _try_phased()
+        if phased_pair is not None:
+            result, body_out = phased_pair
+        else:
+            _emit(
+                "Phased generation unavailable or did not pass checks — single-pass fallback…",
+                phase="content",
+                state="waiting",
+            )
+            result, body_out = _single_shot_with_retries()
+    else:
+        result, body_out = _single_shot_with_retries()
 
     # Hard-fail if a primary authority target was supplied but absent from the body.
     if primary_normalized and primary_normalized.get("url"):

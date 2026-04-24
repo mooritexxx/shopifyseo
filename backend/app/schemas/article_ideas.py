@@ -166,6 +166,10 @@ class BulkStatusRequest(BaseModel):
     status: str
 
 
+class BulkDeleteRequest(BaseModel):
+    idea_ids: list[int] = Field(min_length=1)
+
+
 class LinkedArticle(BaseModel):
     id: int
     blog_handle: str

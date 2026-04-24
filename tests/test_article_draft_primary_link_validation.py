@@ -8,6 +8,18 @@ from shopifyseo.dashboard_ai_engine_parts._article_draft import generate_article
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
+@pytest.fixture(autouse=True)
+def _disable_phased_article_draft(monkeypatch):
+    """Existing tests assume one structured `article_draft` completion."""
+    from shopifyseo.dashboard_ai_engine_parts import settings as _dash_settings
+
+    def _ai(conn, overrides=None):
+        d = _dash_settings.ai_settings(conn, overrides)
+        return {**d, "article_draft_phased": False}
+
+    monkeypatch.setattr(_article_draft, "ai_settings", _ai)
+
+
 @pytest.fixture
 def db_conn():
     conn = sqlite3.connect(":memory:")

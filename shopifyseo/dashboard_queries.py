@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any
 
 from .dashboard_article_ideas import (  # noqa: F401
+    bulk_delete_article_ideas,
     bulk_update_idea_status,
     compute_idea_performance,
     compute_keyword_coverage,

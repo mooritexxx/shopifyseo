@@ -22,6 +22,57 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+# When structured JSON asks for very long strings (e.g. article body minLength 14k), raise completion
+# budget for *all* providers using the same threshold — no provider-specific callers.
+# Article HTML + JSON escaping needs a high ceiling; keep one shared constant for every provider path.
+_LONG_STRING_MINLENGTH_THRESHOLD = 8000
+_DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
+_LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET = 65536
+
+
+def _max_string_min_length_in_schema_node(node: object, *, depth: int = 0) -> int:
+    """Largest ``minLength`` on any string schema nested under *node* (shallow recursion)."""
+    if depth > 12 or not isinstance(node, dict):
+        return 0
+    best = 0
+    t = node.get("type")
+    if t == "string" and isinstance(node.get("minLength"), int):
+        best = max(best, int(node["minLength"]))
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for child in props.values():
+            best = max(best, _max_string_min_length_in_schema_node(child, depth=depth + 1))
+    items = node.get("items")
+    if isinstance(items, dict):
+        best = max(best, _max_string_min_length_in_schema_node(items, depth=depth + 1))
+    for key in ("anyOf", "oneOf", "allOf"):
+        opts = node.get(key)
+        if isinstance(opts, list):
+            for child in opts:
+                best = max(best, _max_string_min_length_in_schema_node(child, depth=depth + 1))
+    return best
+
+
+def _max_string_min_length_from_response_json_schema(json_schema: dict | None) -> int:
+    """Inspect OpenAI-style ``{name, schema: {type, properties...}}`` (or a bare JSON Schema object)."""
+    if not isinstance(json_schema, dict):
+        return 0
+    inner = json_schema.get("schema")
+    if isinstance(inner, dict):
+        return _max_string_min_length_in_schema_node(inner)
+    return _max_string_min_length_in_schema_node(json_schema)
+
+
+def _completion_token_budget_from_json_schema(json_schema: dict | None, stage: str = "") -> int | None:
+    """If the response schema implies very large generated strings, return a generous max completion size."""
+    st = (stage or "").strip()
+    # All article draft stages (single-shot, phased outline, phased HTML batches) share the same high cap.
+    if st.startswith("article_draft"):
+        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+    if _max_string_min_length_from_response_json_schema(json_schema) >= _LONG_STRING_MINLENGTH_THRESHOLD:
+        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+    return None
+
 
 def _log_gemini_usage(response: dict, model: str, call_type: str, stage: str) -> None:
     """Best-effort logging of Gemini token usage from a generateContent response."""
@@ -413,16 +464,20 @@ def _call_openai(api_key: str, model: str, messages: list[dict], timeout: int, *
     else:
         response_format = {"type": "json_object"}
 
+    payload: dict[str, object] = {
+        "model": model,
+        "response_format": response_format,
+        "messages": messages,
+    }
+    _budget = _completion_token_budget_from_json_schema(json_schema, stage=stage)
+    if _budget is not None:
+        payload["max_tokens"] = _budget
     try:
         response = request_json(
             OPENAI_API_URL,
             method="POST",
             headers={"Authorization": f"Bearer {api_key}"},
-            payload={
-                "model": model,
-                "response_format": response_format,
-                "messages": messages,
-            },
+            payload=payload,
             timeout=timeout,
         )
         return _parse_json_response_text("openai", model, stage, extract_content(response))
@@ -449,9 +504,10 @@ def _call_anthropic(
         for message in messages
         if message.get("role") in {"user", "assistant"}
     ]
+    _budget = _completion_token_budget_from_json_schema(json_schema, stage=stage)
     payload = {
         "model": model or DEFAULT_ANTHROPIC_MODEL,
-        "max_tokens": 4096,
+        "max_tokens": _budget if _budget is not None else _DEFAULT_ANTHROPIC_MAX_TOKENS,
         "system": "\n\n".join(part for part in system_parts if part),
         "messages": chat_messages,
     }
@@ -496,16 +552,20 @@ def _call_openrouter(api_key: str, model: str, messages: list[dict], timeout: in
     else:
         response_format = {"type": "json_object"}
 
+    payload: dict[str, object] = {
+        "model": model or DEFAULT_OPENROUTER_MODEL,
+        "response_format": response_format,
+        "messages": messages,
+    }
+    _budget = _completion_token_budget_from_json_schema(json_schema, stage=stage)
+    if _budget is not None:
+        payload["max_tokens"] = _budget
     try:
         response = request_json(
             OPENROUTER_API_URL,
             method="POST",
             headers={"Authorization": f"Bearer {api_key}"},
-            payload={
-                "model": model or DEFAULT_OPENROUTER_MODEL,
-                "response_format": response_format,
-                "messages": messages,
-            },
+            payload=payload,
             timeout=timeout,
         )
         return _parse_json_response_text("openrouter", model or DEFAULT_OPENROUTER_MODEL, stage, extract_content(response))
@@ -547,6 +607,9 @@ def _call_gemini(
             "parts": [{"text": "\n\n".join(part for part in system_parts if part)}]
         }
     generation_config: dict[str, object] = {}
+    _budget = _completion_token_budget_from_json_schema(json_schema, stage=stage)
+    if _budget is not None:
+        generation_config["maxOutputTokens"] = _budget
     if json_schema is not None:
         gemini_schema = _gemini_schema_from_json_schema(json_schema.get("schema", json_schema))
         generation_config["responseMimeType"] = "application/json"
@@ -584,12 +647,15 @@ def _call_ollama(
 ) -> dict:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     effective_timeout = max(timeout, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
-    payload = {
+    payload: dict[str, object] = {
         "model": model,
         "stream": False,
         "format": json_schema.get("schema", json_schema) if json_schema is not None else "json",
         "messages": messages,
     }
+    _budget = _completion_token_budget_from_json_schema(json_schema, stage=stage)
+    if _budget is not None:
+        payload["options"] = {"num_predict": _budget}
     try:
         response = request_json(
             f"{base_url.rstrip('/')}/api/chat",

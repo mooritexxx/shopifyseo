@@ -1307,6 +1307,17 @@ def bulk_update_idea_status(conn: sqlite3.Connection, idea_ids: list[int], statu
     return cur.rowcount
 
 
+def bulk_delete_article_ideas(conn: sqlite3.Connection, idea_ids: list[int]) -> int:
+    """Delete multiple article ideas by ID. Returns number of rows removed."""
+    ids = sorted({int(i) for i in idea_ids if i is not None})
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    cur = conn.execute(f"DELETE FROM article_ideas WHERE id IN ({placeholders})", ids)
+    conn.commit()
+    return cur.rowcount
+
+
 def compute_keyword_coverage(
     conn: sqlite3.Connection,
     blog_handle: str,

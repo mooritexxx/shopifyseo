@@ -137,6 +137,37 @@ def _product_image_replace_output(
     return normalized, ext, mime, None
 
 
+def _image_upload_output(
+    raw: bytes,
+    url: str,
+    header_mime: str,
+    *,
+    apply_fn: bool,
+    convert_webp: bool,
+) -> tuple[bytes, str, str, str | None, bool]:
+    """Return upload bytes while preserving pixels for filename-only WebP re-uploads.
+
+    The final bool is True when original bytes were reused unchanged.
+    """
+    inferred = infer_image_format_from_bytes(raw)
+    source_is_webp = inferred is not None and inferred[0] == ".webp"
+    filename_only_webp = (
+        apply_fn
+        and not convert_webp
+        and source_is_webp
+    )
+    if filename_only_webp:
+        return raw, ".webp", "image/webp", None, True
+    effective_convert_webp = convert_webp or (apply_fn and not source_is_webp)
+    out_bytes, out_ext, out_mime, err = _product_image_replace_output(
+        raw,
+        url,
+        header_mime,
+        convert_webp_flag=effective_convert_webp,
+    )
+    return out_bytes, out_ext, out_mime, err, False
+
+
 def _collection_featured_seo_suffix_seed(collection_shopify_id: str) -> str:
     return f"{collection_shopify_id}|featured"
 
@@ -180,6 +211,8 @@ def _collection_featured_row(
 def draft_optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
     """Build a local draft for a collection featured image (no Shopify writes)."""
     collection_shopify_id = (payload.get("collection_shopify_id") or "").strip()
+    apply_fn = bool(payload.get("apply_suggested_filename"))
+    convert_webp = bool(payload.get("convert_webp"))
     auto_vision = bool(payload.get("auto_vision_alt", True))
 
     steps: list[dict[str, Any]] = []
@@ -191,6 +224,8 @@ def draft_optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
         return _draft_optimize_collection_image_impl(
             conn,
             collection_shopify_id,
+            apply_fn=apply_fn,
+            convert_webp=convert_webp,
             auto_vision=auto_vision,
             steps=steps,
         )
@@ -202,6 +237,8 @@ def _draft_optimize_collection_image_impl(
     conn: sqlite3.Connection,
     collection_shopify_id: str,
     *,
+    apply_fn: bool,
+    convert_webp: bool,
     auto_vision: bool,
     steps: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -319,11 +356,12 @@ def _draft_optimize_collection_image_impl(
         }
     )
 
-    out_bytes, _out_ext, out_mime, webp_err = _product_image_replace_output(
+    out_bytes, _out_ext, out_mime, webp_err, preserved_original = _image_upload_output(
         raw,
         url,
         mime,
-        convert_webp_flag=True,
+        apply_fn=apply_fn,
+        convert_webp=convert_webp,
     )
     if webp_err:
         steps.append(
@@ -339,14 +377,24 @@ def _draft_optimize_collection_image_impl(
             "message": f"WebP conversion failed for this image: {webp_err}",
             "steps": steps,
         }
-    steps.append(
-        {
-            "id": "webp",
-            "label": "Convert to WebP",
-            "status": "ok",
-            "detail": f"{_fmt_bytes(orig_size)} -> {_fmt_bytes(len(out_bytes))}",
-        }
-    )
+    if preserved_original:
+        steps.append(
+            {
+                "id": "encode",
+                "label": "Encoding",
+                "status": "ok",
+                "detail": "Original WebP bytes kept; only the filename will change.",
+            }
+        )
+    else:
+        steps.append(
+            {
+                "id": "webp",
+                "label": "Convert to WebP",
+                "status": "ok",
+                "detail": f"{_fmt_bytes(orig_size)} -> {_fmt_bytes(len(out_bytes))}",
+            }
+        )
 
     preview_b64: str | None = None
     preview_omitted = False
@@ -571,8 +619,12 @@ def _draft_optimize_product_image_impl(
         }
     )
 
-    out_bytes, _out_ext, out_mime, webp_err = _product_image_replace_output(
-        raw, url, mime, convert_webp_flag=convert_webp
+    out_bytes, _out_ext, out_mime, webp_err, preserved_original = _image_upload_output(
+        raw,
+        url,
+        mime,
+        apply_fn=apply_fn,
+        convert_webp=convert_webp,
     )
     if webp_err:
         steps.append(
@@ -589,7 +641,16 @@ def _draft_optimize_product_image_impl(
             "steps": steps,
         }
 
-    if want_webp:
+    if preserved_original:
+        steps.append(
+            {
+                "id": "encode",
+                "label": "Encoding",
+                "status": "ok",
+                "detail": "Original WebP bytes kept; only the filename will change.",
+            }
+        )
+    elif want_webp:
         if is_webp_bytes:
             steps.append(
                 {
@@ -760,11 +821,12 @@ def _optimize_collection_image_impl(
     else:
         raw, mime = download_image_bytes(url)
 
-    out_bytes, out_ext, _, webp_err = _product_image_replace_output(
+    out_bytes, out_ext, _, webp_err, _preserved_original = _image_upload_output(
         raw,
         url,
         mime,
-        convert_webp_flag=True,
+        apply_fn=apply_fn,
+        convert_webp=convert_webp,
     )
     if webp_err:
         return {
@@ -908,8 +970,12 @@ def _optimize_product_image_impl(
     else:
         raw, mime = download_image_bytes(url)
 
-    out_bytes, out_ext, _, webp_err = _product_image_replace_output(
-        raw, url, mime, convert_webp_flag=convert_webp
+    out_bytes, out_ext, _, webp_err, _preserved_original = _image_upload_output(
+        raw,
+        url,
+        mime,
+        apply_fn=apply_fn,
+        convert_webp=convert_webp,
     )
     if webp_err:
         return {

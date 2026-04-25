@@ -13,7 +13,31 @@ const PHASE_LABELS: Record<string, string> = {
   local: "Save to local database"
 };
 
-type PhaseUiStatus = "pending" | "active" | "done" | "skipped";
+const STEP_LABELS: Record<string, string> = {
+  prepare_brief: "Prepare SEO brief",
+  outline: "Generate outline",
+  write_sections: "Write section batches",
+  faq_schema: "Build FAQ/schema",
+  validate_repair: "Validate and repair",
+  content_checkpoint: "Save content checkpoint",
+  images: "Generate/upload images",
+  insert_body_images: "Insert body images",
+  shopify: "Create/update Shopify draft",
+  attach_featured_image: "Attach featured image",
+  local_save: "Save locally"
+};
+
+type PhaseUiStatus = "pending" | "active" | "done" | "skipped" | "failed";
+
+type StepRow = {
+  id: string;
+  label: string;
+  status: PhaseUiStatus;
+  summary?: string;
+  itemDone?: number;
+  itemTotal?: number;
+  index?: number;
+};
 
 function formatDraftElapsed(ms: number): string {
   if (ms < 60000) {
@@ -35,9 +59,58 @@ function buildPhaseStatuses(events: ArticleDraftProgressEvent[]): Record<string,
     const st = (e.state || "").toLowerCase();
     if (st === "done") map[e.phase] = "done";
     else if (st === "skipped") map[e.phase] = "skipped";
+    else if (st === "failed" || st === "error") map[e.phase] = "failed";
     else if (st) map[e.phase] = "active";
   }
   return map;
+}
+
+function stateToStatus(state?: string): PhaseUiStatus {
+  const st = (state || "").toLowerCase();
+  if (st === "done") return "done";
+  if (st === "skipped") return "skipped";
+  if (st === "failed" || st === "error") return "failed";
+  if (st) return "active";
+  return "pending";
+}
+
+function buildDynamicSteps(events: ArticleDraftProgressEvent[]): StepRow[] {
+  const latestByStep = new Map<string, ArticleDraftProgressEvent>();
+  for (const e of events) {
+    if (e.step_key) {
+      latestByStep.set(e.step_key, e);
+    }
+  }
+  if (!latestByStep.size) return [];
+
+  const total = Math.max(
+    0,
+    ...Array.from(latestByStep.values()).map((e) => e.step_total || 0)
+  );
+  const known = Array.from({ length: total || 0 }, (_, i) => i + 1);
+  const byIndex = new Map<number, StepRow>();
+  for (const n of known) {
+    byIndex.set(n, {
+      id: `step-${n}`,
+      label: `Step ${n}`,
+      status: "pending",
+      index: n
+    });
+  }
+
+  for (const [id, e] of latestByStep.entries()) {
+    const index = e.step_index || 999;
+    byIndex.set(index, {
+      id,
+      label: e.step_label || STEP_LABELS[id] || id.replaceAll("_", " "),
+      status: stateToStatus(e.state),
+      summary: e.result_summary,
+      itemDone: e.item_done,
+      itemTotal: e.item_total,
+      index
+    });
+  }
+  return Array.from(byIndex.values()).sort((a, b) => (a.index || 999) - (b.index || 999));
 }
 
 export function ArticleDraftProgressPanel(props: {
@@ -65,6 +138,18 @@ export function ArticleDraftProgressPanel(props: {
   }, [isRunning, runKey]);
 
   const phaseStatuses = useMemo(() => buildPhaseStatuses(events), [events]);
+  const dynamicSteps = useMemo(() => buildDynamicSteps(events), [events]);
+  const displayedSteps = useMemo<StepRow[]>(
+    () =>
+      dynamicSteps.length
+        ? dynamicSteps
+        : PHASE_ORDER.map((phaseId) => ({
+            id: phaseId,
+            label: PHASE_LABELS[phaseId] || phaseId,
+            status: phaseStatuses[phaseId] || "pending"
+          })),
+    [dynamicSteps, phaseStatuses]
+  );
   const latestMessage = events.length ? events[events.length - 1].message : "";
   const imageProgress = useMemo(() => {
     let total: number | undefined;
@@ -99,37 +184,50 @@ export function ArticleDraftProgressPanel(props: {
       </div>
 
       <ul className="mt-4 space-y-2.5">
-        {PHASE_ORDER.map((phaseId) => {
-          const label = PHASE_LABELS[phaseId] || phaseId;
-          const st = phaseStatuses[phaseId] || "pending";
+        {displayedSteps.map((step) => {
+          const st = step.status || "pending";
           return (
-            <li key={phaseId} className="flex items-center gap-3">
+            <li key={step.id} className="flex items-start gap-3">
               <span
-                className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
+                className={`mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
                   st === "done"
                     ? "border-[#8eb89a] bg-[#e8f4ec] text-[#255b38]"
                     : st === "skipped"
                       ? "border-line bg-slate-100 text-slate-400"
+                      : st === "failed"
+                        ? "border-red-200 bg-red-50 text-red-600"
                       : st === "active"
                         ? "border-ocean bg-ocean/10 text-ocean"
                         : "border-line bg-[#f7f9fc] text-slate-300"
                 }`}
                 aria-hidden
               >
-                {st === "done" ? "✓" : st === "skipped" ? "—" : st === "active" ? "●" : ""}
+                {st === "done" ? "✓" : st === "skipped" ? "—" : st === "failed" ? "!" : st === "active" ? "●" : ""}
               </span>
-              <span
-                className={
-                  st === "active"
-                    ? "font-semibold text-ink"
-                    : st === "done"
-                      ? "text-slate-600"
-                      : st === "skipped"
-                        ? "text-slate-400 line-through decoration-slate-300"
-                        : "text-slate-400"
-                }
-              >
-                {label}
+              <span className="min-w-0">
+                <span
+                  className={
+                    st === "active"
+                      ? "font-semibold text-ink"
+                      : st === "done"
+                        ? "text-slate-600"
+                        : st === "skipped"
+                          ? "text-slate-400 line-through decoration-slate-300"
+                          : st === "failed"
+                            ? "font-semibold text-red-600"
+                            : "text-slate-400"
+                  }
+                >
+                  {step.label}
+                </span>
+                {typeof step.itemDone === "number" && typeof step.itemTotal === "number" ? (
+                  <span className="ml-2 text-xs tabular-nums text-slate-400">
+                    {step.itemDone}/{step.itemTotal}
+                  </span>
+                ) : null}
+                {step.summary ? (
+                  <span className="mt-0.5 block text-xs leading-5 text-slate-500">{step.summary}</span>
+                ) : null}
               </span>
             </li>
           );
@@ -143,11 +241,7 @@ export function ArticleDraftProgressPanel(props: {
         </p>
       ) : null}
 
-      <p className="mt-3 text-xs text-slate-500">
-        Content generation is one long AI request; images are generated, encoded to WebP when possible, then uploaded. Shopify
-        steps run after the article JSON is ready. If Shopify omits the image on create, we retry with{" "}
-        <span className="font-medium text-ink">articleUpdate</span> (with short delays).
-      </p>
+      <p className="mt-3 text-xs text-slate-500">Checkpoints are saved as each backend step completes.</p>
     </div>
   );
 }

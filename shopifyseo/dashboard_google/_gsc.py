@@ -955,7 +955,7 @@ def get_search_console_url_detail(
 ) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     site_url = site_url_override or get_service_setting(conn, "search_console_site")
-    if (refresh or not site_url) and not site_url_override:
+    if refresh and not site_url_override:
         sites = get_search_console_sites(conn)
         site_url = preferred_site_url(conn, sites)
     if not site_url:
@@ -1097,7 +1097,7 @@ def get_url_inspection(
 ) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     site_url = site_url_override or get_service_setting(conn, "search_console_site")
-    if (refresh or not site_url) and not site_url_override:
+    if refresh and not site_url_override:
         sites = get_search_console_sites(conn)
         site_url = preferred_site_url(conn, sites)
     if not site_url:

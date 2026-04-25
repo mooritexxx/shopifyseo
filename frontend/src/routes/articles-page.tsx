@@ -137,6 +137,7 @@ export function ArticlesPage() {
   const [draftProgressEvents, setDraftProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
   const [draftRunKey, setDraftRunKey] = useState(0);
   const [draftModalStep, setDraftModalStep] = useState<1 | 2>(1);
+  const [draftResumeRunId, setDraftResumeRunId] = useState("");
 
   const query = useQuery({
     queryKey: ["all-articles"],
@@ -159,11 +160,12 @@ export function ArticlesPage() {
     });
   }, [draftModalOpen, draftModalStep, blogsQuery.data]);
 
-  async function submitDraftFromModal() {
+  async function submitDraftFromModal(resumeRunId = "") {
     setDraftError("");
     setDraftModalStep(2);
     setDraftRunKey((k) => k + 1);
     setDraftProgressEvents([]);
+    if (!resumeRunId) setDraftResumeRunId("");
     setDraftGenerating(true);
     try {
       const keywords = draftForm.keywords
@@ -179,14 +181,19 @@ export function ArticlesPage() {
           topic: draftForm.topic,
           keywords,
           author_name: draftForm.author_name,
-          slug_hint: draftForm.slug.trim()
+          slug_hint: draftForm.slug.trim(),
+          ...(resumeRunId ? { resume_run_id: resumeRunId } : {})
         },
-        (evt) => setDraftProgressEvents((prev) => [...prev, evt])
+        (evt) => {
+          if (evt.run_id) setDraftResumeRunId(evt.run_id);
+          setDraftProgressEvents((prev) => [...prev, evt]);
+        }
       );
       setDraftModalOpen(false);
       setDraftModalStep(1);
       setDraftForm(emptyDraftForm);
       setSlugTouched(false);
+      setDraftResumeRunId("");
       setDraftProgressEvents([]);
       void queryClient.invalidateQueries({ queryKey: ["all-articles"] });
       navigate(
@@ -290,6 +297,7 @@ export function ArticlesPage() {
               setDraftError("");
               setSlugTouched(false);
               setDraftProgressEvents([]);
+              setDraftResumeRunId("");
               setDraftModalStep(1);
               setDraftModalOpen(true);
             }}
@@ -366,6 +374,7 @@ export function ArticlesPage() {
             setDraftModalOpen(open);
             if (!open) {
               setDraftProgressEvents([]);
+              setDraftResumeRunId("");
               setDraftModalStep(1);
             }
           }
@@ -510,6 +519,7 @@ export function ArticlesPage() {
               onClick={() => {
                 setDraftModalOpen(false);
                 setDraftProgressEvents([]);
+                setDraftResumeRunId("");
                 setDraftModalStep(1);
               }}
               disabled={draftGenerating}
@@ -534,16 +544,24 @@ export function ArticlesPage() {
               ) : null}
               <div className="flex flex-wrap justify-end gap-3 pt-2">
                 {!draftGenerating && draftError ? (
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setDraftModalStep(1);
-                      setDraftError("");
-                      setDraftProgressEvents([]);
-                    }}
-                  >
-                    Back to details
-                  </Button>
+                  <>
+                    {draftResumeRunId ? (
+                      <Button onClick={() => void submitDraftFromModal(draftResumeRunId)}>
+                        Retry from checkpoint
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setDraftModalStep(1);
+                        setDraftError("");
+                        setDraftProgressEvents([]);
+                        setDraftResumeRunId("");
+                      }}
+                    >
+                      Back to details
+                    </Button>
+                  </>
                 ) : null}
                 <Button variant="secondary" disabled={draftGenerating} onClick={() => setDraftModalOpen(false)}>
                   {draftGenerating ? "Please wait…" : "Close"}

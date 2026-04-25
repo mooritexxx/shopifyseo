@@ -124,5 +124,5 @@ export function resourceLink(row: CatalogImageSeoRow): { to: string; handleLine:
 
 export function isRowSeoOptimized(row: CatalogImageSeoRow): boolean {
   const f = row.flags;
-  return !f.missing_or_weak_alt && !f.weak_filename && !f.seo_filename_mismatch && !f.not_webp;
+  return !f.missing_or_weak_alt && !f.weak_filename && !f.seo_filename_mismatch && !f.not_webp && !f.bad_dimensions;
 }

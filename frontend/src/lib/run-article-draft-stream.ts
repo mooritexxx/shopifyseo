@@ -4,6 +4,14 @@ export type ArticleDraftProgressEvent = {
   message: string;
   phase?: string;
   state?: string;
+  run_id?: string;
+  step_key?: string;
+  step_label?: string;
+  step_index?: number;
+  step_total?: number;
+  item_done?: number;
+  item_total?: number;
+  result_summary?: string;
   /** Planned image jobs: 1 featured cover + section images */
   images_total?: number;
   /** Successful uploads so far (featured + section images completed) */
@@ -24,6 +32,8 @@ export type ArticleDraftStreamPayload = {
   angle_label?: string;
   /** If set, regenerate an existing article in place (same URL) instead of creating a new draft. */
   regenerate_article_handle?: string;
+  /** If set, resume a persisted draft run from its last checkpoint. */
+  resume_run_id?: string;
 };
 
 /**
@@ -77,6 +87,14 @@ export async function runArticleDraftStream(
             message: data.message,
             phase: typeof data.phase === "string" ? data.phase : undefined,
             state: typeof data.state === "string" ? data.state : undefined,
+            run_id: typeof data.run_id === "string" ? data.run_id : undefined,
+            step_key: typeof data.step_key === "string" ? data.step_key : undefined,
+            step_label: typeof data.step_label === "string" ? data.step_label : undefined,
+            step_index: typeof data.step_index === "number" ? data.step_index : undefined,
+            step_total: typeof data.step_total === "number" ? data.step_total : undefined,
+            item_done: typeof data.item_done === "number" ? data.item_done : undefined,
+            item_total: typeof data.item_total === "number" ? data.item_total : undefined,
+            result_summary: typeof data.result_summary === "string" ? data.result_summary : undefined,
             images_total: typeof data.images_total === "number" ? data.images_total : undefined,
             images_done: typeof data.images_done === "number" ? data.images_done : undefined
           });

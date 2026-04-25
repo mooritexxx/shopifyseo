@@ -115,7 +115,7 @@ export function ImageSeoPage() {
     }
     const f = modalRow.flags;
     const applyFilename = Boolean(f.weak_filename || f.seo_filename_mismatch);
-    const convertWebp = Boolean(f.not_webp);
+    const convertWebp = Boolean(f.not_webp || f.bad_dimensions);
     return {
       applyFilename,
       convertWebp,
@@ -519,7 +519,7 @@ export function ImageSeoPage() {
 
       const f = r.flags;
       const applyFn = Boolean(f.weak_filename || f.seo_filename_mismatch);
-      const convertWebp = Boolean(f.not_webp);
+      const convertWebp = Boolean(f.not_webp || f.bad_dimensions);
 
       try {
         const draft = await postJson(

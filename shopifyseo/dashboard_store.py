@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from datetime import date, datetime
 from urllib.parse import urlparse
 
@@ -448,6 +449,32 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             angle_label TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             UNIQUE(idea_id, blog_handle, article_handle)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS article_draft_runs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'running',
+            current_step TEXT NOT NULL DEFAULT '',
+            last_completed_step TEXT NOT NULL DEFAULT '',
+            request_json TEXT NOT NULL DEFAULT '{}',
+            seo_brief_json TEXT NOT NULL DEFAULT '{}',
+            outline_json TEXT NOT NULL DEFAULT '{}',
+            article_memory_json TEXT NOT NULL DEFAULT '{}',
+            checkpoints_json TEXT NOT NULL DEFAULT '{}',
+            title TEXT NOT NULL DEFAULT '',
+            seo_title TEXT NOT NULL DEFAULT '',
+            seo_description TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            image_payload_json TEXT NOT NULL DEFAULT '{}',
+            shopify_article_id TEXT NOT NULL DEFAULT '',
+            shopify_article_handle TEXT NOT NULL DEFAULT '',
+            validation_summary_json TEXT NOT NULL DEFAULT '{}',
+            error_message TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         )
         """
     )
@@ -1203,7 +1230,13 @@ def _table_for_object_type(object_type: str) -> str:
     }[object_type]
 
 
-def refresh_gsc_signal_data_for_objects(conn: sqlite3.Connection, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
+def refresh_gsc_signal_data_for_objects(
+    conn: sqlite3.Connection,
+    targets: list[tuple[str, str]],
+    *,
+    batch_size: int = 10,
+    sync_query_embeddings: bool = True,
+) -> None:
     ensure_dashboard_schema(conn)
     for i, (object_type, handle) in enumerate(targets, 1):
         if object_type == "blog_article":
@@ -1213,11 +1246,113 @@ def refresh_gsc_signal_data_for_objects(conn: sqlite3.Connection, targets: list[
         if i % batch_size == 0:
             conn.commit()
     conn.commit()
+    if not sync_query_embeddings:
+        return
     try:
         from .embedding_store import sync_embeddings
         sync_embeddings(conn, object_type="gsc_queries")
     except Exception:
         _LOG.warning("GSC embedding sync failed (non-fatal)", exc_info=True)
+
+
+def _json_for_article_draft_run(value: object) -> str:
+    return json.dumps(value if value is not None else {}, ensure_ascii=True)
+
+
+def _decode_article_draft_run_json(raw: object, fallback: object) -> object:
+    if raw in (None, ""):
+        return fallback
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def article_draft_run_to_dict(row: sqlite3.Row | None) -> dict | None:
+    if not row:
+        return None
+    out = dict(row)
+    for key in (
+        "request_json",
+        "seo_brief_json",
+        "outline_json",
+        "article_memory_json",
+        "checkpoints_json",
+        "image_payload_json",
+        "validation_summary_json",
+    ):
+        public_key = key[:-5] if key.endswith("_json") else key
+        out[public_key] = _decode_article_draft_run_json(out.get(key), {})
+    return out
+
+
+def create_article_draft_run(conn: sqlite3.Connection, request_payload: dict) -> str:
+    ensure_dashboard_schema(conn)
+    run_id = uuid.uuid4().hex
+    now_ts = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO article_draft_runs(
+            id, status, request_json, created_at, updated_at
+        ) VALUES(?, 'running', ?, ?, ?)
+        """,
+        (run_id, _json_for_article_draft_run(request_payload), now_ts, now_ts),
+    )
+    conn.commit()
+    return run_id
+
+
+def get_article_draft_run(conn: sqlite3.Connection, run_id: str) -> dict | None:
+    ensure_dashboard_schema(conn)
+    row = conn.execute("SELECT * FROM article_draft_runs WHERE id = ?", (run_id,)).fetchone()
+    return article_draft_run_to_dict(row)
+
+
+def update_article_draft_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> None:
+    if not run_id:
+        return
+    ensure_dashboard_schema(conn)
+    allowed = {
+        "status",
+        "current_step",
+        "last_completed_step",
+        "request_json",
+        "seo_brief_json",
+        "outline_json",
+        "article_memory_json",
+        "checkpoints_json",
+        "title",
+        "seo_title",
+        "seo_description",
+        "body",
+        "image_payload_json",
+        "shopify_article_id",
+        "shopify_article_handle",
+        "validation_summary_json",
+        "error_message",
+    }
+    assignments: list[str] = []
+    values: list[object] = []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        assignments.append(f"{key} = ?")
+        if key.endswith("_json"):
+            values.append(_json_for_article_draft_run(value))
+        else:
+            values.append("" if value is None else value)
+    if not assignments:
+        return
+    assignments.append("updated_at = ?")
+    values.append(int(time.time()))
+    values.append(run_id)
+    conn.execute(
+        f"UPDATE article_draft_runs SET {', '.join(assignments)} WHERE id = ?",
+        values,
+    )
+    conn.commit()
 
 
 def refresh_index_signal_data_for_objects(conn: sqlite3.Connection, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:

@@ -97,9 +97,12 @@ class ArticleGenerateDraftRequest(BaseModel):
     """Optional angle label when generating multiple articles from one idea (e.g. 'listicle', 'how-to')."""
     regenerate_article_handle: str | None = None
     """If set, update this existing Shopify article (same handle/URL) instead of articleCreate."""
+    resume_run_id: str | None = None
+    """If set, resume a persisted article draft run from its last saved checkpoint."""
 
 
 class ArticleGenerateDraftResult(BaseModel):
+    run_id: str = ""
     id: str
     title: str
     handle: str

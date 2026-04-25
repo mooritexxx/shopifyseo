@@ -1,5 +1,6 @@
 """Article draft generation and HTML link utilities."""
 import datetime
+import html as html_module
 import json
 import logging
 import re
@@ -86,6 +87,10 @@ def generate_article_draft(
     primary_target: dict | None = None,
     secondary_targets: list[dict] | None = None,
     idea_serp_context: dict[str, Any] | None = None,
+    idea_linked_keywords: list[dict] | None = None,
+    request_context: dict[str, Any] | None = None,
+    draft_run_id: str = "",
+    resume_run: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Generate a brand-new blog article draft using AI.
@@ -102,12 +107,18 @@ def generate_article_draft(
     from .article_draft_compliance import (
         COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
         MIN_ARTICLE_BODY_HTML_CHARS,
+        append_server_generated_faqpage_jsonld,
         build_compliance_retry_user_message,
+        collect_hrefs,
         collect_tier_related_queries,
+        extract_visible_faq_items,
         length_only_article_compliance_gaps,
         mixed_length_and_serp_compliance_gaps,
+        strip_faqpage_jsonld_blocks,
+        strip_html_for_compliance_search,
         validate_article_draft_compliance,
     )
+    from shopifyseo.dashboard_store import update_article_draft_run
 
     provider = settings["generation_provider"]
     model = settings["generation_model"]
@@ -122,38 +133,76 @@ def generate_article_draft(
     _ship_phrase, _avail_phrase = shipping_cue(_market_code)
     _lang_code = language_region_code(_market_code)
 
+    cluster_meta: dict[str, Any] = {}
+    cluster_kws: list[str] = []
+    target_items: list[dict[str, Any]] = []
+    target_metrics_by_keyword: dict[str, dict[str, Any]] = {}
+    seo_gap_items: list[dict[str, Any]] = []
+    linked_keyword_rows: list[dict[str, Any]] = []
+    for raw_linked in idea_linked_keywords or []:
+        if isinstance(raw_linked, dict):
+            kw = str(raw_linked.get("keyword") or raw_linked.get("query") or "").strip()
+            if kw:
+                linked_keyword_rows.append({**raw_linked, "keyword": kw})
+        else:
+            kw = str(raw_linked or "").strip()
+            if kw:
+                linked_keyword_rows.append({"keyword": kw})
+
+    try:
+        from shopifyseo.dashboard_google import get_service_setting as _get_ss
+
+        target_raw = _get_ss(conn, "target_keywords", "{}")
+        target_data = json.loads(target_raw) if target_raw else {}
+        for item in target_data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            kw = str(item.get("keyword") or "").strip()
+            if not kw:
+                continue
+            target_items.append(item)
+            target_metrics_by_keyword[kw.lower()] = item
+    except Exception:
+        logger.debug("Failed to load target keyword metrics for article draft; proceeding without them")
+
     # Compute SEO keyword gaps from linked cluster (new article = empty content)
     _seo_gap_section = ""
     if linked_cluster_id is not None:
         try:
             from backend.app.services.keyword_clustering import compute_seo_gaps
-            from shopifyseo.dashboard_google import get_service_setting as _get_ss
+
+            cluster_row = conn.execute(
+                """
+                SELECT id, name, primary_keyword, content_brief, dominant_serp_features, content_format_hints
+                FROM clusters WHERE id = ?
+                """,
+                (linked_cluster_id,),
+            ).fetchone()
+            if cluster_row:
+                cluster_meta = {
+                    "id": linked_cluster_id,
+                    "name": cluster_row["name"] if "name" in cluster_row.keys() else cluster_row[1],
+                    "primary_keyword": cluster_row["primary_keyword"] if "primary_keyword" in cluster_row.keys() else cluster_row[2],
+                    "content_brief": cluster_row["content_brief"] if "content_brief" in cluster_row.keys() else cluster_row[3],
+                    "dominant_serp_features": cluster_row["dominant_serp_features"] if "dominant_serp_features" in cluster_row.keys() else "",
+                    "content_format_hints": cluster_row["content_format_hints"] if "content_format_hints" in cluster_row.keys() else "",
+                }
 
             kw_rows = conn.execute(
                 "SELECT keyword FROM cluster_keywords WHERE cluster_id = ?",
                 (linked_cluster_id,),
             ).fetchall()
-            cluster_kws = [r[0] for r in kw_rows]
-
-            pk_row = conn.execute(
-                "SELECT primary_keyword FROM clusters WHERE id = ?",
-                (linked_cluster_id,),
-            ).fetchone()
-            primary_kw = pk_row[0] if pk_row else ""
-
-            target_raw = _get_ss(conn, "target_keywords", "{}")
-            target_data = json.loads(target_raw) if target_raw else {}
-            kw_map: dict[str, dict] = {}
-            for item in target_data.get("items") or []:
-                kw_map[item.get("keyword", "").lower()] = item
+            cluster_kws = [str(r[0]).strip() for r in kw_rows if str(r[0] or "").strip()]
+            primary_kw = str(cluster_meta.get("primary_keyword") or "")
 
             if cluster_kws:
                 gaps = compute_seo_gaps(
-                    cluster_kws, {}, kw_map, "blog_article", primary_kw,
+                    cluster_kws, {}, target_metrics_by_keyword, "blog_article", primary_kw,
                 )
                 if gaps:
+                    seo_gap_items = list(gaps.get("must_consider") or [])
                     mc_lines = []
-                    for mc in gaps["must_consider"]:
+                    for mc in seo_gap_items:
                         mc_lines.append(
                             f"  - \"{mc['keyword']}\" (opportunity: {mc['opportunity']}, ranking: {mc['ranking_status']})"
                         )
@@ -547,9 +596,11 @@ def generate_article_draft(
             + "\n"
         )
 
+    seo_brief_block = ""
     user_msg = (
         f"Write a complete SEO-optimised blog article for {_brand} on the following topic:\n\n"
         f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
         f"{_pre_output_checklist}"
@@ -635,6 +686,7 @@ def generate_article_draft(
     user_outline_msg = (
         f"Plan a long-form SEO blog article for {_brand} on:\n\n"
         f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
         f"{_outline_checklist}"
@@ -653,6 +705,7 @@ def generate_article_draft(
     _shared_grounding = (
         f"Topic and research inputs for {_brand}:\n\n"
         f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
         f"{_authority_link_block}"
@@ -748,9 +801,51 @@ def generate_article_draft(
         },
     }
 
-    def _emit(message: str, *, phase: str, state: str) -> None:
+    def _run_update(**fields: object) -> None:
+        if not draft_run_id:
+            return
+        try:
+            update_article_draft_run(conn, draft_run_id, **fields)
+        except Exception:
+            logger.debug("Failed to persist article draft run update", exc_info=True)
+
+    def _emit(
+        message: str,
+        *,
+        phase: str,
+        state: str,
+        step_key: str = "",
+        step_label: str = "",
+        step_index: int | None = None,
+        step_total: int | None = None,
+        item_done: int | None = None,
+        item_total: int | None = None,
+        result_summary: str = "",
+    ) -> None:
+        if draft_run_id and step_key:
+            fields: dict[str, object] = {"current_step": step_key, "status": "running", "error_message": ""}
+            if state == "done":
+                fields["last_completed_step"] = step_key
+            _run_update(**fields)
         if on_progress:
-            on_progress({"message": message, "phase": phase, "state": state})
+            payload: dict[str, object] = {"message": message, "phase": phase, "state": state}
+            if draft_run_id:
+                payload["run_id"] = draft_run_id
+            if step_key:
+                payload["step_key"] = step_key
+            if step_label:
+                payload["step_label"] = step_label
+            if step_index is not None:
+                payload["step_index"] = step_index
+            if step_total is not None:
+                payload["step_total"] = step_total
+            if item_done is not None:
+                payload["item_done"] = item_done
+            if item_total is not None:
+                payload["item_total"] = item_total
+            if result_summary:
+                payload["result_summary"] = result_summary
+            on_progress(payload)
 
     secondary_urls_for_compliance = [n["url"] for n in secondary_normalized if (n.get("url") or "").strip()]
     primary_kw_for_compliance = (
@@ -759,12 +854,175 @@ def generate_article_draft(
     require_faqpage_ld = bool(_is_faq or _has_serp_paa)
     _tier_queries = collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3)
 
+    def _keyword_texts(raw_keywords: list[str | dict] | None) -> list[str]:
+        out: list[str] = []
+        for raw in raw_keywords or []:
+            if isinstance(raw, dict):
+                k = str(raw.get("keyword") or "").strip()
+            else:
+                k = str(raw or "").strip()
+            if k and k.lower() not in {x.lower() for x in out}:
+                out.append(k)
+        return out
+
+    manual_keyword_texts = _keyword_texts(keywords)
+    idea_supporting_keywords = [
+        str(x).strip()
+        for x in ((idea_serp_context or {}).get("supporting_keywords") or [])
+        if str(x).strip()
+    ]
+    all_signal_keywords: list[str] = []
+    for bucket in (
+        [str((idea_serp_context or {}).get("primary_keyword") or "").strip()],
+        idea_supporting_keywords,
+        manual_keyword_texts,
+        [str(cluster_meta.get("primary_keyword") or "").strip()],
+        cluster_kws,
+        [str(x.get("keyword") or "").strip() for x in linked_keyword_rows],
+        [str(x.get("keyword") or "").strip() for x in seo_gap_items],
+    ):
+        for kw in bucket:
+            if kw and kw.lower() not in {x.lower() for x in all_signal_keywords}:
+                all_signal_keywords.append(kw)
+
+    target_metric_keywords = {
+        kw.lower()
+        for kw in all_signal_keywords
+    }
+    matching_target_metrics = [
+        {
+            "keyword": item.get("keyword") or "",
+            "volume": item.get("volume") or item.get("search_volume") or 0,
+            "difficulty": item.get("difficulty") or item.get("keyword_difficulty") or item.get("kd") or 0,
+            "cpc": item.get("cpc") or 0,
+            "opportunity": item.get("opportunity") or item.get("opportunity_score") or 0,
+            "ranking_status": item.get("ranking_status") or "",
+            "status": item.get("status") or "",
+            "source_endpoint": item.get("source_endpoint") or "",
+            "content_format_hint": item.get("content_format_hint") or item.get("format_hint") or "",
+            "parent_topic": item.get("parent_topic") or "",
+        }
+        for item in target_items
+        if str(item.get("keyword") or "").strip().lower() in target_metric_keywords
+    ][:40]
+
+    required_questions = [
+        str(row.get("question") or "").strip()
+        for row in (_paa_rows if isinstance(_paa_rows, list) else [])
+        if isinstance(row, dict) and str(row.get("question") or "").strip()
+    ][: max(_faq_pair_target, min(len(_paa_rows), 6)) if _has_serp_paa else 0]
+
+    def _top_ranking_page_titles_only(raw_pages: object) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if not isinstance(raw_pages, list):
+            return out
+        for idx, page in enumerate(raw_pages[:10], start=1):
+            if not isinstance(page, dict):
+                continue
+            title = str(page.get("title") or "").strip()
+            if not title:
+                continue
+            out.append({
+                "position": page.get("position") or idx,
+                "title": title,
+            })
+        return out
+
+    seo_brief: dict[str, Any] = {
+        "topic": topic.strip(),
+        "intent": (idea_serp_context or {}).get("content_format_hints") or "",
+        "request": dict(request_context or {}),
+        "manual_target_keywords": manual_keyword_texts,
+        "idea_keywords": {
+            "primary_keyword": str((idea_serp_context or {}).get("primary_keyword") or "").strip(),
+            "supporting_keywords": idea_supporting_keywords,
+            "linked_keywords_json": linked_keyword_rows,
+        },
+        "cluster": {
+            "id": linked_cluster_id,
+            "meta": cluster_meta,
+            "keywords": cluster_kws,
+        },
+        "target_keyword_metrics": matching_target_metrics,
+        "seo_gap_keywords": seo_gap_items,
+        "serp": {
+            "suggested_title": (idea_serp_context or {}).get("suggested_title") or "",
+            "brief": (idea_serp_context or {}).get("brief") or "",
+            "gap_reason": (idea_serp_context or {}).get("gap_reason") or "",
+            "dominant_serp_features": (idea_serp_context or {}).get("dominant_serp_features") or "",
+            "content_format_hints": (idea_serp_context or {}).get("content_format_hints") or "",
+            "audience_questions": _paa_rows if isinstance(_paa_rows, list) else [],
+            "required_faq_questions": required_questions,
+            "related_searches": (idea_serp_context or {}).get("related_searches") or [],
+            "tier_1_3_related_searches": _tier_queries,
+            "top_ranking_pages": _top_ranking_page_titles_only((idea_serp_context or {}).get("top_ranking_pages")),
+            "ai_overview": (idea_serp_context or {}).get("ai_overview") or {},
+        },
+        "internal_links": {
+            "primary": primary_normalized or {},
+            "secondary": secondary_normalized,
+            "approved_targets": link_targets,
+        },
+        "store_references": rag_results,
+        "market": {
+            "brand": _brand,
+            "store_domain": _store_domain,
+            "base_url": _base_url,
+            "country_code": _market_code,
+            "country_name": _market_name,
+            "language": _lang_code,
+            "shipping_phrase": _ship_phrase,
+            "availability_phrase": _avail_phrase,
+        },
+        "required_coverage": {
+            "primary_keyword": primary_kw_for_compliance or _pk_checklist,
+            "keywords": all_signal_keywords[:60],
+            "faq_questions": required_questions,
+            "related_searches": _tier_queries,
+            "primary_link": primary_normalized.get("url") if primary_normalized else "",
+            "secondary_links": secondary_urls_for_compliance,
+            "information_gain": ["comparison table", "buyer checklist", "troubleshooting/decision guidance"],
+            "body_length_min": MIN_ARTICLE_BODY_HTML_CHARS,
+            "body_length_target": _body_aim_chars,
+        },
+    }
+    _run_update(
+        seo_brief_json=seo_brief,
+        current_step="prepare_brief",
+        last_completed_step="prepare_brief",
+    )
+    _emit(
+        "SEO brief prepared from keywords, cluster, SERP, links, store context, and market signals.",
+        phase="content",
+        state="done",
+        step_key="prepare_brief",
+        step_label="Prepare SEO brief",
+        step_index=1,
+        step_total=11,
+        result_summary=(
+            f"Signals: {len(all_signal_keywords)} keywords, {len(required_questions)} FAQ/PAA, "
+            f"{(1 if primary_normalized else 0) + len(secondary_urls_for_compliance)} required links"
+        ),
+    )
+
+    seo_brief_block = (
+        "\n\nCANONICAL SEO BRIEF (source of truth for every draft step):\n"
+        + json.dumps(seo_brief, ensure_ascii=True)[:18000]
+        + "\n"
+    )
+    _grounding_anchor = f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+    if _grounding_anchor:
+        user_msg = user_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
+        user_outline_msg = user_outline_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
+        _shared_grounding = _shared_grounding.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
+
     def _sanitize_body(raw_html: str) -> str:
         out = str(raw_html or "")
         if "<a " in out.lower():
             out = sanitize_article_internal_links(
                 out, path_to_canonical=path_to_canonical, base_url=_base_url
             )
+        out = strip_faqpage_jsonld_blocks(out)
         return out
 
     def _compliance_gaps(body_html: str) -> list[str]:
@@ -775,6 +1033,376 @@ def generate_article_draft(
             primary_keyword_for_body=primary_kw_for_compliance,
             path_to_canonical=path_to_canonical,
             tier1_related_queries=_tier_queries,
+        )
+
+    resume_checkpoints = resume_run.get("checkpoints") if isinstance(resume_run, dict) else {}
+    if not isinstance(resume_checkpoints, dict):
+        resume_checkpoints = {}
+
+    def _norm_loose(text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (text or "").lower())).strip()
+
+    def _article_memory(body_html: str, html_parts: list[str] | None = None) -> dict[str, Any]:
+        visible = strip_html_for_compliance_search(body_html)
+        covered_keywords = [kw for kw in all_signal_keywords if kw and kw.lower() in visible]
+        covered_questions = [q for q in required_questions if _norm_loose(q) and _norm_loose(q) in _norm_loose(visible)]
+        covered_related = [q for q in _tier_queries if _norm_loose(q) and _norm_loose(q) in _norm_loose(visible)]
+        hrefs = collect_hrefs(body_html)
+        faq_items = extract_visible_faq_items(body_html, required_questions=required_questions)
+        summaries: list[str] = []
+        for idx, part in enumerate((html_parts or [])[-8:], start=max(1, len(html_parts or []) - 7)):
+            txt = strip_html_for_compliance_search(part)
+            if txt:
+                summaries.append(f"part {idx}: {txt[:240]}")
+        return {
+            "body_chars": len(body_html or ""),
+            "visible_word_estimate": len(re.findall(r"[a-z0-9']+", visible)),
+            "covered_keywords": covered_keywords,
+            "covered_questions": covered_questions,
+            "covered_related_searches": covered_related,
+            "used_links": hrefs,
+            "faq_candidates": faq_items,
+            "section_summaries": summaries,
+        }
+
+    def _save_memory(body_html: str, html_parts: list[str] | None = None) -> dict[str, Any]:
+        memory = _article_memory(body_html, html_parts)
+        _run_update(article_memory_json=memory)
+        return memory
+
+    def _remaining_requirements(body_html: str) -> dict[str, Any]:
+        memory = _article_memory(body_html)
+        covered_kw = {str(x).lower() for x in (memory.get("covered_keywords") or [])}
+        covered_q = {_norm_loose(str(x)) for x in (memory.get("covered_questions") or [])}
+        covered_rel = {_norm_loose(str(x)) for x in (memory.get("covered_related_searches") or [])}
+        hrefs = collect_hrefs(body_html)
+
+        def _has_url(url: str) -> bool:
+            u = (url or "").strip()
+            if not u:
+                return True
+            path = (urlparse(u).path or "").rstrip("/") or "/"
+            return any(h == u or ((urlparse(h).path or "").rstrip("/") or "/") == path for h in hrefs)
+
+        return {
+            "keywords": [kw for kw in all_signal_keywords if kw.lower() not in covered_kw][:40],
+            "faq_questions": [q for q in required_questions if _norm_loose(q) not in covered_q],
+            "related_searches": [q for q in _tier_queries if _norm_loose(q) not in covered_rel],
+            "primary_link": (
+                primary_normalized.get("url")
+                if primary_normalized and not _has_url(primary_normalized.get("url") or "")
+                else ""
+            ),
+            "secondary_links": [url for url in secondary_urls_for_compliance if not _has_url(url)],
+            "body_chars_remaining_to_target": max(0, _body_aim_chars - len(body_html or "")),
+        }
+
+    def _render_article_jsonld(title: str, seo_description: str) -> str:
+        payload: dict[str, Any] = {
+            "@context": "https://schema.org",
+            "@type": "Article",
+            "headline": title,
+            "description": seo_description,
+            "author": {"@type": "Organization", "name": _brand},
+            "publisher": {"@type": "Organization", "name": _brand},
+            "inLanguage": _lang_code,
+            "datePublished": datetime.date.today().isoformat(),
+        }
+        if _base_url:
+            payload["publisher"]["url"] = _base_url
+        return '<script type="application/ld+json">' + json.dumps(payload, ensure_ascii=False) + "</script>"
+
+    def _ensure_article_jsonld(body_html: str, title: str, seo_description: str) -> str:
+        body = body_html or ""
+        if "application/ld+json" in body.lower() and '"Article"' in body:
+            return body
+        return body.rstrip() + "\n" + _render_article_jsonld(title, seo_description)
+
+    def _link_html(url: str, label: str) -> str:
+        safe_url = html_module.escape(url or "", quote=True)
+        safe_label = html_module.escape(label or url or "related resource")
+        title = html_module.escape(f"{label or 'Related resource'} — {_brand}", quote=True)
+        return f'<a href="{safe_url}" title="{title}">{safe_label}</a>'
+
+    def _ensure_required_links(body_html: str) -> str:
+        body = body_html or ""
+        hrefs = collect_hrefs(body)
+        href_blob = " ".join(hrefs)
+        inserts: list[str] = []
+        if primary_normalized and primary_normalized.get("url"):
+            p_url = primary_normalized["url"]
+            p_path = (urlparse(p_url).path or "").rstrip("/") or "/"
+            has_primary = any(
+                h == p_url or ((urlparse(h).path or "").rstrip("/") or "/") == p_path
+                for h in hrefs
+            )
+            if not has_primary:
+                label = primary_normalized.get("title") or primary_normalized.get("handle") or "main buying guide"
+                para = (
+                    f'<p>For the main product or category context, start with {_link_html(p_url, label)} '
+                    "before comparing options in detail.</p>"
+                )
+                if "</p>" in body.lower():
+                    body = re.sub(r"(?is)</p>", "</p>\n" + para, body, count=1)
+                else:
+                    body = para + body
+                hrefs = collect_hrefs(body)
+                href_blob = " ".join(hrefs)
+        for n in secondary_normalized:
+            u = (n.get("url") or "").strip()
+            if not u or u in href_blob:
+                continue
+            path = (urlparse(u).path or "").rstrip("/") or "/"
+            if any(((urlparse(h).path or "").rstrip("/") or "/") == path for h in hrefs):
+                continue
+            label = n.get("anchor_keyword") or n.get("title") or n.get("handle") or "related option"
+            inserts.append(f"<li>{_link_html(u, label)}</li>")
+        if inserts:
+            body = body.rstrip() + "\n<h2>Related resources for this topic</h2><ul>" + "".join(inserts) + "</ul>"
+        return body
+
+    def _questions_missing_from_body(body_html: str, questions: list[str]) -> list[str]:
+        visible = _norm_loose(strip_html_for_compliance_search(body_html))
+        missing: list[str] = []
+        for q in questions:
+            key = _norm_loose(q)
+            if key and key not in visible:
+                missing.append(q)
+        return missing
+
+    def _append_faq_answers(body_html: str) -> str:
+        missing = _questions_missing_from_body(body_html, required_questions)
+        if not missing:
+            return body_html
+        schema = {
+            "name": "article_draft_faq_repair",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "array",
+                        "minItems": len(missing),
+                        "maxItems": len(missing),
+                        "items": {"type": "string", "minLength": 80, "maxLength": 900},
+                    }
+                },
+                "required": ["answers"],
+                "additionalProperties": False,
+            },
+        }
+        answers: list[str] = []
+        try:
+            out = _call_ai(
+                settings,
+                provider,
+                model,
+                [
+                    {"role": "system", "content": system_section},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Write concise FAQ answers for the exact questions below, using the canonical SEO brief "
+                            "and the article context. Return only JSON. Questions:\n"
+                            + json.dumps(missing, ensure_ascii=True)
+                            + "\n\nCanonical SEO brief:\n"
+                            + json.dumps(seo_brief, ensure_ascii=True)[:12000]
+                        ),
+                    },
+                ],
+                timeout,
+                json_schema=schema,
+                stage="article_draft_faq_repair",
+            )
+            raw_answers = out.get("answers") if isinstance(out, dict) else []
+            answers = [str(x).strip() for x in raw_answers if str(x).strip()]
+        except Exception:
+            logger.warning("FAQ repair AI failed; using deterministic fallback answers", exc_info=True)
+        while len(answers) < len(missing):
+            answers.append(
+                "The best answer depends on your device, preferences, budget, and local availability. "
+                "Use the criteria in this guide to compare options carefully before choosing."
+            )
+        block = "\n<h2>Helpful questions before you choose</h2>"
+        for q, ans in zip(missing, answers):
+            block += f"\n<h3>{html_module.escape(q)}</h3><p>{html_module.escape(ans)}</p>"
+        return (body_html or "").rstrip() + block
+
+    def _append_repair_html(body_html: str, gaps: list[str], title: str) -> str:
+        deficit = max(0, _body_aim_chars - len(body_html or ""))
+        min_len = max(700, min(5000, deficit + 300))
+        schema = {
+            "name": "article_draft_append_repair",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "append_html": {
+                        "type": "string",
+                        "minLength": min_len,
+                        "maxLength": max(2500, min_len + 5000),
+                    }
+                },
+                "required": ["append_html"],
+                "additionalProperties": False,
+            },
+        }
+        out = _call_ai(
+            settings,
+            provider,
+            model,
+            [
+                {"role": "system", "content": system_section},
+                {
+                    "role": "user",
+                    "content": (
+                        "Append only new HTML that fixes these validation gaps. Do not repeat existing sections. "
+                        "Use the canonical SEO brief, the locked article title, and the current article memory. "
+                        "Return JSON with append_html only.\n\n"
+                        f"Title: {title}\n"
+                        f"Gaps: {json.dumps(gaps, ensure_ascii=True)}\n"
+                        f"Current body chars: {len(body_html or '')}\n"
+                        f"Canonical SEO brief:\n{json.dumps(seo_brief, ensure_ascii=True)[:12000]}\n"
+                        f"Article memory:\n{json.dumps(_article_memory(body_html), ensure_ascii=True)[:8000]}\n"
+                    ),
+                },
+            ],
+            timeout,
+            json_schema=schema,
+            stage="article_draft_append_repair",
+        )
+        return (body_html or "").rstrip() + "\n" + str(out.get("append_html") or "")
+
+    def _finalize_and_repair_body(result_local: dict, body_html: str, html_parts: list[str] | None = None) -> tuple[str, dict[str, Any]]:
+        title = str(result_local.get("title") or "")
+        seo_desc = str(result_local.get("seo_description") or "")
+        body = _sanitize_body(body_html)
+        _emit(
+            "Building FAQ/schema from visible article text…",
+            phase="content",
+            state="start",
+            step_key="faq_schema",
+            step_label="Build FAQ/schema",
+            step_index=4,
+            step_total=11,
+        )
+        if not require_faqpage_ld:
+            _emit(
+                "FAQ schema skipped; this draft has no required PAA/FAQ signals.",
+                phase="content",
+                state="skipped",
+                step_key="faq_schema",
+                step_label="Build FAQ/schema",
+                step_index=4,
+                step_total=11,
+            )
+        for attempt in range(3):
+            body = _ensure_required_links(body)
+            if require_faqpage_ld:
+                body = _append_faq_answers(body)
+                body, _faq_items = append_server_generated_faqpage_jsonld(
+                    body,
+                    required_questions=required_questions,
+                )
+                _emit(
+                    "FAQPage schema generated from visible FAQ questions.",
+                    phase="content",
+                    state="done",
+                    step_key="faq_schema",
+                    step_label="Build FAQ/schema",
+                    step_index=4,
+                    step_total=11,
+                    result_summary=f"FAQ {len(_faq_items)}/{max(len(required_questions), len(_faq_items))}",
+                )
+            body = _ensure_article_jsonld(body, title, seo_desc)
+            _emit(
+                "Validating article and applying targeted repairs…",
+                phase="content",
+                state="waiting" if attempt == 0 else "running",
+                step_key="validate_repair",
+                step_label="Validate and repair",
+                step_index=5,
+                step_total=11,
+                result_summary=f"Attempt {attempt + 1}/3 · Body {len(body):,} chars",
+            )
+            gaps = _compliance_gaps(body)
+            if not gaps:
+                memory = _save_memory(body, html_parts)
+                validation = {
+                    "ok": True,
+                    "body_chars": len(body),
+                    "faq_items": len(extract_visible_faq_items(body, required_questions=required_questions)),
+                    "links": len(collect_hrefs(body)),
+                    "covered_keywords": len(memory.get("covered_keywords") or []),
+                    "repairs": attempt,
+                }
+                _run_update(validation_summary_json=validation)
+                _emit(
+                    "Article passed validation after targeted checks.",
+                    phase="content",
+                    state="done",
+                    step_key="validate_repair",
+                    step_label="Validate and repair",
+                    step_index=5,
+                    step_total=11,
+                    result_summary=(
+                        f"Body {len(body):,} chars · FAQ {validation['faq_items']} · "
+                        f"Links {validation['links']} · Repairs {attempt}"
+                    ),
+                )
+                return body, validation
+            if attempt >= 2:
+                break
+            _emit(
+                "Repairing only the missing validation items.",
+                phase="content",
+                state="running",
+                step_key="validate_repair",
+                step_label="Validate and repair",
+                step_index=5,
+                step_total=11,
+                result_summary=f"{len(gaps)} gap{'s' if len(gaps) != 1 else ''} found",
+            )
+            body = _append_repair_html(body, gaps, title)
+            body = _sanitize_body(body)
+        final_gaps = _compliance_gaps(body)
+        if final_gaps:
+            raise RuntimeError(
+                "Article draft failed compliance after targeted repairs: " + " | ".join(final_gaps)
+            )
+        validation = {"ok": True, "body_chars": len(body), "repairs": 3}
+        _run_update(validation_summary_json=validation)
+        return body, validation
+
+    def _persist_content_checkpoint(result_local: dict, body_html: str, validation: dict[str, Any], html_parts: list[str] | None = None) -> None:
+        checkpoints = dict(resume_checkpoints)
+        checkpoints["content"] = {
+            "saved": True,
+            "body_chars": len(body_html or ""),
+            "validation": validation,
+        }
+        if html_parts is not None:
+            checkpoints["html_parts"] = html_parts
+            checkpoints["completed_batches"] = checkpoints.get("completed_batches") or 0
+        _run_update(
+            current_step="content_checkpoint",
+            last_completed_step="content_checkpoint",
+            checkpoints_json=checkpoints,
+            title=str(result_local.get("title") or ""),
+            seo_title=str(result_local.get("seo_title") or ""),
+            seo_description=str(result_local.get("seo_description") or ""),
+            body=body_html or "",
+            validation_summary_json=validation,
+        )
+        _emit(
+            "Passed article content saved before image work.",
+            phase="content",
+            state="done",
+            step_key="content_checkpoint",
+            step_label="Save content checkpoint",
+            step_index=6,
+            step_total=11,
+            result_summary=f"Checkpoint saved · Body {len(body_html or ''):,} chars",
         )
 
     def _single_shot_with_retries() -> tuple[dict, str]:
@@ -792,40 +1420,8 @@ def generate_article_draft(
             raise RuntimeError(str(exc)) from exc
         _emit("Article content received — validating JSON fields…", phase="content", state="done")
         body_local = _sanitize_body(str(res.get("body") or ""))
-        gaps_local = _compliance_gaps(body_local)
-        if gaps_local:
-            messages_local.append({"role": "user", "content": build_compliance_retry_user_message(gaps_local)})
-            _emit("Draft needs compliance fixes — automatic retry…", phase="content", state="waiting")
-            try:
-                res = _call_ai(
-                    settings, provider, model, messages_local, timeout, json_schema=json_schema, stage="article_draft"
-                )
-            except AIProviderRequestError as exc:
-                raise RuntimeError(str(exc)) from exc
-            body_local = _sanitize_body(str(res.get("body") or ""))
-            gaps_local = _compliance_gaps(body_local)
-        if gaps_local and (
-            length_only_article_compliance_gaps(gaps_local) or mixed_length_and_serp_compliance_gaps(gaps_local)
-        ):
-            messages_local.append({"role": "user", "content": build_compliance_retry_user_message(gaps_local)})
-            _emit(
-                "Draft still needs compliance fixes (body length and/or SERP related searches) — one more attempt…",
-                phase="content",
-                state="waiting",
-            )
-            try:
-                res = _call_ai(
-                    settings, provider, model, messages_local, timeout, json_schema=json_schema, stage="article_draft"
-                )
-            except AIProviderRequestError as exc:
-                raise RuntimeError(str(exc)) from exc
-            body_local = _sanitize_body(str(res.get("body") or ""))
-            gaps_local = _compliance_gaps(body_local)
-        if gaps_local:
-            raise RuntimeError(
-                "Article draft failed compliance after automatic retries: " + " | ".join(gaps_local)
-            )
-        _emit("Article content passed compliance checks…", phase="content", state="done")
+        body_local, validation = _finalize_and_repair_body(res, body_local, [body_local])
+        _persist_content_checkpoint(res, body_local, validation, [body_local])
         return res, body_local
 
     def _section_batch_schema(n_items: int, min_len: int) -> dict:
@@ -855,41 +1451,72 @@ def generate_article_draft(
             "authority URL from INTERLINK STRATEGY with natural anchor text in this opening fragment. "
             "Do not include an `<h2>` here — section headings start in later fragments."
         )
-        try:
-            _emit("Generating article outline (phase 1)…", phase="content", state="waiting")
-            outline_messages = [
-                {"role": "system", "content": system_outline},
-                {"role": "user", "content": user_outline_msg},
-            ]
-            outline = _call_ai(
-                settings,
-                provider,
-                model,
-                outline_messages,
-                timeout,
-                json_schema=outline_schema,
-                stage="article_draft_outline",
+        outline: dict[str, Any]
+        resume_outline = resume_run.get("outline") if isinstance(resume_run, dict) else None
+        if isinstance(resume_outline, dict) and resume_outline.get("sections"):
+            outline = dict(resume_outline)
+            _emit(
+                "Using saved outline checkpoint.",
+                phase="content",
+                state="done",
+                step_key="outline",
+                step_label="Generate outline",
+                step_index=2,
+                step_total=11,
+                result_summary=f"{len(outline.get('sections') or [])} sections",
             )
-        except AIProviderRequestError as exc:
-            logger.warning("Article phased outline failed: %s", exc)
-            return None
+        else:
+            try:
+                _emit(
+                    "Generating article outline from canonical SEO brief…",
+                    phase="content",
+                    state="waiting",
+                    step_key="outline",
+                    step_label="Generate outline",
+                    step_index=2,
+                    step_total=11,
+                )
+                outline_messages = [
+                    {"role": "system", "content": system_outline},
+                    {"role": "user", "content": user_outline_msg},
+                ]
+                outline = _call_ai(
+                    settings,
+                    provider,
+                    model,
+                    outline_messages,
+                    timeout,
+                    json_schema=outline_schema,
+                    stage="article_draft_outline",
+                )
+            except AIProviderRequestError as exc:
+                raise RuntimeError(str(exc)) from exc
         sections_raw = outline.get("sections")
         if not isinstance(sections_raw, list) or not (8 <= len(sections_raw) <= 14):
-            logger.warning("Article phased outline had invalid sections count: %r", sections_raw)
-            return None
+            raise RuntimeError("Article outline failed validation: expected 8–14 planned sections.")
         work_items: list[dict[str, str]] = [
             {"kind": "intro", "heading": "", "level": "", "beats": _intro_beats},
         ]
         for sec in sections_raw:
             if not isinstance(sec, dict):
-                return None
+                raise RuntimeError("Article outline failed validation: section item was invalid.")
             heading = str(sec.get("heading") or "").strip()
             level = str(sec.get("level") or "").strip().lower()
             beats = str(sec.get("beats") or "").strip()
             if level not in ("h2", "h3") or not heading or len(beats) < 10:
-                logger.warning("Article phased outline section invalid: %r", sec)
-                return None
+                raise RuntimeError("Article outline failed validation: each section needs a heading, level, and useful beats.")
             work_items.append({"kind": "section", "heading": heading, "level": level, "beats": beats})
+        _run_update(outline_json=outline, last_completed_step="outline", current_step="outline")
+        _emit(
+            "Outline locked and mapped to SEO signals.",
+            phase="content",
+            state="done",
+            step_key="outline",
+            step_label="Generate outline",
+            step_index=2,
+            step_total=11,
+            result_summary=f"{len(sections_raw)} sections · {len(all_signal_keywords)} keywords available",
+        )
 
         n_work = len(work_items)
         min_frag = max(450, min(1400, _body_aim_chars // max(n_work, 6)))
@@ -902,20 +1529,53 @@ def generate_article_draft(
             [{"heading": it.get("heading") or "(intro)", "level": it.get("level") or "", "beats": it.get("beats")} for it in work_items],
             ensure_ascii=True,
         )
-        html_parts: list[str] = []
+        raw_saved_parts = resume_checkpoints.get("html_parts")
+        html_parts: list[str] = [str(x) for x in raw_saved_parts] if isinstance(raw_saved_parts, list) else []
+        completed_batches = int(resume_checkpoints.get("completed_batches") or 0)
+        completed_fragments = min(len(html_parts), completed_batches * batch_size)
+        if completed_fragments < len(html_parts):
+            html_parts = html_parts[:completed_fragments]
+        start_batch = min(max(0, completed_batches), len(batches))
+        if start_batch:
+            _emit(
+                f"Resuming section writing from batch {start_batch + 1}.",
+                phase="content",
+                state="running",
+                step_key="write_sections",
+                step_label="Write section batches",
+                step_index=3,
+                step_total=11,
+                item_done=start_batch,
+                item_total=len(batches),
+                result_summary=f"Loaded {len(html_parts)} saved fragments",
+            )
         n_batches = len(batches)
-        for bi, batch in enumerate(batches):
+        for bi, batch in enumerate(batches[start_batch:], start=start_batch):
             is_last = bi == n_batches - 1
             _emit(
                 f"Writing article HTML — batch {bi + 1} of {n_batches}…",
                 phase="content",
                 state="waiting",
+                step_key="write_sections",
+                step_label="Write section batches",
+                step_index=3,
+                step_total=11,
+                item_done=bi,
+                item_total=n_batches,
+                result_summary=f"Body so far {len(''.join(html_parts)):,} chars",
             )
+            body_so_far = "".join(html_parts)
+            memory = _article_memory(body_so_far, html_parts)
+            remaining = _remaining_requirements(body_so_far)
             frag_lines: list[str] = [
                 _shared_grounding,
                 "\n\n=== Locked outline (Phase 1) ===\n",
                 f"title: {outline_title}\n",
                 f"sections_json: {outline_digest}\n",
+                "\n=== Current article memory ===\n",
+                json.dumps(memory, ensure_ascii=True)[:8000],
+                "\n\n=== Remaining required coverage ===\n",
+                json.dumps(remaining, ensure_ascii=True)[:8000],
                 f"\n=== Batch {bi + 1} of {n_batches} ===\n",
                 f"Return JSON with `html_blocks` array of exactly **{len(batch)}** HTML strings in this order:\n",
             ]
@@ -952,44 +1612,54 @@ def generate_article_draft(
                     stage="article_draft_section",
                 )
             except AIProviderRequestError as exc:
-                logger.warning("Article phased section batch %s failed: %s", bi + 1, exc)
-                return None
+                raise RuntimeError(str(exc)) from exc
             blocks = batch_out.get("html_blocks")
             if not isinstance(blocks, list) or len(blocks) != len(batch):
-                logger.warning("Article phased batch %s html_blocks invalid: %r", bi + 1, blocks)
-                return None
+                raise RuntimeError(f"Article section batch {bi + 1} returned invalid HTML fragments.")
             for k, frag in enumerate(blocks):
                 if not isinstance(frag, str) or not frag.strip():
-                    logger.warning("Article phased batch %s fragment %s empty", bi + 1, k)
-                    return None
+                    raise RuntimeError(f"Article section batch {bi + 1} returned an empty fragment.")
             html_parts.extend(blocks)
+            memory = _save_memory("".join(html_parts), html_parts)
+            checkpoints = dict(resume_checkpoints)
+            checkpoints["html_parts"] = html_parts
+            checkpoints["completed_batches"] = bi + 1
+            checkpoints["section_memory"] = memory
+            _run_update(
+                checkpoints_json=checkpoints,
+                current_step="write_sections",
+                last_completed_step="write_sections" if bi == n_batches - 1 else "outline",
+            )
+            resume_checkpoints.update(checkpoints)
+            _emit(
+                f"Batch {bi + 1} of {n_batches} saved.",
+                phase="content",
+                state="done" if bi == n_batches - 1 else "running",
+                step_key="write_sections",
+                step_label="Write section batches",
+                step_index=3,
+                step_total=11,
+                item_done=bi + 1,
+                item_total=n_batches,
+                result_summary=f"Body {len(''.join(html_parts)):,} chars · {len(memory.get('covered_keywords') or [])} keywords covered",
+            )
         raw_body = "".join(html_parts)
-        body_merged = _sanitize_body(raw_body)
-        gaps_phased = _compliance_gaps(body_merged)
-        if gaps_phased:
-            logger.warning("Phased article assembly failed compliance; falling back to single-pass. Gaps: %s", gaps_phased)
-            return None
-        _emit("Phased article assembly passed compliance checks…", phase="content", state="done")
         meta = {
             "title": outline.get("title"),
             "seo_title": outline.get("seo_title"),
             "seo_description": outline.get("seo_description"),
         }
+        body_merged, validation = _finalize_and_repair_body(meta, raw_body, html_parts)
+        _persist_content_checkpoint(meta, body_merged, validation, html_parts)
         return meta, body_merged
 
     use_phased = bool(settings.get("article_draft_phased", True))
     if use_phased:
         _emit("Using phased generation (outline + HTML batches)…", phase="content", state="start")
         phased_pair = _try_phased()
-        if phased_pair is not None:
-            result, body_out = phased_pair
-        else:
-            _emit(
-                "Phased generation unavailable or did not pass checks — single-pass fallback…",
-                phase="content",
-                state="waiting",
-            )
-            result, body_out = _single_shot_with_retries()
+        if phased_pair is None:
+            raise RuntimeError("Article phased generation did not return a draft.")
+        result, body_out = phased_pair
     else:
         result, body_out = _single_shot_with_retries()
 

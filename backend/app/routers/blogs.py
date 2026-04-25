@@ -28,7 +28,13 @@ from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.content import ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
-from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
+from shopifyseo.dashboard_store import (
+    DB_PATH,
+    create_article_draft_run,
+    get_article_draft_run,
+    refresh_object_structured_seo_data,
+    update_article_draft_run,
+)
 from shopifyseo.shopify_catalog_sync.blogs import sync_article
 from backend.app.services.article_service import (
     get_blog_article_detail,
@@ -64,7 +70,7 @@ from shopifyseo.shopify_catalog_sync import upsert_blog_article_from_admin_creat
 router = APIRouter(prefix="/api", tags=["blogs"])
 
 
-_ProgressFn = Callable[[str, str | None, str | None], None]
+_ProgressFn = Callable[..., None]
 
 
 def _html_contains_img(html: str) -> bool:
@@ -270,10 +276,40 @@ def _run_generate_article_draft(
 
     reg_handle = (payload.regenerate_article_handle or "").strip()
     is_regen = bool(reg_handle)
+    run_id = (payload.resume_run_id or "").strip()
+    resume_run: dict | None = None
+
+    def update_run(**fields: object) -> None:
+        if not run_id:
+            return
+        conn_u = open_db_connection()
+        try:
+            update_article_draft_run(conn_u, run_id, **fields)
+        finally:
+            conn_u.close()
 
     conn = open_db_connection()
     existing_row: sqlite3.Row | None = None
     try:
+        if run_id:
+            resume_run = get_article_draft_run(conn, run_id)
+            if not resume_run:
+                raise RuntimeError("Draft run checkpoint not found")
+            update_article_draft_run(conn, run_id, status="running", error_message="")
+        else:
+            run_id = create_article_draft_run(conn, payload.model_dump())
+            resume_run = get_article_draft_run(conn, run_id)
+        p(
+            "Draft run initialized.",
+            "content",
+            "start",
+            run_id=run_id,
+            step_key="prepare_brief",
+            step_label="Prepare SEO brief",
+            step_index=1,
+            step_total=11,
+        )
+
         if is_regen:
             existing_row = conn.execute(
                 """
@@ -300,6 +336,7 @@ def _run_generate_article_draft(
         primary_target_dict: dict | None = None
         secondary_targets_list: list[dict] = []
         idea_serp_context: dict | None = None
+        idea_linked_keywords: list[dict] = []
         if effective_idea_id is not None:
             idea_row = conn.execute(
                 """
@@ -319,7 +356,8 @@ def _run_generate_article_draft(
                        COALESCE(audience_questions_json, '[]') AS audience_questions_json,
                        COALESCE(top_ranking_pages_json, '[]') AS top_ranking_pages_json,
                        COALESCE(related_searches_json, '[]') AS related_searches_json,
-                       COALESCE(ai_overview_json, '{}') AS ai_overview_json
+                       COALESCE(ai_overview_json, '{}') AS ai_overview_json,
+                       COALESCE(linked_keywords_json, '[]') AS linked_keywords_json
                 FROM article_ideas WHERE id = ?
                 """,
                 (effective_idea_id,),
@@ -342,23 +380,62 @@ def _run_generate_article_draft(
                         secondary_targets_list = parsed_sec
                 except (json.JSONDecodeError, TypeError):
                     secondary_targets_list = []
+                try:
+                    parsed_linked = json.loads(idea_row["linked_keywords_json"] or "[]")
+                    if isinstance(parsed_linked, list):
+                        idea_linked_keywords = [x for x in parsed_linked if isinstance(x, dict)]
+                except (json.JSONDecodeError, TypeError):
+                    idea_linked_keywords = []
                 idea_serp_context = parse_idea_serp_row_from_db(idea_row)
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
 
-        generated = generate_article_draft(
-            conn,
-            topic=payload.topic,
-            keywords=keywords,
-            author_name=payload.author_name,
-            linked_cluster_id=cluster_id,
-            primary_target=primary_target_dict,
-            secondary_targets=secondary_targets_list,
-            idea_serp_context=idea_serp_context,
-            on_progress=on_progress,
-        )
+        stored_body = str((resume_run or {}).get("body") or "")
+        if stored_body and (resume_run or {}).get("title"):
+            generated = {
+                "title": str((resume_run or {}).get("title") or ""),
+                "seo_title": str((resume_run or {}).get("seo_title") or ""),
+                "seo_description": str((resume_run or {}).get("seo_description") or ""),
+                "body": stored_body,
+            }
+            p(
+                "Resuming from saved content checkpoint.",
+                "content",
+                "done",
+                run_id=run_id,
+                step_key="content_checkpoint",
+                step_label="Save content checkpoint",
+                step_index=6,
+                step_total=11,
+                result_summary=f"Body {len(stored_body):,} chars",
+            )
+        else:
+            generated = generate_article_draft(
+                conn,
+                topic=payload.topic,
+                keywords=keywords,
+                author_name=payload.author_name,
+                linked_cluster_id=cluster_id,
+                primary_target=primary_target_dict,
+                secondary_targets=secondary_targets_list,
+                idea_serp_context=idea_serp_context,
+                idea_linked_keywords=idea_linked_keywords,
+                request_context=payload.model_dump(),
+                draft_run_id=run_id,
+                resume_run=resume_run,
+                on_progress=on_progress,
+            )
 
-        p("Starting images: featured cover + per-section body images…", "image", "start")
+        p(
+            "Starting images: featured cover + per-section body images…",
+            "image",
+            "start",
+            run_id=run_id,
+            step_key="images",
+            step_label="Generate/upload images",
+            step_index=7,
+            step_total=11,
+        )
         featured_url, featured_alt, body_images, image_notes = try_prepare_article_images_bundle(
             conn,
             title=generated["title"],
@@ -367,7 +444,37 @@ def _run_generate_article_draft(
             on_step=p,
         )
         for note in image_notes:
-            p(note, "image", "running")
+            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=7, step_total=11)
+        image_failures = [
+            note for note in image_notes
+            if any(token in note.lower() for token in ("failed", "skipp"))
+        ]
+        if not featured_url or image_failures:
+            update_article_draft_run(
+                conn,
+                run_id,
+                image_payload_json={
+                    "featured_url": featured_url or "",
+                    "featured_alt": featured_alt or "",
+                    "body_images": body_images,
+                    "notes": image_notes,
+                },
+                current_step="images",
+            )
+            detail = "; ".join(image_failures[-3:] or image_notes[-3:] or ["Image generation/upload failed"])
+            raise RuntimeError(f"Image generation/upload failed: {detail}")
+        update_article_draft_run(
+            conn,
+            run_id,
+            image_payload_json={
+                "featured_url": featured_url or "",
+                "featured_alt": featured_alt or "",
+                "body_images": body_images,
+                "notes": image_notes,
+            },
+            current_step="images",
+            last_completed_step="images",
+        )
         p(
             f"Featured + {len(body_images)} section image{'s' if len(body_images) != 1 else ''} ready for Shopify."
             if (featured_url and body_images)
@@ -376,24 +483,69 @@ def _run_generate_article_draft(
             else "No images — skipped or failed.",
             "image",
             "done" if featured_url else "skipped",
+            run_id=run_id,
+            step_key="images",
+            step_label="Generate/upload images",
+            step_index=7,
+            step_total=11,
+            result_summary=f"Featured + {len(body_images)} inline image{'s' if len(body_images) != 1 else ''}",
         )
 
         body_html = generated["body"]
         if body_images:
-            p(f"Inserting {len(body_images)} section images into article body HTML…", "body", "start")
+            p(
+                f"Inserting {len(body_images)} section images into article body HTML…",
+                "body",
+                "start",
+                run_id=run_id,
+                step_key="insert_body_images",
+                step_label="Insert body images",
+                step_index=8,
+                step_total=11,
+            )
             body_html = inject_article_body_images(body_html, body_images)
-            p(f"{len(body_images)} section image{'s' if len(body_images) != 1 else ''} injected into body.", "body", "done")
+            update_article_draft_run(conn, run_id, body=body_html, current_step="insert_body_images", last_completed_step="insert_body_images")
+            p(
+                f"{len(body_images)} section image{'s' if len(body_images) != 1 else ''} injected into body.",
+                "body",
+                "done",
+                run_id=run_id,
+                step_key="insert_body_images",
+                step_label="Insert body images",
+                step_index=8,
+                step_total=11,
+                result_summary=f"{len(body_images)} inline image{'s' if len(body_images) != 1 else ''} inserted",
+            )
         else:
-            p("Skipping inline body images (none generated).", "body", "skipped")
+            p(
+                "Skipping inline body images (none generated).",
+                "body",
+                "skipped",
+                run_id=run_id,
+                step_key="insert_body_images",
+                step_label="Insert body images",
+                step_index=8,
+                step_total=11,
+            )
 
         body_html = ensure_link_titles(body_html, conn)
+        update_article_draft_run(conn, run_id, body=body_html)
+    except Exception as exc:
+        if run_id:
+            try:
+                update_article_draft_run(conn, run_id, status="failed", error_message=str(exc))
+            except Exception:
+                pass
+        raise
     finally:
         conn.close()
 
     article: dict
     skip_shopify_upsert = False
-    idea_id_for_persist: int | None = payload.idea_id
+    idea_id_for_persist: int | None = effective_idea_id
     skip_idea_link = False
+    resume_shopify_id = str((resume_run or {}).get("shopify_article_id") or "").strip()
+    resume_shopify_handle = str((resume_run or {}).get("shopify_article_handle") or "").strip()
 
     if is_regen:
         assert existing_row is not None
@@ -413,7 +565,16 @@ def _run_generate_article_draft(
         except Exception:
             pass
 
-        p("Updating article in Shopify…", "shopify", "start")
+        p(
+            "Updating article in Shopify…",
+            "shopify",
+            "start",
+            run_id=run_id,
+            step_key="shopify",
+            step_label="Create/update Shopify draft",
+            step_index=9,
+            step_total=11,
+        )
         try:
             live_update_article(
                 DB_PATH,
@@ -424,6 +585,7 @@ def _run_generate_article_draft(
                 body_html,
             )
         except SystemExit as exc:
+            update_run(status="failed", current_step="shopify", error_message=str(exc) or "Shopify request failed")
             raise RuntimeError(str(exc) or "Shopify request failed") from exc
 
         article = {
@@ -434,8 +596,19 @@ def _run_generate_article_draft(
             "isPublished": bool(existing_row["is_published"]),
             "blog": {"id": str(existing_row["blog_shopify_id"]), "title": blog_title},
         }
+        update_run(current_step="shopify", shopify_article_id=shopify_id, shopify_article_handle=reg_handle)
         created_img_url = ""
         if (featured_url or "").strip().startswith("https://"):
+            p(
+                "Attaching featured image to Shopify article…",
+                "attach",
+                "start",
+                run_id=run_id,
+                step_key="attach_featured_image",
+                step_label="Attach featured image",
+                step_index=10,
+                step_total=11,
+            )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
             )
@@ -453,7 +626,24 @@ def _run_generate_article_draft(
             )
 
         article = _sync_article_body_if_needed(article, body_html, p)
-        p("Article updated in Shopify.", "shopify", "done")
+        update_run(current_step="attach_featured_image", last_completed_step="attach_featured_image")
+        update_run(
+            current_step="shopify",
+            last_completed_step="shopify",
+            shopify_article_id=shopify_id,
+            shopify_article_handle=reg_handle,
+        )
+        p(
+            "Article updated in Shopify.",
+            "shopify",
+            "done",
+            run_id=run_id,
+            step_key="shopify",
+            step_label="Create/update Shopify draft",
+            step_index=9,
+            step_total=11,
+            result_summary=f"Updated {reg_handle}",
+        )
         # live_update_article syncs once; re-sync after optional featured/body fixes.
         sync_article(Path(DB_PATH), shopify_id)
         skip_shopify_upsert = True
@@ -475,34 +665,97 @@ def _run_generate_article_draft(
             ]
             handle = seo_article_slug(generated["title"], keywords=kw_list)
 
-        p("Creating draft article in Shopify…", "shopify", "start")
-        try:
-            result = create_article(
-                blog_id=payload.blog_id,
-                title=generated["title"],
-                body_html=body_html,
-                author_name=payload.author_name or "",
-                handle=handle,
-                summary=generated["seo_description"],
-                tags=None,
-                is_published=False,
-                seo_title=generated["seo_title"],
-                seo_description=generated["seo_description"],
-                image_url=featured_url or "",
-                image_alt=featured_alt or "",
+        if resume_shopify_id:
+            handle = resume_shopify_handle or handle
+            p(
+                "Updating existing Shopify draft from checkpoint…",
+                "shopify",
+                "start",
+                run_id=run_id,
+                step_key="shopify",
+                step_label="Create/update Shopify draft",
+                step_index=9,
+                step_total=11,
             )
-        except SystemExit as exc:
-            raise RuntimeError(str(exc) or "Shopify request failed") from exc
+            try:
+                live_update_article(
+                    DB_PATH,
+                    resume_shopify_id,
+                    generated["title"],
+                    generated["seo_title"],
+                    generated["seo_description"],
+                    body_html,
+                )
+            except SystemExit as exc:
+                update_run(status="failed", current_step="shopify", error_message=str(exc) or "Shopify request failed")
+                raise RuntimeError(str(exc) or "Shopify request failed") from exc
+            article = {
+                "id": resume_shopify_id,
+                "handle": handle,
+                "title": generated["title"],
+                "body": body_html,
+                "isPublished": False,
+                "blog": {"id": payload.blog_id, "title": ""},
+            }
+            update_run(current_step="shopify", shopify_article_id=resume_shopify_id, shopify_article_handle=handle)
+            sync_article(Path(DB_PATH), resume_shopify_id)
+            skip_shopify_upsert = True
+        else:
+            p(
+                "Creating draft article in Shopify…",
+                "shopify",
+                "start",
+                run_id=run_id,
+                step_key="shopify",
+                step_label="Create/update Shopify draft",
+                step_index=9,
+                step_total=11,
+            )
+            try:
+                result = create_article(
+                    blog_id=payload.blog_id,
+                    title=generated["title"],
+                    body_html=body_html,
+                    author_name=payload.author_name or "",
+                    handle=handle,
+                    summary=generated["seo_description"],
+                    tags=None,
+                    is_published=False,
+                    seo_title=generated["seo_title"],
+                    seo_description=generated["seo_description"],
+                    image_url=featured_url or "",
+                    image_alt=featured_alt or "",
+                )
+            except SystemExit as exc:
+                update_run(status="failed", current_step="shopify", error_message=str(exc) or "Shopify request failed")
+                raise RuntimeError(str(exc) or "Shopify request failed") from exc
 
-        errors = result.get("userErrors", [])
-        if errors:
-            raise RuntimeError("; ".join(e["message"] for e in errors))
+            errors = result.get("userErrors", [])
+            if errors:
+                msg = "; ".join(e["message"] for e in errors)
+                update_run(status="failed", current_step="shopify", error_message=msg)
+                raise RuntimeError(msg)
 
-        article = result["article"]
+            article = result["article"]
+            update_run(
+                current_step="shopify",
+                shopify_article_id=article["id"],
+                shopify_article_handle=article["handle"],
+            )
         created_img_url = (
             ((article.get("image") or {}) if isinstance(article.get("image"), dict) else {}).get("url", "").strip()
         )
         if (featured_url or "").strip().startswith("https://") and not created_img_url:
+            p(
+                "Attaching featured image to Shopify article…",
+                "attach",
+                "start",
+                run_id=run_id,
+                step_key="attach_featured_image",
+                step_label="Attach featured image",
+                step_index=10,
+                step_total=11,
+            )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
             )
@@ -511,22 +764,82 @@ def _run_generate_article_draft(
                 "Featured image present on created article." if created_img_url else "No featured image for this draft.",
                 "attach",
                 "done" if created_img_url else "skipped",
+                run_id=run_id,
+                step_key="attach_featured_image",
+                step_label="Attach featured image",
+                step_index=10,
+                step_total=11,
             )
 
         article = _sync_article_body_if_needed(article, body_html, p)
-        p("Draft created in Shopify.", "shopify", "done")
+        update_run(current_step="attach_featured_image", last_completed_step="attach_featured_image")
+        update_run(
+            current_step="shopify",
+            last_completed_step="shopify",
+            shopify_article_id=article["id"],
+            shopify_article_handle=article["handle"],
+        )
+        p(
+            "Draft created in Shopify." if not resume_shopify_id else "Existing Shopify draft updated.",
+            "shopify",
+            "done",
+            run_id=run_id,
+            step_key="shopify",
+            step_label="Create/update Shopify draft",
+            step_index=9,
+            step_total=11,
+            result_summary=f"Handle {article['handle']}",
+        )
 
-    _persist_article_locally(
-        article,
-        payload,
-        generated,
-        p,
-        skip_shopify_upsert=skip_shopify_upsert,
-        idea_id_for_persist=idea_id_for_persist,
-        skip_idea_link=skip_idea_link,
+    p(
+        "Saving article locally and linking the source idea…",
+        "local",
+        "start",
+        run_id=run_id,
+        step_key="local_save",
+        step_label="Save locally",
+        step_index=11,
+        step_total=11,
+    )
+    try:
+        _persist_article_locally(
+            article,
+            payload,
+            generated,
+            p,
+            skip_shopify_upsert=skip_shopify_upsert,
+            idea_id_for_persist=idea_id_for_persist,
+            skip_idea_link=skip_idea_link,
+        )
+    except Exception as exc:
+        update_run(status="failed", current_step="local_save", error_message=str(exc))
+        raise
+    update_run(
+        status="completed",
+        current_step="local_save",
+        last_completed_step="local_save",
+        shopify_article_id=article["id"],
+        shopify_article_handle=article["handle"],
+        title=generated["title"],
+        seo_title=generated["seo_title"],
+        seo_description=generated["seo_description"],
+        body=body_html,
+        error_message="",
+    )
+    p(
+        "Article saved locally and draft run completed.",
+        "local",
+        "done",
+        run_id=run_id,
+        step_key="local_save",
+        step_label="Save locally",
+        step_index=11,
+        step_total=11,
+        result_summary=f"Ready: {article['handle']}",
     )
 
     return ArticleGenerateDraftResult(
+        run_id=run_id,
         id=article["id"],
         title=article["title"],
         handle=article["handle"],
@@ -541,6 +854,18 @@ def _run_generate_article_draft(
 @router.get("/articles", response_model=SuccessResponse[AllArticlesPayload])
 def get_all_articles():
     return success_response(AllArticlesPayload.model_validate(list_all_articles()))
+
+
+@router.get("/articles/draft-runs/{run_id}", response_model=SuccessResponse[dict])
+def get_article_draft_run_detail(run_id: str):
+    conn = open_db_connection()
+    try:
+        run = get_article_draft_run(conn, run_id)
+    finally:
+        conn.close()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft run not found")
+    return success_response(run)
 
 
 @router.get("/articles/{blog_handle}/{article_handle}", response_model=SuccessResponse[ContentDetailPayload])

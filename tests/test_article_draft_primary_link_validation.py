@@ -93,7 +93,7 @@ def test_draft_succeeds_when_primary_link_present(db_conn, monkeypatch):
     assert "disposable-vapes" in result["body"]
 
 
-def test_draft_hard_fails_when_primary_link_missing(db_conn, monkeypatch):
+def test_draft_repairs_when_primary_link_missing(db_conn, monkeypatch):
     primary_target = {
         "type": "collection",
         "handle": "disposable-vapes",
@@ -105,14 +105,14 @@ def test_draft_hard_fails_when_primary_link_missing(db_conn, monkeypatch):
         "_call_ai",
         _fake_call_factory(_long_body_wrong_link()),
     )
-    with pytest.raises(RuntimeError, match="missing required primary authority link"):
-        generate_article_draft(
-            db_conn,
-            topic="Best Disposable Vapes",
-            keywords=["disposable vapes"],
-            primary_target=primary_target,
-            secondary_targets=[],
-        )
+    result = generate_article_draft(
+        db_conn,
+        topic="Best Disposable Vapes",
+        keywords=["disposable vapes"],
+        primary_target=primary_target,
+        secondary_targets=[],
+    )
+    assert 'href="https://example.com/collections/disposable-vapes"' in result["body"]
 
 
 def test_draft_skips_validation_when_no_primary_target(db_conn, monkeypatch):

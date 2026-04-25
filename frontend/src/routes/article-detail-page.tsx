@@ -248,6 +248,7 @@ export function ArticleDetailPage() {
   const [regenProgressEvents, setRegenProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
   const [regenError, setRegenError] = useState("");
   const [regenRunKey, setRegenRunKey] = useState(0);
+  const [regenResumeRunId, setRegenResumeRunId] = useState("");
   const [articleImagePreviewOpen, setArticleImagePreviewOpen] = useState(false);
   const detailQuery = useQuery({
     queryKey: detailQueryKey,
@@ -473,11 +474,12 @@ export function ArticleDetailPage() {
     });
     setRegenError("");
     setRegenProgressEvents([]);
+    setRegenResumeRunId("");
     setRegenerateModalStep(1);
     setRegenerateModalOpen(true);
   }
 
-  async function submitRegenerateDraft() {
+  async function submitRegenerateDraft(resumeRunId = "") {
     const cur = detailQuery.data;
     if (!cur) return;
     const blogId = String((cur.current as Record<string, unknown>).blog_shopify_id ?? "").trim();
@@ -492,6 +494,7 @@ export function ArticleDetailPage() {
     setRegenError("");
     setRegenRunKey((k) => k + 1);
     setRegenProgressEvents([]);
+    if (!resumeRunId) setRegenResumeRunId("");
     setRegenerateModalStep(2);
     setRegenGenerating(true);
     try {
@@ -509,12 +512,17 @@ export function ArticleDetailPage() {
           keywords,
           author_name: regenForm.author_name.trim(),
           slug_hint: articleHandle,
-          regenerate_article_handle: articleHandle
+          regenerate_article_handle: articleHandle,
+          ...(resumeRunId ? { resume_run_id: resumeRunId } : {})
         },
-        (evt) => setRegenProgressEvents((prev) => [...prev, evt])
+        (evt) => {
+          if (evt.run_id) setRegenResumeRunId(evt.run_id);
+          setRegenProgressEvents((prev) => [...prev, evt]);
+        }
       );
       setRegenerateModalOpen(false);
       setRegenerateModalStep(1);
+      setRegenResumeRunId("");
       setRegenProgressEvents([]);
       setToast("Article regenerated — draft engine updated Shopify.");
       void queryClient.invalidateQueries({ queryKey: detailQueryKey });
@@ -902,6 +910,7 @@ export function ArticleDetailPage() {
             setRegenerateModalOpen(open);
             if (!open) {
               setRegenProgressEvents([]);
+              setRegenResumeRunId("");
               setRegenerateModalStep(1);
             }
           }
@@ -948,7 +957,14 @@ export function ArticleDetailPage() {
               </div>
               {regenError ? <p className="text-sm text-red-600">{regenError}</p> : null}
               <div className="flex justify-end gap-2 pt-2">
-                <Button variant="outline" type="button" onClick={() => setRegenerateModalOpen(false)}>
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => {
+                    setRegenerateModalOpen(false);
+                    setRegenResumeRunId("");
+                  }}
+                >
                   Cancel
                 </Button>
                 <Button type="button" onClick={() => void submitRegenerateDraft()} disabled={!regenForm.topic.trim()}>
@@ -964,6 +980,13 @@ export function ArticleDetailPage() {
                 runKey={regenRunKey}
               />
               {regenError ? <p className="text-sm text-red-600">{regenError}</p> : null}
+              {!regenGenerating && regenError && regenResumeRunId ? (
+                <div className="flex justify-end">
+                  <Button type="button" onClick={() => void submitRegenerateDraft(regenResumeRunId)}>
+                    Retry from checkpoint
+                  </Button>
+                </div>
+              ) : null}
             </>
           )}
         </div>

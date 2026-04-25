@@ -375,6 +375,41 @@ def update_collection_featured_image(collection_id: str, image_url: str, image_a
     return result
 
 
+def clear_collection_featured_image(collection_id: str) -> dict:
+    """Remove the current collection featured image before attaching a replacement."""
+    mutation = """
+    mutation ClearCollectionFeaturedImage($input: CollectionInput!) {
+      collectionUpdate(input: $input) {
+        collection {
+          id
+          handle
+          image {
+            id
+            url
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        mutation,
+        {
+            "input": {
+                "id": collection_id,
+                "image": None,
+            }
+        },
+    )
+    result = data["data"]["collectionUpdate"]
+    if result["userErrors"]:
+        raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
+    return result
+
+
 def print_json(data: dict) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=True))
 

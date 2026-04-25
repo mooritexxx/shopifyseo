@@ -245,6 +245,7 @@ export function ImageSeoTableRow({ row, selected, onToggleSelect, onView }: Imag
                 row.flags.weak_filename && "Weak filename",
                 row.flags.seo_filename_mismatch && "SEO filename mismatch",
                 row.flags.not_webp && "Not WebP",
+                row.flags.bad_dimensions && "Not 1000x1000",
               ]
                 .filter(Boolean)
                 .join(", ")}

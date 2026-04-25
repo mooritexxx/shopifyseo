@@ -727,6 +727,7 @@ export const ideaPerformancePayloadSchema = z.object({
 export type IdeaPerformancePayload = z.infer<typeof ideaPerformancePayloadSchema>;
 
 export const articleGenerateDraftResultSchema = z.object({
+  run_id: z.string().default(""),
   id: z.string(),
   title: z.string(),
   handle: z.string(),
@@ -1053,6 +1054,7 @@ const productImageSeoFlagsSchema = z.object({
   /** True when CDN filename differs from template (rename on Optimize); not used for status icon. */
   seo_filename_mismatch: z.boolean().optional().default(false),
   not_webp: z.boolean(),
+  bad_dimensions: z.boolean().optional().default(false),
   is_featured: z.boolean()
 });
 

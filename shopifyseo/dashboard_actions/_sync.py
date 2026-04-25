@@ -74,6 +74,7 @@ from ..exceptions import SyncCancelledError
 SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed"]
 
 SHOPIFY_ACTIVE_SCOPES = frozenset({"shopify", "products", "collections", "pages", "blogs"})
+GSC_SIGNAL_BATCH_SIZE = 10
 
 
 def _is_shopify_progress_state(state: dict[str, Any]) -> bool:
@@ -163,6 +164,25 @@ def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: s
         refresh_structured_seo_data(conn)
     finally:
         conn.close()
+
+
+def _start_gsc_query_embedding_sync(db_path: str) -> None:
+    """Refresh GSC-query embeddings after visible sync completion."""
+
+    def _worker() -> None:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = _db_connect_for_actions(db_path)
+            from ..embedding_store import sync_embeddings
+
+            sync_embeddings(conn, object_type="gsc_queries")
+        except Exception:
+            logger.warning("Background GSC query embedding sync failed", exc_info=True)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -> None:
@@ -510,6 +530,24 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
     }
     try:
         touched_targets: list[tuple[str, str]] = []
+        pending_signal_targets: list[tuple[str, str]] = []
+
+        def _flush_gsc_signal_targets(*, final: bool = False) -> None:
+            if not pending_signal_targets:
+                return
+            if final:
+                _sync_current("Search Console: finalizing catalog rows")
+            else:
+                _sync_current("Search Console: updating catalog rows")
+            batch = list(pending_signal_targets)
+            pending_signal_targets.clear()
+            refresh_gsc_signal_data_for_objects(
+                conn,
+                batch,
+                batch_size=GSC_SIGNAL_BATCH_SIZE,
+                sync_query_embeddings=False,
+            )
+
         summary_payload = dg.get_search_console_summary_cached(conn, refresh=True)
         summary["summary_pages"] = len(summary_payload.get("pages", []))
         summary["summary_queries"] = len(summary_payload.get("queries", []))
@@ -598,11 +636,15 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
                     summary["errors"] += 1
                     SYNC_STATE["gsc_errors"] = summary["errors"]
                     touched_targets.append((kind, handle))
+                pending_signal_targets.append((kind, handle))
+                if len(pending_signal_targets) >= GSC_SIGNAL_BATCH_SIZE:
+                    _flush_gsc_signal_targets()
                 with progress_lock:
                     SYNC_STATE["gsc_progress_done"] = summary["refreshed"] + summary["errors"]
         _raise_if_sync_cancelled()
+        _flush_gsc_signal_targets(final=True)
         if touched_targets:
-            refresh_gsc_signal_data_for_objects(conn, touched_targets)
+            _start_gsc_query_embedding_sync(db_path)
     finally:
         try:
             dg.delete_search_console_overview_timeseries_only(conn)

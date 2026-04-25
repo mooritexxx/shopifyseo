@@ -25,7 +25,11 @@ from shopifyseo.product_image_seo import (
     product_image_seo_suggested_filename,
     stable_seo_filename_suffix,
 )
-from shopifyseo.shopify_admin import update_collection_featured_image, upload_image_bytes_and_get_url
+from shopifyseo.shopify_admin import (
+    clear_collection_featured_image,
+    update_collection_featured_image,
+    upload_image_bytes_and_get_url,
+)
 from shopifyseo.shopify_catalog_sync import sync_collection, sync_product
 from shopifyseo.shopify_image_cache import (
     cache_product_image_bytes,
@@ -151,10 +155,13 @@ def _image_upload_output(
     """
     inferred = infer_image_format_from_bytes(raw)
     source_is_webp = inferred is not None and inferred[0] == ".webp"
+    source_dims = _image_bytes_dimensions(raw)
+    source_is_product_square = source_dims == (1000, 1000)
     filename_only_webp = (
         apply_fn
         and not convert_webp
         and source_is_webp
+        and source_is_product_square
     )
     if filename_only_webp:
         return raw, ".webp", "image/webp", None, True
@@ -166,6 +173,20 @@ def _image_upload_output(
         convert_webp_flag=effective_convert_webp,
     )
     return out_bytes, out_ext, out_mime, err, False
+
+
+def _image_bytes_dimensions(raw: bytes) -> tuple[int, int] | None:
+    if not raw:
+        return None
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(raw)) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        return None
 
 
 def _collection_featured_seo_suffix_seed(collection_shopify_id: str) -> str:
@@ -847,7 +868,18 @@ def _optimize_collection_image_impl(
         out_mime,
         alt=final_alt,
     )
-    details = update_collection_featured_image(collection_shopify_id, new_url, final_alt)
+    clear_collection_featured_image(collection_shopify_id)
+    try:
+        details = update_collection_featured_image(collection_shopify_id, new_url, final_alt)
+    except Exception:
+        try:
+            update_collection_featured_image(collection_shopify_id, url, current_alt)
+        except Exception:
+            logger.exception(
+                "Failed to restore collection image after replacement error for %s",
+                collection_shopify_id,
+            )
+        raise
     sync_collection(Path(DB_PATH), collection_shopify_id)
 
     if new_url and out_bytes:

@@ -260,6 +260,13 @@ def _catalog_image_row(
     weak_fn = is_weak_image_filename(url)
     seo_filename_mismatch = bool(current_fn) and current_fn.lower() not in acceptable_names
     is_product = resource_type == "product"
+    bad_product_dimensions = (
+        is_product
+        and optimize_supported
+        and image_width is not None
+        and image_height is not None
+        and (image_width != 1000 or image_height != 1000)
+    )
     fmt = image_format_label_from_url(url)
     if not fmt:
         fmt = image_format_label_from_mime((cached_mime or "").strip()) if (cached_mime or "").strip() else ""
@@ -293,6 +300,7 @@ def _catalog_image_row(
             "weak_filename": weak_fn,
             "seo_filename_mismatch": seo_filename_mismatch,
             "not_webp": not is_probably_webp_url(url),
+            "bad_dimensions": bad_product_dimensions,
             "is_featured": is_featured,
         },
     }
@@ -310,10 +318,11 @@ def _passes_filters(
     weak_fn = flags["weak_filename"]
     not_webp = flags.get("not_webp", False)
     seo_fn_mismatch = bool(flags.get("seo_filename_mismatch"))
+    bad_dimensions = bool(flags.get("bad_dimensions"))
     filename_issue = weak_fn or seo_fn_mismatch
     # status filter must match summary counts + UI status column.
 
-    not_seo_optimized = miss_alt or weak_fn or seo_fn_mismatch or not_webp
+    not_seo_optimized = miss_alt or weak_fn or seo_fn_mismatch or not_webp or bad_dimensions
     if status == "optimized" and not_seo_optimized:
         return False
     if status == "not_optimized" and not not_seo_optimized:
@@ -766,7 +775,12 @@ def _list_catalog_image_seo_rows_impl(
     for it in items:
         f = it.get("flags") or {}
         filename_issue = bool(f.get("weak_filename")) or bool(f.get("seo_filename_mismatch"))
-        if not f.get("missing_or_weak_alt") and not filename_issue and not f.get("not_webp"):
+        if (
+            not f.get("missing_or_weak_alt")
+            and not filename_issue
+            and not f.get("not_webp")
+            and not f.get("bad_dimensions")
+        ):
             summary["optimized"] += 1
         if f.get("missing_or_weak_alt"):
             summary["missing_alt"] += 1

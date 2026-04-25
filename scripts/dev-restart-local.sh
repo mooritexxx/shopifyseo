@@ -7,6 +7,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+set +e
+python3 - <<'PY'
+import socket
+import sys
+
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", 0))
+except PermissionError:
+    sys.exit(2)
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+bind_status=$?
+set -e
+if [[ "$bind_status" == "2" ]]; then
+  echo "This shell is not allowed to bind localhost ports, so it cannot restart uvicorn safely."
+  echo "Run this script from a normal Terminal session, or grant this agent local-network/server permissions."
+  exit 1
+fi
+
 if lsof -ti:8000 -sTCP:LISTEN >/dev/null 2>&1; then
   kill -9 $(lsof -ti:8000 -sTCP:LISTEN) 2>/dev/null || true
   sleep 1

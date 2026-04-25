@@ -305,6 +305,7 @@ export function IdeaDetailPage() {
   const [draftProgressEvents, setDraftProgressEvents] = useState<ArticleDraftProgressEvent[]>([]);
   const [draftRunKey, setDraftRunKey] = useState(0);
   const [draftModalStep, setDraftModalStep] = useState<1 | 2>(1);
+  const [draftResumeRunId, setDraftResumeRunId] = useState("");
   const [serpRefreshBanner, setSerpRefreshBanner] = useState<
     null | { tone: "ok" | "err"; text: string }
   >(null);
@@ -333,6 +334,7 @@ export function IdeaDetailPage() {
     if (!idea) return;
     authorFieldTouchedRef.current = false;
     setDraftProgressEvents([]);
+    setDraftResumeRunId("");
     setDraftModalStep(1);
     const keywords = [idea.primary_keyword, ...idea.supporting_keywords]
       .filter(Boolean)
@@ -373,12 +375,13 @@ export function IdeaDetailPage() {
     });
   }, [draftModalOpen, draftModalStep, blogsQuery.data]);
 
-  async function submitDraft() {
+  async function submitDraft(resumeRunId = "") {
     if (!idea) return;
     setDraftError("");
     setDraftModalStep(2);
     setDraftRunKey((k) => k + 1);
     setDraftProgressEvents([]);
+    if (!resumeRunId) setDraftResumeRunId("");
     setDraftGenerating(true);
     try {
       const keywords = draftForm.keywords
@@ -394,13 +397,18 @@ export function IdeaDetailPage() {
           slug_hint: draftForm.slug.trim(),
           idea_id: idea.id,
           angle_label: draftForm.angle_label.trim(),
+          ...(resumeRunId ? { resume_run_id: resumeRunId } : {})
         },
-        (evt) => setDraftProgressEvents((prev) => [...prev, evt]),
+        (evt) => {
+          if (evt.run_id) setDraftResumeRunId(evt.run_id);
+          setDraftProgressEvents((prev) => [...prev, evt]);
+        },
       );
       setDraftModalOpen(false);
       setDraftModalStep(1);
       setDraftForm(emptyDraftForm);
       setSlugTouched(false);
+      setDraftResumeRunId("");
       setDraftProgressEvents([]);
       void queryClient.invalidateQueries({ queryKey: ["all-articles"] });
       void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
@@ -1067,6 +1075,7 @@ export function IdeaDetailPage() {
             setDraftModalOpen(open);
             if (!open) {
               setDraftProgressEvents([]);
+              setDraftResumeRunId("");
               setDraftModalStep(1);
             }
           }
@@ -1232,6 +1241,7 @@ export function IdeaDetailPage() {
                   onClick={() => {
                     setDraftModalOpen(false);
                     setDraftProgressEvents([]);
+                    setDraftResumeRunId("");
                     setDraftModalStep(1);
                   }}
                   disabled={draftGenerating}
@@ -1261,16 +1271,24 @@ export function IdeaDetailPage() {
               ) : null}
               <div className="flex flex-wrap justify-end gap-3 pt-2">
                 {!draftGenerating && draftError ? (
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setDraftModalStep(1);
-                      setDraftError("");
-                      setDraftProgressEvents([]);
-                    }}
-                  >
-                    Back to details
-                  </Button>
+                  <>
+                    {draftResumeRunId ? (
+                      <Button onClick={() => void submitDraft(draftResumeRunId)}>
+                        Retry from checkpoint
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setDraftModalStep(1);
+                        setDraftError("");
+                        setDraftProgressEvents([]);
+                        setDraftResumeRunId("");
+                      }}
+                    >
+                      Back to details
+                    </Button>
+                  </>
                 ) : null}
                 <Button
                   variant="secondary"

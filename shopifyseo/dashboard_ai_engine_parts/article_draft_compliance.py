@@ -126,6 +126,17 @@ def _iter_ld_json_script_inner_html(body_html: str) -> list[str]:
     return out
 
 
+def strip_faqpage_jsonld_blocks(body_html: str) -> str:
+    """Remove FAQPage JSON-LD scripts while keeping other JSON-LD, such as Article schema."""
+    def _repl(match: re.Match) -> str:
+        raw = match.group(0) or ""
+        if "FAQPage" in raw:
+            return ""
+        return raw
+
+    return _SCRIPT_RE.sub(_repl, body_html or "")
+
+
 def _types_of(node: dict) -> set[str]:
     raw = node.get("@type")
     if isinstance(raw, str):
@@ -247,6 +258,81 @@ def extract_h2_h4_heading_plain_texts(body_html: str) -> list[str]:
         if inner:
             out.append(inner)
     return out
+
+
+def extract_visible_faq_items(body_html: str, *, required_questions: list[str] | None = None) -> list[dict[str, str]]:
+    """Extract visible FAQ-style H3 questions and nearby answer text from the article body."""
+    html = body_html or ""
+    required_keys = {
+        _normalize_faq_match_key(q)[1]
+        for q in (required_questions or [])
+        if _normalize_faq_match_key(q)[1]
+    }
+    items: list[dict[str, str]] = []
+    h3_re = re.compile(r"(?is)<h3\b[^>]*>(.*?)</h3\s*>")
+    matches = list(h3_re.finditer(html))
+    for i, m in enumerate(matches):
+        q_html = m.group(1) or ""
+        q = html_module.unescape(_TAG_RE.sub(" ", q_html))
+        q = re.sub(r"\s+", " ", q).strip()
+        if not q:
+            continue
+        _strict, loose = _normalize_faq_match_key(q)
+        looks_like_question = "?" in q or loose in required_keys
+        if not looks_like_question:
+            continue
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(html)
+        next_h2 = re.search(r"(?is)<h2\b", html[start:end])
+        if next_h2:
+            end = start + next_h2.start()
+        answer_html = _SCRIPT_RE.sub(" ", html[start:end])
+        answer = html_module.unescape(_TAG_RE.sub(" ", answer_html))
+        answer = re.sub(r"\s+", " ", answer).strip()
+        if not answer:
+            continue
+        if len(answer) > 700:
+            answer = answer[:697].rstrip() + "..."
+        items.append({"question": q, "answer": answer})
+    return items
+
+
+def render_faqpage_jsonld(items: list[dict[str, str]]) -> str:
+    """Render FAQPage JSON-LD from visible FAQ items."""
+    usable = [
+        {
+            "@type": "Question",
+            "name": str(item.get("question") or "").strip(),
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": str(item.get("answer") or "").strip(),
+            },
+        }
+        for item in items
+        if str(item.get("question") or "").strip() and str(item.get("answer") or "").strip()
+    ]
+    if not usable:
+        return ""
+    payload = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": usable,
+    }
+    return '<script type="application/ld+json">' + json.dumps(payload, ensure_ascii=False) + "</script>"
+
+
+def append_server_generated_faqpage_jsonld(
+    body_html: str,
+    *,
+    required_questions: list[str] | None = None,
+) -> tuple[str, list[dict[str, str]]]:
+    """Replace FAQPage JSON-LD with schema generated from visible FAQ text."""
+    body = strip_faqpage_jsonld_blocks(body_html or "")
+    items = extract_visible_faq_items(body, required_questions=required_questions)
+    script = render_faqpage_jsonld(items)
+    if script:
+        body = body.rstrip() + "\n" + script
+    return body, items
 
 
 def _headings_match_blobs(body_html: str) -> tuple[str, str]:

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Database, RefreshCw, CheckCircle2, AlertTriangle, Key } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 
 import { getJson, postJson } from "../lib/api";
@@ -52,24 +52,44 @@ function CoverageBadge({ pct }: { pct: number }) {
   return <Badge variant="outline">0%</Badge>;
 }
 
+function typeLabel(type: string) {
+  return TYPE_LABELS[type] ?? type.replace(/_/g, " ");
+}
+
+function embeddingProgressMessage(status: EmbeddingStatus) {
+  const sync = status.sync;
+  const prefix = sync.current_type ? `${typeLabel(sync.current_type)} ${sync.type_index}/${sync.type_total}` : "Embeddings";
+  const batch =
+    sync.batch_total > 0
+      ? ` · batch ${sync.batch_done}/${sync.batch_total}`
+      : "";
+  const queued = sync.queued > 0 ? ` · ${sync.queued.toLocaleString()} queued` : "";
+  const counts = `${sync.embedded.toLocaleString()} embedded · ${sync.skipped.toLocaleString()} skipped`;
+  return `${sync.message || prefix}${batch}${queued} · ${counts}`;
+}
+
 export default function EmbeddingsPage() {
   const queryClient = useQueryClient();
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
+  const [watchRefresh, setWatchRefresh] = useState(false);
+  const wasRunningRef = useRef(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["embedding-status"],
     staleTime: 30_000,
-    refetchInterval: 30_000,
+    refetchInterval: watchRefresh ? 1000 : 30_000,
     queryFn: () => getJson("/api/embeddings/status", embeddingStatusSchema),
   });
 
   const refreshMutation = useMutation({
     mutationFn: () => postJson("/api/embeddings/refresh", z.object({ status: z.string(), message: z.string() })),
     onSuccess: () => {
-      setToast({ message: "Embedding refresh started in background", variant: "success" });
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["embedding-status"] }), 5000);
+      setWatchRefresh(true);
+      setToast({ message: "Embedding refresh started", variant: "info" });
+      void queryClient.invalidateQueries({ queryKey: ["embedding-status"] });
     },
     onError: (err) => {
+      setWatchRefresh(false);
       setToast({ message: `Refresh failed: ${err.message}`, variant: "error" });
     },
   });
@@ -103,6 +123,29 @@ export default function EmbeddingsPage() {
   }
 
   const status = data as EmbeddingStatus;
+  const sync = status.sync;
+  const refreshRunning = sync.running || refreshMutation.isPending;
+
+  useEffect(() => {
+    if (sync.running) {
+      wasRunningRef.current = true;
+      setWatchRefresh(true);
+      return;
+    }
+    if (wasRunningRef.current || (watchRefresh && sync.finished_at && sync.stage !== "idle")) {
+      wasRunningRef.current = false;
+      setWatchRefresh(false);
+      void queryClient.invalidateQueries({ queryKey: ["embedding-status"] });
+      if (sync.stage === "error" || sync.last_error) {
+        setToast({ message: sync.last_error || "Embedding refresh failed", variant: "error" });
+      } else {
+        setToast({
+          message: `Embedding refresh complete: ${sync.embedded.toLocaleString()} embedded, ${sync.skipped.toLocaleString()} skipped`,
+          variant: "success",
+        });
+      }
+    }
+  }, [queryClient, sync.embedded, sync.finished_at, sync.last_error, sync.running, sync.skipped, sync.stage, watchRefresh]);
 
   return (
     <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
@@ -116,10 +159,10 @@ export default function EmbeddingsPage() {
           variant="ocean"
           size="sm"
           onClick={() => refreshMutation.mutate()}
-          disabled={refreshMutation.isPending}
+          disabled={refreshRunning}
         >
-          <RefreshCw className={`h-4 w-4 ${refreshMutation.isPending ? "animate-spin" : ""}`} />
-          {refreshMutation.isPending ? "Starting..." : "Refresh All"}
+          <RefreshCw className={`h-4 w-4 ${refreshRunning ? "animate-spin" : ""}`} />
+          {refreshRunning ? "Refreshing..." : "Refresh All"}
         </Button>
       </div>
 
@@ -266,6 +309,15 @@ export default function EmbeddingsPage() {
       </Card>
 
       {/* Toast */}
+      {sync.running ? (
+        <Toast
+          variant="info"
+          duration={0}
+          customIcon={<RefreshCw className="h-4 w-4 animate-spin" />}
+        >
+          {embeddingProgressMessage(status)}
+        </Toast>
+      ) : null}
       {toast && (
         <Toast variant={toast.variant} onClose={() => setToast(null)}>
           {toast.message}

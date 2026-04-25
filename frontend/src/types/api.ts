@@ -1035,6 +1035,24 @@ export const embeddingTypeStatusSchema = z.object({
   model_versions: z.string(),
 });
 
+export const embeddingSyncStatusSchema = z.object({
+  running: z.boolean().default(false),
+  stage: z.string().default("idle"),
+  current_type: z.string().default(""),
+  type_index: z.number().default(0),
+  type_total: z.number().default(0),
+  embedded: z.number().default(0),
+  skipped: z.number().default(0),
+  pruned: z.number().default(0),
+  queued: z.number().default(0),
+  batch_done: z.number().default(0),
+  batch_total: z.number().default(0),
+  message: z.string().default(""),
+  started_at: z.number().nullable().optional(),
+  finished_at: z.number().nullable().optional(),
+  last_error: z.string().default(""),
+});
+
 export const embeddingStatusSchema = z.object({
   model: z.string(),
   dimensions: z.number(),
@@ -1043,6 +1061,7 @@ export const embeddingStatusSchema = z.object({
   last_updated: z.string().nullable(),
   api_key_configured: z.boolean(),
   types: z.array(embeddingTypeStatusSchema),
+  sync: embeddingSyncStatusSchema.optional().default({}),
 });
 
 export type EmbeddingStatus = z.infer<typeof embeddingStatusSchema>;

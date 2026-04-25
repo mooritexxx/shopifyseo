@@ -59,6 +59,34 @@ _PRODUCT_LABEL_COLS = (
 )
 
 _sync_lock = threading.Lock()
+_progress_lock = threading.Lock()
+_SYNC_PROGRESS: dict[str, Any] = {
+    "running": False,
+    "stage": "idle",
+    "current_type": "",
+    "type_index": 0,
+    "type_total": 0,
+    "embedded": 0,
+    "skipped": 0,
+    "pruned": 0,
+    "queued": 0,
+    "batch_done": 0,
+    "batch_total": 0,
+    "message": "",
+    "started_at": None,
+    "finished_at": None,
+    "last_error": "",
+}
+
+
+def _set_sync_progress(**updates: Any) -> None:
+    with _progress_lock:
+        _SYNC_PROGRESS.update(updates)
+
+
+def embedding_sync_progress() -> dict[str, Any]:
+    with _progress_lock:
+        return dict(_SYNC_PROGRESS)
 
 
 # ---------------------------------------------------------------------------
@@ -671,12 +699,41 @@ def sync_embeddings(
 ) -> dict:
     """Embed changed/new rows for the given type (or all types). Thread-safe via _sync_lock."""
     if not _sync_lock.acquire(blocking=False):
+        _set_sync_progress(
+            running=True,
+            message="Embedding sync already running",
+            last_error="",
+        )
         return {"skipped": True, "reason": "sync_in_progress"}
 
     try:
+        started_at = time.time()
+        _set_sync_progress(
+            running=True,
+            stage="starting",
+            current_type="",
+            type_index=0,
+            type_total=1 if object_type else len(EMBEDDABLE_TYPES),
+            embedded=0,
+            skipped=0,
+            pruned=0,
+            queued=0,
+            batch_done=0,
+            batch_total=0,
+            message="Starting embedding sync",
+            started_at=started_at,
+            finished_at=None,
+            last_error="",
+        )
         api_key = _get_gemini_api_key(conn)
         if not api_key:
             logger.warning("gemini_api_key not set — skipping embedding sync")
+            _set_sync_progress(
+                running=False,
+                stage="complete",
+                message="Embedding sync skipped: Gemini API key is missing",
+                finished_at=time.time(),
+            )
             return {"embedded": 0, "skipped": 0, "pruned": 0, "reason": "no_api_key"}
 
         types = [object_type] if object_type else list(EMBEDDABLE_TYPES)
@@ -684,9 +741,20 @@ def sync_embeddings(
         total_skipped = 0
         total_pruned = 0
 
-        for t in types:
+        for type_index, t in enumerate(types, start=1):
+            _set_sync_progress(
+                stage="scanning",
+                current_type=t,
+                type_index=type_index,
+                type_total=len(types),
+                queued=0,
+                batch_done=0,
+                batch_total=0,
+                message=f"Scanning {t.replace('_', ' ')}",
+            )
             pruned = prune_stale_embeddings(conn, t)
             total_pruned += pruned
+            _set_sync_progress(pruned=total_pruned)
 
             existing = {}
             for r in conn.execute(
@@ -720,14 +788,35 @@ def sync_embeddings(
                     prev = existing.get((handle, ci))
                     if prev and prev[0] == h and prev[1] == EMBEDDING_MODEL:
                         total_skipped += 1
+                        _set_sync_progress(skipped=total_skipped)
                         continue
                     texts_to_embed.append((handle, chunk_text, ci))
+            _set_sync_progress(
+                queued=len(texts_to_embed),
+                batch_total=(len(texts_to_embed) + BATCH_SIZE - 1) // BATCH_SIZE if texts_to_embed else 0,
+                message=(
+                    f"{t.replace('_', ' ')} is already current"
+                    if not texts_to_embed
+                    else f"Embedding {len(texts_to_embed):,} {t.replace('_', ' ')} chunks"
+                ),
+            )
 
             if not texts_to_embed:
                 continue
 
             for batch_start in range(0, len(texts_to_embed), BATCH_SIZE):
                 batch = texts_to_embed[batch_start : batch_start + BATCH_SIZE]
+                batch_number = batch_start // BATCH_SIZE + 1
+                batch_total = (len(texts_to_embed) + BATCH_SIZE - 1) // BATCH_SIZE
+                _set_sync_progress(
+                    stage="embedding",
+                    batch_done=batch_number - 1,
+                    batch_total=batch_total,
+                    message=(
+                        f"Embedding {t.replace('_', ' ')} batch "
+                        f"{batch_number}/{batch_total}"
+                    ),
+                )
                 batch_texts = [item[1] for item in batch]
                 embeddings: list[list[float]] | None = None
                 last_exc: BaseException | None = None
@@ -763,6 +852,10 @@ def sync_embeddings(
                         batch_start,
                         last_exc,
                     )
+                    _set_sync_progress(
+                        last_error=str(last_exc or "Embedding batch failed"),
+                        batch_done=batch_number,
+                    )
                     continue
 
                 for (handle, text, ci), vec in zip(batch, embeddings):
@@ -782,8 +875,38 @@ def sync_embeddings(
                     )
                     total_embedded += 1
                 conn.commit()
+                _set_sync_progress(
+                    embedded=total_embedded,
+                    batch_done=batch_number,
+                    message=(
+                        f"Embedded {total_embedded:,} chunks "
+                        f"({t.replace('_', ' ')} batch {batch_number}/{batch_total})"
+                    ),
+                )
 
+        _set_sync_progress(
+            running=False,
+            stage="complete",
+            current_type="",
+            message=(
+                f"Embedding sync complete: {total_embedded:,} embedded, "
+                f"{total_skipped:,} skipped"
+            ),
+            embedded=total_embedded,
+            skipped=total_skipped,
+            pruned=total_pruned,
+            finished_at=time.time(),
+        )
         return {"embedded": total_embedded, "skipped": total_skipped, "pruned": total_pruned}
+    except Exception as exc:
+        _set_sync_progress(
+            running=False,
+            stage="error",
+            message="Embedding sync failed",
+            last_error=str(exc),
+            finished_at=time.time(),
+        )
+        raise
     finally:
         _sync_lock.release()
 
@@ -1194,6 +1317,7 @@ def embedding_status(conn: sqlite3.Connection) -> dict:
         "last_updated": global_last_updated,
         "api_key_configured": api_key_configured,
         "types": types_list,
+        "sync": embedding_sync_progress(),
     }
 
 

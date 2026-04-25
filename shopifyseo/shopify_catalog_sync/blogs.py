@@ -198,9 +198,11 @@ def upsert_blog_article(
 
 
 def sync_article(db_path: Path, article_id: str) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         article = fetch_article_by_id(article_id)
         if not article:
@@ -210,6 +212,7 @@ def sync_article(db_path: Path, article_id: str) -> dict:
         blog_handle = str(blog.get("handle") or "").strip()
         if not blog_shopify_id or not blog_handle:
             raise RuntimeError(f"Article {article_id} missing blog id/handle from Shopify")
+        conn = open_db(db_path)
         upsert_blog_article(conn, article, blog_shopify_id, blog_handle, synced_at)
         conn.commit()
         finish_run(conn, run_id, status="success", blog_articles_synced=1)
@@ -220,11 +223,15 @@ def sync_article(db_path: Path, article_id: str) -> dict:
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def sync_blogs(
@@ -237,9 +244,11 @@ def sync_blogs(
     blog_articles_total_hint: int | None = None,
     queue_scope: str | None = None,
 ) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         if blogs is None:
             blogs = fetch_all_blogs(page_size)
@@ -247,6 +256,15 @@ def sync_blogs(
             blogs = list(blogs)
         if progress_callback is not None:
             progress_callback("blogs", 0, len(blogs))
+        fetched_articles_by_blog_id: dict[str, list[dict]] = {}
+        for blog in blogs:
+            bid = str(blog.get("id") or "")
+            if articles_by_blog_id is not None:
+                articles = list(articles_by_blog_id.get(bid) or [])
+            else:
+                articles = fetch_all_articles_for_blog(blog["id"], page_size)
+            fetched_articles_by_blog_id[bid] = articles
+
         blog_count = 0
         article_count = 0
         t_meta_start = time.perf_counter()
@@ -263,6 +281,7 @@ def sync_blogs(
                 ],
             )
 
+        conn = open_db(db_path)
         for blog in blogs:
             bid = str(blog.get("id") or "").strip()
             bh = (blog.get("handle") or "")[:200]
@@ -284,12 +303,8 @@ def sync_blogs(
 
         article_targets: list[tuple[str, str, str]] = []
         for blog in blogs:
-            blog_handle = blog.get("handle") or ""
             bid = str(blog.get("id") or "")
-            if articles_by_blog_id is not None:
-                articles = list(articles_by_blog_id.get(bid) or [])
-            else:
-                articles = fetch_all_articles_for_blog(blog["id"], page_size)
+            articles = fetched_articles_by_blog_id.get(bid, [])
             for article in articles:
                 aid = str(article.get("id") or "").strip()
                 if aid:
@@ -303,10 +318,7 @@ def sync_blogs(
         for blog in blogs:
             blog_handle = blog.get("handle") or ""
             bid = str(blog.get("id") or "")
-            if articles_by_blog_id is not None:
-                articles = list(articles_by_blog_id.get(bid) or [])
-            else:
-                articles = fetch_all_articles_for_blog(blog["id"], page_size)
+            articles = fetched_articles_by_blog_id.get(bid, [])
             if blog_articles_total_hint is not None:
                 articles_total_known = blog_articles_total_hint
             else:
@@ -361,24 +373,32 @@ def sync_blogs(
             "article_duration_seconds": max(t_end - t_articles_start, 0.0),
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def sync_blog(db_path: Path, blog_id: str, page_size: int = 50) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         blog = fetch_blog_by_id(blog_id)
         if not blog:
             raise RuntimeError(f"Blog not found in Shopify: {blog_id}")
+        articles = fetch_all_articles_for_blog(blog["id"], page_size)
+
+        conn = open_db(db_path)
         upsert_blog(conn, blog, synced_at)
         replace_blog_articles(conn, blog["id"])
-        articles = fetch_all_articles_for_blog(blog["id"], page_size)
         blog_handle = blog.get("handle") or ""
         for article in articles:
             upsert_blog_article(conn, article, blog["id"], blog_handle, synced_at)
@@ -398,8 +418,12 @@ def sync_blog(db_path: Path, blog_id: str, page_size: int = 50) -> dict:
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()

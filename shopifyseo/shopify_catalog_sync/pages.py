@@ -64,9 +64,11 @@ def sync_pages(
     pages: list[dict] | None = None,
     queue_scope: str | None = None,
 ) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         if pages is None:
             pages = fetch_all_pages(page_size)
@@ -88,6 +90,7 @@ def sync_pages(
                 ],
             )
 
+        conn = open_db(db_path)
         for page in pages:
             pid = str(page.get("id") or "").strip()
             rk = _sq.catalog_sync_row_key("page", pid, (page.get("handle") or "")[:200]) if queue_scope and pid else ""
@@ -117,21 +120,28 @@ def sync_pages(
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def sync_page(db_path: Path, page_id: str) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         page = fetch_page_by_id(page_id)
         if not page:
             raise RuntimeError(f"Page not found in Shopify: {page_id}")
+        conn = open_db(db_path)
         upsert_page(conn, page, synced_at)
         enrich_pages_template_images(conn)
         conn.commit()
@@ -143,8 +153,12 @@ def sync_page(db_path: Path, page_id: str) -> dict:
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()

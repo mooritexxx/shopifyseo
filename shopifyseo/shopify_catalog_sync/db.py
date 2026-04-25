@@ -448,7 +448,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
     ensure_schema(conn)

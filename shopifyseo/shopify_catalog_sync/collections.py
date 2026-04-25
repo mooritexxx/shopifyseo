@@ -102,9 +102,11 @@ def sync_collections(
     collections: list[dict] | None = None,
     queue_scope: str | None = None,
 ) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         if collections is None:
             collections = fetch_all_collections(page_size)
@@ -112,6 +114,10 @@ def sync_collections(
             collections = list(collections)
         if progress_callback is not None:
             progress_callback("collections", 0, len(collections))
+        products_by_collection_id: dict[str, list[dict]] = {}
+        for collection in collections:
+            products_by_collection_id[collection["id"]] = fetch_collection_products(collection["id"], 250)
+
         collection_count = 0
         metafield_count = 0
         membership_count = 0
@@ -128,6 +134,7 @@ def sync_collections(
                 ],
             )
 
+        conn = open_db(db_path)
         for collection in collections:
             cid = str(collection.get("id") or "").strip()
             rk = (
@@ -142,7 +149,7 @@ def sync_collections(
             try:
                 metafield_count += upsert_collection(conn, collection, synced_at)
                 replace_collection_children(conn, "collection_products", collection["id"])
-                products = fetch_collection_products(collection["id"], 250)
+                products = products_by_collection_id.get(collection["id"], [])
                 conn.executemany(
                     """
                     INSERT INTO collection_products (
@@ -193,24 +200,32 @@ def sync_collections(
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         collection = fetch_collection_by_id(collection_id)
         if not collection:
             raise RuntimeError(f"Collection not found in Shopify: {collection_id}")
+        products = fetch_collection_products(collection["id"], page_size)
+
+        conn = open_db(db_path)
         metafield_count = upsert_collection(conn, collection, synced_at)
         replace_collection_children(conn, "collection_products", collection["id"])
-        products = fetch_collection_products(collection["id"], page_size)
         conn.executemany(
             """
             INSERT INTO collection_products (
@@ -250,8 +265,12 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()

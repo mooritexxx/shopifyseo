@@ -350,9 +350,11 @@ def sync_products(
     products: list[dict] | None = None,
     queue_scope: str | None = None,
 ) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         def _on_product_page_loaded(n_so_far: int) -> None:
             if progress_callback is not None:
@@ -377,9 +379,10 @@ def sync_products(
                 for metaobject_id in parse_json_list(refs_column)
             }
         )
+        metaobject_batches: list[list[dict]] = []
         for start in range(0, len(all_metaobject_ids), 100):
             batch_ids = all_metaobject_ids[start:start + 100]
-            upsert_metaobjects(conn, fetch_metaobjects_by_ids(batch_ids), synced_at)
+            metaobject_batches.append(fetch_metaobjects_by_ids(batch_ids))
         if progress_callback is not None:
             progress_callback("products", 0, len(products))
         product_count = 0
@@ -398,6 +401,10 @@ def sync_products(
                     if str(p.get("id") or "").strip()
                 ],
             )
+
+        conn = open_db(db_path)
+        for metaobjects in metaobject_batches:
+            upsert_metaobjects(conn, metaobjects, synced_at)
 
         for product in products:
             pid = str(product.get("id") or "").strip()
@@ -461,17 +468,23 @@ def sync_products(
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def sync_product(db_path: Path, product_id: str) -> dict:
-    conn = open_db(db_path)
-    run_id = start_run(conn)
+    run_conn = open_db(db_path)
+    run_id = start_run(run_conn)
+    run_conn.close()
     synced_at = now_iso()
+    conn: sqlite3.Connection | None = None
     try:
         product = fetch_product_by_id(product_id)
         if not product:
@@ -491,10 +504,14 @@ def sync_product(db_path: Path, product_id: str) -> dict:
                 for metaobject_id in parse_json_list(refs_column)
             }
         )
+        metaobject_batches: list[list[dict]] = []
         for start in range(0, len(all_metaobject_ids), 100):
             batch_ids = all_metaobject_ids[start:start + 100]
-            upsert_metaobjects(conn, fetch_metaobjects_by_ids(batch_ids), synced_at)
+            metaobject_batches.append(fetch_metaobjects_by_ids(batch_ids))
 
+        conn = open_db(db_path)
+        for metaobjects in metaobject_batches:
+            upsert_metaobjects(conn, metaobjects, synced_at)
         variant_count, image_count, metafield_count = upsert_product(conn, product, synced_at)
         resolve_product_metaobject_labels(
             conn,
@@ -529,8 +546,12 @@ def sync_product(db_path: Path, product_id: str) -> dict:
             "run_id": run_id,
         }
     except Exception as exc:
-        conn.rollback()
+        if conn is None:
+            conn = open_db(db_path)
+        else:
+            conn.rollback()
         finish_run(conn, run_id, status="failed", error_message=str(exc))
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()

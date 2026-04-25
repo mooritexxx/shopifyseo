@@ -25,6 +25,7 @@ const mockedPostJson = vi.mocked(postJson);
 describe("ProductDetailPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, "open").mockImplementation(() => null);
   });
 
   it("loads product detail with draft fields and posts to generate-ai (no recommendation modal)", async () => {
@@ -95,6 +96,8 @@ describe("ProductDetailPage", () => {
         collections: [],
         variants: [],
         metafields: [],
+        gsc_queries: [],
+        gsc_segment_summary: null,
         opportunity: {
           priority: "High",
           score: 82,
@@ -159,6 +162,8 @@ describe("ProductDetailPage", () => {
         collections: [],
         variants: [],
         metafields: [],
+        gsc_queries: [],
+        gsc_segment_summary: null,
         opportunity: { priority: "High", score: 50, reasons: [], handle: "sample-product", title: "Sample", object_type: "product", gsc_impressions: 0, gsc_clicks: 0, gsc_position: 0, ga4_sessions: 0, pagespeed_performance: 90 }
       };
     });
@@ -166,6 +171,62 @@ describe("ProductDetailPage", () => {
     renderWithProviders(<ProductDetailPage />);
     expect(await screen.findByLabelText("SEO title")).toBeInTheDocument();
     expect(screen.getAllByText(/Regenerate/).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("opens cached Search Console inspection link without refreshing first", async () => {
+    mockedGetJson.mockImplementation(async (path: string) => {
+      if (path === "/api/ai-status") {
+        return {
+          running: false,
+          scope: "",
+          stage: "idle",
+          total: 0,
+          done: 0,
+          current: "",
+          successes: 0,
+          failures: 0,
+          last_error: "",
+          last_result: null
+        };
+      }
+      return {
+        product: { handle: "sample-product", title: "Sample", vendor: "V", status: "active", updated_at: "2026-03-10" },
+        draft: { title: "Sample", seo_title: "Title", seo_description: "Desc", body_html: "<p>Body</p>", tags: "", workflow_status: "Needs fix", workflow_notes: "" },
+        workflow: { status: "Needs fix", notes: "", updated_at: null },
+        recommendation: { summary: "S", status: "success", model: "gpt-5.4", created_at: null, error_message: "", details: { seo_title: "Title", seo_description: "Desc", body: "<p>Body</p>", tags: [], internal_links: [] } },
+        recommendation_history: [],
+        signal_cards: [
+          {
+            label: "Index",
+            value: "Indexed",
+            sublabel: "Seen in Google",
+            updated_at: "2026-03-10",
+            step: "index",
+            action_label: "Request indexing",
+            action_href: "https://search.google.com/search-console/inspect"
+          }
+        ],
+        collections: [],
+        variants: [],
+        metafields: [],
+        gsc_queries: [],
+        gsc_segment_summary: null,
+        opportunity: { priority: "High", score: 50, reasons: [], handle: "sample-product", title: "Sample", object_type: "product", gsc_impressions: 0, gsc_clicks: 0, gsc_position: 0, ga4_sessions: 0, pagespeed_performance: 90 }
+      };
+    });
+
+    renderWithProviders(<ProductDetailPage />);
+    fireEvent.click(await screen.findByText("Request indexing"));
+
+    expect(window.open).toHaveBeenCalledWith(
+      "https://search.google.com/search-console/inspect",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(mockedPostJson).not.toHaveBeenCalledWith(
+      "/api/products/sample-product/inspection-link",
+      expect.anything()
+    );
   });
 
   it("saves the edited draft", async () => {
@@ -219,6 +280,8 @@ describe("ProductDetailPage", () => {
         collections: [],
         variants: [],
         metafields: [],
+        gsc_queries: [],
+        gsc_segment_summary: null,
         opportunity: {
           priority: "High",
           score: 82,

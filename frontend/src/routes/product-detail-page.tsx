@@ -429,12 +429,21 @@ export function ProductDetailPage() {
   }, [activeFieldResult, activeFieldRegeneration]);
 
   const inspectionLinkMutation = useMutation({
-    mutationFn: () => postJson(`/api/products/${handle}/inspection-link`, z.object({ href: z.string() })),
+    mutationFn: () => postJson(`/api/products/${encodeURIComponent(handle)}/inspection-link`, z.object({ href: z.string() })),
     onSuccess: (data) => {
       window.open(data.href, "_blank", "noopener,noreferrer");
     },
     onError: (error) => setToast((error as Error).message)
   });
+
+  const openInspectionLink = (href?: string | null) => {
+    const cachedHref = (href || "").trim();
+    if (cachedHref) {
+      window.open(cachedHref, "_blank", "noopener,noreferrer");
+      return;
+    }
+    inspectionLinkMutation.mutate();
+  };
 
   const detail = detailQuery.data;
   if (detailQuery.isLoading) {
@@ -752,7 +761,7 @@ export function ProductDetailPage() {
               onRefresh={signal.step !== "opportunity" ? () => refreshMutation.mutate(signal.step) : undefined}
               isRefreshing={isSignalStepRefreshing(signal.step)}
               actionLabel={signal.step === "index" && signal.action_label ? (inspectionLinkMutation.isPending ? "Opening…" : signal.action_label) : undefined}
-              onAction={signal.step === "index" && signal.action_label ? () => inspectionLinkMutation.mutate() : undefined}
+              onAction={signal.step === "index" && signal.action_label ? () => openInspectionLink(signal.action_href) : undefined}
             />
           ))}
         </section>

@@ -205,6 +205,14 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
     },
     onError: (error) => setToast((error as Error).message)
   });
+  const openInspectionLink = (href?: string | null) => {
+    const cachedHref = (href || "").trim();
+    if (cachedHref) {
+      window.open(cachedHref, "_blank", "noopener,noreferrer");
+      return;
+    }
+    inspectionLinkMutation.mutate();
+  };
   const aiMutation = useMutation({
     mutationFn: () => postJson(`/api/${kind}/${encodeURIComponent(handle)}/generate-ai`, actionSchema),
     onSuccess: (data) => {
@@ -674,7 +682,7 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
               onRefresh={signal.step !== "opportunity" ? () => refreshMutation.mutate(signal.step) : undefined}
               isRefreshing={isSignalStepRefreshing(signal.step)}
               actionLabel={signal.step === "index" && signal.action_label ? (inspectionLinkMutation.isPending ? "Opening…" : signal.action_label) : undefined}
-              onAction={signal.step === "index" && signal.action_label ? () => inspectionLinkMutation.mutate() : undefined}
+              onAction={signal.step === "index" && signal.action_label ? () => openInspectionLink(signal.action_href) : undefined}
             />
           ))}
         </section>

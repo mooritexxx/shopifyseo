@@ -459,7 +459,8 @@ def fetch_serpapi_primary_keyword_snapshot(
     qa, pages, aio, rel, err, raw_data = _serpapi_fetch_google_serp_snapshot(api_key, kw, localization=loc)
     if err:
         logger.debug("SerpAPI snapshot skipped: %s", err)
-        return empty
+        # So callers (e.g. refresh SERP) can surface a failure instead of saving empty JSON.
+        return {**empty, "serpapi_error": err}
     out: dict[str, Any] = {
         "audience_questions": qa,
         "top_ranking_pages": pages,
@@ -551,6 +552,8 @@ def enrich_article_ideas_with_audience_questions(
             idea["paa_expansion"] = []
         else:
             snap = fetch_serpapi_primary_keyword_snapshot(conn, pk, expand_paa=False)
+            if isinstance(snap, dict):
+                snap.pop("serpapi_error", None)
             idea["audience_questions"] = snap["audience_questions"]
             idea["top_ranking_pages"] = snap["top_ranking_pages"]
             idea["ai_overview"] = snap.get("ai_overview")

@@ -1104,6 +1104,14 @@ def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -
         )
 
     snap = fetch_serpapi_primary_keyword_snapshot(conn, pk, expand_paa=True)
+    serp_err = (
+        (snap.pop("serpapi_error", None) or snap.pop("_serpapi_error", None))
+        if isinstance(snap, dict)
+        else None
+    )
+    if serp_err:
+        raise ValueError(f"SerpAPI did not return usable SERP data: {serp_err}")
+
     aq_json = json.dumps(normalize_audience_questions_json(snap["audience_questions"]), ensure_ascii=False)
     trp_json = json.dumps(normalize_top_ranking_pages_json(snap["top_ranking_pages"]), ensure_ascii=False)
     aio_json = serialize_ai_overview_json(snap.get("ai_overview"))

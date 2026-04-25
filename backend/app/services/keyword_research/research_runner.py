@@ -35,6 +35,7 @@ from .keyword_db import (
     sync_competitor_keyword_gaps,
     sync_competitor_profiles,
     sync_competitor_top_pages,
+    sync_competitor_top_pages_from_keyword_metrics,
     sync_keyword_metrics_to_db,
     sync_keyword_page_map,
     update_competitor_profile_organic_sample_count,
@@ -338,6 +339,10 @@ def _finalize_keyword_research(
         sync_competitor_keyword_gaps(conn)
     except Exception:
         logger.exception("Failed to sync competitor_keyword_gaps (non-fatal)")
+    try:
+        sync_competitor_top_pages_from_keyword_metrics(conn, per_domain_limit=50)
+    except Exception:
+        logger.exception("Failed to sync competitor_top_pages from keyword metrics (non-fatal)")
     try:
         from shopifyseo.embedding_store import sync_embeddings
 
@@ -706,6 +711,10 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
         sync_keyword_metrics_to_db(conn)
     except Exception:
         logger.exception("Failed to sync keyword metrics to DB after refresh (non-fatal)")
+    try:
+        sync_competitor_top_pages_from_keyword_metrics(conn, per_domain_limit=50)
+    except Exception:
+        logger.exception("Failed to sync competitor_top_pages from keyword metrics after refresh (non-fatal)")
 
     if on_progress:
         on_progress(f"Done — refreshed {updated_count} of {len(items)} keywords (${total_cost:.4f})")

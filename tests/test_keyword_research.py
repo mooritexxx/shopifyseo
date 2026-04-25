@@ -13,6 +13,7 @@ from backend.app.services.keyword_research.keyword_db import (
     TARGET_KEY,
     load_approved_keywords,
     load_target_keywords,
+    sync_competitor_top_pages_from_keyword_metrics,
 )
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_store import ensure_dashboard_schema
@@ -407,3 +408,34 @@ def test_load_approved_keywords_survives_bad_json():
     assert len(items) == 1
     # Bad JSON stays as string rather than raising
     assert isinstance(items[0]["intent_raw"], str)
+
+
+def test_sync_competitor_top_pages_from_keyword_metrics_limits_per_domain():
+    conn = _make_keyword_metrics_db()
+    for i in range(60):
+        _insert_keyword_metric(
+            conn,
+            keyword=f"competitor keyword {i}",
+            competitor_domain="Example.com",
+            competitor_url=f"https://example.com/page-{i}",
+            competitor_position=(i % 10) + 1,
+            volume=1000 - i,
+            traffic_potential=5000 - i,
+            opportunity=100 - i,
+            content_type_label="Collection page",
+        )
+
+    count = sync_competitor_top_pages_from_keyword_metrics(conn, per_domain_limit=50)
+
+    assert count == 50
+    rows = conn.execute(
+        """
+        SELECT competitor_domain, url, top_keyword, estimated_traffic, total_keywords
+        FROM competitor_top_pages
+        WHERE competitor_domain = 'example.com'
+        ORDER BY estimated_traffic DESC
+        """
+    ).fetchall()
+    assert len(rows) == 50
+    assert rows[0]["url"] == "https://example.com/page-0"
+    assert rows[-1]["url"] == "https://example.com/page-49"

@@ -509,6 +509,102 @@ def sync_competitor_top_pages(conn: sqlite3.Connection, domain: str, pages: list
     return count
 
 
+def sync_competitor_top_pages_from_keyword_metrics(
+    conn: sqlite3.Connection,
+    *,
+    per_domain_limit: int = 50,
+) -> int:
+    """Backfill competitor top pages from keyword-level competitor URLs.
+
+    DataForSEO's relevant-pages endpoint can return no rows for some runs, while
+    keyword_metrics still contains useful competitor URLs from ranked-keyword data.
+    This makes those URLs embeddable and available to competitive-gap RAG.
+    """
+    rows = conn.execute(
+        """
+        SELECT keyword,
+               competitor_domain,
+               competitor_url,
+               competitor_position,
+               volume,
+               traffic_potential,
+               opportunity,
+               content_type_label,
+               intent
+        FROM keyword_metrics
+        WHERE competitor_domain IS NOT NULL
+          AND TRIM(competitor_domain) != ''
+          AND competitor_url IS NOT NULL
+          AND TRIM(competitor_url) != ''
+        """
+    ).fetchall()
+    grouped: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        domain = norm_competitor_domain(row["competitor_domain"] or "")
+        url = (row["competitor_url"] or "").strip()
+        keyword = (row["keyword"] or "").strip()
+        if not domain or not url or not keyword:
+            continue
+        try:
+            position = int(float(row["competitor_position"] or 0))
+        except (TypeError, ValueError):
+            position = 0
+        try:
+            volume = int(float(row["volume"] or 0))
+        except (TypeError, ValueError):
+            volume = 0
+        try:
+            traffic = int(float(row["traffic_potential"] or volume or 0))
+        except (TypeError, ValueError):
+            traffic = volume
+        try:
+            opportunity = float(row["opportunity"] or 0)
+        except (TypeError, ValueError):
+            opportunity = 0.0
+        by_url = grouped.setdefault(domain, {})
+        page = by_url.setdefault(
+            url,
+            {
+                "url": url,
+                "top_keyword": keyword,
+                "top_keyword_volume": volume,
+                "top_keyword_best_position": position,
+                "keywords": 0,
+                "sum_traffic": 0,
+                "value": 0,
+                "page_type": (row["content_type_label"] or row["intent"] or ""),
+                "_best_rank_tuple": (position if position > 0 else 9999, -volume, -opportunity),
+            },
+        )
+        page["keywords"] += 1
+        page["sum_traffic"] += max(traffic, 0)
+        rank_tuple = (position if position > 0 else 9999, -volume, -opportunity)
+        if rank_tuple < page["_best_rank_tuple"]:
+            page["top_keyword"] = keyword
+            page["top_keyword_volume"] = volume
+            page["top_keyword_best_position"] = position
+            page["page_type"] = (row["content_type_label"] or row["intent"] or page.get("page_type") or "")
+            page["_best_rank_tuple"] = rank_tuple
+
+    total = 0
+    for domain, by_url in grouped.items():
+        pages = sorted(
+            by_url.values(),
+            key=lambda p: (
+                -int(p.get("sum_traffic") or 0),
+                -int(p.get("top_keyword_volume") or 0),
+                int(p.get("top_keyword_best_position") or 9999),
+                p.get("url") or "",
+            ),
+        )[: max(1, per_domain_limit)]
+        clean_pages = []
+        for page in pages:
+            clean = {k: v for k, v in page.items() if not k.startswith("_")}
+            clean_pages.append(clean)
+        total += sync_competitor_top_pages(conn, domain, clean_pages)
+    return total
+
+
 def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
     """Enrich target keywords with GSC ranking data."""
     data = load_target_keywords(conn)
@@ -561,6 +657,10 @@ def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
         sync_competitor_keyword_gaps(conn)
     except Exception:
         logger.exception("Failed to sync competitor_keyword_gaps after GSC crossref (non-fatal)")
+    try:
+        sync_competitor_top_pages_from_keyword_metrics(conn, per_domain_limit=50)
+    except Exception:
+        logger.exception("Failed to sync competitor_top_pages from keyword metrics after GSC crossref (non-fatal)")
     try:
         from shopifyseo.embedding_store import sync_embeddings
         sync_embeddings(conn, object_type="keyword")

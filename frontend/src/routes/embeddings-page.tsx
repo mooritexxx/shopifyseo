@@ -94,6 +94,33 @@ export default function EmbeddingsPage() {
     },
   });
 
+  useEffect(() => {
+    if (!data) return;
+    const sync = data.sync;
+    if (sync.running) {
+      wasRunningRef.current = true;
+      setWatchRefresh(true);
+      return;
+    }
+    if (wasRunningRef.current || (watchRefresh && sync.finished_at && sync.stage !== "idle")) {
+      wasRunningRef.current = false;
+      setWatchRefresh(false);
+      void queryClient.invalidateQueries({ queryKey: ["embedding-status"] });
+      if (sync.stage === "error" || sync.last_error) {
+        setToast({ message: sync.last_error || "Embedding refresh failed", variant: "error" });
+      } else {
+        setToast({
+          message: `Embedding refresh complete: ${sync.embedded.toLocaleString()} embedded, ${sync.skipped.toLocaleString()} skipped`,
+          variant: "success",
+        });
+      }
+    }
+  }, [
+    data,
+    queryClient,
+    watchRefresh,
+  ]);
+
   if (isLoading) {
     return (
       <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
@@ -125,27 +152,6 @@ export default function EmbeddingsPage() {
   const status = data as EmbeddingStatus;
   const sync = status.sync;
   const refreshRunning = sync.running || refreshMutation.isPending;
-
-  useEffect(() => {
-    if (sync.running) {
-      wasRunningRef.current = true;
-      setWatchRefresh(true);
-      return;
-    }
-    if (wasRunningRef.current || (watchRefresh && sync.finished_at && sync.stage !== "idle")) {
-      wasRunningRef.current = false;
-      setWatchRefresh(false);
-      void queryClient.invalidateQueries({ queryKey: ["embedding-status"] });
-      if (sync.stage === "error" || sync.last_error) {
-        setToast({ message: sync.last_error || "Embedding refresh failed", variant: "error" });
-      } else {
-        setToast({
-          message: `Embedding refresh complete: ${sync.embedded.toLocaleString()} embedded, ${sync.skipped.toLocaleString()} skipped`,
-          variant: "success",
-        });
-      }
-    }
-  }, [queryClient, sync.embedded, sync.finished_at, sync.last_error, sync.running, sync.skipped, sync.stage, watchRefresh]);
 
   return (
     <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">

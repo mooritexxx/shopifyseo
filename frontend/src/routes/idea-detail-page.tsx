@@ -468,10 +468,15 @@ export function IdeaDetailPage() {
   const supportingKw: string[] = Array.isArray(idea.supporting_keywords)
     ? idea.supporting_keywords
     : [];
-  const clusterKeywords = (idea.linked_keywords_json ?? [])
+  const clusterKeywordRows = (idea.linked_keywords_json ?? [])
     .filter((row): row is Record<string, unknown> => row != null && typeof row === "object" && !Array.isArray(row))
-    .filter((row) => typeof row.keyword === "string" && row.keyword.trim().length > 0)
-    .slice(0, 12);
+    .filter((row) => typeof row.keyword === "string" && row.keyword.trim().length > 0);
+  const clusterKeywords = clusterKeywordRows.slice(0, 18);
+  const hasClusterRelated =
+    idea.linked_cluster_id != null
+    || (idea.linked_cluster_name?.trim() ?? "") !== ""
+    || (idea.linked_collection_title?.trim() ?? "") !== ""
+    || clusterKeywordRows.length > 0;
   const date = new Date(idea.created_at * 1000).toLocaleDateString("en-CA", {
     month: "short",
     day: "numeric",
@@ -999,19 +1004,38 @@ export function IdeaDetailPage() {
             </Card>
           ) : null}
 
-          {/* Linked cluster / collection */}
-          {(idea.linked_cluster_name || idea.linked_collection_title) ? (
+          {/* Linked cluster, snapshot keywords, and collection */}
+          {hasClusterRelated ? (
             <Card className="border-[#e2eaf4]">
               <CardHeader className="px-5 pt-5 pb-0">
-                <h4 className="text-sm font-semibold text-ink">Related</h4>
+                <h4 className="text-sm font-semibold text-ink">{"Cluster & collection"}</h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  Keyword cluster for topical coverage; collection link when the idea targets a specific category page.
+                </p>
               </CardHeader>
               <CardContent className="px-5 pb-5 pt-3 space-y-4">
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {idea.linked_cluster_name ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs text-[#2e6be6]">
                       <BookOpen size={11} />
                       {idea.linked_cluster_name}
                     </span>
+                  ) : idea.linked_cluster_id != null ? (
+                    <Link
+                      to={`/keywords/clusters/${idea.linked_cluster_id}`}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs font-medium text-[#2e6be6] hover:bg-[#e3eeff]"
+                    >
+                      <BookOpen size={11} />
+                      View cluster #{idea.linked_cluster_id}
+                    </Link>
+                  ) : null}
+                  {idea.linked_cluster_id != null && idea.linked_cluster_name ? (
+                    <Link
+                      to={`/keywords/clusters/${idea.linked_cluster_id}`}
+                      className="text-[11px] font-medium text-[#2e6be6] hover:underline"
+                    >
+                      Open in Keywords →
+                    </Link>
                   ) : null}
                   {idea.linked_collection_title ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full border border-[#d1e8d4] bg-[#f0faf1] px-2.5 py-1 text-xs text-emerald-700">
@@ -1041,6 +1065,20 @@ export function IdeaDetailPage() {
                         );
                       })}
                     </div>
+                  </div>
+                ) : idea.linked_cluster_id != null ? (
+                  <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2.5 text-xs text-slate-600">
+                    <p className="font-medium text-slate-700">No keyword snapshot on this idea</p>
+                    <p className="mt-1 leading-relaxed">
+                      Open the cluster for the full keyword list and metrics, or generate new ideas to refresh stored
+                      cluster keywords.
+                    </p>
+                    <Link
+                      to={`/keywords/clusters/${idea.linked_cluster_id}`}
+                      className="mt-2 inline-block font-medium text-[#2e6be6] hover:underline"
+                    >
+                      View all keywords in Keywords →
+                    </Link>
                   </div>
                 ) : null}
               </CardContent>

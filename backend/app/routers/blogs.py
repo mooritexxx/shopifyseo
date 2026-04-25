@@ -288,9 +288,10 @@ def _run_generate_article_draft(
         finally:
             conn_u.close()
 
-    conn = open_db_connection()
+    conn: sqlite3.Connection | None = open_db_connection()
     existing_row: sqlite3.Row | None = None
     try:
+        assert conn is not None
         if run_id:
             resume_run = get_article_draft_run(conn, run_id)
             if not resume_run:
@@ -390,6 +391,10 @@ def _run_generate_article_draft(
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
 
+        # Close the setup connection before slow AI/image work. Subsequent writes use short-lived connections.
+        conn.close()
+        conn = None
+
         stored_body = str((resume_run or {}).get("body") or "")
         if stored_body and (resume_run or {}).get("title"):
             generated = {
@@ -410,21 +415,25 @@ def _run_generate_article_draft(
                 result_summary=f"Body {len(stored_body):,} chars",
             )
         else:
-            generated = generate_article_draft(
-                conn,
-                topic=payload.topic,
-                keywords=keywords,
-                author_name=payload.author_name,
-                linked_cluster_id=cluster_id,
-                primary_target=primary_target_dict,
-                secondary_targets=secondary_targets_list,
-                idea_serp_context=idea_serp_context,
-                idea_linked_keywords=idea_linked_keywords,
-                request_context=payload.model_dump(),
-                draft_run_id=run_id,
-                resume_run=resume_run,
-                on_progress=on_progress,
-            )
+            conn_gen = open_db_connection()
+            try:
+                generated = generate_article_draft(
+                    conn_gen,
+                    topic=payload.topic,
+                    keywords=keywords,
+                    author_name=payload.author_name,
+                    linked_cluster_id=cluster_id,
+                    primary_target=primary_target_dict,
+                    secondary_targets=secondary_targets_list,
+                    idea_serp_context=idea_serp_context,
+                    idea_linked_keywords=idea_linked_keywords,
+                    request_context=payload.model_dump(),
+                    draft_run_id=run_id,
+                    resume_run=resume_run,
+                    on_progress=on_progress,
+                )
+            finally:
+                conn_gen.close()
 
         p(
             "Starting images: featured cover + per-section body images…",
@@ -436,13 +445,17 @@ def _run_generate_article_draft(
             step_index=7,
             step_total=11,
         )
-        featured_url, featured_alt, body_images, image_notes = try_prepare_article_images_bundle(
-            conn,
-            title=generated["title"],
-            topic=payload.topic,
-            body_html=generated["body"],
-            on_step=p,
-        )
+        conn_img = open_db_connection()
+        try:
+            featured_url, featured_alt, body_images, image_notes = try_prepare_article_images_bundle(
+                conn_img,
+                title=generated["title"],
+                topic=payload.topic,
+                body_html=generated["body"],
+                on_step=p,
+            )
+        finally:
+            conn_img.close()
         for note in image_notes:
             p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=7, step_total=11)
         image_failures = [
@@ -450,9 +463,7 @@ def _run_generate_article_draft(
             if any(token in note.lower() for token in ("failed", "skipp"))
         ]
         if not featured_url or image_failures:
-            update_article_draft_run(
-                conn,
-                run_id,
+            update_run(
                 image_payload_json={
                     "featured_url": featured_url or "",
                     "featured_alt": featured_alt or "",
@@ -463,9 +474,7 @@ def _run_generate_article_draft(
             )
             detail = "; ".join(image_failures[-3:] or image_notes[-3:] or ["Image generation/upload failed"])
             raise RuntimeError(f"Image generation/upload failed: {detail}")
-        update_article_draft_run(
-            conn,
-            run_id,
+        update_run(
             image_payload_json={
                 "featured_url": featured_url or "",
                 "featured_alt": featured_alt or "",
@@ -504,7 +513,7 @@ def _run_generate_article_draft(
                 step_total=11,
             )
             body_html = inject_article_body_images(body_html, body_images)
-            update_article_draft_run(conn, run_id, body=body_html, current_step="insert_body_images", last_completed_step="insert_body_images")
+            update_run(body=body_html, current_step="insert_body_images", last_completed_step="insert_body_images")
             p(
                 f"{len(body_images)} section image{'s' if len(body_images) != 1 else ''} injected into body.",
                 "body",
@@ -528,17 +537,22 @@ def _run_generate_article_draft(
                 step_total=11,
             )
 
-        body_html = ensure_link_titles(body_html, conn)
-        update_article_draft_run(conn, run_id, body=body_html)
+        conn_titles = open_db_connection()
+        try:
+            body_html = ensure_link_titles(body_html, conn_titles)
+        finally:
+            conn_titles.close()
+        update_run(body=body_html)
     except Exception as exc:
         if run_id:
             try:
-                update_article_draft_run(conn, run_id, status="failed", error_message=str(exc))
+                update_run(status="failed", error_message=str(exc))
             except Exception:
                 pass
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     article: dict
     skip_shopify_upsert = False

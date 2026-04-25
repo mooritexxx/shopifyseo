@@ -329,6 +329,10 @@ def generate_article_draft(
     _base_url = (_dq._base_store_url(conn) or "").strip().rstrip("/")
 
     link_targets, _, _ = _dq.build_store_internal_link_allowlist(conn, _base_url, rag_results=rag_results)
+    try:
+        conn.close()
+    except Exception:
+        logger.debug("Failed to close article draft setup DB connection", exc_info=True)
 
     # Widen allowlist with primary/secondary interlink targets so sanitizer keeps them.
     def _normalize_target_entry(t: dict) -> dict | None:
@@ -804,10 +808,17 @@ def generate_article_draft(
     def _run_update(**fields: object) -> None:
         if not draft_run_id:
             return
+        update_conn = None
         try:
-            update_article_draft_run(conn, draft_run_id, **fields)
+            from shopifyseo.dashboard_store import db_connect
+
+            update_conn = db_connect()
+            update_article_draft_run(update_conn, draft_run_id, **fields)
         except Exception:
             logger.debug("Failed to persist article draft run update", exc_info=True)
+        finally:
+            if update_conn is not None:
+                update_conn.close()
 
     def _emit(
         message: str,

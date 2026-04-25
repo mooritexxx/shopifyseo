@@ -157,10 +157,14 @@ Article draft generation now persists `article_draft_runs` and uses a canonical 
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
 
-#### Linking legacy `article_ideas` rows to a cluster (maintainer SQL)
+#### Article idea cluster linkage
 
-Article drafts read `linked_cluster_id` to inject cluster keyword gaps into the AI prompt. Older `article_ideas` rows
-may have `linked_cluster_id` **NULL**. The app does not auto-guess clusters; fix data deliberately.
+Article ideas are generated from keyword-cluster data. The generation prompt asks the model for a real
+`linked_cluster_id`, and the backend repairs missing/invalid model output by matching the idea title, primary keyword,
+and supporting keywords back to the best available cluster. The idea stores `linked_keywords_json` as a snapshot of the
+related cluster keywords, and the idea detail page displays those keywords for review and draft context.
+
+Older `article_ideas` rows may still have `linked_cluster_id` **NULL**. Fix those rows deliberately when needed:
 
 1. Find the correct `clusters.id` (e.g. from the Keywords / Clusters UI or `SELECT id, name, primary_keyword FROM clusters WHERE …`).
 2. Update the idea row(s), for example:

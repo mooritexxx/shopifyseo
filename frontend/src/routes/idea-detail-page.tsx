@@ -81,6 +81,19 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: "Rejected",
 };
 
+function keywordMetricLabel(row: Record<string, unknown>) {
+  const bits: string[] = [];
+  const volume = Number(row.volume ?? 0);
+  const difficulty = Number(row.difficulty ?? 0);
+  const position = row.gsc_position == null ? null : Number(row.gsc_position);
+  const rankingStatus = typeof row.ranking_status === "string" ? row.ranking_status.replace(/_/g, " ") : "";
+  if (Number.isFinite(volume) && volume > 0) bits.push(`${volume.toLocaleString()}/mo`);
+  if (Number.isFinite(difficulty) && difficulty > 0) bits.push(`KD ${difficulty.toFixed(0)}`);
+  if (position != null && Number.isFinite(position) && position > 0 && position < 900) bits.push(`pos ${position.toFixed(1)}`);
+  if (rankingStatus && rankingStatus !== "not ranking") bits.push(rankingStatus);
+  return bits.join(" · ");
+}
+
 const emptyDraftForm = {
   blog_id: "",
   blog_handle: "",
@@ -455,6 +468,10 @@ export function IdeaDetailPage() {
   const supportingKw: string[] = Array.isArray(idea.supporting_keywords)
     ? idea.supporting_keywords
     : [];
+  const clusterKeywords = (idea.linked_keywords_json ?? [])
+    .filter((row): row is Record<string, unknown> => row != null && typeof row === "object" && !Array.isArray(row))
+    .filter((row) => typeof row.keyword === "string" && row.keyword.trim().length > 0)
+    .slice(0, 12);
   const date = new Date(idea.created_at * 1000).toLocaleDateString("en-CA", {
     month: "short",
     day: "numeric",
@@ -988,7 +1005,7 @@ export function IdeaDetailPage() {
               <CardHeader className="px-5 pt-5 pb-0">
                 <h4 className="text-sm font-semibold text-ink">Related</h4>
               </CardHeader>
-              <CardContent className="px-5 pb-5 pt-3">
+              <CardContent className="px-5 pb-5 pt-3 space-y-4">
                 <div className="flex flex-wrap gap-2">
                   {idea.linked_cluster_name ? (
                     <span className="inline-flex items-center gap-1.5 rounded-full border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs text-[#2e6be6]">
@@ -1003,6 +1020,29 @@ export function IdeaDetailPage() {
                     </span>
                   ) : null}
                 </div>
+                {clusterKeywords.length > 0 ? (
+                  <div>
+                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      <Tag size={11} />
+                      Cluster keywords
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {clusterKeywords.map((row) => {
+                        const keyword = String(row.keyword || "").trim();
+                        const metric = keywordMetricLabel(row);
+                        return (
+                          <span
+                            key={keyword}
+                            className="inline-flex max-w-full flex-col rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700"
+                          >
+                            <span className="truncate font-medium">{keyword}</span>
+                            {metric ? <span className="mt-0.5 text-[11px] text-slate-500">{metric}</span> : null}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           ) : null}

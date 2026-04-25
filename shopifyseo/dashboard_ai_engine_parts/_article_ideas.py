@@ -9,6 +9,209 @@ from .providers import AIProviderRequestError, _call_ai
 from .settings import ai_settings
 
 
+def _keyword_text(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _cluster_keyword_values(cluster: dict) -> list[str]:
+    out: list[str] = []
+    primary = str(cluster.get("primary_keyword") or "").strip()
+    if primary:
+        out.append(primary)
+    for kw in cluster.get("top_keywords") or []:
+        if isinstance(kw, dict):
+            text = str(kw.get("keyword") or "").strip()
+        else:
+            text = str(kw or "").strip()
+        if text and text.lower() not in {k.lower() for k in out}:
+            out.append(text)
+    for kw in cluster.get("keywords") or []:
+        text = str(kw.get("keyword") if isinstance(kw, dict) else kw or "").strip()
+        if text and text.lower() not in {k.lower() for k in out}:
+            out.append(text)
+    return out
+
+
+def _cluster_match_score(idea: dict, cluster: dict) -> float:
+    """Score how well an AI idea maps back to a real keyword cluster."""
+    primary = _keyword_text(idea.get("primary_keyword"))
+    title = _keyword_text(idea.get("suggested_title"))
+    brief = _keyword_text(idea.get("brief"))
+    supporting = [_keyword_text(k) for k in idea.get("supporting_keywords") or [] if _keyword_text(k)]
+    haystack = " ".join([primary, title, brief, *supporting])
+    if not haystack.strip():
+        return 0.0
+
+    score = 0.0
+    cluster_primary = _keyword_text(cluster.get("primary_keyword"))
+    if cluster_primary:
+        if primary == cluster_primary:
+            score += 120.0
+        elif cluster_primary in haystack:
+            score += 60.0
+        else:
+            cp_tokens = {t for t in cluster_primary.split() if len(t) > 2}
+            p_tokens = {t for t in primary.split() if len(t) > 2}
+            if cp_tokens and p_tokens:
+                score += 20.0 * (len(cp_tokens & p_tokens) / len(cp_tokens | p_tokens))
+
+    for idx, kw in enumerate(_cluster_keyword_values(cluster)[:20]):
+        norm = _keyword_text(kw)
+        if not norm:
+            continue
+        weight = max(8.0, 32.0 - idx * 1.5)
+        if primary == norm:
+            score += weight * 2.5
+        elif norm in supporting:
+            score += weight * 1.8
+        elif norm in haystack:
+            score += weight
+        else:
+            kw_tokens = {t for t in norm.split() if len(t) > 2}
+            idea_tokens = {t for t in haystack.split() if len(t) > 2}
+            if kw_tokens and idea_tokens:
+                overlap = len(kw_tokens & idea_tokens) / len(kw_tokens)
+                if overlap >= 0.5:
+                    score += weight * overlap * 0.45
+
+    return score
+
+
+def _best_cluster_for_idea(idea: dict, clusters: list[dict]) -> dict:
+    """Return the model's valid cluster, or the best real cluster by keyword overlap."""
+    raw_cid = idea.get("linked_cluster_id")
+    try:
+        cid = int(raw_cid) if raw_cid is not None and raw_cid != "" else None
+    except (TypeError, ValueError):
+        cid = None
+    by_id = {int(c["id"]): c for c in clusters if c.get("id") is not None}
+    if cid in by_id:
+        return by_id[cid]
+    if not clusters:
+        return {}
+    return max(
+        clusters,
+        key=lambda c: (
+            _cluster_match_score(idea, c),
+            bool(c.get("has_ranking_opportunity")),
+            float(c.get("avg_opportunity") or 0.0),
+            int(c.get("total_volume") or 0),
+        ),
+    )
+
+
+def _cluster_keywords_snapshot(conn: sqlite3.Connection, cluster_meta: dict, *, limit: int = 18) -> list[dict]:
+    """Snapshot related cluster keywords with available metrics for idea detail/drafts."""
+    cid = cluster_meta.get("id")
+    rows_by_keyword: dict[str, dict] = {}
+    for row in cluster_meta.get("top_keywords") or []:
+        if not isinstance(row, dict):
+            continue
+        keyword = str(row.get("keyword") or "").strip()
+        if keyword:
+            rows_by_keyword[keyword.lower()] = {**row, "keyword": keyword}
+
+    ordered = _cluster_keyword_values(cluster_meta)
+    if cid is not None:
+        try:
+            db_rows = conn.execute(
+                """
+                SELECT ck.keyword,
+                       COALESCE(km.volume, 0) AS volume,
+                       COALESCE(km.difficulty, 0) AS difficulty,
+                       COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
+                       km.gsc_position,
+                       COALESCE(km.opportunity, 0.0) AS opportunity
+                FROM cluster_keywords ck
+                LEFT JOIN keyword_metrics km ON LOWER(km.keyword) = LOWER(ck.keyword)
+                WHERE ck.cluster_id = ?
+                ORDER BY km.opportunity DESC NULLS LAST, ck.keyword ASC
+                LIMIT ?
+                """,
+                (cid, limit),
+            ).fetchall()
+            for r in db_rows:
+                keyword = str(r[0] or "").strip()
+                if not keyword:
+                    continue
+                if keyword.lower() not in {k.lower() for k in ordered}:
+                    ordered.append(keyword)
+                rows_by_keyword.setdefault(
+                    keyword.lower(),
+                    {
+                        "keyword": keyword,
+                        "volume": int(r[1] or 0),
+                        "difficulty": int(r[2] or 0),
+                        "ranking_status": r[3] or "not_ranking",
+                        "gsc_position": round(float(r[4]), 1) if r[4] is not None else None,
+                        "opportunity": round(float(r[5] or 0.0), 1),
+                    },
+                )
+        except Exception:
+            logger.debug("Could not snapshot cluster keywords for article idea", exc_info=True)
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for keyword in ordered:
+        key = keyword.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        row = rows_by_keyword.get(key, {"keyword": keyword})
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> list[dict]:
+    """Load real clusters when strict gap filtering has no candidates."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, name, primary_keyword, content_brief,
+                   total_volume, avg_difficulty, avg_opportunity,
+                   content_type, match_type, match_handle, match_title,
+                   dominant_serp_features, content_format_hints, avg_cps
+            FROM clusters
+            WHERE content_type IN ('blog_post', 'buying_guide')
+            ORDER BY avg_opportunity DESC, total_volume DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    except Exception:
+        return []
+    clusters: list[dict] = []
+    for r in rows:
+        cluster = {
+            "id": r[0],
+            "name": r[1],
+            "primary_keyword": r[2],
+            "content_brief": r[3],
+            "total_volume": int(r[4] or 0),
+            "avg_difficulty": round(float(r[5] or 0.0), 1),
+            "avg_opportunity": round(float(r[6] or 0.0), 1),
+            "content_type": r[7],
+            "match_type": r[8],
+            "match_handle": r[9],
+            "match_title": r[10],
+            "dominant_serp_features": r[11] or "",
+            "content_format_hints": r[12] or "",
+            "avg_cps": round(float(r[13] or 0.0), 2),
+            "top_keywords": [],
+            "has_ranking_opportunity": False,
+        }
+        cluster["top_keywords"] = _cluster_keywords_snapshot(conn, cluster, limit=8)
+        cluster["keywords"] = [kw["keyword"] for kw in cluster["top_keywords"] if kw.get("keyword")]
+        cluster["has_ranking_opportunity"] = any(
+            kw.get("ranking_status") in ("quick_win", "striking_distance")
+            for kw in cluster["top_keywords"]
+        )
+        clusters.append(cluster)
+    return clusters
+
+
 def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
     """Analyse content gaps and return 3 AI-generated article ideas.
 
@@ -42,8 +245,9 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         gap_pct = 1.0 - (cf / ct)
         return (gap_pct, c.get("has_ranking_opportunity", False), c.get("total_volume", 0))
 
+    cluster_candidates = gap_data["cluster_gaps"] or _fallback_article_clusters(conn)
     sorted_clusters = sorted(
-        gap_data["cluster_gaps"][:10],
+        cluster_candidates[:10],
         key=_cluster_sort_key,
         reverse=True,
     )
@@ -391,6 +595,8 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
 
     user_msg = (
         f"Based on the gap analysis below, generate exactly 5 high-impact article ideas for {_brand}. "
+        "Every idea must be anchored to one listed keyword cluster and should use that cluster's primary or supporting "
+        "keywords as its core topic. "
         "Prioritise clusters marked ⚡ QUICK WIN or 📈 STRIKING DIST — these are keywords we already rank "
         "for on page 2/3 and a strong article could reach page 1 fast. "
         "Also consider competitor keyword gaps (informational keywords competitors rank for but we don't; "
@@ -416,8 +622,9 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         "Choose based on SERP mix and content format hints in the cluster data.\n"
         "- estimated_monthly_traffic: Your rough estimate of monthly organic visits if ranking in top 5 "
         "for the primary keyword (integer, e.g. 60 for 1,200/mo volume × 5% CTR).\n"
-        "- linked_cluster_id: Integer ID of the most relevant cluster from the data (or null).\n"
-        "- linked_cluster_name: Name of that cluster (or empty string).\n"
+        "- linked_cluster_id: Required integer ID of the most relevant keyword cluster from the data. "
+        "Do not return null when any cluster is listed.\n"
+        "- linked_cluster_name: Name of that exact cluster.\n"
         f"- linked_collection_handle: The most relevant {_brand} collection handle this article should link to "
         "(use handles from Top Collections list — e.g. 'disposable-vapes', 'vape-kits'). Empty string if none.\n"
         "- linked_collection_title: The human-readable title of that collection (or empty string).\n"
@@ -498,19 +705,20 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
 
     ideas = result.get("ideas") or []
     # Build a lookup so we can snapshot cluster metrics into each idea
-    cluster_lookup = {c["id"]: c for c in gap_data["cluster_gaps"]}
+    cluster_lookup = {c["id"]: c for c in cluster_candidates}
 
     cleaned = []
     for idea in ideas:
-        cid = idea.get("linked_cluster_id")
-        if isinstance(cid, str):
+        cluster_meta = _best_cluster_for_idea(idea, list(cluster_lookup.values()))
+        cid = cluster_meta.get("id")
+        linked_cluster_name = str(cluster_meta.get("name") or idea.get("linked_cluster_name") or "")
+        if not cluster_meta:
             try:
-                cid = int(cid)
+                cid = int(idea.get("linked_cluster_id")) if idea.get("linked_cluster_id") is not None else None
             except (ValueError, TypeError):
                 cid = None
 
-        # Snapshot cluster-level metrics from gap_data (not from AI output)
-        cluster_meta = cluster_lookup.get(cid, {}) if cid else {}
+        # Snapshot cluster-level metrics from real cluster data (not from AI output)
         total_volume = int(cluster_meta.get("total_volume") or 0)
         avg_difficulty = round(float(cluster_meta.get("avg_difficulty") or 0.0), 1)
         # Opportunity score: avg_opportunity boosted by 50% if cluster has ranking opportunity
@@ -519,7 +727,7 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         dominant_serp_features = str(cluster_meta.get("dominant_serp_features") or "")
         content_format_hints = str(cluster_meta.get("content_format_hints") or "")
         import json as _json
-        linked_keywords_json = _json.dumps(cluster_meta.get("top_keywords") or [])
+        linked_keywords_json = _json.dumps(_cluster_keywords_snapshot(conn, cluster_meta) if cluster_meta else [])
 
         from shopifyseo.dashboard_article_ideas import resolve_idea_targets
         linked_collection_handle = str(idea.get("linked_collection_handle") or "")
@@ -542,7 +750,7 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
                 "content_format": str(idea.get("content_format") or ""),
                 "estimated_monthly_traffic": int(idea.get("estimated_monthly_traffic") or 0),
                 "linked_cluster_id": cid,
-                "linked_cluster_name": str(idea.get("linked_cluster_name") or ""),
+                "linked_cluster_name": linked_cluster_name,
                 "linked_collection_handle": linked_collection_handle,
                 "linked_collection_title": linked_collection_title,
                 "source_type": str(idea.get("source_type") or "cluster_gap"),

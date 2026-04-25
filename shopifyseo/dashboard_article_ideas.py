@@ -32,6 +32,34 @@ def normalize_audience_questions_json(value: Any) -> list[dict[str, str]]:
     return out
 
 
+def normalize_paa_expansion_json(value: Any) -> list[dict[str, Any]]:
+    """Coerce SerpAPI PAA expansion tree: ``[{parent_question, children: [{question, snippet}, ...]}, ...]``."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        pq = str(item.get("parent_question") or "").strip()
+        raw_ch = item.get("children")
+        if not pq or not isinstance(raw_ch, list):
+            continue
+        children: list[dict[str, str]] = []
+        for ch in raw_ch:
+            if not isinstance(ch, dict):
+                continue
+            q = str(ch.get("question") or "").strip()
+            if not q:
+                continue
+            sn = str(ch.get("snippet") or "").strip()
+            children.append({"question": q, "snippet": sn})
+            if len(children) >= 80:
+                break
+        if children:
+            out.append({"parent_question": pq, "children": children})
+    return out
+
+
 def normalize_top_ranking_pages_json(value: Any) -> list[dict[str, str]]:
     """Coerce ``top_ranking_pages`` / DB JSON to ``[{title, url}, ...]`` (accepts legacy ``link``)."""
     if not isinstance(value, list):
@@ -818,8 +846,8 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
                  dominant_serp_features, content_format_hints, linked_keywords_json,
                  primary_target_type, primary_target_handle, primary_target_title,
                  primary_target_url, secondary_targets_json, audience_questions_json,
-                 top_ranking_pages_json, ai_overview_json, related_searches_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 top_ranking_pages_json, ai_overview_json, related_searches_json, paa_expansion_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 idea.get("suggested_title", ""),
@@ -851,6 +879,7 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
                 top_pages_json,
                 aio,
                 rs_json,
+                "[]",
             ),
         )
         ids.append(cur.lastrowid)
@@ -889,7 +918,8 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                COALESCE(ai.audience_questions_json, '[]')  AS audience_questions_json,
                COALESCE(ai.top_ranking_pages_json, '[]')   AS top_ranking_pages_json,
                COALESCE(ai.ai_overview_json, '{}')         AS ai_overview_json,
-               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json
+               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json,
+               COALESCE(ai.paa_expansion_json, '[]')       AS paa_expansion_json
         FROM article_ideas ai
         LEFT JOIN idea_articles ia ON ia.idea_id = ai.id
         LEFT JOIN blog_articles ba
@@ -927,7 +957,8 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                COALESCE(ai.audience_questions_json, '[]')  AS audience_questions_json,
                COALESCE(ai.top_ranking_pages_json, '[]')   AS top_ranking_pages_json,
                COALESCE(ai.ai_overview_json, '{}')         AS ai_overview_json,
-               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json
+               COALESCE(ai.related_searches_json, '[]')    AS related_searches_json,
+               COALESCE(ai.paa_expansion_json, '[]')       AS paa_expansion_json
         FROM article_ideas ai
         ORDER BY ai.created_at DESC, ai.id DESC
     """
@@ -996,6 +1027,13 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             raw_rs_list = []
         related_searches = normalize_related_searches_json(raw_rs_list)
 
+        raw_paa_ex = r[37] or "[]"
+        try:
+            raw_paa_ex_list = json.loads(raw_paa_ex) if isinstance(raw_paa_ex, str) else raw_paa_ex
+        except (json.JSONDecodeError, TypeError):
+            raw_paa_ex_list = []
+        paa_expansion = normalize_paa_expansion_json(raw_paa_ex_list)
+
         result.append(
             {
                 "id": r[0],
@@ -1032,13 +1070,16 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "top_ranking_pages": top_ranking_pages,
                 "ai_overview": ai_overview,
                 "related_searches": related_searches,
+                "paa_expansion": paa_expansion,
             }
         )
     return result
 
 
 def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -> dict[str, Any]:
-    """Run one SerpAPI Google search for the idea's primary keyword; overwrite PAA, organic, AI overview, and related searches JSON.
+    """Run SerpAPI for the idea's primary keyword; overwrite PAA, organics, AI overview, related searches, and PAA expansion.
+
+    PAA expansion uses ``google_related_questions`` (extra API calls) when the main result includes tokens.
 
     Raises:
         LookupError: No ``article_ideas`` row for ``idea_id``.
@@ -1062,7 +1103,7 @@ def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -
             "Add a SerpAPI API key under Settings → Integrations to refresh SERP snapshot data."
         )
 
-    snap = fetch_serpapi_primary_keyword_snapshot(conn, pk)
+    snap = fetch_serpapi_primary_keyword_snapshot(conn, pk, expand_paa=True)
     aq_json = json.dumps(normalize_audience_questions_json(snap["audience_questions"]), ensure_ascii=False)
     trp_json = json.dumps(normalize_top_ranking_pages_json(snap["top_ranking_pages"]), ensure_ascii=False)
     aio_json = serialize_ai_overview_json(snap.get("ai_overview"))
@@ -1070,10 +1111,11 @@ def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -
         normalize_related_searches_json(snap.get("related_searches")),
         ensure_ascii=False,
     )
+    paa_ex_json = json.dumps(normalize_paa_expansion_json(snap.get("paa_expansion")), ensure_ascii=False)
     cur = conn.execute(
         "UPDATE article_ideas SET audience_questions_json = ?, top_ranking_pages_json = ?, "
-        "ai_overview_json = ?, related_searches_json = ? WHERE id = ?",
-        (aq_json, trp_json, aio_json, rs_json, idea_id),
+        "ai_overview_json = ?, related_searches_json = ?, paa_expansion_json = ? WHERE id = ?",
+        (aq_json, trp_json, aio_json, rs_json, paa_ex_json, idea_id),
     )
     conn.commit()
     if cur.rowcount < 1:

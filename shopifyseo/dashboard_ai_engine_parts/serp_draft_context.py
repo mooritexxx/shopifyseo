@@ -398,6 +398,7 @@ def parse_idea_serp_row_from_db(
 
     from shopifyseo.dashboard_article_ideas import (
         normalize_audience_questions_json,
+        normalize_paa_expansion_json,
         normalize_related_searches_json,
         normalize_top_ranking_pages_json,
         parse_ai_overview_json,
@@ -433,4 +434,5 @@ def parse_idea_serp_row_from_db(
         "top_ranking_pages": normalize_top_ranking_pages_json(_loads_json(_get("top_ranking_pages_json"))),
         "related_searches": normalize_related_searches_json(_loads_json(_get("related_searches_json"))),
         "ai_overview": parse_ai_overview_json(_get("ai_overview_json")),
+        "paa_expansion": normalize_paa_expansion_json(_loads_json(_get("paa_expansion_json"))),
     }

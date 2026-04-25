@@ -594,6 +594,20 @@ function coerceAudienceQuestions(val: unknown): { question: string; snippet: str
   return out;
 }
 
+function coercePaaExpansion(val: unknown): { parent_question: string; children: { question: string; snippet: string }[] }[] {
+  if (!Array.isArray(val)) return [];
+  const out: { parent_question: string; children: { question: string; snippet: string }[] }[] = [];
+  for (const item of val) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as { parent_question?: unknown; children?: unknown };
+    const pq = typeof o.parent_question === "string" ? o.parent_question.trim() : "";
+    if (!pq) continue;
+    const children = coerceAudienceQuestions(o.children);
+    if (children.length) out.push({ parent_question: pq, children });
+  }
+  return out;
+}
+
 export const interlinkTargetSchema = z.object({
   type: z.string(),
   handle: z.string(),
@@ -658,6 +672,18 @@ export const articleIdeaSchema = z.object({
     .optional(),
   /** Google ``related_searches`` from the same SerpAPI response (query + SERP position when provided) */
   related_searches: z.preprocess(coerceRelatedSearches, z.array(relatedSearchItemSchema)).default([]),
+  /** Deeper PAA from SerpAPI ``google_related_questions`` (after “Refresh SERP data” on this page) */
+  paa_expansion: z
+    .preprocess(
+      coercePaaExpansion,
+      z.array(
+        z.object({
+          parent_question: z.string().default(""),
+          children: z.preprocess(coerceAudienceQuestions, z.array(audienceQuestionItemSchema)).default([])
+        })
+      )
+    )
+    .default([])
 });
 export type ArticleIdea = z.infer<typeof articleIdeaSchema>;
 export type RelatedSearchItem = z.infer<typeof relatedSearchItemSchema>;

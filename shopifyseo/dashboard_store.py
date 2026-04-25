@@ -436,6 +436,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "top_ranking_pages_json": "TEXT NOT NULL DEFAULT '[]'",
             "ai_overview_json": "TEXT NOT NULL DEFAULT '{}'",
             "related_searches_json": "TEXT NOT NULL DEFAULT '[]'",
+            "paa_expansion_json": "TEXT NOT NULL DEFAULT '[]'",
         },
     )
     conn.execute(

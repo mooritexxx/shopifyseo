@@ -81,7 +81,7 @@ def test_refresh_persists_snapshot(monkeypatch: pytest.MonkeyPatch, conn: sqlite
     )
     conn.commit()
 
-    def fake_snapshot(_c: sqlite3.Connection, _kw: str) -> dict:
+    def fake_snapshot(_c: sqlite3.Connection, _kw: str, **_: object) -> dict:
         return {
             "audience_questions": [{"question": "Q1?", "snippet": "S1"}],
             "top_ranking_pages": [{"title": "T1", "url": "https://example.com/1"}],
@@ -90,6 +90,9 @@ def test_refresh_persists_snapshot(monkeypatch: pytest.MonkeyPatch, conn: sqlite
                 "references": [{"title": "R1", "link": "https://r.example", "snippet": "", "source": "", "index": 0}],
             },
             "related_searches": [{"query": "related kw one", "position": 5}],
+            "paa_expansion": [
+                {"parent_question": "P?", "children": [{"question": "C?", "snippet": "CS"}]}
+            ],
         }
 
     monkeypatch.setattr(
@@ -104,12 +107,16 @@ def test_refresh_persists_snapshot(monkeypatch: pytest.MonkeyPatch, conn: sqlite
     assert updated["ai_overview"] is not None
     assert updated["ai_overview"]["text_blocks"][0]["snippet"] == "Overview line."
     assert updated["related_searches"] == [{"query": "related kw one", "position": 5}]
+    assert updated["paa_expansion"] == [
+        {"parent_question": "P?", "children": [{"question": "C?", "snippet": "CS"}]}
+    ]
 
     row = conn.execute(
-        "SELECT audience_questions_json, top_ranking_pages_json, ai_overview_json, related_searches_json FROM article_ideas WHERE id = ?",
+        "SELECT audience_questions_json, top_ranking_pages_json, ai_overview_json, related_searches_json, paa_expansion_json FROM article_ideas WHERE id = ?",
         (idea_id,),
     ).fetchone()
     assert "Q1?" in (row[0] or "")
     assert "example.com" in (row[1] or "")
     assert "Overview line." in (row[2] or "")
     assert "related kw one" in (row[3] or "")
+    assert "P?" in (row[4] or "")

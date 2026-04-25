@@ -190,5 +190,6 @@ def test_article_ideas_schema_has_new_columns(idea_conn: sqlite3.Connection):
         "top_ranking_pages_json",
         "ai_overview_json",
         "related_searches_json",
+        "paa_expansion_json",
     ]:
         assert expected in cols, f"Missing column: {expected}"

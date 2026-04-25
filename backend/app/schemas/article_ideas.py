@@ -102,6 +102,43 @@ def _coerce_related_searches(v: Any) -> list[dict[str, Any]]:
 RelatedSearches = Annotated[list[RelatedSearchItem], BeforeValidator(_coerce_related_searches)]
 
 
+def _coerce_paa_expansion(v: Any) -> list[dict[str, Any]]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in v:
+        if not isinstance(item, dict):
+            continue
+        pq = str(item.get("parent_question") or "").strip()
+        children_raw = item.get("children")
+        if not pq or not isinstance(children_raw, list):
+            continue
+        children: list[dict[str, str]] = []
+        for ch in children_raw:
+            if not isinstance(ch, dict):
+                continue
+            q = str(ch.get("question") or "").strip()
+            if not q:
+                continue
+            sn = str(ch.get("snippet") or "").strip()
+            children.append({"question": q, "snippet": sn})
+        if children:
+            out.append({"parent_question": pq, "children": children})
+    return out
+
+
+class PaaExpansionLayer(BaseModel):
+    """One top-level PAA question and its deeper ``google_related_questions`` children."""
+
+    parent_question: str = ""
+    children: AudienceQuestions = Field(default_factory=list)
+
+
+PaaExpansion = Annotated[list[PaaExpansionLayer], BeforeValidator(_coerce_paa_expansion)]
+
+
 class ArticleIdeaItem(BaseModel):
     id: int
     suggested_title: str
@@ -144,6 +181,8 @@ class ArticleIdeaItem(BaseModel):
     ai_overview: dict[str, Any] | None = None
     # Google related searches (SerpAPI ``related_searches``): query + position when present
     related_searches: RelatedSearches = Field(default_factory=list)
+    # Deeper PAA from SerpAPI ``engine=google_related_questions`` (Refresh SERP data on idea detail)
+    paa_expansion: PaaExpansion = Field(default_factory=list)
 
 
 class ArticleIdeasPayload(BaseModel):

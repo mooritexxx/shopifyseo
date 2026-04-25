@@ -76,10 +76,12 @@ def test_enrich_without_serpapi_key_empty(conn):
     assert ideas[0]["top_ranking_pages"] == []
     assert ideas[0]["ai_overview"] is None
     assert ideas[0]["related_searches"] == []
+    assert ideas[0]["paa_expansion"] == []
     assert ideas[1]["audience_questions"] == []
     assert ideas[1]["top_ranking_pages"] == []
     assert ideas[1]["ai_overview"] is None
     assert ideas[1]["related_searches"] == []
+    assert ideas[1]["paa_expansion"] == []
 
 
 def test_ai_overview_from_payload():
@@ -172,3 +174,63 @@ def test_enrich_with_serpapi_mock(monkeypatch: pytest.MonkeyPatch, conn):
         {"query": "zyn nicotine pouches", "position": 1},
         {"query": "zyn flavors", "position": 2},
     ]
+    assert ideas[0]["paa_expansion"] == []
+
+
+def test_expand_paa_fetches_google_related_questions(monkeypatch: pytest.MonkeyPatch, conn):
+    from shopifyseo import dashboard_google as dg
+
+    def fake_get_setting(_c: object, key: str) -> str:
+        return "k" if key == "serpapi_api_key" else ""
+
+    monkeypatch.setattr(dg, "get_service_setting", fake_get_setting)
+
+    _call = 0
+
+    def fake_urlopen(_req: object, *a, **k):
+        nonlocal _call
+        _call += 1
+
+        class Resp:
+            def read(self) -> bytes:
+                if _call == 1:
+                    return json.dumps(
+                        {
+                            "related_questions": [
+                                {
+                                    "question": "Parent Q?",
+                                    "snippet": "P snip.",
+                                    "next_page_token": "tok-abc-123",
+                                }
+                            ],
+                        }
+                    ).encode()
+                return json.dumps(
+                    {
+                        "related_questions": [
+                            {"question": "Child A?", "snippet": "A ans."},
+                            {"question": "Child B?", "snippet": "B ans."},
+                        ]
+                    }
+                ).encode()
+
+            def __enter__(self) -> "Resp":
+                return self
+
+            def __exit__(self, *x: object) -> None:
+                return None
+
+        return Resp()
+
+    monkeypatch.setattr(aq, "urlopen", fake_urlopen)
+    out = aq.fetch_serpapi_primary_keyword_snapshot(conn, "test query", expand_paa=True)
+    assert out["paa_expansion"] == [
+        {
+            "parent_question": "Parent Q?",
+            "children": [
+                {"question": "Child A?", "snippet": "A ans."},
+                {"question": "Child B?", "snippet": "B ans."},
+            ],
+        }
+    ]
+    assert _call == 2

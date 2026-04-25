@@ -142,7 +142,11 @@ def bulk_delete_ideas(body: BulkDeleteRequest):
 
 @router.post("/{idea_id}/refresh-serp", response_model=SuccessResponse[RefreshArticleIdeaSerpPayload])
 def refresh_idea_serp_snapshot(idea_id: int):
-    """Re-fetch SerpAPI related questions + top organic URLs for this idea's primary keyword (overwrites stored JSON)."""
+    """Re-fetch SerpAPI snapshot for the idea's primary keyword (overwrites stored JSON).
+
+    Includes top-level PAA, organics, AI overview, related searches, and — when SerpAPI
+    returns ``next_page_token`` on PAA rows — one level of ``google_related_questions`` expansion.
+    """
     conn = open_db_connection()
     try:
         try:

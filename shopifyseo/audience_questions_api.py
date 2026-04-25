@@ -19,6 +19,11 @@ Requires **SerpAPI API key** saved in Settings → Integrations → SerpAPI
 
 Optional: ``RELATED_QUESTIONS_DELAY_SEC`` — seconds to sleep between SerpAPI
 calls when generating a batch of ideas (rate limiting).
+
+When ``expand_paa=True`` (article idea **Refresh SERP data** only), after the
+initial ``engine=google`` response we call SerpAPI ``engine=google_related_questions``
+for each top-level ``related_questions`` item that includes a ``next_page_token``,
+up to ``PAA_EXPANSION_MAX_PARENTS`` (default 6), to load the deeper PAA tree.
 """
 
 from __future__ import annotations
@@ -48,6 +53,10 @@ _MAX_ORGANIC_RESULTS = 15
 
 # Cap ``related_searches`` rows per idea.
 _MAX_RELATED_SEARCHES = 40
+
+# PAA expansion (SerpAPI ``google_related_questions``) after the main Google search.
+PAA_EXPANSION_MAX_PARENTS_DEFAULT = 6
+PAA_EXPANSION_DELAY_SEC_DEFAULT = 0.35
 
 # Cap AI overview payload size (SerpAPI shape varies; keep JSON bounded).
 _MAX_AI_OVERVIEW_BLOCKS = 48
@@ -269,6 +278,90 @@ def _related_searches_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
+def _fetch_google_related_questions_expansion(
+    api_key: str,
+    next_page_token: str,
+    localization: dict[str, str],
+) -> dict[str, Any] | None:
+    """One SerpAPI ``engine=google_related_questions`` call (deeper PAA for a parent question)."""
+    key = (api_key or "").strip()
+    tok = (next_page_token or "").strip()
+    if not key or not tok:
+        return None
+    params: dict[str, str] = {
+        "engine": "google_related_questions",
+        "next_page_token": tok,
+        "api_key": key,
+    }
+    if localization:
+        for lk, lv in localization.items():
+            if isinstance(lv, str) and lv.strip():
+                params[lk] = lv.strip()
+    url = SERPAPI_SEARCH_JSON + "?" + urlencode(params)
+    req = Request(url, headers={"User-Agent": "ShopifySEO/1.0 (article-ideas)"}, method="GET")
+    try:
+        with urlopen(req, timeout=25) as resp:  # noqa: S310 — SerpAPI HTTPS
+            raw = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        err = data.get("error")
+        if isinstance(err, str) and err.strip():
+            logger.warning("SerpAPI google_related_questions error: %s", err.strip())
+            return None
+        return data
+    except HTTPError as exc:
+        logger.warning("SerpAPI google_related_questions HTTP %s", exc.code, exc_info=True)
+        return None
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("SerpAPI google_related_questions request failed: %s", exc)
+        return None
+
+
+def expand_paa_via_related_questions_engine(
+    api_key: str,
+    initial_serp_data: dict[str, Any],
+    localization: dict[str, str],
+) -> list[dict[str, Any]]:
+    """For each top PAA row with ``next_page_token``, fetch child questions via ``google_related_questions``."""
+    try:
+        max_parents = int(os.environ.get("PAA_EXPANSION_MAX_PARENTS", str(PAA_EXPANSION_MAX_PARENTS_DEFAULT)))
+    except (TypeError, ValueError):
+        max_parents = PAA_EXPANSION_MAX_PARENTS_DEFAULT
+    max_parents = max(0, min(max_parents, 20))
+    try:
+        delay = float(os.environ.get("PAA_EXPANSION_DELAY_SEC", str(PAA_EXPANSION_DELAY_SEC_DEFAULT)))
+    except (TypeError, ValueError):
+        delay = PAA_EXPANSION_DELAY_SEC_DEFAULT
+    delay = max(0.0, min(delay, 5.0))
+
+    layers: list[dict[str, Any]] = []
+    rq = initial_serp_data.get("related_questions")
+    if not isinstance(rq, list):
+        return layers
+
+    for i, item in enumerate(rq):
+        if len(layers) >= max_parents:
+            break
+        if not isinstance(item, dict):
+            continue
+        q = item.get("question")
+        if not isinstance(q, str) or not q.strip():
+            continue
+        token = item.get("next_page_token")
+        if not isinstance(token, str) or not token.strip():
+            continue
+        if i > 0 and delay > 0:
+            time.sleep(delay)
+        child_payload = _fetch_google_related_questions_expansion(api_key, token, localization)
+        if not child_payload:
+            continue
+        children = _qa_from_related_payload(child_payload)
+        if children:
+            layers.append({"parent_question": q.strip(), "children": children})
+    return layers
+
+
 def _serpapi_fetch_google_serp_snapshot(
     api_key: str,
     keyword: str,
@@ -280,14 +373,15 @@ def _serpapi_fetch_google_serp_snapshot(
     dict[str, Any] | None,
     list[dict[str, Any]],
     str | None,
+    dict[str, Any] | None,
 ]:
-    """Call SerpAPI once; return ``(audience_qa, top_organic_pages, ai_overview|None, related_searches, error)``."""
+    """Call SerpAPI once; return parsed fields, error, and **raw** JSON (for PAA ``next_page_token``s)."""
     kw = (keyword or "").strip()
     key = (api_key or "").strip()
     if not key:
-        return [], [], None, [], "SerpAPI API key is empty."
+        return [], [], None, [], "SerpAPI API key is empty.", None
     if not kw:
-        return [], [], None, [], "Keyword is empty."
+        return [], [], None, [], "Keyword is empty.", None
 
     params: dict[str, str] = {
         "engine": "google",
@@ -305,11 +399,11 @@ def _serpapi_fetch_google_serp_snapshot(
             raw = resp.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
         if not isinstance(data, dict):
-            return [], [], None, [], "SerpAPI returned an unexpected JSON shape."
+            return [], [], None, [], "SerpAPI returned an unexpected JSON shape.", None
         err = data.get("error")
         if isinstance(err, str) and err.strip():
             logger.warning("SerpAPI error for keyword %r: %s", kw, err.strip())
-            return [], [], None, [], err.strip()
+            return [], [], None, [], err.strip(), None
         aio = _ai_overview_from_payload(data)
         rel = _related_searches_from_payload(data)
         return (
@@ -318,6 +412,7 @@ def _serpapi_fetch_google_serp_snapshot(
             aio,
             rel,
             None,
+            data,
         )
     except HTTPError as exc:
         detail = f"HTTP {exc.code}"
@@ -327,50 +422,58 @@ def _serpapi_fetch_google_serp_snapshot(
             if isinstance(err_obj, dict):
                 em = err_obj.get("error")
                 if isinstance(em, str) and em.strip():
-                    return [], [], None, [], f"{detail}: {em.strip()}"
+                    return [], [], None, [], f"{detail}: {em.strip()}", None
         except Exception:
             pass
         reason = getattr(exc, "reason", None) or str(exc)
-        return [], [], None, [], f"SerpAPI request failed ({detail}: {reason})."
+        return [], [], None, [], f"SerpAPI request failed ({detail}: {reason}).", None
     except (URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("SerpAPI Google search request failed for keyword %r: %s", kw, exc)
-        return [], [], None, [], str(exc) or "SerpAPI request failed."
+        return [], [], None, [], str(exc) or "SerpAPI request failed.", None
 
 
-def fetch_serpapi_primary_keyword_snapshot(conn: sqlite3.Connection, keyword: str) -> dict[str, Any]:
-    """Return SerpAPI Google search fields for one keyword; empty lists / None on skip/error."""
+def fetch_serpapi_primary_keyword_snapshot(
+    conn: sqlite3.Connection,
+    keyword: str,
+    *,
+    expand_paa: bool = False,
+) -> dict[str, Any]:
+    """Return SerpAPI Google search fields for one keyword; empty lists / None on skip/error.
+
+    ``expand_paa`` runs extra ``google_related_questions`` calls (uses SerpAPI credits).
+    """
+    empty: dict[str, Any] = {
+        "audience_questions": [],
+        "top_ranking_pages": [],
+        "ai_overview": None,
+        "related_searches": [],
+        "paa_expansion": [],
+    }
     kw = (keyword or "").strip()
     if not kw:
-        return {
-            "audience_questions": [],
-            "top_ranking_pages": [],
-            "ai_overview": None,
-            "related_searches": [],
-        }
+        return empty
     api_key = (dg.get_service_setting(conn, "serpapi_api_key") or "").strip()
     if not api_key:
-        return {
-            "audience_questions": [],
-            "top_ranking_pages": [],
-            "ai_overview": None,
-            "related_searches": [],
-        }
+        return empty
     loc = mc.serpapi_google_search_params(conn)
-    qa, pages, aio, rel, err = _serpapi_fetch_google_serp_snapshot(api_key, kw, localization=loc)
+    qa, pages, aio, rel, err, raw_data = _serpapi_fetch_google_serp_snapshot(api_key, kw, localization=loc)
     if err:
         logger.debug("SerpAPI snapshot skipped: %s", err)
-        return {
-            "audience_questions": [],
-            "top_ranking_pages": [],
-            "ai_overview": None,
-            "related_searches": [],
-        }
-    return {
+        return empty
+    out: dict[str, Any] = {
         "audience_questions": qa,
         "top_ranking_pages": pages,
         "ai_overview": aio,
         "related_searches": rel,
+        "paa_expansion": [],
     }
+    if expand_paa and isinstance(raw_data, dict):
+        try:
+            out["paa_expansion"] = expand_paa_via_related_questions_engine(api_key, raw_data, loc)
+        except Exception:
+            logger.warning("SerpAPI PAA expansion failed (non-fatal)", exc_info=True)
+            out["paa_expansion"] = []
+    return out
 
 
 def fetch_related_questions_serpapi(conn: sqlite3.Connection, keyword: str) -> list[dict[str, str]]:
@@ -391,7 +494,7 @@ def run_serpapi_connection_test(
     key = (api_key_override or "").strip() or (dg.get_service_setting(conn, "serpapi_api_key") or "").strip()
     kw = (test_keyword or SERPAPI_SETTINGS_TEST_KEYWORD).strip() or SERPAPI_SETTINGS_TEST_KEYWORD
     loc = mc.serpapi_google_search_params(conn)
-    qa, pages, aio, rel, err = _serpapi_fetch_google_serp_snapshot(key, kw, localization=loc)
+    qa, pages, aio, rel, err, _raw = _serpapi_fetch_google_serp_snapshot(key, kw, localization=loc)
     if err:
         return {
             "ok": False,
@@ -445,11 +548,13 @@ def enrich_article_ideas_with_audience_questions(
             idea["top_ranking_pages"] = []
             idea["ai_overview"] = None
             idea["related_searches"] = []
+            idea["paa_expansion"] = []
         else:
-            snap = fetch_serpapi_primary_keyword_snapshot(conn, pk)
+            snap = fetch_serpapi_primary_keyword_snapshot(conn, pk, expand_paa=False)
             idea["audience_questions"] = snap["audience_questions"]
             idea["top_ranking_pages"] = snap["top_ranking_pages"]
             idea["ai_overview"] = snap.get("ai_overview")
             idea["related_searches"] = snap.get("related_searches") or []
+            idea["paa_expansion"] = snap.get("paa_expansion") or []
         if delay > 0 and i + 1 < len(ideas):
             time.sleep(delay)

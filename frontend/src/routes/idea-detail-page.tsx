@@ -9,6 +9,7 @@ import {
   ExternalLink,
   FileText,
   Layers3,
+  ListTree,
   ListOrdered,
   MessagesSquare,
   Search,
@@ -329,7 +330,10 @@ export function IdeaDetailPage() {
     onMutate: () => setSerpRefreshBanner(null),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
-      setSerpRefreshBanner({ tone: "ok", text: "SERP data updated from SerpAPI." });
+        setSerpRefreshBanner({
+          tone: "ok",
+          text: "SERP data updated (including expanded People also ask when SerpAPI returns expand tokens).",
+        });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : "Refresh failed.";
@@ -684,6 +688,57 @@ export function IdeaDetailPage() {
                 <p className="text-sm text-slate-400 leading-relaxed">
                   No questions stored for this idea. Save a SerpAPI key under Settings → Integrations, then generate
                   new ideas — each idea fetches related questions for its primary keyword via SerpAPI.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Expanded PAA (SerpAPI google_related_questions) — filled by Refresh SERP data */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-6 pt-6 pb-0">
+              <div className="flex items-center gap-2">
+                <ListTree size={18} className="text-slate-400" />
+                <h3 className="text-lg font-semibold text-ink">Expanded “People also ask”</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                One level deeper: for each top-level PAA item that includes an expand token, we call SerpAPI{" "}
+                <span className="font-mono text-[11px]">engine=google_related_questions</span> (extra credits). Use{" "}
+                <span className="font-medium text-slate-600">Refresh SERP data</span> above to fetch or update. If Google
+                does not return tokens, this section stays empty.
+              </p>
+            </CardHeader>
+            <CardContent className="px-6 pb-6 pt-3">
+              {idea.paa_expansion && idea.paa_expansion.length > 0 ? (
+                <div className="space-y-6 text-sm text-slate-700 leading-relaxed">
+                  {idea.paa_expansion.map((layer, li) => (
+                    <div
+                      key={`${li}-${layer.parent_question.slice(0, 32)}`}
+                      className="rounded-xl border border-slate-200/80 bg-slate-50/40 px-4 py-3"
+                    >
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Parent question</p>
+                      <p className="mt-0.5 font-medium text-ink">{layer.parent_question}</p>
+                      {layer.children.length > 0 ? (
+                        <ol className="mt-3 list-decimal space-y-2.5 pl-4 marker:text-slate-400">
+                          {layer.children.map((ch, ci) => (
+                            <li key={`${li}-${ci}-${ch.question.slice(0, 40)}`} className="pl-1">
+                              <span className="font-medium text-ink">{ch.question}</span>
+                              {ch.snippet ? (
+                                <p className="mt-0.5 text-sm font-normal text-slate-600 whitespace-pre-wrap">
+                                  {ch.snippet}
+                                </p>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  No expanded questions yet. Click <span className="font-medium text-slate-600">Refresh SERP data</span>{" "}
+                  with a SerpAPI key — we expand up to a few top-level PAA items when SerpAPI provides{" "}
+                  <span className="font-mono text-[11px]">next_page_token</span> on the main Google result.
                 </p>
               )}
             </CardContent>

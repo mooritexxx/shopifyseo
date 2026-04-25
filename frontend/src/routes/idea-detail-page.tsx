@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -43,6 +43,7 @@ import {
 } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
 import { ArticleDraftProgressPanel } from "../components/article-draft-progress-panel";
+import { PaaMindMap, buildPaaMindMapBranches } from "../components/paa-mindmap";
 import { getJson, patchJson, postJson } from "../lib/api";
 import {
   runArticleDraftStream,
@@ -486,6 +487,7 @@ export function IdeaDetailPage() {
     day: "numeric",
     year: "numeric",
   });
+  const paaBranches = useMemo(() => buildPaaMindMapBranches(idea), [idea]);
 
   return (
     <div className="space-y-6 pb-12">
@@ -653,6 +655,28 @@ export function IdeaDetailPage() {
                   each idea captures the first-page organic list for its primary keyword.
                 </p>
               )}
+            </CardContent>
+          </Card>
+
+          {/* Horizontal PAA tree (SerpAPI → mind map) */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-6 pt-6 pb-0">
+              <div className="flex items-center gap-2">
+                <ListTree size={18} className="text-slate-400" />
+                <h3 className="text-lg font-semibold text-ink">People also ask — map</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                Primary keyword on the left, first-level “People also ask” in the middle, expanded follow-up questions
+                on the right (when SerpAPI returned <span className="font-mono text-[11px]">next_page_token</span> and a
+                successful <span className="font-mono text-[11px]">google_related_questions</span> fetch). Similar layout
+                to PAA tree tools; scroll sideways if needed.
+              </p>
+            </CardHeader>
+            <CardContent className="px-3 pb-6 pt-2 sm:px-5">
+              <PaaMindMap
+                rootLabel={idea.primary_keyword?.trim() || "(no primary keyword)"}
+                branches={paaBranches}
+              />
             </CardContent>
           </Card>
 

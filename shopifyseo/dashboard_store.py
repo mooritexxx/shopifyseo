@@ -656,12 +656,16 @@ def _resolve_ga4_metrics_for_url(
 
 
 def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
+    """GSC, GA4, and URL inspection only.
+
+    PageSpeed denormalized columns are updated only from PageSpeed sync paths
+    (``_refresh_object_pagespeed_into_table`` and
+    ``refresh_pagespeed_columns_from_cache_for_all_cached_objects``) so a missing
+    ``google_api_cache`` entry cannot wipe prior scores.
+    """
     url = dq.object_url(object_type, handle)
     gsc_detail = dg.get_search_console_url_detail(conn, url, refresh=False, object_type=object_type, object_handle=handle)
     inspection_detail = dg.get_url_inspection(conn, url, refresh=False, object_type=object_type, object_handle=handle)
-    dg.invalidate_pagespeed_memory_cache(url)
-    pagespeed_mobile = dg.get_pagespeed(conn, url, "mobile", refresh=False, object_type=object_type, object_handle=handle)
-    pagespeed_desktop = dg.get_pagespeed(conn, url, "desktop", refresh=False, object_type=object_type, object_handle=handle)
     ga4_sessions, ga4_views, ga4_avg_dur, ga4_fetched_at = _resolve_ga4_metrics_for_url(
         conn, url, object_type, handle, ga4_refresh=False
     )
@@ -669,8 +673,6 @@ def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, obj
     gsc_row = (gsc_detail.get("page_rows") or [None])[0] if gsc_detail else None
     gsc_meta = (gsc_detail or {}).get("_cache") or {}
     inspection_meta = (inspection_detail or {}).get("_cache") or {}
-    m_perf, m_seo, m_stat, m_ts = _pagespeed_denormalized_fields(pagespeed_mobile)
-    d_perf, d_seo, d_stat, d_ts = _pagespeed_denormalized_fields(pagespeed_desktop)
     idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
     index_label, _, _ = index_status_info(inspection_detail)
     has_inspection_data = bool(idx.get("indexingState") or idx.get("coverageState"))
@@ -701,14 +703,6 @@ def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, obj
             index_coverage = ?,
             google_canonical = ?,
             index_last_fetched_at = ?,
-            pagespeed_performance = ?,
-            pagespeed_seo = ?,
-            pagespeed_status = ?,
-            pagespeed_last_fetched_at = ?,
-            pagespeed_desktop_performance = ?,
-            pagespeed_desktop_seo = ?,
-            pagespeed_desktop_status = ?,
-            pagespeed_desktop_last_fetched_at = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE handle = ?
         """,
@@ -726,14 +720,6 @@ def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, obj
             idx.get("coverageState"),
             idx.get("googleCanonical"),
             inspection_meta.get("fetched_at"),
-            m_perf,
-            m_seo,
-            m_stat,
-            m_ts,
-            d_perf,
-            d_seo,
-            d_stat,
-            d_ts,
             handle,
         ),
     )
@@ -1083,6 +1069,7 @@ def _parse_blog_article_parts(composite_handle: str) -> tuple[str, str] | None:
 
 
 def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite_handle: str) -> None:
+    """Same scope as :func:`_refresh_object_signals_into_table` (excludes PageSpeed)."""
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
         return
@@ -1092,9 +1079,6 @@ def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite
     url = dq.object_url(object_type, handle)
     gsc_detail = dg.get_search_console_url_detail(conn, url, refresh=False, object_type=object_type, object_handle=handle)
     inspection_detail = dg.get_url_inspection(conn, url, refresh=False, object_type=object_type, object_handle=handle)
-    dg.invalidate_pagespeed_memory_cache(url)
-    pagespeed_mobile = dg.get_pagespeed(conn, url, "mobile", refresh=False, object_type=object_type, object_handle=handle)
-    pagespeed_desktop = dg.get_pagespeed(conn, url, "desktop", refresh=False, object_type=object_type, object_handle=handle)
     ga4_sessions, ga4_views, ga4_avg_dur, ga4_fetched_at = _resolve_ga4_metrics_for_url(
         conn, url, object_type, handle, ga4_refresh=False
     )
@@ -1102,8 +1086,6 @@ def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite
     gsc_row = (gsc_detail.get("page_rows") or [None])[0] if gsc_detail else None
     gsc_meta = (gsc_detail or {}).get("_cache") or {}
     inspection_meta = (inspection_detail or {}).get("_cache") or {}
-    m_perf, m_seo, m_stat, m_ts = _pagespeed_denormalized_fields(pagespeed_mobile)
-    d_perf, d_seo, d_stat, d_ts = _pagespeed_denormalized_fields(pagespeed_desktop)
     idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
     index_label, _, _ = index_status_info(inspection_detail)
     conn.execute(
@@ -1122,14 +1104,6 @@ def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite
             index_coverage = ?,
             google_canonical = ?,
             index_last_fetched_at = ?,
-            pagespeed_performance = ?,
-            pagespeed_seo = ?,
-            pagespeed_status = ?,
-            pagespeed_last_fetched_at = ?,
-            pagespeed_desktop_performance = ?,
-            pagespeed_desktop_seo = ?,
-            pagespeed_desktop_status = ?,
-            pagespeed_desktop_last_fetched_at = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE blog_handle = ? AND handle = ?
         """,
@@ -1147,14 +1121,6 @@ def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite
             idx.get("coverageState"),
             idx.get("googleCanonical"),
             inspection_meta.get("fetched_at"),
-            m_perf,
-            m_seo,
-            m_stat,
-            m_ts,
-            d_perf,
-            d_seo,
-            d_stat,
-            d_ts,
             blog_h,
             art_h,
         ),
@@ -1428,7 +1394,10 @@ def refresh_ga4_signal_data_for_objects(conn: sqlite3.Connection, targets: list[
 
 
 def refresh_structured_seo_data(conn: sqlite3.Connection, *, batch_size: int = 10) -> None:
-    """Denormalize GSC / GA4 / URL Inspection / PageSpeed from local API cache onto all catalog rows.
+    """Denormalize GSC / GA4 / URL inspection from the local API cache onto all catalog rows.
+
+    PageSpeed columns are *not* updated here; use the PageSpeed sync path or
+    ``refresh_pagespeed_columns_from_cache_for_all_cached_objects``.
 
     (Name kept for callers; this is catalog *signal* reconciliation, not JSON-LD.)
     """

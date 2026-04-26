@@ -1,4 +1,9 @@
-"""AI-driven cluster generation and page-matching."""
+"""AI-driven cluster generation and page-matching.
+
+Uses each approved keyword's ``parent_topic`` string for pre-bucketing (see
+``_pre_cluster`` / ``_group_by_parent_topic``). That field is populated from
+DataForSEO when metrics are ingested; column name is historical.
+"""
 import concurrent.futures
 import json
 import logging

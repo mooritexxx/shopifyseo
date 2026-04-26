@@ -20,6 +20,7 @@ export const targetKeywordSchema = z.object({
   intent: z.string().nullable(),
   intent_raw: z.record(z.boolean()).nullable().optional(),
   content_type: z.string().nullable(),
+  /** DataForSEO core topic (`keyword_properties.core_keyword`); API/DB key is legacy `parent_topic`. */
   parent_topic: z.string().nullable().optional(),
   opportunity: z.number().nullable(),
   seed_keywords: z.array(z.string()).optional(),

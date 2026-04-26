@@ -104,6 +104,10 @@ def load_approved_keywords(conn: sqlite3.Connection) -> list[dict]:
     Shape matches what the clustering pipeline consumes: JSON-encoded
     columns are parsed back to Python objects, and ``content_type_label``
     is aliased to ``content_type`` to match the JSON-blob vocabulary.
+
+    ``parent_topic`` is a legacy name for the DataForSEO ``core_keyword`` value
+    when the row was last updated from DataForSEO; Google Ads–only fields may
+    omit it.
     """
     rows = conn.execute(
         "SELECT * FROM keyword_metrics WHERE status = 'approved'"

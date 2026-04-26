@@ -335,6 +335,7 @@ def _build_gsc_queries_text(handle: str, object_type_src: str, conn: sqlite3.Con
 
 
 def _build_keyword_text(row: dict) -> str:
+    # parent_topic on keyword_metrics: DataForSEO core_keyword (legacy column name); see dataforseo_client
     parts = [
         _coalesce(row.get("keyword")),
         _coalesce(row.get("parent_topic")),

@@ -2,13 +2,13 @@
 
 ## Overview
 
-Group approved target keywords into topic clusters using a hybrid approach: Ahrefs `parent_topic` for initial grouping, then LLM refinement to merge similar groups, assign orphans, and generate content-ready cluster metadata. Each cluster becomes a future content brief for AI content generation.
+Group approved target keywords into topic clusters using a hybrid approach: the `parent_topic` field on each keyword (ingested as **DataForSEO** `keyword_properties.core_keyword` in `dataforseo_client`; the DB column name is historical) for initial grouping, then LLM refinement to merge similar groups, assign orphans, and generate content-ready cluster metadata. Each cluster becomes a future content brief for AI content generation.
 
 ## 1. Clustering Logic
 
 ### Pass 1: Parent Topic Grouping
 
-Group approved keywords by their `parent_topic` field (from Ahrefs data). Keywords with `null` or empty `parent_topic` become "orphans" for LLM assignment.
+Group approved keywords by their `parent_topic` field (from **DataForSEO** `core_keyword` when using DataForSEO; empty if never filled). Keywords with `null` or empty `parent_topic` become "orphans" for LLM assignment.
 
 ### Pass 2: LLM Refinement
 
@@ -92,7 +92,7 @@ Load saved clusters from `service_settings`. Returns `{"clusters": [...], "gener
 
 **`_group_by_parent_topic(keywords) -> tuple[dict[str, list], list]`**
 
-Pure function. Groups keyword dicts by `parent_topic`. Returns `(groups_dict, orphans_list)`.
+Pure function. Groups keyword dicts by `parent_topic` (DataForSEO `core_keyword` when that pipeline ran). Returns `(groups_dict, orphans_list)`.
 
 **`_build_clustering_prompt(groups, orphans) -> tuple[str, str]`**
 

@@ -1,4 +1,11 @@
-"""Pure utility functions for keyword clustering — no DB or AI dependencies."""
+"""Pure utility functions for keyword clustering — no DB or AI dependencies.
+
+``parent_topic`` on each approved keyword (see ``keyword_metrics``) is a legacy **column name**:
+it is filled from **DataForSEO** ``keyword_properties.core_keyword`` when target keywords are
+fetched or refreshed through ``dataforseo_client``. The Google Ads Keyword Planner refresh path
+does not populate this field. Clustering still groups by this string via ``_group_by_parent_topic``
+and ``pre_cluster`` (empty/null → "orphan" for embedding-based assignment).
+"""
 import json
 import re
 from collections import Counter
@@ -19,7 +26,10 @@ def _suggested_match_object_key(suggested_match: dict | None) -> tuple[str, str]
 def _group_by_parent_topic(
     keywords: list[dict],
 ) -> tuple[dict[str, list[dict]], list[dict]]:
-    """Group keywords by parent_topic. Null/empty parent_topic → orphans."""
+    """Group keywords by ``parent_topic`` (DataForSEO core_keyword when present).
+
+    Null, missing, or empty ``parent_topic`` → orphans (handled separately in ``pre_cluster``).
+    """
     groups: dict[str, list[dict]] = {}
     orphans: list[dict] = []
     for kw in keywords:
@@ -134,8 +144,8 @@ def _build_clustering_prompt(
     """Build system and user prompts for LLM clustering refinement."""
     system_prompt = (
         f"You are an SEO content strategist for a {country_name} online vape store. "
-        "You will receive keyword data organized into preliminary groups (by provider parent topic) "
-        "plus a list of ungrouped orphan keywords.\n\n"
+        "You will receive keyword data organized into preliminary groups (shared topic / "
+        "parent label per keyword) plus a list of ungrouped orphan keywords (no such label on file).\n\n"
         "Your job:\n"
         "1. Assign every orphan keyword to an existing group OR create a new group for it.\n"
         "2. Merge groups that are too similar — they should share one page on the website.\n"

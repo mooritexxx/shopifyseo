@@ -212,6 +212,9 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 | PATCH  | `/api/keywords/clusters/match`                   | Body              | `{ ok, data }` | Override cluster → page match                  |
 
 
+**`parent_topic` on target keywords / `keyword_metrics`:** legacy column name. Filled from **DataForSEO** `keyword_properties.core_keyword` when metrics are ingested or refreshed via DataForSEO (`dataforseo_client` maps it to `parent_topic`). **Google Ads** Keyword Planner refresh updates Ads metrics only, not this field. Keyword clustering pre-bucketing uses `parent_topic` in `_group_by_parent_topic` and `pre_cluster` (empty value → treated as an orphan for embedding-based bucket assignment).
+
+
 ### Embeddings, image SEO, Sidekick, Google Ads lab, Auth
 
 

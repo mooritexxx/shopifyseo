@@ -1,4 +1,9 @@
-"""DataForSEO API v3 client — Labs + SERP for keyword and competitor research."""
+"""DataForSEO API v3 client — Labs + SERP for keyword and competitor research.
+
+``parent_topic`` in our target-keyword / ``keyword_metrics`` objects is set from
+DataForSEO ``keyword_properties.core_keyword`` (broad "core" topic for the phrase).
+The DB column name predates the DataForSEO integration; it is not from Ahrefs.
+"""
 
 from __future__ import annotations
 
@@ -230,6 +235,7 @@ def _keyword_data_block_to_explorer_row(
         "difficulty": difficulty,
         "traffic_potential": tp,
         "intents": intents,
+        # keyword_metrics / JSON key `parent_topic` — DataForSEO `keyword_properties.core_keyword`
         "parent_topic": kp.get("core_keyword"),
         "cpc": ki.get("cpc"),
         "global_volume": None,
@@ -803,7 +809,7 @@ def _ranked_item_to_site_explorer_row(item: dict, domain: str) -> dict | None:
         "traffic_potential": etv,
         "cpc": ki.get("cpc"),
         "intents": intents,
-        "parent_topic": kp.get("core_keyword"),
+        "parent_topic": kp.get("core_keyword"),  # see module docstring; maps to `keyword_metrics.parent_topic`
         "serp_features": serp_features,
         "word_count": len(kw.split()),
         "best_position": rank_group,

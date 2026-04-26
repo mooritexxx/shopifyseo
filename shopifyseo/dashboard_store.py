@@ -241,6 +241,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "updated_at": "TEXT",
         },
     )
+    # parent_topic: legacy column name; filled from DataForSEO keyword_properties.core_keyword in
+    # backend keyword flows (see dataforseo_client). Not populated by Google Ads-only refresh.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS keyword_metrics (

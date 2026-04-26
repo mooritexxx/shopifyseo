@@ -5,16 +5,19 @@ downstream LLM clustering step can run one call per bucket in parallel. Each
 bucket is a list of keyword dicts.
 
 Strategy:
-  1. Seed buckets from `parent_topic` groups (existing signal).
+  1. Seed buckets from `parent_topic` groups on each keyword. That field is a legacy
+     column name: when metrics are ingested via DataForSEO, it is set from
+     `keyword_properties.core_keyword` (see `dataforseo_client`). Google Ads–only
+     refresh does not populate it, so many rows may be orphans.
   2. For each orphan keyword with an embedding: assign to the bucket whose
      centroid is most similar, if cosine >= assign_threshold.
   3. Remaining orphans with embeddings: union-find merge on pairs with
      cosine >= merge_threshold; each connected component becomes a bucket.
   4. Orphans without embeddings: bundled into one fallback bucket (legacy
      behavior).
-  5. If numpy or the embeddings table is missing/empty: returns the parent-topic
+  5. If numpy or the embeddings table is missing/empty: returns the same-topic
      buckets plus a single orphan bucket, which is equivalent to chunking only
-     by parent_topic.
+     by `parent_topic`.
 """
 from __future__ import annotations
 

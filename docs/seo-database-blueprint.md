@@ -120,7 +120,7 @@ This is the central keyword intelligence table.
 Data points:
 - Keyword fundamentals: `keyword`, `volume`, `global_volume`, `difficulty`, `traffic_potential`, `cpc`, `clicks`, `cps`, `word_count`
 - Intent and content mapping: `intent`, `intent_raw`, `content_type_label`, `content_format_hint`, `is_local`
-- SERP/context: `serp_features`, `parent_topic`, `first_seen`, `serp_last_update`, `source_endpoint`
+- SERP/context: `serp_features`, `parent_topic` (legacy name; from DataForSEO `keyword_properties.core_keyword` when ingested via DataForSEO; not set by Google Ads–only refresh), `first_seen`, `serp_last_update`, `source_endpoint`
 - Opportunity + pipeline state: `opportunity`, `ranking_status`, `status`, `updated_at`
 - Our rank/performance: `gsc_position`, `gsc_clicks`, `gsc_impressions`
 - Lineage: `seed_keywords`
@@ -618,7 +618,7 @@ Legend:
 | `intent` | `TEXT` | 0 | 0 | `` |
 | `content_type_label` | `TEXT` | 0 | 0 | `` |
 | `intent_raw` | `TEXT` | 1 | 0 | `'{}'` |
-| `parent_topic` | `TEXT` | 0 | 0 | `` |
+| `parent_topic` | `TEXT` | 0 | 0 | See Intent/SERP: DataForSEO `core_keyword`, not Ahrefs. |
 | `opportunity` | `REAL` | 0 | 0 | `` |
 | `seed_keywords` | `TEXT` | 1 | 0 | `'[]'` |
 | `ranking_status` | `TEXT` | 1 | 0 | `'not_ranking'` |

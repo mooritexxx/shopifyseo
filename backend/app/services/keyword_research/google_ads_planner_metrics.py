@@ -1,4 +1,8 @@
-"""Keyword Planner historical metrics (Google Ads API) for target keywords."""
+"""Keyword Planner historical metrics (Google Ads API) for target keywords.
+
+Does not set ``parent_topic`` (that string comes from DataForSEO ``core_keyword``
+on keyword overview / research rows; see ``dataforseo_client``).
+"""
 
 from __future__ import annotations
 

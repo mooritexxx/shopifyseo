@@ -599,6 +599,10 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
     Only keywords with status ``"approved"`` are sent to the API.  Metrics are
     updated in place while preserving status, GSC data, and competitor fields.
     Returns the updated target keywords dict.
+
+    ``parent_topic`` on each item is updated from the fresh DataForSEO response
+    (``core_keyword`` → stored as ``parent_topic``). Google Ads Keyword Planner
+    alone does not refresh this field.
     """
     login, password = _preflight_keyword_research(conn, on_progress)
     cc_iso = _primary_country_iso(conn)
@@ -675,6 +679,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
             item["serp_features_json"] = json.dumps(serp)
             item["content_format_hint"] = derive_content_format_hint(serp, item["intent"])
         item["serp_last_update"] = fresh.get("serp_last_update", item.get("serp_last_update"))
+        # parent_topic: DataForSEO core_keyword in fresh rows; unchanged if no match
         item["parent_topic"] = fresh.get("parent_topic", item.get("parent_topic"))
         updated_count += 1
         # Preserve: status, seed_keywords, source_endpoint, gsc_*, ranking_status, competitor_*

@@ -2,6 +2,7 @@
 
 from shopifyseo.dashboard_ai_engine_parts.serp_draft_context import (
     build_serp_appendix_and_retrieval_boost,
+    select_required_paa_questions_for_draft,
 )
 
 
@@ -190,3 +191,51 @@ def test_paa_numbered_and_snippet_capped():
     assert paa_n == 1
     assert "1. Is this safe?" in appendix
     assert appendix.count("S") < 400
+
+
+def test_expanded_paa_hierarchy_guides_section_depth():
+    ctx = {
+        "suggested_title": "",
+        "brief": "",
+        "primary_keyword": "pod kits",
+        "supporting_keywords": [],
+        "gap_reason": "",
+        "dominant_serp_features": "PAA",
+        "content_format_hints": "",
+        "audience_questions": [
+            {"question": "Which pod kit is best for beginners?", "snippet": "Choose simple kits."},
+            {"question": "Are pod kits cheaper than disposables?", "snippet": ""},
+        ],
+        "paa_expansion": [
+            {
+                "parent_question": "Which pod kit is best for beginners?",
+                "children": [
+                    {"question": "What should a beginner look for in a pod kit?", "snippet": "Ease of use."},
+                    {"question": "Are refillable pod kits hard to maintain?", "snippet": ""},
+                    {"question": "Which pod kit is best for beginners?", "snippet": "duplicate parent"},
+                ],
+            }
+        ],
+        "top_ranking_pages": [],
+        "related_searches": [],
+        "ai_overview": None,
+    }
+
+    appendix, boost, paa_n = build_serp_appendix_and_retrieval_boost(
+        topic="Pod kits guide",
+        keywords=["pod kits"],
+        idea_serp_context=ctx,
+    )
+    required = select_required_paa_questions_for_draft(ctx)
+
+    assert paa_n == 2
+    assert "PAA hierarchy" in appendix
+    assert "Parent intent: Which pod kit is best for beginners?" in appendix
+    assert "What should a beginner look for in a pod kit?" in appendix
+    assert "Are refillable pod kits hard to maintain?" in appendix
+    assert required[:2] == [
+        "Which pod kit is best for beginners?",
+        "Are pod kits cheaper than disposables?",
+    ]
+    assert "What should a beginner look for in a pod kit?" in required
+    assert any("what should a beginner" in x for x in boost)

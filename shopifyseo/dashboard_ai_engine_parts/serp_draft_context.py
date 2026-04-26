@@ -12,6 +12,9 @@ DEFAULT_SERP_APPENDIX_MAX_CHARS = 7200
 # PAA: cap count and per-row snippet so SERP data cannot dominate the prompt.
 MAX_PAA_QUESTIONS = 18
 MAX_PAA_SNIPPET_CHARS = 280
+MAX_PAA_HIERARCHY_PARENTS = 6
+MAX_PAA_HIERARCHY_CHILDREN_PER_PARENT = 3
+MAX_REQUIRED_PAA_QUESTIONS = 6
 # AI overview: commodity radar, not full text to echo.
 MAX_AIO_BULLETS = 14
 MAX_AIO_SECTION_CHARS = 2200
@@ -152,6 +155,160 @@ def _paa_question_stem(q: str, max_words: int = 6) -> str:
     return " ".join(words[:max_words])
 
 
+def _question_key(q: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", (q or "").lower())).strip()
+
+
+def _question_role_hint(q: str) -> str:
+    shape = _subsection_shape_hint(q)
+    if shape:
+        return shape
+    ql = f" {(q or '').strip().lower()} "
+    if ql.strip().startswith(("what ", "which ")):
+        return "definition, criteria, or buyer-decision section"
+    if ql.strip().startswith(("why ", "when ")):
+        return "context and caveats"
+    if ql.strip().startswith(("can ", "does ", "do ")):
+        return "direct answer with practical next step"
+    if "problem" in ql or "not working" in ql or "not charging" in ql or "fix" in ql:
+        return "troubleshooting subsection"
+    return "supporting reader question"
+
+
+def _clean_question_row(row: Any) -> dict[str, str] | None:
+    if not isinstance(row, dict):
+        return None
+    q = str(row.get("question") or "").strip()
+    if not q:
+        return None
+    sn = str(row.get("snippet") or "").strip()
+    if len(sn) > MAX_PAA_SNIPPET_CHARS:
+        sn = sn[: MAX_PAA_SNIPPET_CHARS - 1] + "…"
+    return {"question": q, "snippet": sn}
+
+
+def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Compact parent → child PAA tree for draft prompts.
+
+    Parent PAA questions represent section intent. Expanded children are capped and
+    deduped so they can add depth without overwhelming the prompt or forcing thin FAQ spam.
+    """
+    ctx = idea_serp_context or {}
+    raw_aq = ctx.get("audience_questions") or []
+    audience_questions = raw_aq if isinstance(raw_aq, list) else []
+    raw_exp = ctx.get("paa_expansion") or []
+    expansions = raw_exp if isinstance(raw_exp, list) else []
+
+    expansion_by_parent: dict[str, list[dict[str, str]]] = {}
+    expansion_order: list[str] = []
+    expansion_parent_text: dict[str, str] = {}
+    for layer in expansions:
+        if not isinstance(layer, dict):
+            continue
+        parent = str(layer.get("parent_question") or "").strip()
+        key = _question_key(parent)
+        children_raw = layer.get("children")
+        if not key or not isinstance(children_raw, list):
+            continue
+        seen_child_keys: set[str] = set()
+        children: list[dict[str, str]] = []
+        for child_raw in children_raw:
+            child = _clean_question_row(child_raw)
+            if not child:
+                continue
+            ck = _question_key(child["question"])
+            if not ck or ck == key or ck in seen_child_keys:
+                continue
+            seen_child_keys.add(ck)
+            children.append(child)
+            if len(children) >= MAX_PAA_HIERARCHY_CHILDREN_PER_PARENT:
+                break
+        if not children:
+            continue
+        if key not in expansion_by_parent:
+            expansion_order.append(key)
+            expansion_parent_text[key] = parent
+        expansion_by_parent[key] = children
+
+    rows: list[dict[str, Any]] = []
+    seen_parent_keys: set[str] = set()
+
+    def _append_parent(parent_q: str, snippet: str = "") -> None:
+        key = _question_key(parent_q)
+        if not key or key in seen_parent_keys or len(rows) >= MAX_PAA_HIERARCHY_PARENTS:
+            return
+        seen_parent_keys.add(key)
+        rows.append(
+            {
+                "parent_question": parent_q.strip(),
+                "snippet": snippet.strip(),
+                "role_hint": _question_role_hint(parent_q),
+                "children": expansion_by_parent.get(key, []),
+            }
+        )
+
+    for row in audience_questions:
+        cleaned = _clean_question_row(row)
+        if cleaned:
+            _append_parent(cleaned["question"], cleaned["snippet"])
+        if len(rows) >= MAX_PAA_HIERARCHY_PARENTS:
+            break
+
+    for key in expansion_order:
+        if len(rows) >= MAX_PAA_HIERARCHY_PARENTS:
+            break
+        if key not in seen_parent_keys:
+            _append_parent(expansion_parent_text.get(key, ""))
+
+    return rows
+
+
+def select_required_paa_questions_for_draft(
+    idea_serp_context: dict[str, Any] | None,
+    *,
+    max_questions: int = MAX_REQUIRED_PAA_QUESTIONS,
+) -> list[str]:
+    """Select visible FAQ/schema targets from parent PAA plus useful child follow-ups."""
+    hierarchy = build_paa_question_hierarchy(idea_serp_context)
+    if max_questions <= 0:
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    def _add(q: str) -> None:
+        key = _question_key(q)
+        if not key or key in seen or len(selected) >= max_questions:
+            return
+        # Avoid selecting near-duplicates where one question simply contains the other.
+        for existing in seen:
+            if len(key) >= 18 and len(existing) >= 18 and (key in existing or existing in key):
+                return
+        seen.add(key)
+        selected.append(q.strip())
+
+    # Parent questions are strongest section anchors; reserve room for child depth.
+    parent_soft_cap = min(4, max_questions)
+    for layer in hierarchy:
+        _add(str(layer.get("parent_question") or ""))
+        if len(selected) >= parent_soft_cap:
+            break
+
+    # Promote one or two distinct child questions as depth targets.
+    for layer in hierarchy:
+        for child in layer.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            _add(str(child.get("question") or ""))
+            if len(selected) >= max_questions:
+                return selected
+
+    for layer in hierarchy:
+        _add(str(layer.get("parent_question") or ""))
+        if len(selected) >= max_questions:
+            break
+    return selected
+
+
 STYLE_EXAMPLES_BLOCK = """=== SERP: Style examples (do not copy — adapt to your topic) ===
 These illustrate diverse opening pivots only; they are not facts about this topic.
 - Comparison shape: after establishing the main topic, narrow to the decision readers still face and contrast the leading options on criteria that matter for purchase or use.
@@ -184,6 +341,7 @@ def build_serp_appendix_and_retrieval_boost(
     audience_questions: list[dict[str, str]] = idea_serp_context.get("audience_questions") or []
     if not isinstance(audience_questions, list):
         audience_questions = []
+    paa_hierarchy = build_paa_question_hierarchy(idea_serp_context)
 
     top_pages: list[dict[str, str]] = idea_serp_context.get("top_ranking_pages") or []
     if not isinstance(top_pages, list):
@@ -253,6 +411,32 @@ def build_serp_appendix_and_retrieval_boost(
         extra = total_paa - len(paa_lines)
         tail = f"\n(+ {extra} further PAA-style questions in cluster — cover as many as fit naturally.)" if extra > 0 else ""
         sections.append("=== SERP: People Also Ask (cover in H2/H3 where natural) ===\n" + "\n".join(paa_lines) + tail)
+
+    hierarchy_lines: list[str] = []
+    if any(layer.get("children") for layer in paa_hierarchy):
+        for i, layer in enumerate(paa_hierarchy, start=1):
+            parent = str(layer.get("parent_question") or "").strip()
+            if not parent:
+                continue
+            role = str(layer.get("role_hint") or "").strip()
+            children = [c for c in (layer.get("children") or []) if isinstance(c, dict)]
+            if not children:
+                continue
+            hierarchy_lines.append(f"{i}. Parent intent: {parent}")
+            if role:
+                hierarchy_lines.append(f"   Suggested section role: {role}")
+            hierarchy_lines.append("   Child follow-ups to answer inside the same section:")
+            for child in children[:MAX_PAA_HIERARCHY_CHILDREN_PER_PARENT]:
+                cq = str(child.get("question") or "").strip()
+                if cq:
+                    hierarchy_lines.append(f"   - {cq}")
+    if hierarchy_lines:
+        sections.append(
+            "=== SERP: PAA hierarchy (use for cohesive section depth) ===\n"
+            "Treat parent questions as reader-intent anchors. Use child follow-ups as subpoints, examples, or concise "
+            "FAQ answers under the same section; do not force every child into the article.\n"
+            + "\n".join(hierarchy_lines)
+        )
 
     # --- (3) Related searches (PASF tiers) ---
     tier_high: list[dict[str, Any]] = []
@@ -372,6 +556,17 @@ def build_serp_appendix_and_retrieval_boost(
         stem = _paa_question_stem(str(row.get("question") or ""))
         if stem:
             _add_boost(stem)
+    for layer in paa_hierarchy:
+        if len(boost) >= 1 + MAX_BOOST_RELATED + MAX_BOOST_PAA_STEMS:
+            break
+        for child in layer.get("children") or []:
+            if len(boost) >= 1 + MAX_BOOST_RELATED + MAX_BOOST_PAA_STEMS:
+                break
+            if not isinstance(child, dict):
+                continue
+            stem = _paa_question_stem(str(child.get("question") or ""))
+            if stem:
+                _add_boost(stem)
 
     return appendix, boost, paa_shown_count
 

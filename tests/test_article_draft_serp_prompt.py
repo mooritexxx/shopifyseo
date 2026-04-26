@@ -40,16 +40,22 @@ def db_conn():
 def _filler_body(url: str) -> str:
     """Passes compliance: length, primary keyword phrase, FAQPage JSON-LD, primary href."""
     qtext = "Which pod kit is best for beginners?"
+    child_q = "What should a beginner look for in a pod kit?"
     faq = (
         '<script type="application/ld+json">'
         '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":['
         '{"@type":"Question","name":"' + qtext.replace('"', '\\"') + '",'
-        '"acceptedAnswer":{"@type":"Answer","text":"Start with a simple refillable kit."}}]}'
+        '"acceptedAnswer":{"@type":"Answer","text":"Start with a simple refillable kit."}},'
+        '{"@type":"Question","name":"' + child_q.replace('"', '\\"') + '",'
+        '"acceptedAnswer":{"@type":"Answer","text":"Look for simple controls, easy refills, and available pods."}}]}'
         "</script>"
     )
     link = f'<p><a href="{url}">pod kits</a> and more about pod kits here.</p>'
     serp_h2 = "<h2>Pod kits vs disposable vapes</h2>"
-    visible = f"<h3>{qtext}</h3><p>Start with a simple refillable kit.</p>"
+    visible = (
+        f"<h3>{qtext}</h3><p>Start with a simple refillable kit.</p>"
+        f"<h3>{child_q}</h3><p>Look for simple controls, easy refills, and available pods.</p>"
+    )
     return link + serp_h2 + visible + faq + "<p>" + ("word " * 5000) + "</p>"
 
 
@@ -79,6 +85,14 @@ def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, m
         "dominant_serp_features": "PAA, related searches",
         "content_format_hints": "comparison tables",
         "audience_questions": [{"question": "Which pod kit is best for beginners?", "snippet": "Hint only."}],
+        "paa_expansion": [
+            {
+                "parent_question": "Which pod kit is best for beginners?",
+                "children": [
+                    {"question": "What should a beginner look for in a pod kit?", "snippet": "Ease and pod availability."}
+                ],
+            }
+        ],
         "top_ranking_pages": [{"title": "SERP Title Alpha", "url": "https://serp.example/a"}],
         "related_searches": [
             {"query": "pod kits vs disposable vapes", "position": 1},
@@ -108,6 +122,8 @@ def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, m
 
     assert "SERP-informed research" in user_content
     assert "Which pod kit is best for beginners" in user_content
+    assert "What should a beginner look for in a pod kit" in user_content
+    assert "PAA hierarchy" in user_content
     assert "(position 1)" in user_content and "pod kits vs disposable" in user_content
     assert "SERP Title Alpha" in user_content
     # Competitor domains must not appear in the SERP appendix (titles only).
@@ -165,6 +181,7 @@ def test_compliance_retry_calls_ai_twice(db_conn, monkeypatch):
         "dominant_serp_features": "",
         "content_format_hints": "",
         "audience_questions": [{"question": "Which pod kit?", "snippet": ""}],
+        "paa_expansion": [],
         "top_ranking_pages": [],
         "related_searches": [],
         "ai_overview": None,

@@ -103,7 +103,11 @@ def generate_article_draft(
     Raises RuntimeError on AI failure.
     """
     settings = ai_settings(conn)
-    from .serp_draft_context import MAX_PAA_QUESTIONS
+    from .serp_draft_context import (
+        MAX_PAA_QUESTIONS,
+        build_paa_question_hierarchy,
+        select_required_paa_questions_for_draft,
+    )
     from .article_draft_compliance import (
         COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
         MIN_ARTICLE_BODY_HTML_CHARS,
@@ -294,16 +298,24 @@ def generate_article_draft(
     )
 
     _paa_rows = (idea_serp_context or {}).get("audience_questions") or []
-    _has_serp_paa = bool(isinstance(_paa_rows, list) and len(_paa_rows) > 0)
+    _paa_hierarchy = build_paa_question_hierarchy(idea_serp_context or {})
+    required_questions = select_required_paa_questions_for_draft(idea_serp_context or {})
+    _has_serp_paa = bool(
+        (isinstance(_paa_rows, list) and len(_paa_rows) > 0)
+        or _paa_hierarchy
+        or required_questions
+    )
     _n_visible_paa_for_faq = (
-        paa_shown_count
+        len(required_questions)
+        if required_questions
+        else paa_shown_count
         if paa_shown_count > 0
         else (min(len(_paa_rows), MAX_PAA_QUESTIONS) if _has_serp_paa else 0)
     )
     _faq_pair_target = min(6, _n_visible_paa_for_faq) if _n_visible_paa_for_faq > 0 else 0
     _paa_faq_instruction = (
-        "People Also Ask (PAA) signals are included below for this topic. Map those questions to explicit H2/H3 "
-        "coverage where they fit the outline; address the highest-priority questions first. "
+        "People Also Ask (PAA) signals are included below for this topic. Use parent PAA as section intent and "
+        "expanded child PAA as depth inside the matching section; address the highest-priority questions first. "
         "At the end of the body, add FAQPage JSON-LD (Question + acceptedAnswer) aligned to the reader questions "
         f"you answer in the article — include **{_faq_pair_target}** Question/acceptedAnswer pairs (match the "
         "wording of your `<h3>` FAQ-style questions in the body; do not invent questions you did not cover).\n"
@@ -942,12 +954,6 @@ def generate_article_draft(
         if str(item.get("keyword") or "").strip().lower() in target_metric_keywords
     ][:40]
 
-    required_questions = [
-        str(row.get("question") or "").strip()
-        for row in (_paa_rows if isinstance(_paa_rows, list) else [])
-        if isinstance(row, dict) and str(row.get("question") or "").strip()
-    ][: max(_faq_pair_target, min(len(_paa_rows), 6)) if _has_serp_paa else 0]
-
     def _top_ranking_page_titles_only(raw_pages: object) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         if not isinstance(raw_pages, list):
@@ -988,6 +994,7 @@ def generate_article_draft(
             "dominant_serp_features": (idea_serp_context or {}).get("dominant_serp_features") or "",
             "content_format_hints": (idea_serp_context or {}).get("content_format_hints") or "",
             "audience_questions": _paa_rows if isinstance(_paa_rows, list) else [],
+            "paa_hierarchy": _paa_hierarchy,
             "required_faq_questions": required_questions,
             "related_searches": (idea_serp_context or {}).get("related_searches") or [],
             "tier_1_3_related_searches": _tier_queries,

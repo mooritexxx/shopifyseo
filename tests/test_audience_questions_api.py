@@ -49,6 +49,41 @@ def test_top_organic_pages_from_payload():
     ]
 
 
+def test_soft_serpapi_error_ignored_when_paa_present(conn, monkeypatch: pytest.MonkeyPatch):
+    """SerpAPI may set an organic-empty error while related_questions is still populated."""
+    from shopifyseo import dashboard_google as dg
+
+    def fake_get_setting(_c: object, key: str) -> str:
+        return "test-key" if key == "serpapi_api_key" else ""
+
+    monkeypatch.setattr(dg, "get_service_setting", fake_get_setting)
+
+    class FakeResp:
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "error": "Google hasn't returned any results for this query.",
+                    "related_questions": [
+                        {"question": "What is a pod in a vape?", "snippet": "A pod is…"},
+                    ],
+                    "organic_results": [],
+                }
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(aq, "urlopen", lambda *a, **k: FakeResp())
+    out = aq.fetch_serpapi_primary_keyword_snapshot(conn, "pod vape", expand_paa=False)
+    assert out.get("serpapi_error") is None
+    assert out["audience_questions"] == [
+        {"question": "What is a pod in a vape?", "snippet": "A pod is…"},
+    ]
+
+
 def test_qa_from_related_payload_uses_snippet_only():
     data = {
         "related_questions": [

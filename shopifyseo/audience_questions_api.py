@@ -51,6 +51,10 @@ SERPAPI_SETTINGS_TEST_KEYWORD = "black coffee"
 # Cap organic rows stored per idea (first page only).
 _MAX_ORGANIC_RESULTS = 15
 
+# SerpAPI Google `engine=google`: low `num` is linked to sporadic empty / error-like responses;
+# 10+ is a common stable default.
+_SERPAPI_GOOGLE_NUM_RESULTS = "10"
+
 # Cap ``related_searches`` rows per idea.
 _MAX_RELATED_SEARCHES = 40
 
@@ -256,6 +260,25 @@ def _related_search_position(entry: dict[str, Any], fallback: int) -> int:
     return fallback
 
 
+def _serpapi_payload_has_usable_features(data: dict[str, Any]) -> bool:
+    """True if the JSON has at least one block we store (PAA, organics, AI overview, related searches)."""
+    if _qa_from_related_payload(data):
+        return True
+    if _top_organic_pages_from_payload(data):
+        return True
+    if _ai_overview_from_payload(data):
+        return True
+    if _related_searches_from_payload(data):
+        return True
+    return False
+
+
+def _is_serpapi_organic_empty_noise(err: str) -> bool:
+    """SerpAPI sometimes sets this when organic is empty or parsing glitches, while PAA still exists."""
+    el = err.strip().lower()
+    return "hasn't returned any results" in el or "has not returned any results" in el
+
+
 def _related_searches_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build ``[{query, position}, ...]`` from SerpAPI ``related_searches``."""
     raw = data.get("related_searches")
@@ -387,6 +410,7 @@ def _serpapi_fetch_google_serp_snapshot(
         "engine": "google",
         "q": kw,
         "api_key": key,
+        "num": _SERPAPI_GOOGLE_NUM_RESULTS,
     }
     if localization:
         for lk, lv in localization.items():
@@ -400,10 +424,21 @@ def _serpapi_fetch_google_serp_snapshot(
         data = json.loads(raw)
         if not isinstance(data, dict):
             return [], [], None, [], "SerpAPI returned an unexpected JSON shape.", None
-        err = data.get("error")
-        if isinstance(err, str) and err.strip():
-            logger.warning("SerpAPI error for keyword %r: %s", kw, err.strip())
-            return [], [], None, [], err.strip(), None
+        err: str | None = None
+        raw_err = data.get("error")
+        if isinstance(raw_err, str) and raw_err.strip():
+            e = raw_err.strip()
+            if _is_serpapi_organic_empty_noise(e) and _serpapi_payload_has_usable_features(data):
+                logger.info(
+                    "SerpAPI reported %r for keyword %r but SERP features are present; continuing.",
+                    e,
+                    kw,
+                )
+            else:
+                err = e
+        if err:
+            logger.warning("SerpAPI error for keyword %r: %s", kw, err)
+            return [], [], None, [], err, None
         aio = _ai_overview_from_payload(data)
         rel = _related_searches_from_payload(data)
         return (

@@ -24,8 +24,9 @@ When ``expand_paa=True`` (article idea **Refresh SERP data** only), after the
 initial ``engine=google`` response we call SerpAPI ``engine=google_related_questions``
 for each top-level ``related_questions`` item that includes a ``next_page_token``,
 up to ``PAA_EXPANSION_MAX_PARENTS`` (default 6). Each parent is paginated to collect
-up to ``PAA_EXPANSION_MAX_CHILDREN`` (default 10) sub-questions, following
-``next_page_token`` on the last item and optional same-token refetches (``PAA_SAME_TOKEN_EXTRA_ROUNDS``).
+up to ``PAA_EXPANSION_MAX_CHILDREN`` (default 10) sub-questions, following distinct
+``next_page_token`` / ``serpapi_link`` on any result row, plus same-token refetches
+(``PAA_SAME_TOKEN_EXTRA_ROUNDS``).
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ import sqlite3
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import shopifyseo.dashboard_google as dg
@@ -70,7 +71,7 @@ PAA_EXPANSION_MAX_PARENTS_DEFAULT = 6
 PAA_EXPANSION_MAX_CHILDREN_DEFAULT = 10
 PAA_EXPANSION_DELAY_SEC_DEFAULT = 0.35
 # Extra requests with the same next_page_token can return more rows (see SerpAPI blog, PAA pagination).
-PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT = 1
+PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT = 4
 
 # Cap AI overview payload size (SerpAPI shape varies; keep JSON bounded).
 _MAX_AI_OVERVIEW_BLOCKS = 48
@@ -311,28 +312,46 @@ def _related_searches_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
-def _paa_next_page_token_from_expansion(
+def _paa_serpapi_link_next_page_token(item: dict[str, Any]) -> str | None:
+    """Parse ``next_page_token`` from a ``serpapi_link`` when the field is easier to use than the JSON value."""
+    link = item.get("serpapi_link")
+    if not isinstance(link, str) or "next_page_token" not in link:
+        return None
+    try:
+        q = parse_qs(urlparse(link).query)
+        toks = q.get("next_page_token", [])
+        if not toks or not isinstance(toks[0], str):
+            return None
+        t = unquote(toks[0].strip())
+        return t or None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _paa_continuation_token_from_expansion(
     child_payload: dict[str, Any], request_token: str
 ) -> str | None:
-    """Next ``next_page_token`` to load more sub-questions for the same expanded parent.
+    """Next page token: scan **all** related_questions (end-first); field + ``serpapi_link`` fallbacks.
 
-    Google typically adds ~2 at a time; SerpAPI exposes the next step on the last
-    ``related_questions`` item. Skip if it equals *request_token* to avoid a tight loop.
+    Only the last item is not always the continuation — some parents expose the next step on
+    an earlier row. Skip tokens that equal *request_token* to avoid a tight loop.
     """
     req = (request_token or "").strip()
     rq = child_payload.get("related_questions")
     if not isinstance(rq, list) or not rq:
         return None
-    last = rq[-1]
-    if not isinstance(last, dict):
-        return None
-    t = last.get("next_page_token")
-    if not isinstance(t, str) or not t.strip():
-        return None
-    ts = t.strip()
-    if ts == req:
-        return None
-    return ts
+    for item in reversed(rq):
+        if not isinstance(item, dict):
+            continue
+        t = item.get("next_page_token")
+        if isinstance(t, str) and t.strip():
+            ts = t.strip()
+            if ts != req:
+                return ts
+        st = _paa_serpapi_link_next_page_token(item)
+        if st and st != req:
+            return st
+    return None
 
 
 def _fetch_google_related_questions_expansion(
@@ -395,7 +414,7 @@ def _collect_paa_children_for_one_parent(
         )
     except (TypeError, ValueError):
         extra_same = PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT
-    extra_same = max(0, min(extra_same, 4))
+    extra_same = max(0, min(extra_same, 8))
     try:
         max_req = int(os.environ.get("PAA_EXPANSION_MAX_REQUESTS_PER_PARENT", "18"))
     except (TypeError, ValueError):
@@ -421,7 +440,7 @@ def _collect_paa_children_for_one_parent(
             out.append(row)
             if len(out) >= max_children:
                 return out
-        nxt = _paa_next_page_token_from_expansion(child_payload, token)
+        nxt = _paa_continuation_token_from_expansion(child_payload, token)
         if nxt:
             token = nxt
             continue

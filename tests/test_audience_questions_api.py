@@ -342,3 +342,23 @@ def test_paa_children_pagination_uses_continuation_token(monkeypatch: pytest.Mon
     )
     assert [x["question"] for x in out] == ["One?", "Two?"]
     assert calls == ["T-step-1", "T-step-2"]
+
+
+def test_paa_continuation_uses_serpapi_link_when_json_token_matches_request() -> None:
+    """If only ``serpapi_link`` encodes a different next token, we still continue."""
+    p = {
+        "related_questions": [
+            {
+                "question": "A?",
+                "next_page_token": "REQ-TOK",
+            },
+            {
+                "question": "B?",
+                "next_page_token": "REQ-TOK",
+                "serpapi_link": "https://serpapi.com/search.json?engine=google_related_questions&next_page_token=OTHER-TOK-XYZ"
+                "&google_domain=google.com",
+            },
+        ],
+    }
+    n = aq._paa_continuation_token_from_expansion(p, "REQ-TOK")
+    assert n == "OTHER-TOK-XYZ"

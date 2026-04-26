@@ -102,7 +102,8 @@ export function PaaMindMap({ rootLabel, branches }: { rootLabel: string; branche
   }
 
   const GAP = 10;
-  const lineH2 = 22;
+  // Vertical pitch for L2 must fit wrapped 12px text in a ~200px-wide box (often 2+ lines).
+  const lineH2 = 52;
   const minBlock = 40;
 
   const l1Meta: { box: Box; l2: Box[] }[] = [];
@@ -120,7 +121,7 @@ export function PaaMindMap({ rootLabel, branches }: { rootLabel: string; branche
       const firstY = l1Y + (l1H - n2 * lineH2) / 2;
       for (let j = 0; j < n2; j++) {
         const y2 = firstY + j * lineH2;
-        const bh = lineH2 - 4;
+        const bh = lineH2 - 6;
         l2.push({
           x: X2,
           y: y2,

@@ -88,8 +88,11 @@ def main() -> int:
     loc = mc.serpapi_google_search_params(conn)
     print(f"Localization (gl, hl, google_domain): {loc}")
 
-    qa, pages, aio, rel, err, raw = _serpapi_fetch_google_serp_snapshot(key, pk, localization=loc)
+    qa, pages, aio, rel, err, raw, loc_used = _serpapi_fetch_google_serp_snapshot(
+        key, pk, localization=loc
+    )
     print("\n=== First HTTP: engine=google (same as refresh) ===")
+    print(f"localization used for main SERP + PAA expansion: {loc_used}")
     print(f"internal error string: {err!r}")
     print(f"parsed audience_questions: {len(qa)}")
     print(f"parsed top_ranking_pages: {len(pages)}")

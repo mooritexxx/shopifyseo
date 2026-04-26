@@ -55,6 +55,11 @@ _MAX_ORGANIC_RESULTS = 15
 # 10+ is a common stable default.
 _SERPAPI_GOOGLE_NUM_RESULTS = "10"
 
+# If primary-market Google returns the common “no results” error and no blocks to parse, retry
+# once on google.com — some queries (e.g. short head terms) return nothing on a regional TLD
+# but do return PAA/organics in the US index.
+_SERPAPI_US_FALLBACK: dict[str, str] = {"gl": "us", "hl": "en", "google_domain": "google.com"}
+
 # Cap ``related_searches`` rows per idea.
 _MAX_RELATED_SEARCHES = 40
 
@@ -385,11 +390,10 @@ def expand_paa_via_related_questions_engine(
     return layers
 
 
-def _serpapi_fetch_google_serp_snapshot(
+def _serpapi_one_google_organic_request(
     api_key: str,
     keyword: str,
-    *,
-    localization: dict[str, str] | None = None,
+    localization: dict[str, str] | None,
 ) -> tuple[
     list[dict[str, str]],
     list[dict[str, str]],
@@ -398,7 +402,7 @@ def _serpapi_fetch_google_serp_snapshot(
     str | None,
     dict[str, Any] | None,
 ]:
-    """Call SerpAPI once; return parsed fields, error, and **raw** JSON (for PAA ``next_page_token``s)."""
+    """Single ``engine=google`` HTTP call; return parsed fields, error, raw JSON (or None on hard error)."""
     kw = (keyword or "").strip()
     key = (api_key or "").strip()
     if not key:
@@ -467,6 +471,44 @@ def _serpapi_fetch_google_serp_snapshot(
         return [], [], None, [], str(exc) or "SerpAPI request failed.", None
 
 
+def _serpapi_fetch_google_serp_snapshot(
+    api_key: str,
+    keyword: str,
+    *,
+    localization: dict[str, str] | None = None,
+) -> tuple[
+    list[dict[str, str]],
+    list[dict[str, str]],
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    str | None,
+    dict[str, Any] | None,
+    dict[str, str],
+]:
+    """Call SerpAPI (and optionally a US index fallback); return parsed fields, error, raw JSON, **loc used** for PAA.
+
+    PAA expansion must use the same ``gl``/domain as the main response that provided ``next_page_token``s.
+    """
+    loc_primary = {k: v for k, v in (localization or {}).items() if isinstance(v, str) and v.strip()}
+    r1 = _serpapi_one_google_organic_request(api_key, keyword, loc_primary)
+    if r1[4] is None:
+        return (*r1, loc_primary)
+
+    err1 = r1[4]
+    gl0 = (loc_primary.get("gl") or "").lower()
+    if _is_serpapi_organic_empty_noise(err1) and gl0 != "us":
+        r2 = _serpapi_one_google_organic_request(
+            api_key, keyword, dict(_SERPAPI_US_FALLBACK)
+        )
+        if r2[4] is None:
+            logger.info(
+                "SERP: primary market returned no parseable index for %r; using US Google (google.com) for this run.",
+                (keyword or "").strip(),
+            )
+            return (*r2, dict(_SERPAPI_US_FALLBACK))
+    return (*r1, loc_primary)
+
+
 def fetch_serpapi_primary_keyword_snapshot(
     conn: sqlite3.Connection,
     keyword: str,
@@ -491,7 +533,9 @@ def fetch_serpapi_primary_keyword_snapshot(
     if not api_key:
         return empty
     loc = mc.serpapi_google_search_params(conn)
-    qa, pages, aio, rel, err, raw_data = _serpapi_fetch_google_serp_snapshot(api_key, kw, localization=loc)
+    qa, pages, aio, rel, err, raw_data, loc_effective = _serpapi_fetch_google_serp_snapshot(
+        api_key, kw, localization=loc
+    )
     if err:
         logger.debug("SerpAPI snapshot skipped: %s", err)
         # So callers (e.g. refresh SERP) can surface a failure instead of saving empty JSON.
@@ -505,7 +549,9 @@ def fetch_serpapi_primary_keyword_snapshot(
     }
     if expand_paa and isinstance(raw_data, dict):
         try:
-            out["paa_expansion"] = expand_paa_via_related_questions_engine(api_key, raw_data, loc)
+            out["paa_expansion"] = expand_paa_via_related_questions_engine(
+                api_key, raw_data, loc_effective
+            )
         except Exception:
             logger.warning("SerpAPI PAA expansion failed (non-fatal)", exc_info=True)
             out["paa_expansion"] = []
@@ -530,7 +576,9 @@ def run_serpapi_connection_test(
     key = (api_key_override or "").strip() or (dg.get_service_setting(conn, "serpapi_api_key") or "").strip()
     kw = (test_keyword or SERPAPI_SETTINGS_TEST_KEYWORD).strip() or SERPAPI_SETTINGS_TEST_KEYWORD
     loc = mc.serpapi_google_search_params(conn)
-    qa, pages, aio, rel, err, _raw = _serpapi_fetch_google_serp_snapshot(key, kw, localization=loc)
+    qa, pages, aio, rel, err, _raw, _loc = _serpapi_fetch_google_serp_snapshot(
+        key, kw, localization=loc
+    )
     if err:
         return {
             "ok": False,

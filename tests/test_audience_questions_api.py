@@ -49,6 +49,42 @@ def test_top_organic_pages_from_payload():
     ]
 
 
+def test_serpapi_us_fallback_after_ca_empty_error(monkeypatch: pytest.MonkeyPatch):
+    """Short queries may return the organic-empty error on regional Google but succeed on google.com."""
+    _call = 0
+
+    def fake_one(_key: str, _kw: str, loc: object) -> object:
+        nonlocal _call
+        _call += 1
+        if _call == 1:
+            assert isinstance(loc, dict) and (loc.get("gl") or "").lower() == "ca"
+            return (
+                [],
+                [],
+                None,
+                [],
+                "Google hasn't returned any results for this query.",
+                None,
+            )
+        assert _call == 2
+        assert isinstance(loc, dict) and (loc.get("gl") or "").lower() == "us"
+        return (
+            [{"question": "Q?", "snippet": ""}],
+            [{"title": "R", "url": "https://u"}],
+            None,
+            [],
+            None,
+            {"related_questions": []},
+        )
+
+    monkeypatch.setattr("shopifyseo.audience_questions_api._serpapi_one_google_organic_request", fake_one)
+    r = aq._serpapi_fetch_google_serp_snapshot("k", "pod rate", localization={"gl": "ca", "hl": "en", "google_domain": "google.ca"})
+    assert r[4] is None
+    assert len(r[0]) == 1
+    assert r[6] == {"gl": "us", "hl": "en", "google_domain": "google.com"}
+    assert _call == 2
+
+
 def test_soft_serpapi_error_ignored_when_paa_present(conn, monkeypatch: pytest.MonkeyPatch):
     """SerpAPI may set an organic-empty error while related_questions is still populated."""
     from shopifyseo import dashboard_google as dg

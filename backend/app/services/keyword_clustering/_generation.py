@@ -6,7 +6,10 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Callable
 
-from backend.app.services.keyword_research.keyword_db import load_approved_keywords
+from backend.app.services.keyword_research.keyword_db import (
+    load_approved_keywords,
+    refresh_keyword_metric_opportunity_scores,
+)
 from shopifyseo.dashboard_ai_engine_parts.generation import (
     _call_ai,
     _require_provider_credentials,
@@ -18,6 +21,7 @@ from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
 from ._postprocess import fold_singletons, merge_similar_clusters
 from ._pre_cluster import pre_cluster
+from ._scoring import cluster_priority_score, select_primary_keyword
 
 CLUSTERING_MODE_KEY = "clustering_mode"
 CLUSTERING_MAX_WORKERS = 4
@@ -85,6 +89,84 @@ MATCHING_SCHEMA = {
         "additionalProperties": False,
     },
 }
+
+
+def _load_keyword_vector_lookup(conn: sqlite3.Connection):
+    """Load normalized keyword embedding vectors, or return an empty lookup."""
+    try:
+        import numpy as np
+        from shopifyseo.embedding_store import _load_embedding_matrix
+    except Exception:
+        return None, {}
+    try:
+        matrix, meta = _load_embedding_matrix(conn, object_types=["keyword"])
+    except Exception:
+        logger.debug("Keyword embeddings unavailable for primary-keyword scoring", exc_info=True)
+        return None, {}
+    if matrix.shape[0] == 0:
+        return np, {}
+
+    lookup: dict[str, object] = {}
+    for i, m in enumerate(meta):
+        handle = (m.get("object_handle") or "").lower().strip()
+        if not handle or handle in lookup:
+            continue
+        v = matrix[i].astype(np.float32)
+        lookup[handle] = v / (np.linalg.norm(v) + 1e-10)
+    return np, lookup
+
+
+def _embedding_centrality_scores(
+    keywords: list[str],
+    np_mod,
+    vector_lookup: dict[str, object],
+) -> dict[str, float] | None:
+    if np_mod is None or not vector_lookup:
+        return None
+    rows = [
+        (kw.lower(), vector_lookup[kw.lower()])
+        for kw in keywords
+        if kw.lower() in vector_lookup
+    ]
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return {rows[0][0]: 100.0}
+    matrix = np_mod.vstack([v for _, v in rows])
+    centroid = np_mod.mean(matrix, axis=0)
+    centroid = centroid / (np_mod.linalg.norm(centroid) + 1e-10)
+    return {
+        key: round(max(0.0, min(100.0, ((float(vec @ centroid) + 1.0) / 2.0) * 100.0)), 2)
+        for key, vec in rows
+    }
+
+
+def _refresh_cluster_scoring(
+    cluster: dict,
+    keywords_map: dict[str, dict],
+    np_mod,
+    vector_lookup: dict[str, object],
+) -> dict:
+    kw_list = [kw for kw in cluster.get("keywords", []) if isinstance(kw, str) and kw.strip()]
+    if not kw_list:
+        return cluster
+    content_type = cluster.get("content_type", "blog_post")
+    centrality_scores = _embedding_centrality_scores(kw_list, np_mod, vector_lookup)
+    stats = _compute_cluster_stats([kw.lower() for kw in kw_list], keywords_map)
+    primary_keyword = select_primary_keyword(
+        kw_list,
+        keywords_map,
+        ai_primary=cluster.get("primary_keyword", ""),
+        content_type=content_type,
+        centrality_scores=centrality_scores,
+    )
+    return {
+        **cluster,
+        "primary_keyword": primary_keyword,
+        "keywords": kw_list,
+        **stats,
+        "priority_score": cluster_priority_score(kw_list, keywords_map),
+    }
 
 
 def _bucket_to_prompt(bucket: list[dict], country_name: str) -> tuple[str, str]:
@@ -224,6 +306,8 @@ def generate_clusters(
             on_progress(msg)
 
     # 1. Load approved target keywords from keyword_metrics (source of truth).
+    progress("Refreshing opportunity scores…")
+    refresh_keyword_metric_opportunity_scores(conn)
     progress("Loading approved keywords…")
     approved = load_approved_keywords(conn)
 
@@ -309,6 +393,7 @@ def generate_clusters(
 
     # 6. Compute stats per cluster, expanding aliases into each cluster's keywords.
     keywords_map = {item["keyword"].lower(): item for item in approved}
+    np_mod, vector_lookup = _load_keyword_vector_lookup(conn)
     alias_map_lower = {k.lower(): v for k, v in alias_map.items()}
     clusters: list[dict] = []
     by_primary: dict[str, dict] = {}
@@ -327,22 +412,19 @@ def generate_clusters(
                     seen.add(al)
         if not kw_list:
             continue
-        stats = _compute_cluster_stats(
-            [k.lower() for k in kw_list], keywords_map
-        )
         cluster = {
             "name": raw_cluster.get("name", "Unnamed Cluster"),
             "content_type": raw_cluster.get("content_type", "blog_post"),
             "primary_keyword": raw_cluster.get("primary_keyword", kw_list[0]),
             "content_brief": raw_cluster.get("content_brief", ""),
             "keywords": kw_list,
-            **stats,
         }
-        # Cross-bucket dedupe: same primary_keyword → keep higher avg_opportunity.
+        cluster = _refresh_cluster_scoring(cluster, keywords_map, np_mod, vector_lookup)
+        # Cross-bucket dedupe: same deterministic primary_keyword → keep higher-priority cluster.
         pk = (cluster["primary_keyword"] or "").strip().lower()
         if pk and pk in by_primary:
             existing = by_primary[pk]
-            if cluster.get("avg_opportunity", 0.0) > existing.get("avg_opportunity", 0.0):
+            if cluster.get("priority_score", 0.0) > existing.get("priority_score", 0.0):
                 clusters.remove(existing)
                 clusters.append(cluster)
                 by_primary[pk] = cluster
@@ -355,11 +437,15 @@ def generate_clusters(
     before = len(clusters)
     clusters = merge_similar_clusters(clusters, conn, keywords_map)
     clusters = fold_singletons(clusters, conn, keywords_map)
+    clusters = [
+        _refresh_cluster_scoring(c, keywords_map, np_mod, vector_lookup)
+        for c in clusters
+    ]
     if len(clusters) < before:
         progress(f"Post-processed clusters — {before} → {len(clusters)}")
 
-    # 7. Sort by total opportunity descending
-    clusters.sort(key=lambda c: c.get("avg_opportunity", 0), reverse=True)
+    # 7. Sort by cluster priority: strong top keywords + demand + ranking upside.
+    clusters.sort(key=lambda c: c.get("priority_score", 0), reverse=True)
 
     # 7. Match clusters to existing pages
     progress("Matching clusters to existing pages…")
@@ -379,36 +465,64 @@ def generate_clusters(
     # 8. Save to DB
     generated_at = datetime.now(timezone.utc).isoformat()
     conn.execute("DELETE FROM clusters")  # CASCADE deletes cluster_keywords
+    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
     for cluster in clusters:
         sm = cluster.get("suggested_match")
         match_type = sm.get("match_type") if sm else None
         match_handle = sm.get("match_handle", "") if sm else None
         match_title = sm.get("match_title", "") if sm else None
 
-        conn.execute(
-            """INSERT INTO clusters
-               (name, content_type, primary_keyword, content_brief,
-                total_volume, avg_difficulty, avg_opportunity,
-                dominant_serp_features, content_format_hints, avg_cps,
-                match_type, match_handle, match_title, generated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                cluster["name"],
-                cluster.get("content_type", "blog_post"),
-                cluster.get("primary_keyword", ""),
-                cluster.get("content_brief", ""),
-                cluster.get("total_volume", 0),
-                cluster.get("avg_difficulty", 0.0),
-                cluster.get("avg_opportunity", 0.0),
-                (cluster.get("dominant_serp_features") or "").strip(),
-                (cluster.get("content_format_hints") or "").strip(),
-                float(cluster.get("avg_cps") or 0.0),
-                match_type,
-                match_handle,
-                match_title,
-                generated_at,
-            ),
-        )
+        if "priority_score" in cluster_cols:
+            conn.execute(
+                """INSERT INTO clusters
+                   (name, content_type, primary_keyword, content_brief,
+                    total_volume, avg_difficulty, avg_opportunity, priority_score,
+                    dominant_serp_features, content_format_hints, avg_cps,
+                    match_type, match_handle, match_title, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cluster["name"],
+                    cluster.get("content_type", "blog_post"),
+                    cluster.get("primary_keyword", ""),
+                    cluster.get("content_brief", ""),
+                    cluster.get("total_volume", 0),
+                    cluster.get("avg_difficulty", 0.0),
+                    cluster.get("avg_opportunity", 0.0),
+                    cluster.get("priority_score", 0.0),
+                    (cluster.get("dominant_serp_features") or "").strip(),
+                    (cluster.get("content_format_hints") or "").strip(),
+                    float(cluster.get("avg_cps") or 0.0),
+                    match_type,
+                    match_handle,
+                    match_title,
+                    generated_at,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO clusters
+                   (name, content_type, primary_keyword, content_brief,
+                    total_volume, avg_difficulty, avg_opportunity,
+                    dominant_serp_features, content_format_hints, avg_cps,
+                    match_type, match_handle, match_title, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cluster["name"],
+                    cluster.get("content_type", "blog_post"),
+                    cluster.get("primary_keyword", ""),
+                    cluster.get("content_brief", ""),
+                    cluster.get("total_volume", 0),
+                    cluster.get("avg_difficulty", 0.0),
+                    cluster.get("avg_opportunity", 0.0),
+                    (cluster.get("dominant_serp_features") or "").strip(),
+                    (cluster.get("content_format_hints") or "").strip(),
+                    float(cluster.get("avg_cps") or 0.0),
+                    match_type,
+                    match_handle,
+                    match_title,
+                    generated_at,
+                ),
+            )
         cluster_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         cluster["id"] = cluster_id
         for kw in cluster.get("keywords", []):

@@ -30,6 +30,7 @@ from .competitor_blocklist import (
     purge_disallowed_competitor_rows,
 )
 from .keyword_db import (
+    OPPORTUNITY_SCORING_VERSION,
     TARGET_KEY,
     apply_competitor_traffic_from_provider_batch,
     sync_competitor_keyword_gaps,
@@ -44,11 +45,10 @@ from .keyword_db import load_target_keywords
 from .keyword_utils import (
     batch_seeds,
     classify_intent,
-    compute_opportunity,
     deduplicate_results,
     derive_content_format_hint,
     merge_with_existing,
-    normalize_opportunity_scores,
+    recompute_opportunity_scores,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,12 +285,8 @@ def _finalize_keyword_research(
         item["intent"] = intent
         item["intent_raw"] = item.pop("intents", None) or {}
         item["content_type"] = content_type
-        item["opportunity_raw"] = compute_opportunity(
-            volume=item.get("volume") or 0,
-            traffic_potential=item.get("traffic_potential"),
-            difficulty=item.get("difficulty") or 0,
-        )
         item["status"] = "new"
+        item["ranking_status"] = item.get("ranking_status") or "not_ranking"
         item["is_local"] = 1 if item["intent_raw"].get("local") or item["intent_raw"].get("is_local") else 0
         serp = item.get("serp_features")
         if isinstance(serp, dict):
@@ -304,11 +300,6 @@ def _finalize_keyword_research(
             item.setdefault("competitor_url", item.get("best_position_url"))
             item.setdefault("competitor_position_kind", item.get("best_position_kind"))
 
-    normalize_opportunity_scores(deduped)
-
-    for item in deduped:
-        item.pop("opportunity_raw", None)
-
     existing_raw = get_service_setting(conn, TARGET_KEY, "{}")
     try:
         existing_data = json.loads(existing_raw)
@@ -317,6 +308,7 @@ def _finalize_keyword_research(
     existing_items = existing_data.get("items", [])
 
     merged = merge_with_existing(existing_items, deduped)
+    recompute_opportunity_scores(merged)
     merged.sort(key=lambda x: x.get("opportunity", 0), reverse=True)
 
     result = {
@@ -325,6 +317,7 @@ def _finalize_keyword_research(
         "items": merged,
         "total": len(merged),
         "errors": errors if errors else None,
+        "opportunity_scoring_version": OPPORTUNITY_SCORING_VERSION,
     }
     set_service_setting(conn, TARGET_KEY, json.dumps(result))
     try:
@@ -683,19 +676,12 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
             item["content_format_hint"] = derive_content_format_hint(serp, item["intent"])
         item["serp_last_update"] = fresh.get("serp_last_update", item.get("serp_last_update"))
         item["parent_topic"] = fresh.get("parent_topic", item.get("parent_topic"))
-        # Recompute raw opportunity for this item
-        item["opportunity_raw"] = compute_opportunity(
-            volume=item.get("volume") or 0,
-            traffic_potential=item.get("traffic_potential"),
-            difficulty=item.get("difficulty") or 0,
-        )
         updated_count += 1
         # Preserve: status, seed_keywords, source_endpoint, gsc_*, ranking_status, competitor_*
 
-    # Re-normalize opportunity scores across all items
-    normalize_opportunity_scores(items)
-    for item in items:
-        item.pop("opportunity_raw", None)
+    # Re-normalize opportunity scores across all items so stale rows do not
+    # keep an old scoring scale beside freshly refreshed rows.
+    recompute_opportunity_scores(items)
 
     items.sort(key=lambda x: x.get("opportunity", 0), reverse=True)
 
@@ -703,6 +689,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
     data["total"] = len(items)
     data["metrics_refreshed_at"] = datetime.now(timezone.utc).isoformat()
     data["metrics_refresh_cost"] = total_cost
+    data["opportunity_scoring_version"] = OPPORTUNITY_SCORING_VERSION
     if errors:
         data["metrics_refresh_errors"] = errors
 

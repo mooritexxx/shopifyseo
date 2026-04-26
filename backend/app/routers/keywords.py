@@ -17,8 +17,8 @@ from backend.app.services.keyword_research import (
     load_competitor_blocklist,
     load_competitor_discovery_pending,
     load_dismissed_snapshots,
-    load_target_keywords,
     norm_competitor_domain,
+    refresh_opportunity_scores,
     refresh_google_ads_planner_metrics,
     refresh_target_keyword_metrics,
     remove_competitor_from_blocklist,
@@ -627,7 +627,7 @@ def delete_competitor(domain: str):
 def get_target_keywords():
     conn = open_db_connection()
     try:
-        data = load_target_keywords(conn)
+        data = refresh_opportunity_scores(conn)
         return {"ok": True, "data": data}
     finally:
         conn.close()

@@ -126,6 +126,9 @@ def get_cluster_detail(conn: sqlite3.Connection, cluster_id: int) -> dict:
         "total_volume": row["total_volume"],
         "avg_difficulty": row["avg_difficulty"],
         "avg_opportunity": row["avg_opportunity"],
+        "priority_score": (
+            row["priority_score"] if "priority_score" in row.keys() and row["priority_score"] else row["avg_opportunity"]
+        ),
         "suggested_match": suggested_match,
         "matched_vendor": matched_vendor,
     }

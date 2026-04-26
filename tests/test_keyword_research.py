@@ -8,6 +8,7 @@ from backend.app.services.keyword_research import (
     match_gsc_queries,
     merge_with_existing,
     normalize_opportunity_scores,
+    recompute_opportunity_scores,
 )
 from backend.app.services.keyword_research.keyword_db import (
     TARGET_KEY,
@@ -33,6 +34,38 @@ def test_compute_opportunity_zero_volume():
 def test_compute_opportunity_none_traffic():
     score = compute_opportunity(volume=500, traffic_potential=None, difficulty=10)
     assert score > 0
+
+
+def test_compute_opportunity_missing_difficulty_is_neutral():
+    unknown_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
+    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=0)
+    hard_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=80)
+    assert hard_kd < unknown_kd < easy_kd
+
+
+def test_recompute_opportunity_scores_uses_intent_and_ranking():
+    items = [
+        {
+            "keyword": "quick win",
+            "volume": 500,
+            "traffic_potential": 500,
+            "difficulty": 30,
+            "intent": "commercial",
+            "ranking_status": "quick_win",
+        },
+        {
+            "keyword": "plain info",
+            "volume": 500,
+            "traffic_potential": 500,
+            "difficulty": 30,
+            "intent": "informational",
+            "ranking_status": "not_ranking",
+        },
+    ]
+    recompute_opportunity_scores(items)
+    assert items[0]["opportunity"] > 70.0
+    assert 0 < items[1]["opportunity"] < items[0]["opportunity"]
+    assert "opportunity_raw" not in items[0]
 
 
 def test_classify_intent_transactional_wins():

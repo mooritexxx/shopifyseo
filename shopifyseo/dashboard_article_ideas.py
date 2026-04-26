@@ -166,6 +166,16 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         if "dominant_serp_features" in cluster_stat_cols
         else ", NULL AS dominant_serp_features, NULL AS content_format_hints, NULL AS avg_cps"
     )
+    cluster_priority_sql = (
+        ", COALESCE(NULLIF(c.priority_score, 0), c.avg_opportunity) AS priority_score"
+        if "priority_score" in cluster_stat_cols
+        else ", c.avg_opportunity AS priority_score"
+    )
+    cluster_order_sql = (
+        "COALESCE(NULLIF(c.priority_score, 0), c.avg_opportunity) DESC, c.total_volume DESC, c.avg_opportunity DESC"
+        if "priority_score" in cluster_stat_cols
+        else "c.total_volume DESC, c.avg_opportunity DESC"
+    )
 
     # 1. Blog/buying-guide clusters with no matching article.
     #    Only surface content_type values that map to blog posts.
@@ -175,6 +185,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
                c.total_volume, c.avg_difficulty, c.avg_opportunity,
                c.content_type, c.match_type, c.match_handle, c.match_title
                {cluster_stats_sql}
+               {cluster_priority_sql}
         FROM clusters c
         WHERE c.content_type IN ('blog_post', 'buying_guide')
           AND NOT EXISTS (
@@ -185,7 +196,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
                 OR LOWER(ba.body) LIKE '%' || LOWER(c.primary_keyword) || '%'
             )
         )
-        ORDER BY c.total_volume DESC, c.avg_opportunity DESC
+        ORDER BY {cluster_order_sql}
         LIMIT 12
         """
     ).fetchall()
@@ -253,6 +264,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         cfh = (r[12] or "").strip()
         ac_raw = r[13]
         avg_cps_cluster = round(float(ac_raw), 2) if ac_raw is not None else 0.0
+        priority_score = round(float(r[14] or r[6] or 0), 1)
 
         cluster_gaps.append(
             {
@@ -263,6 +275,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
                 "total_volume": r[4] or 0,
                 "avg_difficulty": round(float(r[5] or 0), 1),
                 "avg_opportunity": round(float(r[6] or 0), 1),
+                "priority_score": priority_score,
                 "content_type": r[7],
                 "match_type": r[8],
                 "match_handle": r[9],

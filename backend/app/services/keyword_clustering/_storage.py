@@ -36,6 +36,7 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
 
     clusters = data.get("clusters") or []
     generated_at = data.get("generated_at") or datetime.now(timezone.utc).isoformat()
+    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
 
     for cluster in clusters:
         sm = cluster.get("suggested_match")
@@ -58,30 +59,57 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
             ac = inner_stats.get("avg_cps")
         avg_cps = float(ac) if ac is not None else 0.0
 
-        conn.execute(
-            """INSERT INTO clusters
-               (name, content_type, primary_keyword, content_brief,
-                total_volume, avg_difficulty, avg_opportunity,
-                dominant_serp_features, content_format_hints, avg_cps,
-                match_type, match_handle, match_title, generated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                cluster.get("name", "Unnamed"),
-                cluster.get("content_type", "blog_post"),
-                cluster.get("primary_keyword", ""),
-                cluster.get("content_brief", ""),
-                cluster.get("total_volume", 0),
-                cluster.get("avg_difficulty", 0.0),
-                cluster.get("avg_opportunity", 0.0),
-                (dsf or "").strip(),
-                (cfh or "").strip(),
-                avg_cps,
-                match_type,
-                match_handle,
-                match_title,
-                generated_at,
-            ),
-        )
+        if "priority_score" in cluster_cols:
+            conn.execute(
+                """INSERT INTO clusters
+                   (name, content_type, primary_keyword, content_brief,
+                    total_volume, avg_difficulty, avg_opportunity, priority_score,
+                    dominant_serp_features, content_format_hints, avg_cps,
+                    match_type, match_handle, match_title, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cluster.get("name", "Unnamed"),
+                    cluster.get("content_type", "blog_post"),
+                    cluster.get("primary_keyword", ""),
+                    cluster.get("content_brief", ""),
+                    cluster.get("total_volume", 0),
+                    cluster.get("avg_difficulty", 0.0),
+                    cluster.get("avg_opportunity", 0.0),
+                    cluster.get("priority_score", cluster.get("avg_opportunity", 0.0)),
+                    (dsf or "").strip(),
+                    (cfh or "").strip(),
+                    avg_cps,
+                    match_type,
+                    match_handle,
+                    match_title,
+                    generated_at,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO clusters
+                   (name, content_type, primary_keyword, content_brief,
+                    total_volume, avg_difficulty, avg_opportunity,
+                    dominant_serp_features, content_format_hints, avg_cps,
+                    match_type, match_handle, match_title, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cluster.get("name", "Unnamed"),
+                    cluster.get("content_type", "blog_post"),
+                    cluster.get("primary_keyword", ""),
+                    cluster.get("content_brief", ""),
+                    cluster.get("total_volume", 0),
+                    cluster.get("avg_difficulty", 0.0),
+                    cluster.get("avg_opportunity", 0.0),
+                    (dsf or "").strip(),
+                    (cfh or "").strip(),
+                    avg_cps,
+                    match_type,
+                    match_handle,
+                    match_title,
+                    generated_at,
+                ),
+            )
         cluster_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         for kw in cluster.get("keywords", []):
             conn.execute(
@@ -114,9 +142,13 @@ def load_clusters(conn: sqlite3.Connection) -> dict:
     """Load clusters from DB tables. Migrates JSON data on first call if needed."""
     _migrate_json_to_db(conn)
 
-    rows = conn.execute(
-        "SELECT * FROM clusters ORDER BY avg_opportunity DESC"
-    ).fetchall()
+    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    order_expr = (
+        "COALESCE(NULLIF(priority_score, 0), avg_opportunity) DESC, avg_opportunity DESC"
+        if "priority_score" in cluster_cols
+        else "avg_opportunity DESC"
+    )
+    rows = conn.execute(f"SELECT * FROM clusters ORDER BY {order_expr}").fetchall()
 
     if not rows:
         return {"clusters": [], "generated_at": None}
@@ -155,6 +187,9 @@ def load_clusters(conn: sqlite3.Connection) -> dict:
             "total_volume": row["total_volume"],
             "avg_difficulty": row["avg_difficulty"],
             "avg_opportunity": row["avg_opportunity"],
+            "priority_score": (
+                row["priority_score"] if "priority_score" in cluster_cols and row["priority_score"] else row["avg_opportunity"]
+            ),
             "suggested_match": suggested_match,
         }
         stats = _cluster_stats_from_row(row)

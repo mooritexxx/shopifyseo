@@ -15,6 +15,7 @@ from ._gaps import compute_seo_gaps, enrich_clusters_with_coverage
 from ._generation import generate_clusters
 from ._postprocess import fold_singletons, merge_similar_clusters
 from ._pre_cluster import pre_cluster
+from ._scoring import cluster_priority_score, select_primary_keyword
 from ._helpers import (
     _build_clustering_prompt,
     _check_keyword_coverage,
@@ -38,6 +39,8 @@ __all__ = [
     "pre_cluster",
     "merge_similar_clusters",
     "fold_singletons",
+    "cluster_priority_score",
+    "select_primary_keyword",
     "load_clusters",
     "enrich_clusters_with_coverage",
     "compute_seo_gaps",

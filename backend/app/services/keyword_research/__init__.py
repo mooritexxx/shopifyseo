@@ -21,11 +21,14 @@ from .competitor_blocklist import (
     upsert_dismissed_profile_snapshot,
 )
 from .keyword_db import (
+    OPPORTUNITY_SCORING_VERSION,
     TARGET_KEY,
     bulk_update_status,
     cross_reference_gsc,
     load_approved_keywords,
     load_target_keywords,
+    refresh_keyword_metric_opportunity_scores,
+    refresh_opportunity_scores,
     sync_competitor_keyword_gaps,
     sync_competitor_profiles,
     sync_competitor_top_pages,
@@ -50,6 +53,7 @@ from .keyword_utils import (
     match_gsc_queries,
     merge_with_existing,
     normalize_opportunity_scores,
+    recompute_opportunity_scores,
 )
 from .research_runner import (
     COMPETITOR_DISCOVERY_PENDING_KEY,
@@ -89,10 +93,13 @@ __all__ = [
     "upsert_dismissed_profile_snapshot",
     # keyword_db
     "TARGET_KEY",
+    "OPPORTUNITY_SCORING_VERSION",
     "bulk_update_status",
     "cross_reference_gsc",
     "load_approved_keywords",
     "load_target_keywords",
+    "refresh_keyword_metric_opportunity_scores",
+    "refresh_opportunity_scores",
     "sync_competitor_keyword_gaps",
     "sync_competitor_profiles",
     "sync_competitor_top_pages",
@@ -117,6 +124,7 @@ __all__ = [
     "match_gsc_queries",
     "merge_with_existing",
     "normalize_opportunity_scores",
+    "recompute_opportunity_scores",
     # research_runner
     "COMPETITOR_DISCOVERY_PENDING_KEY",
     "COMPETITOR_RESEARCH_META_KEY",

@@ -89,9 +89,12 @@ def _compute_cluster_stats(
             "content_format_hints": "",
         }
     total_volume = sum(item.get("volume", 0) or 0 for item in found)
-    avg_difficulty = round(
-        sum(item.get("difficulty", 0) or 0 for item in found) / count, 1
-    )
+    difficulty_values = [
+        float(item["difficulty"])
+        for item in found
+        if item.get("difficulty") is not None
+    ]
+    avg_difficulty = round(sum(difficulty_values) / len(difficulty_values), 1) if difficulty_values else 0.0
     avg_opportunity = round(
         sum(item.get("opportunity", 0.0) or 0.0 for item in found) / count, 1
     )
@@ -140,7 +143,8 @@ def _build_clustering_prompt(
         "4. For each final cluster, provide:\n"
         "   - name: A clear descriptive label (e.g. 'Elf Bar Disposable Vapes')\n"
         "   - content_type: One of 'collection_page', 'product_page', 'blog_post', 'buying_guide', 'landing_page'\n"
-        "   - primary_keyword: The single keyword with the highest search opportunity in the cluster\n"
+        "   - primary_keyword: The strongest representative target keyword in the cluster. "
+        "Prefer high opportunity, clear page intent, and topical centrality over raw volume alone.\n"
         "   - content_brief: 1-2 sentences describing what the page should cover and its target intent\n"
         "   - keywords: Array of all keyword strings in the cluster\n\n"
         "Some keywords include extra signals: cps (clicks-per-search), format_hint (best content format for SERP), "

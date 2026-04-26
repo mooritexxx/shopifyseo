@@ -222,7 +222,7 @@ def _keyword_data_block_to_explorer_row(
     serp_features = _serp_item_types_to_feature_counts(serp.get("serp_item_types"))
     vol = int(ki.get("search_volume") or 0)
     kd_raw = kp.get("keyword_difficulty")
-    difficulty = int(kd_raw) if kd_raw is not None else 0
+    difficulty = int(kd_raw) if kd_raw is not None else None
     tp = traffic_potential_override if traffic_potential_override is not None else vol
     return {
         "keyword": (kw_data.get("keyword") or "").strip(),
@@ -517,7 +517,7 @@ def call_google_autocomplete_suggestions(
                 {
                     "keyword": s,
                     "volume": 0,
-                    "difficulty": 0,
+                    "difficulty": None,
                     "traffic_potential": 0,
                     "intents": {},
                     "parent_topic": None,
@@ -775,7 +775,7 @@ def _ranked_item_to_site_explorer_row(item: dict, domain: str) -> dict | None:
     serp_features = _serp_item_types_to_feature_counts(serp.get("serp_item_types"))
     vol = int(ki.get("search_volume") or 0)
     kd_raw = kp.get("keyword_difficulty")
-    difficulty = int(kd_raw) if kd_raw is not None else 0
+    difficulty = int(kd_raw) if kd_raw is not None else None
     rse = item.get("ranked_serp_element") or {}
     serp_item = rse.get("serp_item") if isinstance(rse, dict) else None
     rank_group = None

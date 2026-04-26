@@ -94,7 +94,7 @@ def _best_cluster_for_idea(idea: dict, clusters: list[dict]) -> dict:
         key=lambda c: (
             _cluster_match_score(idea, c),
             bool(c.get("has_ranking_opportunity")),
-            float(c.get("avg_opportunity") or 0.0),
+            float(c.get("priority_score") or c.get("avg_opportunity") or 0.0),
             int(c.get("total_volume") or 0),
         ),
     )
@@ -166,16 +166,28 @@ def _cluster_keywords_snapshot(conn: sqlite3.Connection, cluster_meta: dict, *, 
 
 def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> list[dict]:
     """Load real clusters when strict gap filtering has no candidates."""
+    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    priority_select = (
+        "COALESCE(NULLIF(priority_score, 0), avg_opportunity) AS priority_score"
+        if "priority_score" in cluster_cols
+        else "avg_opportunity AS priority_score"
+    )
+    order_sql = (
+        "COALESCE(NULLIF(priority_score, 0), avg_opportunity) DESC, total_volume DESC, avg_opportunity DESC"
+        if "priority_score" in cluster_cols
+        else "avg_opportunity DESC, total_volume DESC"
+    )
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT id, name, primary_keyword, content_brief,
                    total_volume, avg_difficulty, avg_opportunity,
                    content_type, match_type, match_handle, match_title,
-                   dominant_serp_features, content_format_hints, avg_cps
+                   dominant_serp_features, content_format_hints, avg_cps,
+                   {priority_select}
             FROM clusters
             WHERE content_type IN ('blog_post', 'buying_guide')
-            ORDER BY avg_opportunity DESC, total_volume DESC
+            ORDER BY {order_sql}
             LIMIT ?
             """,
             (limit,),
@@ -199,6 +211,7 @@ def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> 
             "dominant_serp_features": r[11] or "",
             "content_format_hints": r[12] or "",
             "avg_cps": round(float(r[13] or 0.0), 2),
+            "priority_score": round(float(r[14] or r[6] or 0.0), 1),
             "top_keywords": [],
             "has_ranking_opportunity": False,
         }
@@ -243,7 +256,12 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         ct = c.get("coverage_total", 0) or 1
         cf = c.get("coverage_found", 0)
         gap_pct = 1.0 - (cf / ct)
-        return (gap_pct, c.get("has_ranking_opportunity", False), c.get("total_volume", 0))
+        return (
+            gap_pct,
+            c.get("has_ranking_opportunity", False),
+            float(c.get("priority_score") or c.get("avg_opportunity") or 0.0),
+            c.get("total_volume", 0),
+        )
 
     cluster_candidates = gap_data["cluster_gaps"] or _fallback_article_clusters(conn)
     sorted_clusters = sorted(
@@ -260,7 +278,9 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         opp_flag = " ⚡ RANKING OPPORTUNITY" if c.get("has_ranking_opportunity") else ""
         header = (
             f"- Cluster '{c['name']}' (id:{c['id']}) | {c.get('content_type', 'blog_post')} | "
-            f"vol:{vol}/mo | avg KD:{c['avg_difficulty']} | avg opp:{c.get('avg_opportunity', 0):.0f}{opp_flag}"
+            f"vol:{vol}/mo | avg KD:{c['avg_difficulty']} | "
+            f"priority:{float(c.get('priority_score') or c.get('avg_opportunity') or 0):.0f} | "
+            f"avg opp:{c.get('avg_opportunity', 0):.0f}{opp_flag}"
         )
         cluster_lines.append(header)
 
@@ -721,9 +741,11 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         # Snapshot cluster-level metrics from real cluster data (not from AI output)
         total_volume = int(cluster_meta.get("total_volume") or 0)
         avg_difficulty = round(float(cluster_meta.get("avg_difficulty") or 0.0), 1)
-        # Opportunity score: avg_opportunity boosted by 50% if cluster has ranking opportunity
-        raw_opp = float(cluster_meta.get("avg_opportunity") or 0.0)
-        opportunity_score = round(raw_opp * 1.5 if cluster_meta.get("has_ranking_opportunity") else raw_opp, 1)
+        # Idea priority follows cluster priority when available; older data falls back to avg opportunity.
+        raw_opp = float(cluster_meta.get("priority_score") or cluster_meta.get("avg_opportunity") or 0.0)
+        if not cluster_meta.get("priority_score") and cluster_meta.get("has_ranking_opportunity"):
+            raw_opp *= 1.5
+        opportunity_score = round(raw_opp, 1)
         dominant_serp_features = str(cluster_meta.get("dominant_serp_features") or "")
         content_format_hints = str(cluster_meta.get("content_format_hints") or "")
         import json as _json

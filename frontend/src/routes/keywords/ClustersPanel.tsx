@@ -426,6 +426,12 @@ export function ClustersPanel() {
                   <span className="font-medium text-ink">{cluster.avg_difficulty}</span>
                 </span>
                 <span>
+                  Priority:{" "}
+                  <span className="font-medium text-ink">
+                    {(cluster.priority_score || cluster.avg_opportunity).toFixed(1)}
+                  </span>
+                </span>
+                <span>
                   Avg opportunity:{" "}
                   <span className="font-medium text-ink">{cluster.avg_opportunity}</span>
                 </span>

@@ -91,7 +91,7 @@ const TIP_CONTENT_TYPE =
   "Suggested page type from this app’s intent mapping plus DataForSEO SERP feature signals. Updated when you run Refresh metrics.";
 
 const TIP_OPPORTUNITY =
-  "Opportunity score computed in this app from DataForSEO volume, traffic potential, and difficulty, then normalized across the full keyword list. Updated when you run Refresh metrics.";
+  "Opportunity score computed in this app from log-scaled demand, traffic potential, difficulty, ranking status, and intent on a 0–100 scale. Updated when you run Refresh metrics or Cross-reference GSC.";
 
 const TIP_GSC_POSITION =
   "Average position from Google Search Console for queries matched to this keyword (exact or containment match). Populated when you run Cross-reference GSC.";

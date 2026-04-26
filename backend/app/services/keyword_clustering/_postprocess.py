@@ -113,7 +113,8 @@ def merge_similar_clusters(
 ) -> list[dict]:
     """Collapse clusters whose primary_keyword embeddings are cos-similar.
 
-    Winner per group = highest avg_opportunity. Keyword lists are unioned and
+    Winner per group = highest priority_score (falling back to avg_opportunity).
+    Keyword lists are unioned and
     stats recomputed. Uses union-find so transitive similarity chains merge.
     """
     if len(clusters) < 2:
@@ -150,7 +151,10 @@ def merge_similar_clusters(
         if len(members) == 1:
             continue
         group_clusters = [clusters[i] for i in members]
-        winner = max(group_clusters, key=lambda c: float(c.get("avg_opportunity") or 0.0))
+        winner = max(
+            group_clusters,
+            key=lambda c: float(c.get("priority_score") or c.get("avg_opportunity") or 0.0),
+        )
         result = winner
         for other in group_clusters:
             if other is winner:

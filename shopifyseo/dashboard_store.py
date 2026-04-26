@@ -141,6 +141,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             total_volume INTEGER NOT NULL DEFAULT 0,
             avg_difficulty REAL NOT NULL DEFAULT 0.0,
             avg_opportunity REAL NOT NULL DEFAULT 0.0,
+            priority_score REAL NOT NULL DEFAULT 0.0,
             match_type TEXT,
             match_handle TEXT,
             match_title TEXT,
@@ -165,6 +166,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "dominant_serp_features": "TEXT",
             "content_format_hints": "TEXT",
             "avg_cps": "REAL",
+            "priority_score": "REAL NOT NULL DEFAULT 0.0",
         },
     )
     conn.execute(

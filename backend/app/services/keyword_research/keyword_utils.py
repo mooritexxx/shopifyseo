@@ -1,5 +1,7 @@
 """Keyword scoring, classification, and data processing helpers."""
 
+import math
+
 INTENT_PRIORITY = ["transactional", "commercial", "local", "informational", "navigational", "branded"]
 INTENT_TO_CONTENT = {
     "transactional": "Product / Collection page",
@@ -116,22 +118,143 @@ def match_gsc_queries(keyword: str, gsc_data: dict[str, dict]) -> dict | None:
     }
 
 
-def compute_opportunity(volume: int, traffic_potential: int | None, difficulty: int) -> float:
-    v = volume or 0
-    tp = traffic_potential if traffic_potential else v
-    d = difficulty or 0
-    if v == 0:
+def _num(value: int | float | str | None, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bounded_log_score(value: int | float | str | None, reference: float) -> float:
+    v = max(_num(value), 0.0)
+    if v <= 0:
         return 0.0
-    return (v * tp) / ((d + 1) ** 2)
+    return min(100.0, math.log1p(v) / math.log1p(reference) * 100.0)
+
+
+def _difficulty_ease_score(difficulty: int | float | str | None) -> float:
+    if difficulty is None:
+        return 50.0
+    d = max(0.0, min(100.0, _num(difficulty, 50.0)))
+    return 100.0 - d
+
+
+def _intent_opportunity_score(intent: str | None) -> float:
+    match (intent or "").strip().lower():
+        case "transactional":
+            return 100.0
+        case "commercial":
+            return 95.0
+        case "local":
+            return 90.0
+        case "informational":
+            return 70.0
+        case "branded":
+            return 50.0
+        case "navigational":
+            return 35.0
+        case _:
+            return 65.0
+
+
+def _ranking_opportunity_score(
+    ranking_status: str | None,
+    gsc_position: int | float | str | None,
+) -> float:
+    status = (ranking_status or "").strip().lower()
+    if not status and gsc_position is not None:
+        pos = _num(gsc_position, -1.0)
+        status = classify_ranking_status(pos) if pos > 0 else "not_ranking"
+    return {
+        "quick_win": 100.0,
+        "striking_distance": 85.0,
+        "low_visibility": 65.0,
+        "not_ranking": 55.0,
+        "ranking": 45.0,
+    }.get(status, 55.0)
+
+
+def compute_opportunity(
+    volume: int | float | None,
+    traffic_potential: int | float | None,
+    difficulty: int | float | None,
+    *,
+    intent: str | None = None,
+    ranking_status: str | None = None,
+    gsc_position: int | float | None = None,
+) -> float:
+    """Return an un-normalized 0-100 keyword opportunity score.
+
+    Demand and traffic potential are log-scaled so one head term does not
+    flatten the whole keyword set. Difficulty is an ease signal, with missing
+    KD treated as neutral instead of "free." GSC ranking and intent make the
+    score useful for prioritizing actual SEO work, not just theoretical volume.
+    """
+    v = max(_num(volume), 0.0)
+    if v <= 0:
+        return 0.0
+    tp = max(_num(traffic_potential, v), 0.0) or v
+    demand_score = _bounded_log_score(v, 10000.0)
+    traffic_score = _bounded_log_score(tp, 10000.0)
+    ease_score = _difficulty_ease_score(difficulty)
+    ranking_score = _ranking_opportunity_score(ranking_status, gsc_position)
+    intent_score = _intent_opportunity_score(intent)
+    return round(
+        (0.35 * demand_score)
+        + (0.20 * traffic_score)
+        + (0.20 * ease_score)
+        + (0.15 * ranking_score)
+        + (0.10 * intent_score),
+        4,
+    )
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) < 20:
+        return ordered[-1]
+    idx = (len(ordered) - 1) * pct
+    lo = math.floor(idx)
+    hi = math.ceil(idx)
+    if lo == hi:
+        return ordered[int(idx)]
+    frac = idx - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
 def normalize_opportunity_scores(items: list[dict]) -> None:
     if not items:
         return
-    max_raw = max(item.get("opportunity_raw", 0) for item in items)
+    raw_values = [
+        max(_num(item.get("opportunity_raw")), 0.0)
+        for item in items
+        if _num(item.get("opportunity_raw")) > 0
+    ]
+    max_raw = max(raw_values) if raw_values else 0.0
+    cap = 100.0 if max_raw <= 100.0 else _percentile(raw_values, 0.95)
     for item in items:
-        raw = item.get("opportunity_raw", 0)
-        item["opportunity"] = round((raw / max_raw) * 100, 1) if max_raw > 0 else 0.0
+        raw = max(_num(item.get("opportunity_raw")), 0.0)
+        item["opportunity"] = round(min(raw / cap, 1.0) * 100, 1) if cap > 0 else 0.0
+
+
+def recompute_opportunity_scores(items: list[dict]) -> None:
+    """Rebuild raw and normalized opportunity scores for a keyword list in place."""
+    for item in items:
+        item["opportunity_raw"] = compute_opportunity(
+            volume=item.get("volume") or 0,
+            traffic_potential=item.get("traffic_potential"),
+            difficulty=item.get("difficulty"),
+            intent=item.get("intent"),
+            ranking_status=item.get("ranking_status"),
+            gsc_position=item.get("gsc_position"),
+        )
+    normalize_opportunity_scores(items)
+    for item in items:
+        item.pop("opportunity_raw", None)
 
 
 def classify_intent(intents: dict | None) -> tuple[str, str]:

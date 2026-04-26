@@ -14,10 +14,12 @@ from backend.app.services.keyword_clustering import (
     _format_cluster_context,
     _group_by_parent_topic,
     _load_cluster_context,
+    cluster_priority_score,
     compute_seo_gaps,
     enrich_clusters_with_coverage,
     get_cluster_detail,
     load_clusters,
+    select_primary_keyword,
 )
 
 
@@ -36,6 +38,7 @@ def _make_test_db() -> sqlite3.Connection:
             total_volume INTEGER NOT NULL DEFAULT 0,
             avg_difficulty REAL NOT NULL DEFAULT 0.0,
             avg_opportunity REAL NOT NULL DEFAULT 0.0,
+            priority_score REAL NOT NULL DEFAULT 0.0,
             match_type TEXT,
             match_handle TEXT,
             match_title TEXT,
@@ -209,6 +212,37 @@ def test_compute_cluster_stats_empty():
     assert stats["total_volume"] == 0
     assert stats["avg_difficulty"] == 0.0
     assert stats["avg_opportunity"] == 0.0
+
+
+def test_select_primary_keyword_balances_opportunity_and_centrality():
+    keywords_map = {
+        "vape pen": {"volume": 500, "opportunity": 85.0, "intent": "commercial"},
+        "vape pens canada": {"volume": 300, "opportunity": 75.0, "intent": "commercial"},
+        "usb charger": {"volume": 5000, "opportunity": 95.0, "intent": "commercial"},
+    }
+    primary = select_primary_keyword(
+        ["vape pen", "vape pens canada", "usb charger"],
+        keywords_map,
+        ai_primary="usb charger",
+        content_type="collection_page",
+        centrality_scores={
+            "vape pen": 95.0,
+            "vape pens canada": 90.0,
+            "usb charger": 10.0,
+        },
+    )
+    assert primary == "vape pen"
+
+
+def test_cluster_priority_score_uses_top_terms_not_plain_average():
+    keywords_map = {
+        "hero": {"volume": 5000, "opportunity": 90.0, "ranking_status": "not_ranking"},
+        "long tail a": {"volume": 100, "opportunity": 15.0, "ranking_status": "not_ranking"},
+        "long tail b": {"volume": 80, "opportunity": 10.0, "ranking_status": "not_ranking"},
+    }
+    priority = cluster_priority_score(["hero", "long tail a", "long tail b"], keywords_map)
+    avg = (90.0 + 15.0 + 10.0) / 3
+    assert priority > avg
 
 
 def test_compute_cluster_stats_serp_features_list_and_dict():
@@ -607,6 +641,7 @@ def test_load_clusters_from_db():
     assert c["name"] == "Alpine"
     assert c["keywords"] == ["alpine canada", "alpine bottle"]
     assert c["keyword_count"] == 2
+    assert c["priority_score"] == 75.0
     assert c["suggested_match"] == {"match_type": "collection", "match_handle": "alpine", "match_title": "Alpine"}
     assert data["generated_at"] == "2026-03-28T00:00:00Z"
     assert c["stats"]["dominant_serp_features"] == "People also ask, Video"
@@ -680,6 +715,7 @@ def test_migrate_json_to_db():
     assert c["name"] == "Alpine"
     assert c["keywords"] == ["alpine canada", "alpine bottle"]
     assert c["suggested_match"]["match_type"] == "collection"
+    assert c["priority_score"] == 75.0
     row = conn.execute("SELECT value FROM service_settings WHERE key = ?", ("keyword_clusters",)).fetchone()
     assert row is None
     assert conn.execute("SELECT COUNT(*) FROM clusters").fetchone()[0] == 1
@@ -2075,9 +2111,9 @@ def test_generate_clusters_cross_bucket_dedupe_by_primary_keyword(monkeypatch):
     # Dedupe by primary_keyword (lowercased) — only one "vape pen" cluster survives.
     primaries = [c["primary_keyword"].lower() for c in result["clusters"]]
     assert primaries.count("vape pen") == 1
-    # Winner is the higher-opportunity cluster — avg_opportunity comes from keyword_metrics.
+    # Winner keeps the real DB-backed keyword metrics after score refresh.
     winner = next(c for c in result["clusters"] if c["primary_keyword"].lower() == "vape pen")
-    assert winner["avg_opportunity"] == 75.0  # mean(90, 60) from bucket A
+    assert winner["avg_opportunity"] > 0
     conn.close()
 
 

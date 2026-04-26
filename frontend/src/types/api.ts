@@ -497,6 +497,7 @@ export const clusterSchema = z.object({
   total_volume: z.number(),
   avg_difficulty: z.number(),
   avg_opportunity: z.number(),
+  priority_score: z.number().optional().default(0),
   keyword_count: z.number(),
   suggested_match: matchSchema.nullable().optional(),
   gsc_segment_flags: z

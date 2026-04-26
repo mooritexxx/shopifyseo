@@ -9,11 +9,12 @@ from datetime import datetime, timezone
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
 from .competitor_blocklist import norm_competitor_domain
-from .keyword_utils import classify_ranking_status, match_gsc_queries
+from .keyword_utils import classify_ranking_status, match_gsc_queries, recompute_opportunity_scores
 
 logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_keywords"
+OPPORTUNITY_SCORING_VERSION = 2
 
 
 def load_target_keywords(conn: sqlite3.Connection) -> dict:
@@ -46,6 +47,52 @@ def load_target_keywords(conn: sqlite3.Connection) -> dict:
     if not clean:
         return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
     return {**data, "items": clean, "total": len(clean)}
+
+
+def refresh_opportunity_scores(conn: sqlite3.Connection, *, force: bool = False) -> dict:
+    """Backfill stored target keyword opportunity scores to the current scoring model."""
+    data = load_target_keywords(conn)
+    items = data.get("items", [])
+    if not items:
+        return data
+    if not force and data.get("opportunity_scoring_version") == OPPORTUNITY_SCORING_VERSION:
+        return data
+
+    recompute_opportunity_scores(items)
+    items.sort(key=lambda x: x.get("opportunity", 0), reverse=True)
+    data["items"] = items
+    data["total"] = len(items)
+    data["opportunity_scoring_version"] = OPPORTUNITY_SCORING_VERSION
+    data["opportunity_scored_at"] = datetime.now(timezone.utc).isoformat()
+    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    try:
+        sync_keyword_metrics_to_db(conn)
+    except Exception:
+        logger.exception("Failed to sync keyword metrics after opportunity score refresh (non-fatal)")
+    return data
+
+
+def refresh_keyword_metric_opportunity_scores(conn: sqlite3.Connection) -> int:
+    """Recompute opportunity directly in ``keyword_metrics`` without trusting stale JSON."""
+    rows = conn.execute(
+        """
+        SELECT keyword, volume, difficulty, traffic_potential, intent,
+               ranking_status, gsc_position
+        FROM keyword_metrics
+        """
+    ).fetchall()
+    items = [dict(row) for row in rows]
+    if not items:
+        return 0
+    recompute_opportunity_scores(items)
+    now = int(time.time())
+    for item in items:
+        conn.execute(
+            "UPDATE keyword_metrics SET opportunity = ?, updated_at = ? WHERE keyword = ?",
+            (item.get("opportunity", 0.0), now, item.get("keyword", "")),
+        )
+    conn.commit()
+    return len(items)
 
 
 _APPROVED_JSON_COLUMNS = ("intent_raw", "seed_keywords", "serp_features")
@@ -643,6 +690,10 @@ def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
             item["gsc_impressions"] = None
             item["ranking_status"] = "not_ranking"
 
+    recompute_opportunity_scores(items)
+    items.sort(key=lambda x: x.get("opportunity", 0), reverse=True)
+    data["opportunity_scoring_version"] = OPPORTUNITY_SCORING_VERSION
+    data["opportunity_scored_at"] = datetime.now(timezone.utc).isoformat()
     data["gsc_crossref_at"] = datetime.now(timezone.utc).isoformat()
     set_service_setting(conn, TARGET_KEY, json.dumps(data))
     try:

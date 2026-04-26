@@ -43,7 +43,11 @@ import {
 } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
 import { ArticleDraftProgressPanel } from "../components/article-draft-progress-panel";
-import { PaaMindMap, buildPaaMindMapBranches } from "../components/paa-mindmap";
+import {
+  PaaMindMap,
+  buildPaaMindMapBranches,
+  type PaaBranch,
+} from "../components/paa-mindmap";
 import { getJson, patchJson, postJson } from "../lib/api";
 import {
   runArticleDraftStream,
@@ -443,6 +447,11 @@ export function IdeaDetailPage() {
 
   const canSubmitDraft = draftForm.blog_id.trim() && draftForm.topic.trim() && !draftGenerating;
 
+  const paaBranches: PaaBranch[] = useMemo(
+    () => (idea ? buildPaaMindMapBranches(idea) : []),
+    [idea],
+  );
+
   // Loading / not found
   if (ideasQuery.isLoading) {
     return (
@@ -487,7 +496,6 @@ export function IdeaDetailPage() {
     day: "numeric",
     year: "numeric",
   });
-  const paaBranches = useMemo(() => buildPaaMindMapBranches(idea), [idea]);
 
   return (
     <div className="space-y-6 pb-12">

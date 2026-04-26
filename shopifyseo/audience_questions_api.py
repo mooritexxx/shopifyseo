@@ -26,7 +26,8 @@ for each top-level ``related_questions`` item that includes a ``next_page_token`
 up to ``PAA_EXPANSION_MAX_PARENTS`` (default 6). Each parent is paginated to collect
 up to ``PAA_EXPANSION_MAX_CHILDREN`` (default 10) sub-questions, following distinct
 ``next_page_token`` / ``serpapi_link`` on any result row, plus same-token refetches
-(``PAA_SAME_TOKEN_EXTRA_ROUNDS``).
+(``PAA_SAME_TOKEN_EXTRA_ROUNDS``). Rows with no token get an optional Google search
+on the question text (``PAA_EXPANSION_SEARCH_FALLBACK``).
 """
 
 from __future__ import annotations
@@ -328,6 +329,14 @@ def _paa_serpapi_link_next_page_token(item: dict[str, Any]) -> str | None:
         return None
 
 
+def _paa_first_expand_token_for_item(item: dict[str, Any]) -> str | None:
+    """`next_page_token` on the PAA row, or the token in ``serpapi_link`` when the key is empty."""
+    t = item.get("next_page_token")
+    if isinstance(t, str) and t.strip():
+        return t.strip()
+    return _paa_serpapi_link_next_page_token(item) or None
+
+
 def _paa_continuation_token_from_expansion(
     child_payload: dict[str, Any], request_token: str
 ) -> str | None:
@@ -464,7 +473,7 @@ def expand_paa_via_related_questions_engine(
     initial_serp_data: dict[str, Any],
     localization: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """For each top PAA row with ``next_page_token``, fetch child questions via ``google_related_questions``."""
+    """Expand each top PAA row: ``google_related_questions`` by token, else question-text Google search."""
     try:
         max_parents = int(os.environ.get("PAA_EXPANSION_MAX_PARENTS", str(PAA_EXPANSION_MAX_PARENTS_DEFAULT)))
     except (TypeError, ValueError):
@@ -496,16 +505,22 @@ def expand_paa_via_related_questions_engine(
         q = item.get("question")
         if not isinstance(q, str) or not q.strip():
             continue
-        token = item.get("next_page_token")
-        if not isinstance(token, str) or not token.strip():
-            continue
         if i > 0 and delay > 0:
             time.sleep(delay)
-        children = _collect_paa_children_for_one_parent(
-            api_key, token, q.strip(), localization, delay, max_children
-        )
+        q_str = q.strip()
+        token = _paa_first_expand_token_for_item(item)
+        if token:
+            children = _collect_paa_children_for_one_parent(
+                api_key, token, q_str, localization, delay, max_children
+            )
+        elif _paa_expansion_search_fallback_enabled():
+            children = _paa_children_from_google_question_search(
+                api_key, q_str, localization, max_children
+            )
+        else:
+            children = []
         if children:
-            layers.append({"parent_question": q.strip(), "children": children})
+            layers.append({"parent_question": q_str, "children": children})
     return layers
 
 
@@ -588,6 +603,51 @@ def _serpapi_one_google_organic_request(
     except (URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("SerpAPI Google search request failed for keyword %r: %s", kw, exc)
         return [], [], None, [], str(exc) or "SerpAPI request failed.", None
+
+
+def _paa_expansion_search_fallback_enabled() -> bool:
+    """When the main PAA block omits ``next_page_token`` for a row, run ``engine=google`` on that question text."""
+    v = (os.environ.get("PAA_EXPANSION_SEARCH_FALLBACK", "1") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _paa_children_from_google_question_search(
+    api_key: str,
+    parent_question: str,
+    localization: dict[str, str],
+    max_children: int,
+) -> list[dict[str, str]]:
+    """Use PAA from a dedicated Google search for the parent question (no ``google_related_questions`` token on main SERP)."""
+    pl = (parent_question or "").strip()
+    if not pl:
+        return []
+    loc = {k: v for k, v in (localization or {}).items() if isinstance(v, str) and v.strip()}
+    qa, _pages, _aio, _rel, err, _raw, _loc_used = _serpapi_fetch_google_serp_snapshot(
+        api_key, pl, localization=loc
+    )
+    if err:
+        logger.info(
+            "PAA question-search fallback failed for %r: %s",
+            pl[:100],
+            err,
+        )
+        return []
+    parent_lower = pl.lower()
+    out: list[dict[str, str]] = []
+    for row in qa:
+        rq = (row.get("question") or "").strip()
+        if not rq or rq.lower() == parent_lower:
+            continue
+        out.append(row)
+        if len(out) >= max_children:
+            break
+    if out and parent_question:
+        logger.info(
+            "PAA expansion: question-search fallback for %r — %d related question(s).",
+            pl[:100],
+            len(out),
+        )
+    return out
 
 
 def _serpapi_fetch_google_serp_snapshot(

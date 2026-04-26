@@ -344,6 +344,28 @@ def test_paa_children_pagination_uses_continuation_token(monkeypatch: pytest.Mon
     assert calls == ["T-step-1", "T-step-2"]
 
 
+def test_expand_paa_uses_question_search_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rows without next_page_token / serpapi_link use Google search for the question (fallback)."""
+    def fake_q(_api: str, q: str, _loc: object, _mx: int) -> list[dict[str, str]]:
+        assert "orphan" in q.lower()
+        return [{"question": "From fallback?", "snippet": "x"}]
+
+    monkeypatch.setattr(
+        "shopifyseo.audience_questions_api._paa_children_from_google_question_search", fake_q
+    )
+    out = aq.expand_paa_via_related_questions_engine(
+        "k",
+        {"related_questions": [{"question": "Orphan parent?", "snippet": "a"}]},
+        {"gl": "us", "hl": "en", "google_domain": "google.com"},
+    )
+    assert out == [
+        {
+            "parent_question": "Orphan parent?",
+            "children": [{"question": "From fallback?", "snippet": "x"}],
+        }
+    ]
+
+
 def test_paa_continuation_uses_serpapi_link_when_json_token_matches_request() -> None:
     """If only ``serpapi_link`` encodes a different next token, we still continue."""
     p = {

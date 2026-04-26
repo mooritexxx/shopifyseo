@@ -691,7 +691,8 @@ export type AudienceQuestionItem = z.infer<typeof audienceQuestionItemSchema>;
 export type TopRankingPageItem = z.infer<typeof topRankingPageItemSchema>;
 
 export const refreshArticleIdeaSerpSchema = z.object({
-  idea: articleIdeaSchema
+  idea: articleIdeaSchema,
+  message: z.string()
 });
 
 export const articleIdeasPayloadSchema = z.object({

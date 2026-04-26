@@ -194,6 +194,7 @@ class RefreshArticleIdeaSerpPayload(BaseModel):
     """Response from ``POST /article-ideas/{id}/refresh-serp``."""
 
     idea: ArticleIdeaItem
+    message: str
 
 
 class UpdateIdeaStatusRequest(BaseModel):

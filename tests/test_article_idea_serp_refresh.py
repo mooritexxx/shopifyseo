@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from shopifyseo.dashboard_queries import refresh_article_idea_serp_snapshot, save_article_ideas
+from shopifyseo.dashboard_article_ideas import serp_refresh_user_message
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
@@ -120,3 +121,25 @@ def test_refresh_persists_snapshot(monkeypatch: pytest.MonkeyPatch, conn: sqlite
     assert "Overview line." in (row[2] or "")
     assert "related kw one" in (row[3] or "")
     assert "P?" in (row[4] or "")
+
+
+def test_serp_refresh_user_message_summarizes_idea() -> None:
+    msg = serp_refresh_user_message(
+        {
+            "primary_keyword": "vape",
+            "audience_questions": [{"question": "Q1"}],
+            "top_ranking_pages": [{"title": "a", "url": "u"}],
+            "related_searches": [{"query": "r", "position": 1}],
+            "paa_expansion": [
+                {"parent_question": "P", "children": [{"question": "C", "snippet": "s"}]}
+            ],
+            "ai_overview": {"text_blocks": [{"type": "paragraph", "snippet": "hi"}]},
+        }
+    )
+    assert "vape" in msg
+    assert "1 first-level PAA" in msg
+    assert "1 organic" in msg
+    assert "1 related searches" in msg
+    assert "1 parent" in msg
+    assert "1 sub-question" in msg
+    assert "AI overview" in msg

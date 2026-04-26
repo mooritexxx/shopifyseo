@@ -16,6 +16,7 @@ from backend.app.schemas.article_ideas import (
 from backend.app.schemas.common import SuccessResponse, success_response
 from shopifyseo.audience_questions_api import enrich_article_ideas_with_audience_questions
 from shopifyseo.dashboard_ai_engine_parts.generation import generate_article_ideas
+from shopifyseo.dashboard_article_ideas import serp_refresh_user_message
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,9 @@ def refresh_idea_serp_snapshot(idea_id: int):
         conn.close()
 
     item = ArticleIdeaItem.model_validate(idea_dict)
-    return success_response(RefreshArticleIdeaSerpPayload(idea=item))
+    return success_response(
+        RefreshArticleIdeaSerpPayload(idea=item, message=serp_refresh_user_message(idea_dict))
+    )
 
 
 @router.get("/{idea_id}/performance", response_model=SuccessResponse[IdeaPerformancePayload])

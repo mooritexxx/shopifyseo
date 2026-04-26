@@ -333,12 +333,9 @@ export function IdeaDetailPage() {
     mutationFn: () =>
       postJson(`/api/article-ideas/${numericId}/refresh-serp`, refreshArticleIdeaSerpSchema, {}),
     onMutate: () => setSerpRefreshBanner(null),
-    onSuccess: () => {
+    onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
-        setSerpRefreshBanner({
-          tone: "ok",
-          text: "SERP data updated (including expanded People also ask when SerpAPI returns expand tokens).",
-        });
+      setSerpRefreshBanner({ tone: "ok", text: data.message });
     },
     onError: (e: unknown) => {
       const msg = e instanceof Error ? e.message : "Refresh failed.";

@@ -1076,6 +1076,51 @@ def fetch_article_ideas(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return result
 
 
+def serp_refresh_user_message(idea: dict[str, Any]) -> str:
+    """Summarize what was stored after a SerpAPI refresh (returned in the API for the success banner)."""
+    pk = (str(idea.get("primary_keyword") or "")).strip() or "this keyword"
+    aq = idea.get("audience_questions") or []
+    trp = idea.get("top_ranking_pages") or []
+    rs = idea.get("related_searches") or []
+    pex = idea.get("paa_expansion") or []
+    n_aq = len(aq) if isinstance(aq, list) else 0
+    n_trp = len(trp) if isinstance(trp, list) else 0
+    n_rs = len(rs) if isinstance(rs, list) else 0
+    n_exp_parents = len(pex) if isinstance(pex, list) else 0
+    n_exp_children = 0
+    if isinstance(pex, list):
+        for row in pex:
+            if isinstance(row, dict):
+                ch = row.get("children") or []
+                if isinstance(ch, list):
+                    n_exp_children += len(ch)
+    aio = idea.get("ai_overview")
+    has_aio = bool(
+        aio
+        and isinstance(aio, dict)
+        and (aio.get("text_blocks") or aio.get("references"))
+    )
+    parts = [
+        f'SERP snapshot saved for "{pk}".',
+        f"{n_aq} first-level PAA, {n_trp} organic results, {n_rs} related searches.",
+    ]
+    if n_exp_parents or n_exp_children:
+        parts.append(
+            f"Expanded PAA: {n_exp_parents} parent(s), {n_exp_children} sub-question(s)."
+        )
+    if has_aio:
+        parts.append("AI overview stored.")
+    if (
+        n_aq == 0
+        and n_trp == 0
+        and n_rs == 0
+        and n_exp_children == 0
+        and not has_aio
+    ):
+        parts.append("No PAA, organic, or related-search blocks were in this response.")
+    return " ".join(parts)
+
+
 def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -> dict[str, Any]:
     """Run SerpAPI for the idea's primary keyword; overwrite PAA, organics, AI overview, related searches, and PAA expansion.
 

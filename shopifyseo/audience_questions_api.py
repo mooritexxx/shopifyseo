@@ -28,6 +28,11 @@ up to ``PAA_EXPANSION_MAX_CHILDREN`` (default 10) sub-questions, following disti
 ``next_page_token`` / ``serpapi_link`` on any result row, plus same-token refetches
 (``PAA_SAME_TOKEN_EXTRA_ROUNDS``). Rows with no token get an optional Google search
 on the question text (``PAA_EXPANSION_SEARCH_FALLBACK``).
+
+When the exact keyword has organic results but no first-level PAA, refreshes may
+optionally try a few informational variants (``PAA_FALLBACK_MAX_QUERIES``,
+default 3) and use only their PAA tree. This keeps ranking-page evidence tied to
+the exact keyword while still giving content briefs useful question coverage.
 """
 
 from __future__ import annotations
@@ -73,6 +78,9 @@ PAA_EXPANSION_MAX_CHILDREN_DEFAULT = 10
 PAA_EXPANSION_DELAY_SEC_DEFAULT = 0.35
 # Extra requests with the same next_page_token can return more rows (see SerpAPI blog, PAA pagination).
 PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT = 4
+PAA_FALLBACK_MAX_QUERIES_DEFAULT = 3
+PAA_FALLBACK_MAX_QUESTIONS_DEFAULT = 20
+PAA_FALLBACK_DELAY_SEC_DEFAULT = 0.25
 
 # Cap AI overview payload size (SerpAPI shape varies; keep JSON bounded).
 _MAX_AI_OVERVIEW_BLOCKS = 48
@@ -231,6 +239,137 @@ def _qa_from_related_payload(data: dict[str, Any]) -> list[dict[str, str]]:
         if len(out) >= 80:
             break
     return out
+
+
+_LOCAL_QUERY_TOKENS = {
+    "canada",
+    "canadian",
+    "ca",
+    "usa",
+    "us",
+    "united states",
+    "near me",
+    "online",
+}
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        s = " ".join(str(raw or "").lower().split())
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(" ".join(str(raw or "").split()))
+    return out
+
+
+def _keyword_without_local_modifiers(keyword: str) -> str:
+    base = " ".join((keyword or "").strip().split())
+    if not base:
+        return ""
+    lowered = f" {base.lower()} "
+    for token in sorted(_LOCAL_QUERY_TOKENS, key=len, reverse=True):
+        lowered = lowered.replace(f" {token} ", " ")
+    cleaned = " ".join(lowered.split())
+    return cleaned or base
+
+
+def _paa_informational_fallback_queries(keyword: str) -> list[str]:
+    """Variant queries used only when the exact SERP has no first-level PAA."""
+    kw = " ".join((keyword or "").strip().split())
+    base = _keyword_without_local_modifiers(kw)
+    if not base:
+        return []
+    final_token = base.rsplit(" ", 1)[-1]
+    copula = "are" if final_token.endswith("s") else "is"
+    return _dedupe_preserve_order(
+        [
+            f"what {copula} {base}",
+            f"how to choose {base}",
+            f"best {base} for beginners",
+            f"common questions about {base}",
+        ]
+    )
+
+
+def _paa_fallback_limit(env_key: str, default: int, *, low: int, high: int) -> int:
+    try:
+        raw = int(os.environ.get(env_key, str(default)))
+    except (TypeError, ValueError):
+        raw = default
+    return max(low, min(raw, high))
+
+
+def _fetch_paa_from_informational_fallbacks(
+    api_key: str,
+    keyword: str,
+    localization: dict[str, str],
+) -> tuple[list[dict[str, str]], dict[str, Any] | None, dict[str, str]]:
+    """Try informational variants for PAA only; exact SERP organics remain authoritative."""
+    max_queries = _paa_fallback_limit(
+        "PAA_FALLBACK_MAX_QUERIES",
+        PAA_FALLBACK_MAX_QUERIES_DEFAULT,
+        low=0,
+        high=8,
+    )
+    if max_queries <= 0:
+        return [], None, localization
+    max_questions = _paa_fallback_limit(
+        "PAA_FALLBACK_MAX_QUESTIONS",
+        PAA_FALLBACK_MAX_QUESTIONS_DEFAULT,
+        low=1,
+        high=80,
+    )
+    try:
+        delay = float(os.environ.get("PAA_FALLBACK_DELAY_SEC", str(PAA_FALLBACK_DELAY_SEC_DEFAULT)))
+    except (TypeError, ValueError):
+        delay = PAA_FALLBACK_DELAY_SEC_DEFAULT
+    delay = max(0.0, min(delay, 5.0))
+
+    merged: list[dict[str, str]] = []
+    seen_questions: set[str] = set()
+    first_raw_with_paa: dict[str, Any] | None = None
+    first_loc_with_paa: dict[str, str] = localization
+
+    for idx, query in enumerate(_paa_informational_fallback_queries(keyword)[:max_queries]):
+        if idx > 0 and delay > 0:
+            time.sleep(delay)
+        qa, _pages, _aio, _rel, err, raw_data, loc_effective = _serpapi_fetch_google_serp_snapshot(
+            api_key,
+            query,
+            localization=localization,
+        )
+        if err:
+            logger.info("PAA fallback query failed for %r: %s", query, err)
+            continue
+        if not qa:
+            continue
+        if first_raw_with_paa is None and isinstance(raw_data, dict):
+            first_raw_with_paa = raw_data
+            first_loc_with_paa = loc_effective
+        for row in qa:
+            q = (row.get("question") or "").strip()
+            if not q:
+                continue
+            key = " ".join(q.lower().split())
+            if key in seen_questions:
+                continue
+            seen_questions.add(key)
+            merged.append({"question": q, "snippet": (row.get("snippet") or "").strip()})
+            if len(merged) >= max_questions:
+                break
+        if merged:
+            logger.info(
+                "SERP PAA fallback: %r had no PAA; using %d question(s) from informational query %r.",
+                keyword,
+                len(merged),
+                query,
+            )
+            break
+
+    return merged, first_raw_with_paa, first_loc_with_paa
 
 
 def _top_organic_pages_from_payload(data: dict[str, Any]) -> list[dict[str, str]]:
@@ -726,10 +865,23 @@ def fetch_serpapi_primary_keyword_snapshot(
         "related_searches": rel,
         "paa_expansion": [],
     }
-    if expand_paa and isinstance(raw_data, dict):
+    raw_for_expansion = raw_data
+    loc_for_expansion = loc_effective
+    if expand_paa and not qa:
+        fallback_qa, fallback_raw, fallback_loc = _fetch_paa_from_informational_fallbacks(
+            api_key,
+            kw,
+            loc_effective,
+        )
+        if fallback_qa:
+            out["audience_questions"] = fallback_qa
+            if isinstance(fallback_raw, dict):
+                raw_for_expansion = fallback_raw
+                loc_for_expansion = fallback_loc
+    if expand_paa and isinstance(raw_for_expansion, dict):
         try:
             out["paa_expansion"] = expand_paa_via_related_questions_engine(
-                api_key, raw_data, loc_effective
+                api_key, raw_for_expansion, loc_for_expansion
             )
         except Exception:
             logger.warning("SerpAPI PAA expansion failed (non-fatal)", exc_info=True)

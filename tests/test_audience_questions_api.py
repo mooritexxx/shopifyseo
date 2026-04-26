@@ -1,6 +1,7 @@
 """Tests for SerpAPI audience question enrichment."""
 
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -307,6 +308,103 @@ def test_expand_paa_fetches_google_related_questions(monkeypatch: pytest.MonkeyP
         }
     ]
     assert _call == 2
+
+
+def test_refresh_snapshot_uses_informational_paa_fallback_without_replacing_exact_serp(
+    monkeypatch: pytest.MonkeyPatch,
+    conn,
+):
+    from shopifyseo import dashboard_google as dg
+
+    def fake_get_setting(_c: object, key: str) -> str:
+        return "k" if key == "serpapi_api_key" else ""
+
+    monkeypatch.setattr(dg, "get_service_setting", fake_get_setting)
+    monkeypatch.setenv("PAA_FALLBACK_DELAY_SEC", "0")
+    monkeypatch.setenv("PAA_SAME_TOKEN_EXTRA_ROUNDS", "0")
+    seen_queries: list[str] = []
+
+    def fake_urlopen(req: object, *a, **k):
+        url = getattr(req, "full_url", "")
+        params = parse_qs(urlparse(url).query)
+        engine = params.get("engine", [""])[0]
+        query = params.get("q", [""])[0]
+        seen_queries.append(query or engine)
+
+        class Resp:
+            def read(self) -> bytes:
+                if engine == "google_related_questions":
+                    return json.dumps(
+                        {
+                            "related_questions": [
+                                {"question": "Which accessories matter?", "snippet": "Coils, pods, chargers."}
+                            ]
+                        }
+                    ).encode()
+                if query == "vape accessories canada":
+                    return json.dumps(
+                        {
+                            "organic_results": [
+                                {"title": "Exact Rank", "link": "https://exact.example/rank"}
+                            ],
+                            "related_searches": [{"query": "vape accessories online", "position": 1}],
+                        }
+                    ).encode()
+                assert query == "what are vape accessories"
+                return json.dumps(
+                    {
+                        "related_questions": [
+                            {
+                                "question": "What accessories do you need for a vape?",
+                                "snippet": "Common basics include coils and chargers.",
+                                "next_page_token": "paa-token",
+                            }
+                        ],
+                        "organic_results": [
+                            {"title": "Fallback Rank", "link": "https://fallback.example/rank"}
+                        ],
+                    }
+                ).encode()
+
+            def __enter__(self) -> "Resp":
+                return self
+
+            def __exit__(self, *x: object) -> None:
+                return None
+
+        return Resp()
+
+    monkeypatch.setattr(aq, "urlopen", fake_urlopen)
+
+    out = aq.fetch_serpapi_primary_keyword_snapshot(
+        conn,
+        "vape accessories canada",
+        expand_paa=True,
+    )
+
+    assert out["top_ranking_pages"] == [
+        {"title": "Exact Rank", "url": "https://exact.example/rank"}
+    ]
+    assert out["related_searches"] == [{"query": "vape accessories online", "position": 1}]
+    assert out["audience_questions"] == [
+        {
+            "question": "What accessories do you need for a vape?",
+            "snippet": "Common basics include coils and chargers.",
+        }
+    ]
+    assert out["paa_expansion"] == [
+        {
+            "parent_question": "What accessories do you need for a vape?",
+            "children": [
+                {"question": "Which accessories matter?", "snippet": "Coils, pods, chargers."}
+            ],
+        }
+    ]
+    assert seen_queries[:3] == [
+        "vape accessories canada",
+        "what are vape accessories",
+        "google_related_questions",
+    ]
 
 
 def test_paa_children_pagination_uses_continuation_token(monkeypatch: pytest.MonkeyPatch):

@@ -16,7 +16,7 @@ import shopifyseo.dashboard_queries as dq
 from backend.app.db import open_db_connection
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
 from backend.app.services.index_status import index_status_info, inspection_for_catalog_index_display
-from backend.app.services.object_signals import load_object_signals, search_console_inspect_href
+from backend.app.services.object_signals import load_object_signals
 
 
 PRODUCT_SORTERS: dict[str, Any] = {
@@ -245,11 +245,8 @@ def _signal_cards_for(
         )
     inspection_display = inspection_for_catalog_index_display(signals["inspection_detail"], current)
     index_label, _, index_reason = index_status_info(inspection_display)
-    inspect_href = search_console_inspect_href(
-        current.get("url") or dq.object_url(kind, current["handle"]),
-        signals.get("site_url") or "",
-        signals.get("inspection_detail"),
-    )
+    inspection_result = ((signals.get("inspection_detail") or {}).get("inspectionResult") or {})
+    inspect_href = (inspection_result.get("inspectionResultLink") or "").strip() or None
     gsc_dates = _gsc_date_range_label(gsc_period)
     ga4_dates = _ga4_date_range_label()
     gsc_has = bool(current.get("gsc_impressions"))

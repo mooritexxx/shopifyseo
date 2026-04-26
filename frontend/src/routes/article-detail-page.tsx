@@ -30,6 +30,7 @@ import { useSidekickBinding } from "../components/sidekick/sidekick-context";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, patchJson, postJson } from "../lib/api";
 import { useDashboardGscPeriodSync } from "../lib/gsc-period";
+import { isSearchConsoleInspectionLink } from "../lib/search-console";
 import { cleanSeoTitle } from "../lib/utils";
 import { actionSchema, contentDetailSchema, keywordCoveragePayloadSchema, messageSchema, type KeywordCoveragePayload } from "../types/api";
 
@@ -321,7 +322,7 @@ export function ArticleDetailPage() {
   });
   const openInspectionLink = (href?: string | null) => {
     const cachedHref = (href || "").trim();
-    if (cachedHref) {
+    if (isSearchConsoleInspectionLink(cachedHref)) {
       window.open(cachedHref, "_blank", "noopener,noreferrer");
       return;
     }

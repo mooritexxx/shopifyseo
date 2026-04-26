@@ -171,14 +171,23 @@ def generate_article_draft(
         try:
             from backend.app.services.keyword_clustering import compute_seo_gaps
 
+            cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+            tier_select = (
+                ", core_keywords_json, supporting_keywords_json, extended_keywords_json, cluster_role, cluster_intent"
+                if "core_keywords_json" in cluster_cols
+                else ", '[]' AS core_keywords_json, '[]' AS supporting_keywords_json, '[]' AS extended_keywords_json, '' AS cluster_role, '' AS cluster_intent"
+            )
             cluster_row = conn.execute(
                 """
                 SELECT id, name, primary_keyword, content_brief, dominant_serp_features, content_format_hints
+                       {tier_select}
                 FROM clusters WHERE id = ?
-                """,
+                """.format(tier_select=tier_select),
                 (linked_cluster_id,),
             ).fetchone()
             if cluster_row:
+                from backend.app.services.keyword_clustering import parse_keyword_tier
+
                 cluster_meta = {
                     "id": linked_cluster_id,
                     "name": cluster_row["name"] if "name" in cluster_row.keys() else cluster_row[1],
@@ -186,13 +195,29 @@ def generate_article_draft(
                     "content_brief": cluster_row["content_brief"] if "content_brief" in cluster_row.keys() else cluster_row[3],
                     "dominant_serp_features": cluster_row["dominant_serp_features"] if "dominant_serp_features" in cluster_row.keys() else "",
                     "content_format_hints": cluster_row["content_format_hints"] if "content_format_hints" in cluster_row.keys() else "",
+                    "core_keywords": parse_keyword_tier(cluster_row["core_keywords_json"] if "core_keywords_json" in cluster_row.keys() else "[]"),
+                    "supporting_keywords": parse_keyword_tier(cluster_row["supporting_keywords_json"] if "supporting_keywords_json" in cluster_row.keys() else "[]"),
+                    "extended_keywords": parse_keyword_tier(cluster_row["extended_keywords_json"] if "extended_keywords_json" in cluster_row.keys() else "[]"),
+                    "cluster_role": cluster_row["cluster_role"] if "cluster_role" in cluster_row.keys() else "",
+                    "cluster_intent": cluster_row["cluster_intent"] if "cluster_intent" in cluster_row.keys() else "",
                 }
 
             kw_rows = conn.execute(
                 "SELECT keyword FROM cluster_keywords WHERE cluster_id = ?",
                 (linked_cluster_id,),
             ).fetchall()
-            cluster_kws = [str(r[0]).strip() for r in kw_rows if str(r[0] or "").strip()]
+            tiered_kws = []
+            for field in ("primary_keyword", "core_keywords", "supporting_keywords"):
+                value = cluster_meta.get(field)
+                raw_values = [value] if isinstance(value, str) else (value or [])
+                for raw_kw in raw_values:
+                    kw = str(raw_kw or "").strip()
+                    if kw and kw.lower() not in {x.lower() for x in tiered_kws}:
+                        tiered_kws.append(kw)
+            if tiered_kws:
+                cluster_kws = tiered_kws[:24]
+            else:
+                cluster_kws = [str(r[0]).strip() for r in kw_rows if str(r[0] or "").strip()][:24]
             primary_kw = str(cluster_meta.get("primary_keyword") or "")
 
             if cluster_kws:

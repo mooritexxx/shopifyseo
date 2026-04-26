@@ -4,6 +4,29 @@ import sqlite3
 _MIN_VENDOR_LENGTH = 3
 
 
+def _tiered_cluster_keywords(cluster: dict, *, include_extended: bool = False) -> list[str]:
+    """Return generation-safe cluster keywords, falling back to raw keywords."""
+    out: list[str] = []
+    for field in ("primary_keyword",):
+        text = str(cluster.get(field) or "").strip()
+        if text:
+            out.append(text)
+    tier_fields = ["core_keywords", "supporting_keywords"]
+    if include_extended:
+        tier_fields.append("extended_keywords")
+    for field in tier_fields:
+        for kw in cluster.get(field) or []:
+            text = str(kw or "").strip()
+            if text and text.lower() not in {x.lower() for x in out}:
+                out.append(text)
+    if len(out) <= 1:
+        for kw in cluster.get("keywords", [])[:24]:
+            text = str(kw or "").strip()
+            if text and text.lower() not in {x.lower() for x in out}:
+                out.append(text)
+    return out
+
+
 def _format_cluster_context(
     matched_clusters: list[dict],
     target_data: dict,
@@ -30,7 +53,7 @@ def _format_cluster_context(
         primary_diff = primary_metrics.get("difficulty", 0) or 0
 
         supporting = []
-        for kw in cluster.get("keywords", []):
+        for kw in _tiered_cluster_keywords(cluster):
             if kw.lower() == primary_kw.lower():
                 continue
             m = kw_map.get(kw.lower(), {})
@@ -203,7 +226,7 @@ def _get_matched_cluster_keywords(
         pk = cluster.get("primary_keyword", "")
         if pk and not primary_kw:
             primary_kw = pk
-        for kw in cluster.get("keywords", []):
+        for kw in _tiered_cluster_keywords(cluster):
             kl = kw.lower()
             if kl not in seen:
                 seen.add(kl)

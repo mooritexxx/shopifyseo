@@ -167,6 +167,14 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "content_format_hints": "TEXT",
             "avg_cps": "REAL",
             "priority_score": "REAL NOT NULL DEFAULT 0.0",
+            "detected_entity": "TEXT NOT NULL DEFAULT ''",
+            "cluster_intent": "TEXT NOT NULL DEFAULT ''",
+            "cluster_role": "TEXT NOT NULL DEFAULT ''",
+            "quality_score": "REAL NOT NULL DEFAULT 0.0",
+            "core_keywords_json": "TEXT NOT NULL DEFAULT '[]'",
+            "supporting_keywords_json": "TEXT NOT NULL DEFAULT '[]'",
+            "extended_keywords_json": "TEXT NOT NULL DEFAULT '[]'",
+            "cannibalization_risk": "TEXT NOT NULL DEFAULT 'none'",
         },
     )
     conn.execute(

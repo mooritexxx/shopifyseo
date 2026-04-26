@@ -1982,6 +1982,78 @@ def test_pre_cluster_orphans_without_embeddings_fall_back_to_one_bucket():
     assert {k["keyword"] for k in fallback} == {"stray-a", "stray-b"}
 
 
+def test_entity_detection_normalizes_key_vape_brands():
+    from backend.app.services.keyword_clustering._planning import detect_entities, load_entity_rules
+
+    conn = _make_dedupe_db()
+    rules = load_entity_rules(conn)
+    assert detect_entities("elf bar flavours", rules) == ["ELFBAR"]
+    assert detect_entities("elfbar bc10000", rules) == ["ELFBAR"]
+    assert detect_entities("geek bar pulse x", rules) == ["Geek Bar"]
+    assert detect_entities("caliburn g3 pods", rules) == ["Caliburn"]
+    assert detect_entities("stlth geek bar 80k", rules) == ["STLTH x GEEK BAR"]
+
+
+def test_safe_partition_keeps_competing_brands_apart_without_parent_topics():
+    from backend.app.services.keyword_clustering._planning import partition_keywords_for_generation
+
+    conn = _make_dedupe_db()
+    keywords = [
+        _kw("elf bars", opportunity=95.0, intent="transactional", parent_topic=""),
+        _kw("elfbar flavours", opportunity=85.0, intent="commercial", parent_topic=""),
+        _kw("geek bar", opportunity=92.0, intent="transactional", parent_topic=""),
+        _kw("geek bar flavours", opportunity=80.0, intent="commercial", parent_topic=""),
+        _kw("caliburn g3", opportunity=88.0, intent="transactional", parent_topic=""),
+    ]
+    buckets, _rules = partition_keywords_for_generation(keywords, conn)
+    bucket_sets = [set(item["keyword"] for item in bucket) for bucket in buckets]
+
+    for bucket in bucket_sets:
+        assert not ({"elf bars", "elfbar flavours"} & bucket and {"geek bar", "geek bar flavours"} & bucket)
+        assert not ({"caliburn g3"} & bucket and ({"elf bars", "elfbar flavours", "geek bar", "geek bar flavours"} & bucket))
+
+
+def test_repair_splits_mixed_brand_cluster_and_caps_generation_tiers():
+    from backend.app.services.keyword_clustering._planning import repair_and_enrich_clusters
+
+    conn = _make_dedupe_db()
+    keywords = [
+        "elf bars",
+        "elfbar flavours",
+        "geek bar",
+        "geek bar flavours",
+        "stlth pods",
+        "caliburn g3",
+    ]
+    keywords_map = {
+        kw: {
+            "keyword": kw,
+            "volume": 1000,
+            "difficulty": 10,
+            "opportunity": 80.0,
+            "intent": "commercial",
+            "ranking_status": "not_ranking",
+        }
+        for kw in keywords
+    }
+    clusters = [{
+        "name": "Elf Bar Products",
+        "content_type": "collection_page",
+        "primary_keyword": "elf bars",
+        "content_brief": "",
+        "keywords": keywords,
+    }]
+
+    repaired = repair_and_enrich_clusters(clusters, conn, keywords_map)
+    assert len(repaired) >= 4
+    for cluster in repaired:
+        kws = " ".join(cluster["keywords"]).lower()
+        assert not ("elf" in kws and "geek bar" in kws)
+        assert not ("elf" in kws and "caliburn" in kws)
+        assert len(cluster["core_keywords"]) <= 10
+        assert cluster["quality_score"] >= 68.0
+
+
 def test_generate_clusters_parallel_calls_llm_per_bucket(monkeypatch):
     """Two parent_topic groups → two LLM clustering calls, each with its own payload."""
     import time as _time

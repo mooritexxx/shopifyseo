@@ -24,6 +24,11 @@ from shopifyseo.dashboard_google import get_service_setting
 
 from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
+from ._planning import (
+    partition_keywords_for_generation,
+    repair_and_enrich_clusters,
+    serialize_keyword_tiers,
+)
 from ._postprocess import fold_singletons, merge_similar_clusters
 from ._pre_cluster import pre_cluster
 from ._scoring import cluster_priority_score, select_primary_keyword
@@ -223,7 +228,10 @@ def _match_clusters_to_pages(
             "name": c["name"],
             "content_type": c.get("content_type", ""),
             "primary_keyword": c.get("primary_keyword", ""),
-            "keywords": c.get("keywords", [])[:10],
+            "keywords": (c.get("core_keywords") or c.get("keywords", []))[:10],
+            "cluster_role": c.get("cluster_role", ""),
+            "detected_entity": c.get("detected_entity", ""),
+            "cannibalization_risk": c.get("cannibalization_risk", "none"),
         }
         for c in clusters
     ]
@@ -349,8 +357,14 @@ def generate_clusters(
         sys_p, user_p = _build_clustering_prompt(groups, orphans, country_name=_mkt_name)
         bucket_prompts: list[tuple[str, str]] = [(sys_p, user_p)]
     else:
-        buckets = pre_cluster(canonicals, conn)
-        progress(f"Pre-clustered into {len(buckets)} bucket(s)")
+        safe_partitions, _entity_rules = partition_keywords_for_generation(canonicals, conn)
+        buckets = []
+        for partition in safe_partitions:
+            if len(partition) > 60:
+                buckets.extend(pre_cluster(partition, conn, assign_threshold=0.82, merge_threshold=0.82))
+            else:
+                buckets.append(partition)
+        progress(f"Entity/intent safe-bucketed into {len(buckets)} bucket(s)")
         bucket_prompts = [_bucket_to_prompt(b, _mkt_name) for b in buckets]
 
     # 5. Call LLM per bucket — in parallel when we have more than one bucket.
@@ -446,6 +460,7 @@ def generate_clusters(
         _refresh_cluster_scoring(c, keywords_map, np_mod, vector_lookup)
         for c in clusters
     ]
+    clusters = repair_and_enrich_clusters(clusters, conn, keywords_map)
     if len(clusters) < before:
         progress(f"Post-processed clusters — {before} → {len(clusters)}")
 
@@ -476,32 +491,61 @@ def generate_clusters(
         match_type = sm.get("match_type") if sm else None
         match_handle = sm.get("match_handle", "") if sm else None
         match_title = sm.get("match_title", "") if sm else None
+        tiers = serialize_keyword_tiers(cluster)
 
         if "priority_score" in cluster_cols:
+            planning_cols = [
+                col for col in (
+                    "detected_entity",
+                    "cluster_intent",
+                    "cluster_role",
+                    "quality_score",
+                    "core_keywords_json",
+                    "supporting_keywords_json",
+                    "extended_keywords_json",
+                    "cannibalization_risk",
+                )
+                if col in cluster_cols
+            ]
+            base_cols = [
+                "name", "content_type", "primary_keyword", "content_brief",
+                "total_volume", "avg_difficulty", "avg_opportunity", "priority_score",
+                "dominant_serp_features", "content_format_hints", "avg_cps",
+                "match_type", "match_handle", "match_title", "generated_at",
+            ]
+            values = [
+                cluster["name"],
+                cluster.get("content_type", "blog_post"),
+                cluster.get("primary_keyword", ""),
+                cluster.get("content_brief", ""),
+                cluster.get("total_volume", 0),
+                cluster.get("avg_difficulty", 0.0),
+                cluster.get("avg_opportunity", 0.0),
+                cluster.get("priority_score", 0.0),
+                (cluster.get("dominant_serp_features") or "").strip(),
+                (cluster.get("content_format_hints") or "").strip(),
+                float(cluster.get("avg_cps") or 0.0),
+                match_type,
+                match_handle,
+                match_title,
+                generated_at,
+            ]
+            planning_values = {
+                "detected_entity": cluster.get("detected_entity", ""),
+                "cluster_intent": cluster.get("cluster_intent", ""),
+                "cluster_role": cluster.get("cluster_role", ""),
+                "quality_score": float(cluster.get("quality_score") or 0.0),
+                "core_keywords_json": tiers["core_keywords_json"],
+                "supporting_keywords_json": tiers["supporting_keywords_json"],
+                "extended_keywords_json": tiers["extended_keywords_json"],
+                "cannibalization_risk": cluster.get("cannibalization_risk", "none"),
+            }
+            values.extend(planning_values[col] for col in planning_cols)
+            insert_cols = base_cols + planning_cols
+            placeholders = ", ".join("?" for _ in insert_cols)
             conn.execute(
-                """INSERT INTO clusters
-                   (name, content_type, primary_keyword, content_brief,
-                    total_volume, avg_difficulty, avg_opportunity, priority_score,
-                    dominant_serp_features, content_format_hints, avg_cps,
-                    match_type, match_handle, match_title, generated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    cluster["name"],
-                    cluster.get("content_type", "blog_post"),
-                    cluster.get("primary_keyword", ""),
-                    cluster.get("content_brief", ""),
-                    cluster.get("total_volume", 0),
-                    cluster.get("avg_difficulty", 0.0),
-                    cluster.get("avg_opportunity", 0.0),
-                    cluster.get("priority_score", 0.0),
-                    (cluster.get("dominant_serp_features") or "").strip(),
-                    (cluster.get("content_format_hints") or "").strip(),
-                    float(cluster.get("avg_cps") or 0.0),
-                    match_type,
-                    match_handle,
-                    match_title,
-                    generated_at,
-                ),
+                f"INSERT INTO clusters ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                tuple(values),
             )
         else:
             conn.execute(

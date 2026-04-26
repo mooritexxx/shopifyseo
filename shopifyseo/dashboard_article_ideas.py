@@ -171,6 +171,13 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         if "priority_score" in cluster_stat_cols
         else ", c.avg_opportunity AS priority_score"
     )
+    cluster_planning_sql = (
+        ", c.core_keywords_json, c.supporting_keywords_json, c.extended_keywords_json, "
+        "c.quality_score, c.cannibalization_risk"
+        if "core_keywords_json" in cluster_stat_cols
+        else ", '[]' AS core_keywords_json, '[]' AS supporting_keywords_json, "
+        "'[]' AS extended_keywords_json, 0.0 AS quality_score, 'none' AS cannibalization_risk"
+    )
     cluster_order_sql = (
         "COALESCE(NULLIF(c.priority_score, 0), c.avg_opportunity) DESC, c.total_volume DESC, c.avg_opportunity DESC"
         if "priority_score" in cluster_stat_cols
@@ -186,6 +193,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
                c.content_type, c.match_type, c.match_handle, c.match_title
                {cluster_stats_sql}
                {cluster_priority_sql}
+               {cluster_planning_sql}
         FROM clusters c
         WHERE c.content_type IN ('blog_post', 'buying_guide')
           AND NOT EXISTS (
@@ -206,32 +214,46 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
     cluster_gaps: list[dict[str, Any]] = []
     for r in cluster_rows:
         cluster_id = r[0]
-        kw_rows = conn.execute(
-            """
-            SELECT ck.keyword,
-                   COALESCE(km.volume, 0)               AS volume,
-                   COALESCE(km.difficulty, 0)            AS difficulty,
-                   COALESCE(km.cpc, 0.0)                 AS cpc,
-                   COALESCE(km.intent, 'informational')  AS intent,
-                   COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
-                   km.gsc_position,
-                   COALESCE(km.opportunity, 0.0)         AS opportunity,
-                   km.clicks,
-                   km.cps,
-                   km.content_format_hint,
-                   km.serp_features,
-                   km.word_count,
-                   km.first_seen,
-                   COALESCE(km.traffic_potential, 0)     AS traffic_potential,
-                   COALESCE(km.global_volume, 0)         AS global_volume
-            FROM cluster_keywords ck
-            LEFT JOIN keyword_metrics km ON LOWER(km.keyword) = LOWER(ck.keyword)
-            WHERE ck.cluster_id = ?
-            ORDER BY km.opportunity DESC NULLS LAST
-            LIMIT 5
-            """,
-            (cluster_id,),
-        ).fetchall()
+        from backend.app.services.keyword_clustering import parse_keyword_tier
+
+        core_keywords = parse_keyword_tier(r[15] if len(r) > 15 else "[]")
+        supporting_keywords = parse_keyword_tier(r[16] if len(r) > 16 else "[]")
+        extended_keywords = parse_keyword_tier(r[17] if len(r) > 17 else "[]")
+        preferred_keywords = core_keywords + [kw for kw in supporting_keywords if kw.lower() not in {x.lower() for x in core_keywords}]
+        kw_base_sql = """
+                SELECT ck.keyword,
+                       COALESCE(km.volume, 0)               AS volume,
+                       COALESCE(km.difficulty, 0)            AS difficulty,
+                       COALESCE(km.cpc, 0.0)                 AS cpc,
+                       COALESCE(km.intent, 'informational')  AS intent,
+                       COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
+                       km.gsc_position,
+                       COALESCE(km.opportunity, 0.0)         AS opportunity,
+                       km.clicks,
+                       km.cps,
+                       km.content_format_hint,
+                       km.serp_features,
+                       km.word_count,
+                       km.first_seen,
+                       COALESCE(km.traffic_potential, 0)     AS traffic_potential,
+                       COALESCE(km.global_volume, 0)         AS global_volume
+                FROM cluster_keywords ck
+                LEFT JOIN keyword_metrics km ON LOWER(km.keyword) = LOWER(ck.keyword)
+                WHERE ck.cluster_id = ?
+        """
+        if preferred_keywords:
+            placeholders = ",".join("?" for _ in preferred_keywords[:12])
+            kw_rows = conn.execute(
+                kw_base_sql
+                + f" AND LOWER(ck.keyword) IN ({placeholders}) "
+                + "ORDER BY km.opportunity DESC NULLS LAST LIMIT 8",
+                (cluster_id, *[kw.lower() for kw in preferred_keywords[:12]]),
+            ).fetchall()
+        else:
+            kw_rows = conn.execute(
+                kw_base_sql + " ORDER BY km.opportunity DESC NULLS LAST LIMIT 5",
+                (cluster_id,),
+            ).fetchall()
 
         top_keywords = [
             {
@@ -265,6 +287,8 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         ac_raw = r[13]
         avg_cps_cluster = round(float(ac_raw), 2) if ac_raw is not None else 0.0
         priority_score = round(float(r[14] or r[6] or 0), 1)
+        quality_score = round(float((r[18] if len(r) > 18 else 0.0) or 0.0), 1)
+        cannibalization_risk = (r[19] if len(r) > 19 else "none") or "none"
 
         cluster_gaps.append(
             {
@@ -276,6 +300,11 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
                 "avg_difficulty": round(float(r[5] or 0), 1),
                 "avg_opportunity": round(float(r[6] or 0), 1),
                 "priority_score": priority_score,
+                "quality_score": quality_score,
+                "cannibalization_risk": cannibalization_risk,
+                "core_keywords": core_keywords,
+                "supporting_keywords": supporting_keywords,
+                "extended_keywords": extended_keywords,
                 "content_type": r[7],
                 "match_type": r[8],
                 "match_handle": r[9],

@@ -18,6 +18,11 @@ def _cluster_keyword_values(cluster: dict) -> list[str]:
     primary = str(cluster.get("primary_keyword") or "").strip()
     if primary:
         out.append(primary)
+    for field in ("core_keywords", "supporting_keywords"):
+        for kw in cluster.get(field) or []:
+            text = str(kw.get("keyword") if isinstance(kw, dict) else kw or "").strip()
+            if text and text.lower() not in {k.lower() for k in out}:
+                out.append(text)
     for kw in cluster.get("top_keywords") or []:
         if isinstance(kw, dict):
             text = str(kw.get("keyword") or "").strip()
@@ -177,6 +182,11 @@ def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> 
         if "priority_score" in cluster_cols
         else "avg_opportunity DESC, total_volume DESC"
     )
+    tier_select = (
+        ", core_keywords_json, supporting_keywords_json, extended_keywords_json, quality_score, cannibalization_risk"
+        if "core_keywords_json" in cluster_cols
+        else ", '[]' AS core_keywords_json, '[]' AS supporting_keywords_json, '[]' AS extended_keywords_json, 0.0 AS quality_score, 'none' AS cannibalization_risk"
+    )
     try:
         rows = conn.execute(
             f"""
@@ -185,6 +195,7 @@ def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> 
                    content_type, match_type, match_handle, match_title,
                    dominant_serp_features, content_format_hints, avg_cps,
                    {priority_select}
+                   {tier_select}
             FROM clusters
             WHERE content_type IN ('blog_post', 'buying_guide')
             ORDER BY {order_sql}
@@ -212,9 +223,21 @@ def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> 
             "content_format_hints": r[12] or "",
             "avg_cps": round(float(r[13] or 0.0), 2),
             "priority_score": round(float(r[14] or r[6] or 0.0), 1),
+            "core_keywords": [],
+            "supporting_keywords": [],
+            "extended_keywords": [],
+            "quality_score": round(float(r[18] or 0.0), 1),
+            "cannibalization_risk": r[19] or "none",
             "top_keywords": [],
             "has_ranking_opportunity": False,
         }
+        try:
+            from backend.app.services.keyword_clustering import parse_keyword_tier
+            cluster["core_keywords"] = parse_keyword_tier(r[15])
+            cluster["supporting_keywords"] = parse_keyword_tier(r[16])
+            cluster["extended_keywords"] = parse_keyword_tier(r[17])
+        except Exception:
+            pass
         cluster["top_keywords"] = _cluster_keywords_snapshot(conn, cluster, limit=8)
         cluster["keywords"] = [kw["keyword"] for kw in cluster["top_keywords"] if kw.get("keyword")]
         cluster["has_ranking_opportunity"] = any(
@@ -256,10 +279,16 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
         ct = c.get("coverage_total", 0) or 1
         cf = c.get("coverage_found", 0)
         gap_pct = 1.0 - (cf / ct)
+        risk_multiplier = {"high": 0.72, "medium": 0.86, "low": 0.95}.get(
+            str(c.get("cannibalization_risk") or "none").lower(), 1.0
+        )
+        quality_factor = max(0.25, float(c.get("quality_score") or 100.0) / 100.0)
         return (
             gap_pct,
             c.get("has_ranking_opportunity", False),
-            float(c.get("priority_score") or c.get("avg_opportunity") or 0.0),
+            float(c.get("priority_score") or c.get("avg_opportunity") or 0.0)
+            * quality_factor
+            * risk_multiplier,
             c.get("total_volume", 0),
         )
 
@@ -280,7 +309,9 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
             f"- Cluster '{c['name']}' (id:{c['id']}) | {c.get('content_type', 'blog_post')} | "
             f"vol:{vol}/mo | avg KD:{c['avg_difficulty']} | "
             f"priority:{float(c.get('priority_score') or c.get('avg_opportunity') or 0):.0f} | "
-            f"avg opp:{c.get('avg_opportunity', 0):.0f}{opp_flag}"
+            f"avg opp:{c.get('avg_opportunity', 0):.0f} | "
+            f"quality:{float(c.get('quality_score') or 0):.0f} | "
+            f"cannibalization:{c.get('cannibalization_risk') or 'none'}{opp_flag}"
         )
         cluster_lines.append(header)
 

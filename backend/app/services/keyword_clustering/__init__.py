@@ -14,6 +14,7 @@ from ._dedupe import collapse_near_duplicates
 from ._gaps import compute_seo_gaps, enrich_clusters_with_coverage
 from ._generation import generate_clusters
 from ._postprocess import fold_singletons, merge_similar_clusters
+from ._planning import parse_keyword_tier, repair_and_enrich_clusters
 from ._pre_cluster import pre_cluster
 from ._scoring import cluster_priority_score, select_primary_keyword
 from ._helpers import (
@@ -39,6 +40,8 @@ __all__ = [
     "pre_cluster",
     "merge_similar_clusters",
     "fold_singletons",
+    "repair_and_enrich_clusters",
+    "parse_keyword_tier",
     "cluster_priority_score",
     "select_primary_keyword",
     "load_clusters",

@@ -4,6 +4,8 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
+from ._planning import parse_keyword_tier
+
 logger = logging.getLogger(__name__)
 
 CLUSTERS_KEY = "keyword_clusters"
@@ -138,6 +140,28 @@ def _cluster_stats_from_row(row: sqlite3.Row) -> dict:
     return stats
 
 
+def _cluster_planning_from_row(row: sqlite3.Row) -> dict:
+    """Optional SEO-planning fields added after the original cluster schema."""
+    keys = row.keys()
+    out: dict[str, object] = {}
+    for field in ("detected_entity", "cluster_intent", "cluster_role"):
+        if field in keys:
+            out[field] = row[field] or ""
+    if "cannibalization_risk" in keys:
+        out["cannibalization_risk"] = row["cannibalization_risk"] or "none"
+    if "quality_score" in keys:
+        out["quality_score"] = float(row["quality_score"] or 0.0)
+    tier_map = {
+        "core_keywords": "core_keywords_json",
+        "supporting_keywords": "supporting_keywords_json",
+        "extended_keywords": "extended_keywords_json",
+    }
+    for api_field, db_field in tier_map.items():
+        if db_field in keys:
+            out[api_field] = parse_keyword_tier(row[db_field])
+    return out
+
+
 def load_clusters(conn: sqlite3.Connection) -> dict:
     """Load clusters from DB tables. Migrates JSON data on first call if needed."""
     _migrate_json_to_db(conn)
@@ -192,6 +216,7 @@ def load_clusters(conn: sqlite3.Connection) -> dict:
             ),
             "suggested_match": suggested_match,
         }
+        cluster_dict.update(_cluster_planning_from_row(row))
         stats = _cluster_stats_from_row(row)
         if stats:
             cluster_dict["stats"] = stats

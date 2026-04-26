@@ -25,6 +25,7 @@ from shopifyseo.dashboard_google import get_service_setting
 
 from ._dedupe import _UnionFind
 from ._helpers import _compute_cluster_stats
+from ._planning import clusters_can_merge, load_entity_rules
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +139,12 @@ def merge_similar_clusters(
     sim = sub @ sub.T
     uf = _UnionFind(len(indexed))
     iu, ju = np_mod.triu_indices(len(indexed), k=1)
+    entity_rules = load_entity_rules(conn)
     for p in np_mod.where(sim[iu, ju] >= thr)[0]:
-        uf.union(int(iu[p]), int(ju[p]))
+        left_idx = indexed[int(iu[p])]
+        right_idx = indexed[int(ju[p])]
+        if clusters_can_merge(clusters[left_idx], clusters[right_idx], keywords_map, entity_rules):
+            uf.union(int(iu[p]), int(ju[p]))
 
     groups: dict[int, list[int]] = {}
     for local in range(len(indexed)):
@@ -217,6 +222,7 @@ def fold_singletons(
     if not target_rows:
         return list(clusters)
     target_matrix = np_mod.vstack([vecs[i] for i in target_rows])
+    entity_rules = load_entity_rules(conn)
 
     target_lookup: dict[int, dict] = {i: dict(clusters[i]) for i in targets}
     absorbed: set[int] = set()
@@ -231,6 +237,8 @@ def fold_singletons(
         if best_sim < thr:
             continue
         best_target = target_rows[best_local]
+        if not clusters_can_merge(clusters[best_target], clusters[si], keywords_map, entity_rules):
+            continue
         target_lookup[best_target] = _merge_two(
             target_lookup[best_target], clusters[si], keywords_map
         )

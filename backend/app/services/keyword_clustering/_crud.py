@@ -5,7 +5,7 @@ import sqlite3
 import shopifyseo.dashboard_queries as dq
 
 from ._helpers import _detect_vendor, _keyword_coverage_detail, _suggested_match_object_key
-from ._storage import _cluster_stats_from_row, load_clusters
+from ._storage import _cluster_planning_from_row, _cluster_stats_from_row, load_clusters
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ def get_cluster_detail(conn: sqlite3.Connection, cluster_id: int) -> dict:
         "suggested_match": suggested_match,
         "matched_vendor": matched_vendor,
     }
+    cluster.update(_cluster_planning_from_row(row))
     detail_stats = _cluster_stats_from_row(row)
     if detail_stats:
         cluster["stats"] = detail_stats

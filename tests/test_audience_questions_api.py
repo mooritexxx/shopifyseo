@@ -442,6 +442,32 @@ def test_paa_children_pagination_uses_continuation_token(monkeypatch: pytest.Mon
     assert calls == ["T-step-1", "T-step-2"]
 
 
+def test_paa_child_env_override_cannot_exceed_ten(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "related_questions": [
+            {"question": "Parent?", "next_page_token": "tok"},
+        ]
+    }
+
+    def fake_fetch(_key: str, _token: str, _loc: object) -> dict[str, object]:
+        return {
+            "related_questions": [
+                {"question": f"Child {i}?", "snippet": "s"} for i in range(14)
+            ]
+        }
+
+    monkeypatch.setattr(
+        "shopifyseo.audience_questions_api._fetch_google_related_questions_expansion", fake_fetch
+    )
+    monkeypatch.setenv("PAA_EXPANSION_MAX_CHILDREN", "20")
+    monkeypatch.setenv("PAA_SAME_TOKEN_EXTRA_ROUNDS", "0")
+
+    out = aq.expand_paa_via_related_questions_engine("k", payload, {})
+
+    assert len(out) == 1
+    assert len(out[0]["children"]) == 10
+
+
 def test_expand_paa_uses_question_search_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Rows without next_page_token / serpapi_link use Google search for the question (fallback)."""
     def fake_q(_api: str, q: str, _loc: object, _mx: int) -> list[dict[str, str]]:

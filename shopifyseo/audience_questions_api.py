@@ -624,7 +624,7 @@ def expand_paa_via_related_questions_engine(
         )
     except (TypeError, ValueError):
         max_children = PAA_EXPANSION_MAX_CHILDREN_DEFAULT
-    max_children = max(1, min(max_children, 20))
+    max_children = max(1, min(max_children, PAA_EXPANSION_MAX_CHILDREN_DEFAULT))
     try:
         delay = float(os.environ.get("PAA_EXPANSION_DELAY_SEC", str(PAA_EXPANSION_DELAY_SEC_DEFAULT)))
     except (TypeError, ValueError):

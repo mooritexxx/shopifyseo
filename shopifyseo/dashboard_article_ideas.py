@@ -53,7 +53,7 @@ def normalize_paa_expansion_json(value: Any) -> list[dict[str, Any]]:
                 continue
             sn = str(ch.get("snippet") or "").strip()
             children.append({"question": q, "snippet": sn})
-            if len(children) >= 80:
+            if len(children) >= 10:
                 break
         if children:
             out.append({"parent_question": pq, "children": children})

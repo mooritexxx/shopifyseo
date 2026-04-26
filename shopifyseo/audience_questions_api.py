@@ -23,7 +23,9 @@ calls when generating a batch of ideas (rate limiting).
 When ``expand_paa=True`` (article idea **Refresh SERP data** only), after the
 initial ``engine=google`` response we call SerpAPI ``engine=google_related_questions``
 for each top-level ``related_questions`` item that includes a ``next_page_token``,
-up to ``PAA_EXPANSION_MAX_PARENTS`` (default 6), to load the deeper PAA tree.
+up to ``PAA_EXPANSION_MAX_PARENTS`` (default 6). Each parent is paginated to collect
+up to ``PAA_EXPANSION_MAX_CHILDREN`` (default 10) sub-questions, following
+``next_page_token`` on the last item and optional same-token refetches (``PAA_SAME_TOKEN_EXTRA_ROUNDS``).
 """
 
 from __future__ import annotations
@@ -65,7 +67,10 @@ _MAX_RELATED_SEARCHES = 40
 
 # PAA expansion (SerpAPI ``google_related_questions``) after the main Google search.
 PAA_EXPANSION_MAX_PARENTS_DEFAULT = 6
+PAA_EXPANSION_MAX_CHILDREN_DEFAULT = 10
 PAA_EXPANSION_DELAY_SEC_DEFAULT = 0.35
+# Extra requests with the same next_page_token can return more rows (see SerpAPI blog, PAA pagination).
+PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT = 1
 
 # Cap AI overview payload size (SerpAPI shape varies; keep JSON bounded).
 _MAX_AI_OVERVIEW_BLOCKS = 48
@@ -306,6 +311,30 @@ def _related_searches_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
+def _paa_next_page_token_from_expansion(
+    child_payload: dict[str, Any], request_token: str
+) -> str | None:
+    """Next ``next_page_token`` to load more sub-questions for the same expanded parent.
+
+    Google typically adds ~2 at a time; SerpAPI exposes the next step on the last
+    ``related_questions`` item. Skip if it equals *request_token* to avoid a tight loop.
+    """
+    req = (request_token or "").strip()
+    rq = child_payload.get("related_questions")
+    if not isinstance(rq, list) or not rq:
+        return None
+    last = rq[-1]
+    if not isinstance(last, dict):
+        return None
+    t = last.get("next_page_token")
+    if not isinstance(t, str) or not t.strip():
+        return None
+    ts = t.strip()
+    if ts == req:
+        return None
+    return ts
+
+
 def _fetch_google_related_questions_expansion(
     api_key: str,
     next_page_token: str,
@@ -346,6 +375,71 @@ def _fetch_google_related_questions_expansion(
         return None
 
 
+def _collect_paa_children_for_one_parent(
+    api_key: str,
+    first_token: str,
+    parent_question: str,
+    localization: dict[str, str],
+    delay: float,
+    max_children: int,
+) -> list[dict[str, str]]:
+    """Follow ``next_page_token`` pagination; optional extra round with same first token (SerpAPI PAA blog)."""
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    first = (first_token or "").strip()
+    if not first:
+        return out
+    try:
+        extra_same = int(
+            os.environ.get("PAA_SAME_TOKEN_EXTRA_ROUNDS", str(PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT))
+        )
+    except (TypeError, ValueError):
+        extra_same = PAA_SAME_TOKEN_EXTRA_ROUNDS_DEFAULT
+    extra_same = max(0, min(extra_same, 4))
+    try:
+        max_req = int(os.environ.get("PAA_EXPANSION_MAX_REQUESTS_PER_PARENT", "18"))
+    except (TypeError, ValueError):
+        max_req = 18
+    max_req = max(1, min(max_req, 40))
+
+    token = first
+    same_again: dict[str, int] = {}
+    for req_i in range(max_req):
+        if len(out) >= max_children:
+            break
+        if req_i > 0 and delay > 0:
+            time.sleep(delay)
+        n_before = len(out)
+        child_payload = _fetch_google_related_questions_expansion(api_key, token, localization)
+        if not child_payload:
+            break
+        for row in _qa_from_related_payload(child_payload):
+            k = (row.get("question") or "").strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(row)
+            if len(out) >= max_children:
+                return out
+        nxt = _paa_next_page_token_from_expansion(child_payload, token)
+        if nxt:
+            token = nxt
+            continue
+        if len(out) == n_before:
+            break
+        st = same_again.get(token, 0)
+        if st < extra_same and len(out) < max_children:
+            same_again[token] = st + 1
+            continue
+        break
+    if not out and (parent_question or "").strip():
+        logger.debug(
+            "PAA expansion: no sub-questions after pagination for parent %r.",
+            (parent_question or "")[:80],
+        )
+    return out
+
+
 def expand_paa_via_related_questions_engine(
     api_key: str,
     initial_serp_data: dict[str, Any],
@@ -357,6 +451,13 @@ def expand_paa_via_related_questions_engine(
     except (TypeError, ValueError):
         max_parents = PAA_EXPANSION_MAX_PARENTS_DEFAULT
     max_parents = max(0, min(max_parents, 20))
+    try:
+        max_children = int(
+            os.environ.get("PAA_EXPANSION_MAX_CHILDREN", str(PAA_EXPANSION_MAX_CHILDREN_DEFAULT))
+        )
+    except (TypeError, ValueError):
+        max_children = PAA_EXPANSION_MAX_CHILDREN_DEFAULT
+    max_children = max(1, min(max_children, 20))
     try:
         delay = float(os.environ.get("PAA_EXPANSION_DELAY_SEC", str(PAA_EXPANSION_DELAY_SEC_DEFAULT)))
     except (TypeError, ValueError):
@@ -381,10 +482,9 @@ def expand_paa_via_related_questions_engine(
             continue
         if i > 0 and delay > 0:
             time.sleep(delay)
-        child_payload = _fetch_google_related_questions_expansion(api_key, token, localization)
-        if not child_payload:
-            continue
-        children = _qa_from_related_payload(child_payload)
+        children = _collect_paa_children_for_one_parent(
+            api_key, token, q.strip(), localization, delay, max_children
+        )
         if children:
             layers.append({"parent_question": q.strip(), "children": children})
     return layers

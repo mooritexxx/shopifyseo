@@ -255,6 +255,8 @@ def test_expand_paa_fetches_google_related_questions(monkeypatch: pytest.MonkeyP
         return "k" if key == "serpapi_api_key" else ""
 
     monkeypatch.setattr(dg, "get_service_setting", fake_get_setting)
+    # One HTTP per parent is enough; avoid an extra "same token" follow-up in this test.
+    monkeypatch.setenv("PAA_SAME_TOKEN_EXTRA_ROUNDS", "0")
 
     _call = 0
 
@@ -305,3 +307,38 @@ def test_expand_paa_fetches_google_related_questions(monkeypatch: pytest.MonkeyP
         }
     ]
     assert _call == 2
+
+
+def test_paa_children_pagination_uses_continuation_token(monkeypatch: pytest.MonkeyPatch):
+    """Second request uses last item's next_page_token when it differs from the request token."""
+    calls: list[str] = []
+
+    def fake_fetch(_key: str, token: str, _loc: object) -> dict[str, object] | None:
+        calls.append(str(token).strip())
+        if len(calls) == 1:
+            return {
+                "related_questions": [
+                    {
+                        "question": "One?",
+                        "snippet": "a",
+                        "next_page_token": "T-step-2",
+                    },
+                ],
+            }
+        if len(calls) == 2 and calls[-1] == "T-step-2":
+            return {
+                "related_questions": [
+                    {"question": "Two?", "snippet": "b"},
+                ],
+            }
+        return None
+
+    monkeypatch.setattr(
+        "shopifyseo.audience_questions_api._fetch_google_related_questions_expansion", fake_fetch
+    )
+    monkeypatch.setenv("PAA_SAME_TOKEN_EXTRA_ROUNDS", "0")
+    out = aq._collect_paa_children_for_one_parent(
+        "k", "T-step-1", "Parent Q?", {}, 0, 10
+    )
+    assert [x["question"] for x in out] == ["One?", "Two?"]
+    assert calls == ["T-step-1", "T-step-2"]

@@ -106,7 +106,7 @@ def _load_cached_payload(conn: sqlite3.Connection, cache_key: str) -> tuple[dict
         return None, _cache_meta(None)
     try:
         payload = json.loads(row["payload_json"])
-    except Exception:
+    except json.JSONDecodeError:
         payload = None
     meta = _cache_meta(row)
     if isinstance(payload, dict):

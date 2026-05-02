@@ -15,6 +15,9 @@ from .dashboard_http import HttpRequestError, request_json
 
 DEFAULT_API_VERSION = "2026-01"
 
+_FILE_STATUS_READY = "READY"
+_FILE_STATUS_FAILED = "FAILED"
+
 
 def env(name: str, required: bool = True, default: str = "") -> str:
     value = os.getenv(name, default).strip()
@@ -195,7 +198,7 @@ def _wait_media_image_cdn_url(
         if url.startswith("https://"):
             return url
         fst = str(node.get("fileStatus") or "").upper()
-        if fst == "FAILED":
+        if fst == _FILE_STATUS_FAILED:
             raise RuntimeError("Shopify file processing failed (fileStatus=FAILED)")
         time.sleep(interval_s)
     raise RuntimeError(
@@ -318,7 +321,7 @@ def upload_image_bytes_and_get_url(
     fst = str(node.get("fileStatus") or "").upper()
     # Article APIs re-fetch the image URL; if the file is still PROCESSING they attach nothing with no userError.
     if file_id:
-        if fst == "READY" and url.startswith("https://"):
+        if fst == _FILE_STATUS_READY and url.startswith("https://"):
             return url
         return _wait_media_image_cdn_url(file_id, timeout_s=90.0, interval_s=1.5)
     if url.startswith("https://"):

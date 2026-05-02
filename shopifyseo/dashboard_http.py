@@ -33,13 +33,14 @@ def request_text(
         return response.text
     except requests.HTTPError as exc:
         response = exc.response
-        body = response.text if response is not None else ""
+        if response is None:
+            raise HttpRequestError(f"HTTP unknown for {url}", reason=str(exc)) from exc
         raise HttpRequestError(
-            f"HTTP {response.status_code if response is not None else 'unknown'} for {url}",
-            status=response.status_code if response is not None else None,
-            body=body,
+            f"HTTP {response.status_code} for {url}",
+            status=response.status_code,
+            body=response.text,
             reason=str(exc),
-            headers=dict(response.headers) if response is not None else {},
+            headers=dict(response.headers),
         ) from exc
     except requests.RequestException as exc:
         raise HttpRequestError(f"Connection error for {url}: {exc}", reason=str(exc)) from exc

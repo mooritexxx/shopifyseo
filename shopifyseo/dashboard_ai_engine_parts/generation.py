@@ -12,7 +12,7 @@ from shopifyseo.exceptions import AICancelledError
 logger = logging.getLogger(__name__)
 
 from .config import REGENERABLE_FIELDS
-from .context import condensed_context, object_context, prompt_context, signal_availability_summary
+from .context import condensed_context, object_context, signal_availability_summary
 from .images import (
     extract_first_paragraph_plain_text,
     inject_article_body_image,

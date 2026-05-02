@@ -15,6 +15,14 @@ _GENERIC_ALT_TOKENS = frozenset(
     {"image", "photo", "picture", "pic", "img", "product", "product image", "untitled"}
 )
 
+# Compiled patterns for _looks_like_generic_filename — avoids recompilation on every call
+_RE_IMG_NUMBERED = re.compile(r"^img[_-]?\d+$", re.I)
+_RE_IMAGE_NUMBERED = re.compile(r"^image[_-]?\d+$", re.I)
+_RE_DIMENSIONS = re.compile(r"^\d+x\d+$")
+_RE_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_RE_HEX_HASH = re.compile(r"^[0-9a-f]{32,}$", re.I)
+_RE_NO_WORDS = re.compile(r"[a-z]{3,}")
+
 
 def random_product_file_suffix(length: int = 4) -> str:
     return "".join(secrets.choice(_SHORT_ID_ALPHABET) for _ in range(length))
@@ -127,17 +135,17 @@ def is_weak_image_filename(url: str) -> bool:
     stem = fn.rsplit(".", 1)[0].lower() if "." in fn else fn.lower()
     if not stem or len(stem) < 4:
         return True
-    if re.match(r"^img[_-]?\d+$", stem, re.I):
+    if _RE_IMG_NUMBERED.match(stem):
         return True
-    if re.match(r"^image[_-]?\d+$", stem, re.I):
+    if _RE_IMAGE_NUMBERED.match(stem):
         return True
-    if re.match(r"^\d+x\d+$", stem):
+    if _RE_DIMENSIONS.match(stem):
         return True
-    if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", stem, re.I):
+    if _RE_UUID.match(stem):
         return True
-    if re.match(r"^[0-9a-f]{32,}$", stem, re.I):
+    if _RE_HEX_HASH.match(stem):
         return True
-    if "_" in stem and not re.search(r"[a-z]{3,}", stem.replace("_", "")):
+    if "_" in stem and not _RE_NO_WORDS.search(stem.replace("_", "")):
         return True
     return False
 

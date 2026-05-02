@@ -146,8 +146,8 @@ def save_settings(payload: dict[str, str]) -> str:
             pass
         # Reset cached store base URL so custom domain changes take effect
         try:
-            import shopifyseo.dashboard_queries as _dq
-            _dq._BASE_URL_CACHE = None
+            from shopifyseo.dashboard_queries import clear_base_url_cache
+            clear_base_url_cache()
         except (ImportError, AttributeError):
             pass
         return "Settings saved"

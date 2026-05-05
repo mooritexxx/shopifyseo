@@ -8,6 +8,8 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+_INSPECTION_LINK_REFRESH_LOCK = threading.Lock()
+
 from .. import dashboard_ai as dai
 from .. import dashboard_google as dg
 from .. import dashboard_queries as dq
@@ -590,21 +592,57 @@ def refresh_object_signals(
     }
 
 
+def _inspection_deep_link(payload: dict | None) -> str:
+    return (
+        ((payload or {}).get("inspectionResult") or {})
+        .get("inspectionResultLink", "")
+        .strip()
+    )
+
+
 def refresh_and_get_inspection_link(db_connect, kind: str, handle: str) -> str:
+    url = dq.object_url(kind, handle)
+
     conn = db_connect()
     try:
-        url = dq.object_url(kind, handle)
-        payload = dg.get_url_inspection(
+        cached_payload = dg.get_url_inspection(
             conn,
             url,
-            refresh=True,
+            refresh=False,
             object_type=kind,
             object_handle=handle,
         )
-        refresh_object_structured_seo_data(conn, kind, handle)
-        link = ((payload.get("inspectionResult") or {}).get("inspectionResultLink") or "").strip()
-        if not link:
-            raise RuntimeError("Google did not return an inspection deep link for this URL.")
-        return link
+        cached_link = _inspection_deep_link(cached_payload)
+        if cached_link:
+            return cached_link
     finally:
         conn.close()
+
+    with _INSPECTION_LINK_REFRESH_LOCK:
+        conn = db_connect()
+        try:
+            cached_payload = dg.get_url_inspection(
+                conn,
+                url,
+                refresh=False,
+                object_type=kind,
+                object_handle=handle,
+            )
+            cached_link = _inspection_deep_link(cached_payload)
+            if cached_link:
+                return cached_link
+
+            payload = dg.get_url_inspection(
+                conn,
+                url,
+                refresh=True,
+                object_type=kind,
+                object_handle=handle,
+            )
+            refresh_object_structured_seo_data(conn, kind, handle)
+            link = _inspection_deep_link(payload)
+            if not link:
+                raise RuntimeError("Google did not return an inspection deep link for this URL.")
+            return link
+        finally:
+            conn.close()

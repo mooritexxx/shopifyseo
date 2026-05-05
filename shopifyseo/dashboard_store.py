@@ -669,7 +669,14 @@ def _resolve_ga4_metrics_for_url(
     )
 
 
-def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
+def _refresh_object_signals_into_table(
+    conn: sqlite3.Connection,
+    table: str,
+    object_type: str,
+    handle: str,
+    *,
+    include_query_dimensions: bool = False,
+) -> None:
     """GSC, GA4, and URL inspection only.
 
     PageSpeed denormalized columns are updated only from PageSpeed sync paths
@@ -738,7 +745,14 @@ def _refresh_object_signals_into_table(conn: sqlite3.Connection, table: str, obj
         ),
     )
 
-    _write_gsc_per_url_query_caches(conn, object_type, handle, url, gsc_detail)
+    _write_gsc_per_url_query_caches(
+        conn,
+        object_type,
+        handle,
+        url,
+        gsc_detail,
+        include_query_dimensions=include_query_dimensions,
+    )
 
 
 def _write_gsc_per_url_query_caches(
@@ -747,6 +761,8 @@ def _write_gsc_per_url_query_caches(
     handle: str,
     url: str,
     gsc_detail: dict | None,
+    *,
+    include_query_dimensions: bool = False,
 ) -> None:
     gsc_meta = (gsc_detail or {}).get("_cache") or {}
     conn.execute(
@@ -776,15 +792,16 @@ def _write_gsc_per_url_query_caches(
             ),
         )
 
-    _refresh_gsc_query_dimensions_into_table(
-        conn,
-        object_type,
-        handle,
-        url,
-        fetched_at=gsc_meta.get("fetched_at"),
-        gsc_detail=gsc_detail,
-        gsc_period=(gsc_detail or {}).get("period_mode") or "mtd",
-    )
+    if include_query_dimensions:
+        _refresh_gsc_query_dimensions_into_table(
+            conn,
+            object_type,
+            handle,
+            url,
+            fetched_at=gsc_meta.get("fetched_at"),
+            gsc_detail=gsc_detail,
+            gsc_period=(gsc_detail or {}).get("period_mode") or "mtd",
+        )
 
 
 def _refresh_object_pagespeed_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
@@ -952,7 +969,14 @@ def _refresh_object_gsc_into_table(conn: sqlite3.Connection, table: str, object_
             handle,
         ),
     )
-    _write_gsc_per_url_query_caches(conn, object_type, handle, url, gsc_detail)
+    _write_gsc_per_url_query_caches(
+        conn,
+        object_type,
+        handle,
+        url,
+        gsc_detail,
+        include_query_dimensions=True,
+    )
 
 
 def _refresh_object_index_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
@@ -1082,7 +1106,12 @@ def _parse_blog_article_parts(composite_handle: str) -> tuple[str, str] | None:
     return blog_h, art_h
 
 
-def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite_handle: str) -> None:
+def _refresh_blog_article_signals_into_table(
+    conn: sqlite3.Connection,
+    composite_handle: str,
+    *,
+    include_query_dimensions: bool = False,
+) -> None:
     """Same scope as :func:`_refresh_object_signals_into_table` (excludes PageSpeed)."""
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
@@ -1139,7 +1168,14 @@ def _refresh_blog_article_signals_into_table(conn: sqlite3.Connection, composite
             art_h,
         ),
     )
-    _write_gsc_per_url_query_caches(conn, object_type, handle, url, gsc_detail)
+    _write_gsc_per_url_query_caches(
+        conn,
+        object_type,
+        handle,
+        url,
+        gsc_detail,
+        include_query_dimensions=include_query_dimensions,
+    )
 
 
 def _refresh_object_gsc_into_blog_article(conn: sqlite3.Connection, composite_handle: str) -> None:
@@ -1174,7 +1210,14 @@ def _refresh_object_gsc_into_blog_article(conn: sqlite3.Connection, composite_ha
             art_h,
         ),
     )
-    _write_gsc_per_url_query_caches(conn, object_type, handle, url, gsc_detail)
+    _write_gsc_per_url_query_caches(
+        conn,
+        object_type,
+        handle,
+        url,
+        gsc_detail,
+        include_query_dimensions=True,
+    )
 
 
 def refresh_object_structured_seo_data(conn: sqlite3.Connection, object_type: str, handle: str, *, snapshot_recommendation: bool = False) -> None:
@@ -1412,6 +1455,7 @@ def refresh_structured_seo_data(
     *,
     batch_size: int = 10,
     progress_callback: Callable[[str, int, int], None] | None = None,
+    include_query_dimensions: bool = False,
 ) -> None:
     """Denormalize GSC / GA4 / URL inspection from the local API cache onto all catalog rows.
 
@@ -1430,21 +1474,39 @@ def refresh_structured_seo_data(
     if progress_callback:
         progress_callback("products", counter, total)
     for row in products:
-        _refresh_object_signals_into_table(conn, "products", "product", row["handle"])
+        _refresh_object_signals_into_table(
+            conn,
+            "products",
+            "product",
+            row["handle"],
+            include_query_dimensions=include_query_dimensions,
+        )
         counter += 1
         if progress_callback:
             progress_callback("products", counter, total)
         if counter % batch_size == 0:
             conn.commit()
     for row in collections:
-        _refresh_object_signals_into_table(conn, "collections", "collection", row["handle"])
+        _refresh_object_signals_into_table(
+            conn,
+            "collections",
+            "collection",
+            row["handle"],
+            include_query_dimensions=include_query_dimensions,
+        )
         counter += 1
         if progress_callback:
             progress_callback("collections", counter, total)
         if counter % batch_size == 0:
             conn.commit()
     for row in pages:
-        _refresh_object_signals_into_table(conn, "pages", "page", row["handle"])
+        _refresh_object_signals_into_table(
+            conn,
+            "pages",
+            "page",
+            row["handle"],
+            include_query_dimensions=include_query_dimensions,
+        )
         counter += 1
         if progress_callback:
             progress_callback("pages", counter, total)
@@ -1452,7 +1514,11 @@ def refresh_structured_seo_data(
             conn.commit()
     for row in articles:
         ch = dq.blog_article_composite_handle(row["blog_handle"], row["handle"])
-        _refresh_blog_article_signals_into_table(conn, ch)
+        _refresh_blog_article_signals_into_table(
+            conn,
+            ch,
+            include_query_dimensions=include_query_dimensions,
+        )
         counter += 1
         if progress_callback:
             progress_callback("articles", counter, total)

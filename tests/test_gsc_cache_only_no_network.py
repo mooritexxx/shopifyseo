@@ -89,3 +89,34 @@ def test_gsc_signal_refresh_can_skip_embedding_sync(monkeypatch) -> None:
 
     assert called["row_refreshed"] is True
     conn.close()
+
+
+def test_gsc_query_cache_dimensions_are_opt_in(monkeypatch) -> None:
+    conn = _conn()
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        dashboard_store,
+        "_refresh_gsc_query_dimensions_into_table",
+        lambda _conn, object_type, handle, *_args, **_kwargs: calls.append((object_type, handle)),
+    )
+
+    dashboard_store._write_gsc_per_url_query_caches(
+        conn,
+        "product",
+        "widget",
+        "https://example.com/products/widget",
+        {"query_rows": [], "_cache": {"fetched_at": 123}},
+    )
+    assert calls == []
+
+    dashboard_store._write_gsc_per_url_query_caches(
+        conn,
+        "product",
+        "widget",
+        "https://example.com/products/widget",
+        {"query_rows": [], "_cache": {"fetched_at": 123}},
+        include_query_dimensions=True,
+    )
+    assert calls == [("product", "widget")]
+    conn.close()

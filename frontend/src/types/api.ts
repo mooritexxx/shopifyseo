@@ -880,6 +880,8 @@ export const statusSchema = z.object({
   blog_articles_total: z.number().optional().default(0),
   images_synced: z.number().optional().default(0),
   images_total: z.number().optional().default(0),
+  shopify_finalize_done: z.number().optional().default(0),
+  shopify_finalize_total: z.number().optional().default(0),
   gsc_refreshed: z.number().optional().default(0),
   gsc_skipped: z.number().optional().default(0),
   gsc_errors: z.number().optional().default(0),

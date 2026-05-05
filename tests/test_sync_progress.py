@@ -47,6 +47,21 @@ def test_shopify_aggregate_progress_includes_blog_articles():
     assert shopify_aggregate_progress(state) == (25, 28)
 
 
+def test_shopify_aggregate_progress_includes_finalize_unit():
+    state = {
+        "products_total": 10,
+        "images_total": 5,
+        "shopify_finalize_total": 1,
+        "products_synced": 10,
+        "images_synced": 5,
+        "shopify_finalize_done": 0,
+    }
+    assert shopify_aggregate_progress(state) == (15, 16)
+
+    state["shopify_finalize_done"] = 1
+    assert shopify_aggregate_progress(state) == (16, 16)
+
+
 def test_normalize_sync_scopes_follows_pipeline_order_not_ui_toggle_order():
     scope, scopes = _normalize_sync_scopes("custom", ["pagespeed", "shopify", "gsc"])
     assert scope == "custom"

@@ -39,6 +39,8 @@ class SyncStatusPayload(BaseModel):
     blog_articles_total: int = 0
     images_synced: int = 0
     images_total: int = 0
+    shopify_finalize_done: int = 0
+    shopify_finalize_total: int = 0
     gsc_refreshed: int = 0
     gsc_skipped: int = 0
     gsc_errors: int = 0

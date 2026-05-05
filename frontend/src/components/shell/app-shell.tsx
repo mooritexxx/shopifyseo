@@ -364,7 +364,8 @@ export function AppShell({ children }: PropsWithChildren) {
       { label: "Pages", synced: syncStatus.pages_synced ?? 0, total: syncStatus.pages_total ?? 0 },
       { label: "Blogs", synced: syncStatus.blogs_synced ?? 0, total: syncStatus.blogs_total ?? 0 },
       { label: "Articles", synced: syncStatus.blog_articles_synced ?? 0, total: syncStatus.blog_articles_total ?? 0 },
-      { label: "Images", synced: syncStatus.images_synced ?? 0, total: syncStatus.images_total ?? 0 }
+      { label: "Images", synced: syncStatus.images_synced ?? 0, total: syncStatus.images_total ?? 0 },
+      { label: "Finalizing", synced: syncStatus.shopify_finalize_done ?? 0, total: syncStatus.shopify_finalize_total ?? 0 }
     ];
   }, [syncRunning, syncStatus, effectiveActiveScope, activeSelectedScopes]);
 

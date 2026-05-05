@@ -97,14 +97,16 @@ def shopify_aggregate_progress(state: dict[str, Any]) -> tuple[int, int]:
     bgt = int(state.get("blogs_total") or 0)
     bat = int(state.get("blog_articles_total") or 0)
     img_t = int(state.get("images_total") or 0)
+    fin_t = int(state.get("shopify_finalize_total") or 0)
     ps = int(state.get("products_synced") or 0)
     cs = int(state.get("collections_synced") or 0)
     pgs = int(state.get("pages_synced") or 0)
     bgs = int(state.get("blogs_synced") or 0)
     bas = int(state.get("blog_articles_synced") or 0)
     img_s = int(state.get("images_synced") or 0)
-    total = pt + ct + pgt + bgt + bat + img_t
-    done = ps + cs + pgs + bgs + bas + img_s
+    fin_s = int(state.get("shopify_finalize_done") or 0)
+    total = pt + ct + pgt + bgt + bat + img_t + fin_t
+    done = ps + cs + pgs + bgs + bas + img_s + fin_s
     return done, total
 
 
@@ -158,7 +160,10 @@ def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: s
         "index": "index status",
         "pagespeed": "PageSpeed",
     }.get(after_scope, after_scope)
-    _sync_current(f"Merging cached SEO signals into catalog (after {label})…")
+    if after_scope == "shopify":
+        _sync_current("Shopify: finalizing catalog rows…")
+    else:
+        _sync_current(f"Merging cached SEO signals into catalog (after {label})…")
     conn = _db_connect_for_actions(db_path)
     try:
         refresh_structured_seo_data(conn)
@@ -225,6 +230,8 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "blog_articles_total": 0,
             "images_synced": 0,
             "images_total": 0,
+            "shopify_finalize_done": 0,
+            "shopify_finalize_total": 0,
             "gsc_refreshed": 0,
             "gsc_skipped": 0,
             "gsc_errors": 0,
@@ -301,6 +308,12 @@ def _recompute_shopify_scoped_progress() -> None:
     done, total = shopify_aggregate_progress(SYNC_STATE)
     SYNC_STATE["shopify_progress_done"] = done
     SYNC_STATE["shopify_progress_total"] = total
+
+
+def _set_shopify_finalize_progress(done: int, total: int = 1) -> None:
+    SYNC_STATE["shopify_finalize_done"] = max(0, done)
+    SYNC_STATE["shopify_finalize_total"] = max(0, total)
+    _recompute_shopify_scoped_progress()
 
 
 def _warm_product_image_cache_safe(db_path: str) -> dict[str, int] | None:
@@ -923,6 +936,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             SYNC_STATE["blogs_synced"] = 0
             SYNC_STATE["blog_articles_synced"] = 0
             SYNC_STATE["images_synced"] = 0
+            _set_shopify_finalize_progress(0)
             SYNC_STATE["images_total"] = count_catalog_image_urls_discover(
                 disc.products, disc.collections, disc.pages, disc.articles_by_blog_id
             )
@@ -980,7 +994,9 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             ic = _warm_product_image_cache_safe(db_path)
             if ic is not None:
                 result["shopify"]["product_image_cache"] = ic
+            _sync_current("Shopify: finalizing catalog rows")
             _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
+            _set_shopify_finalize_progress(1)
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -1078,12 +1094,15 @@ def run_sync(
                 }
                 SYNC_STATE["images_total"] = count_catalog_images_for_cache(Path(db_path))
                 SYNC_STATE["images_synced"] = 0
+                _set_shopify_finalize_progress(0)
                 _recompute_shopify_scoped_progress()
                 _raise_if_sync_cancelled()
                 ic = _warm_product_image_cache_safe(db_path)
                 if ic is not None:
                     result["products"]["product_image_cache"] = ic
+                _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
+                _set_shopify_finalize_progress(1)
             elif normalized_scope == "collections":
                 _set_sync_stage(
                     stage="syncing_collections",
@@ -1107,7 +1126,10 @@ def run_sync(
                         queue_scope="shopify",
                     )
                 }
+                _set_shopify_finalize_progress(0)
+                _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
+                _set_shopify_finalize_progress(1)
             elif normalized_scope == "pages":
                 _set_sync_stage(
                     stage="syncing_pages",
@@ -1131,7 +1153,10 @@ def run_sync(
                         queue_scope="shopify",
                     )
                 }
+                _set_shopify_finalize_progress(0)
+                _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
+                _set_shopify_finalize_progress(1)
             elif normalized_scope == "blogs":
                 _set_sync_stage(
                     stage="syncing_blogs",
@@ -1165,8 +1190,11 @@ def run_sync(
                 br = result.get("blogs") or {}
                 SYNC_STATE["blog_articles_synced"] = int(br.get("blog_articles_synced") or 0)
                 SYNC_STATE["blog_articles_total"] = int(br.get("blog_articles_total") or br.get("blog_articles_synced") or 0)
+                _set_shopify_finalize_progress(0)
                 _recompute_shopify_scoped_progress()
+                _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
+                _set_shopify_finalize_progress(1)
             else:
                 result = _run_selected_sync_steps(db_path, normalized_selected_scopes, force_refresh=force_refresh)
             _raise_if_sync_cancelled()

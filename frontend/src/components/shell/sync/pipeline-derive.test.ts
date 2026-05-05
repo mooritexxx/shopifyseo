@@ -71,6 +71,29 @@ describe("derivePipelineRows accurate counts", () => {
     expect(ps?.total).toBe(4);
   });
 
+  it("Shopify progress includes finalization before the row is done", () => {
+    const rows = derivePipelineRows({
+      orderedScopes: ["shopify", "gsc"],
+      syncStatus: {
+        running: true,
+        stage: "syncing_shopify",
+        active_scope: "shopify",
+        products_synced: 10,
+        products_total: 10,
+        images_synced: 5,
+        images_total: 5,
+        shopify_finalize_done: 0,
+        shopify_finalize_total: 1
+      } as never,
+      activeScope: "shopify",
+      ...runArgs
+    });
+    const shopify = rows.find((r) => r.key === "shopify");
+    expect(shopify?.status).toBe("active");
+    expect(shopify?.count).toBe(15);
+    expect(shopify?.total).toBe(16);
+  });
+
   it("after sync complete, Search Console row shows full refreshed count", () => {
     const rows = derivePipelineRows({
       orderedScopes: ["gsc", "pagespeed"],

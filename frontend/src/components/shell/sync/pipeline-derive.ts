@@ -53,14 +53,16 @@ function countsForService(
           (s.pages_synced || 0) +
           (s.blogs_synced || 0) +
           (s.blog_articles_synced || 0) +
-          (s.images_synced || 0),
+          (s.images_synced || 0) +
+          (s.shopify_finalize_done || 0),
         total:
           (s.products_total || 0) +
           (s.collections_total || 0) +
           (s.pages_total || 0) +
           (s.blogs_total || 0) +
           (s.blog_articles_total || 0) +
-          (s.images_total || 0)
+          (s.images_total || 0) +
+          (s.shopify_finalize_total || 0)
       };
     case "gsc": {
       const doneRaw = (s.gsc_refreshed || 0) + (s.gsc_errors || 0);

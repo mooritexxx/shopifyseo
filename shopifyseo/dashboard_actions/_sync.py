@@ -166,7 +166,21 @@ def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: s
         _sync_current(f"Merging cached SEO signals into catalog (after {label})…")
     conn = _db_connect_for_actions(db_path)
     try:
-        refresh_structured_seo_data(conn)
+        if after_scope == "shopify":
+            def _progress(kind: str, done: int, total: int) -> None:
+                _raise_if_sync_cancelled()
+                _set_shopify_finalize_progress(done, total)
+                label = {
+                    "products": "products",
+                    "collections": "collections",
+                    "pages": "pages",
+                    "articles": "articles",
+                }.get(kind, "catalog rows")
+                _sync_current(f"Shopify: finalizing {label} {done}/{total}")
+
+            refresh_structured_seo_data(conn, progress_callback=_progress)
+        else:
+            refresh_structured_seo_data(conn)
     finally:
         conn.close()
 

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime
 from urllib.parse import urlparse
 
@@ -1406,7 +1407,12 @@ def refresh_ga4_signal_data_for_objects(conn: sqlite3.Connection, targets: list[
     conn.commit()
 
 
-def refresh_structured_seo_data(conn: sqlite3.Connection, *, batch_size: int = 10) -> None:
+def refresh_structured_seo_data(
+    conn: sqlite3.Connection,
+    *,
+    batch_size: int = 10,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> None:
     """Denormalize GSC / GA4 / URL inspection from the local API cache onto all catalog rows.
 
     PageSpeed columns are *not* updated here; use the PageSpeed sync path or
@@ -1415,26 +1421,41 @@ def refresh_structured_seo_data(conn: sqlite3.Connection, *, batch_size: int = 1
     (Name kept for callers; this is catalog *signal* reconciliation, not JSON-LD.)
     """
     ensure_dashboard_schema(conn)
+    products = dq.fetch_all_products(conn)
+    collections = dq.fetch_all_collections(conn)
+    pages = dq.fetch_all_pages(conn)
+    articles = dq.fetch_all_blog_articles(conn)
+    total = len(products) + len(collections) + len(pages) + len(articles)
     counter = 0
-    for row in dq.fetch_all_products(conn):
+    if progress_callback:
+        progress_callback("products", counter, total)
+    for row in products:
         _refresh_object_signals_into_table(conn, "products", "product", row["handle"])
         counter += 1
+        if progress_callback:
+            progress_callback("products", counter, total)
         if counter % batch_size == 0:
             conn.commit()
-    for row in dq.fetch_all_collections(conn):
+    for row in collections:
         _refresh_object_signals_into_table(conn, "collections", "collection", row["handle"])
         counter += 1
+        if progress_callback:
+            progress_callback("collections", counter, total)
         if counter % batch_size == 0:
             conn.commit()
-    for row in dq.fetch_all_pages(conn):
+    for row in pages:
         _refresh_object_signals_into_table(conn, "pages", "page", row["handle"])
         counter += 1
+        if progress_callback:
+            progress_callback("pages", counter, total)
         if counter % batch_size == 0:
             conn.commit()
-    for row in dq.fetch_all_blog_articles(conn):
+    for row in articles:
         ch = dq.blog_article_composite_handle(row["blog_handle"], row["handle"])
         _refresh_blog_article_signals_into_table(conn, ch)
         counter += 1
+        if progress_callback:
+            progress_callback("articles", counter, total)
         if counter % batch_size == 0:
             conn.commit()
     conn.commit()

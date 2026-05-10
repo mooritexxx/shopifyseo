@@ -10,8 +10,12 @@ from backend.app.schemas.article_ideas import (
     BulkDeleteRequest,
     BulkStatusRequest,
     IdeaPerformancePayload,
+    LinkTargetItem,
+    LinkTargetsPayload,
     RefreshArticleIdeaSerpPayload,
     UpdateIdeaStatusRequest,
+    UpdateIdeaTargetsPayload,
+    UpdateIdeaTargetsRequest,
 )
 from backend.app.schemas.common import SuccessResponse, success_response
 from shopifyseo.audience_questions_api import enrich_article_ideas_with_audience_questions
@@ -180,3 +184,66 @@ def get_idea_performance(idea_id: int):
     finally:
         conn.close()
     return success_response(IdeaPerformancePayload.model_validate(perf))
+
+
+@router.get("/link-targets", response_model=SuccessResponse[LinkTargetsPayload])
+def get_link_targets():
+    """Return the store internal-link allowlist for the target picker UI.
+
+    Used by the idea-detail "Interlink Targets" editor to populate dropdowns
+    so users can only pick (type, handle) pairs that resolve to real store
+    pages — the same allowlist the article drafter uses when sanitizing AI
+    output. Order matches what the prompt sees: RAG hits first per type, then
+    alphabetical by title.
+    """
+    conn = open_db_connection()
+    try:
+        base = (dq._base_store_url(conn) or "").strip().rstrip("/")
+        targets, _full, _paths = dq.build_store_internal_link_allowlist(conn, base)
+    finally:
+        conn.close()
+    items = [
+        LinkTargetItem(
+            type=str(t.get("type") or ""),
+            handle=str(t.get("handle") or ""),
+            title=str(t.get("title") or ""),
+            url=str(t.get("url") or ""),
+        )
+        for t in targets
+    ]
+    return success_response(LinkTargetsPayload(items=items, total=len(items)))
+
+
+@router.patch("/{idea_id}/targets", response_model=SuccessResponse[UpdateIdeaTargetsPayload])
+def update_idea_targets(idea_id: int, body: UpdateIdeaTargetsRequest):
+    """Override the primary + secondary interlink targets for an idea.
+
+    Only ideas in status ``idea`` or ``approved`` are editable — published ideas
+    are frozen. Every submitted (type, handle) is validated against the store
+    internal-link allowlist to prevent invented URLs from reaching the drafter.
+    """
+    conn = open_db_connection()
+    try:
+        base = (dq._base_store_url(conn) or "").strip().rstrip("/")
+        allow_targets, _full, _paths = dq.build_store_internal_link_allowlist(conn, base)
+        allowed_keys = {
+            (str(t.get("type") or ""), str(t.get("handle") or "")) for t in allow_targets
+        }
+        primary_dict = body.primary_target.model_dump() if body.primary_target else None
+        secondary_dicts = [t.model_dump() for t in body.secondary_targets]
+        try:
+            updated = dq.update_article_idea_targets(
+                conn,
+                idea_id,
+                primary_dict,
+                secondary_dicts,
+                allowed_keys=allowed_keys,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    finally:
+        conn.close()
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Idea not found")
+    item = ArticleIdeaItem.model_validate(updated)
+    return success_response(UpdateIdeaTargetsPayload(idea=item))

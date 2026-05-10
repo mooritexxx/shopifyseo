@@ -60,8 +60,12 @@ import {
   refreshArticleIdeaSerpSchema,
   blogShopifyIdSchema,
   ideaPerformancePayloadSchema,
+  linkTargetsPayloadSchema,
   messageSchema,
+  updateIdeaTargetsPayloadSchema,
   type ArticleIdea,
+  type InterlinkTarget,
+  type LinkTargetItem,
 } from "../types/api";
 
 const blogShopifyIdsSchema = z.array(blogShopifyIdSchema);
@@ -342,6 +346,78 @@ export function IdeaDetailPage() {
       setSerpRefreshBanner({ tone: "err", text: msg || "Refresh failed." });
     },
   });
+
+  // --- Interlink Targets editor -------------------------------------------------
+  // The editor lets the user override the AI's picks before approval. The picker
+  // sources are the same allowlist the article drafter uses for sanitization, so
+  // we can't smuggle in fake URLs.
+  const [editingTargets, setEditingTargets] = useState(false);
+  const [primaryDraft, setPrimaryDraft] = useState<InterlinkTarget | null>(null);
+  const [secondaryDraft, setSecondaryDraft] = useState<InterlinkTarget[]>([]);
+  const [targetsError, setTargetsError] = useState("");
+  const [secondaryPickerKey, setSecondaryPickerKey] = useState<string>("");
+
+  const linkTargetsQuery = useQuery({
+    queryKey: ["article-idea-link-targets"],
+    queryFn: () =>
+      getJson("/api/article-ideas/link-targets", linkTargetsPayloadSchema),
+    enabled: editingTargets,
+  });
+
+  const updateTargetsMutation = useMutation({
+    mutationFn: ({
+      primary_target,
+      secondary_targets,
+    }: {
+      primary_target: InterlinkTarget | null;
+      secondary_targets: InterlinkTarget[];
+    }) =>
+      patchJson(
+        `/api/article-ideas/${numericId}/targets`,
+        updateIdeaTargetsPayloadSchema,
+        { primary_target, secondary_targets },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
+      setEditingTargets(false);
+      setTargetsError("");
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : "Save failed.";
+      setTargetsError(msg);
+    },
+  });
+
+  function openTargetsEditor() {
+    if (!idea) return;
+    setPrimaryDraft(idea.primary_target ?? null);
+    setSecondaryDraft(idea.secondary_targets ?? []);
+    setSecondaryPickerKey("");
+    setTargetsError("");
+    setEditingTargets(true);
+  }
+
+  function cancelTargetsEdit() {
+    setEditingTargets(false);
+    setTargetsError("");
+  }
+
+  function saveTargets() {
+    updateTargetsMutation.mutate({
+      primary_target: primaryDraft,
+      secondary_targets: secondaryDraft,
+    });
+  }
+
+  // Build picker option groups for the link-targets dropdowns.
+  const linkTargetOptions: LinkTargetItem[] = linkTargetsQuery.data?.items ?? [];
+  const linkTargetByKey = useMemo(() => {
+    const m = new Map<string, LinkTargetItem>();
+    for (const t of linkTargetOptions) m.set(`${t.type}:${t.handle}`, t);
+    return m;
+  }, [linkTargetOptions]);
+  const targetsEditable =
+    !!idea && (idea.status === "idea" || idea.status === "approved");
 
   const blogsQuery = useQuery({
     queryKey: ["blogs-shopify-ids"],
@@ -1169,63 +1245,168 @@ export function IdeaDetailPage() {
             </Card>
           ) : null}
 
-          {/* Interlink targets — authority page + related pages */}
-          {(idea.primary_target || (idea.secondary_targets && idea.secondary_targets.length > 0)) ? (
-            <Card className="border-[#e2eaf4]">
-              <CardHeader className="px-5 pt-5 pb-0">
-                <h4 className="text-sm font-semibold text-ink">Interlink Targets</h4>
-                <p className="mt-1 text-xs text-slate-500">
-                  This article will link back to these pages to build topical authority.
-                </p>
-              </CardHeader>
-              <CardContent className="px-5 pb-5 pt-3 space-y-3">
-                {idea.primary_target ? (
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                      Primary authority page
-                    </div>
-                    <a
-                      href={idea.primary_target.url || "#"}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs font-medium text-[#2e6be6] hover:bg-[#e3eeff]"
-                      title={idea.primary_target.url}
+          {/* Interlink targets — authority page + related pages (editable) */}
+          <Card className="border-[#e2eaf4]">
+            <CardHeader className="px-5 pt-5 pb-0">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="text-sm font-semibold text-ink">Interlink Targets</h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {editingTargets
+                      ? "Pick which store pages this article should interlink to. Only pages that exist in your store are allowed."
+                      : "This article will link back to these pages to build topical authority."}
+                  </p>
+                </div>
+                {targetsEditable && !editingTargets ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={openTargetsEditor}
+                  >
+                    Edit
+                  </Button>
+                ) : null}
+              </div>
+            </CardHeader>
+            <CardContent className="px-5 pb-5 pt-3 space-y-3">
+              {editingTargets ? (
+                <div className="space-y-4">
+                  {linkTargetsQuery.isLoading ? (
+                    <p className="text-xs text-slate-500">Loading store pages…</p>
+                  ) : linkTargetsQuery.error ? (
+                    <p className="text-xs text-red-600">
+                      Failed to load store pages:{" "}
+                      {(linkTargetsQuery.error as Error).message}
+                    </p>
+                  ) : (
+                    <>
+                      <PrimaryTargetEditor
+                        value={primaryDraft}
+                        options={linkTargetOptions}
+                        onChange={setPrimaryDraft}
+                      />
+                      <SecondaryTargetsEditor
+                        values={secondaryDraft}
+                        options={linkTargetOptions}
+                        primaryKey={
+                          primaryDraft
+                            ? `${primaryDraft.type}:${primaryDraft.handle}`
+                            : ""
+                        }
+                        pickerKey={secondaryPickerKey}
+                        onPickerKeyChange={setSecondaryPickerKey}
+                        onAdd={(item) => {
+                          const key = `${item.type}:${item.handle}`;
+                          if (secondaryDraft.some((s) => `${s.type}:${s.handle}` === key)) return;
+                          if (primaryDraft && `${primaryDraft.type}:${primaryDraft.handle}` === key) return;
+                          if (secondaryDraft.length >= 5) return;
+                          setSecondaryDraft([
+                            ...secondaryDraft,
+                            {
+                              type: item.type,
+                              handle: item.handle,
+                              title: item.title,
+                              url: item.url,
+                              anchor_keyword: "",
+                              source: "user_override",
+                            },
+                          ]);
+                          setSecondaryPickerKey("");
+                        }}
+                        onRemove={(idx) =>
+                          setSecondaryDraft(secondaryDraft.filter((_, i) => i !== idx))
+                        }
+                        onAnchorChange={(idx, anchor_keyword) =>
+                          setSecondaryDraft(
+                            secondaryDraft.map((s, i) =>
+                              i === idx ? { ...s, anchor_keyword } : s,
+                            ),
+                          )
+                        }
+                      />
+                    </>
+                  )}
+                  {targetsError ? (
+                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {targetsError}
+                    </p>
+                  ) : null}
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={cancelTargetsEdit}
+                      disabled={updateTargetsMutation.isPending}
                     >
-                      <span className="rounded bg-[#2e6be6] px-1 py-0.5 text-[10px] font-semibold text-white">
-                        {idea.primary_target.type}
-                      </span>
-                      <span className="truncate">{idea.primary_target.title || idea.primary_target.handle}</span>
-                    </a>
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={saveTargets}
+                      disabled={
+                        updateTargetsMutation.isPending || linkTargetsQuery.isLoading
+                      }
+                    >
+                      {updateTargetsMutation.isPending ? "Saving…" : "Save targets"}
+                    </Button>
                   </div>
-                ) : null}
-                {idea.secondary_targets && idea.secondary_targets.length > 0 ? (
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                      Related pages ({idea.secondary_targets.length})
+                </div>
+              ) : idea.primary_target || (idea.secondary_targets && idea.secondary_targets.length > 0) ? (
+                <>
+                  {idea.primary_target ? (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                        Primary authority page
+                      </div>
+                      <a
+                        href={idea.primary_target.url || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[#c7d9f8] bg-[#f0f6ff] px-2.5 py-1 text-xs font-medium text-[#2e6be6] hover:bg-[#e3eeff]"
+                        title={idea.primary_target.url}
+                      >
+                        <span className="rounded bg-[#2e6be6] px-1 py-0.5 text-[10px] font-semibold text-white">
+                          {idea.primary_target.type}
+                        </span>
+                        <span className="truncate">{idea.primary_target.title || idea.primary_target.handle}</span>
+                      </a>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {idea.secondary_targets.map((t) => (
-                        <a
-                          key={`${t.type}:${t.handle}`}
-                          href={t.url || "#"}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:border-slate-300 hover:bg-slate-50"
-                          title={`${t.url}${t.anchor_keyword ? ` — anchor: ${t.anchor_keyword}` : ""}`}
-                        >
-                          <span className="text-slate-400">{t.type}</span>
-                          <span className="truncate max-w-[180px]">{t.title || t.handle}</span>
-                          {t.anchor_keyword ? (
-                            <span className="text-slate-400">· {t.anchor_keyword}</span>
-                          ) : null}
-                        </a>
-                      ))}
+                  ) : null}
+                  {idea.secondary_targets && idea.secondary_targets.length > 0 ? (
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                        Related pages ({idea.secondary_targets.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {idea.secondary_targets.map((t) => (
+                          <a
+                            key={`${t.type}:${t.handle}`}
+                            href={t.url || "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                            title={`${t.url}${t.anchor_keyword ? ` — anchor: ${t.anchor_keyword}` : ""}`}
+                          >
+                            <span className="text-slate-400">{t.type}</span>
+                            <span className="truncate max-w-[180px]">{t.title || t.handle}</span>
+                            {t.anchor_keyword ? (
+                              <span className="text-slate-400">· {t.anchor_keyword}</span>
+                            ) : null}
+                          </a>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          ) : null}
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  No interlink targets set.
+                  {targetsEditable ? " Click Edit to choose pages this article should support." : ""}
+                </p>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
 
@@ -1464,6 +1645,191 @@ export function IdeaDetailPage() {
           )}
         </div>
       </Modal>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Interlink target editor — sub-components
+// ---------------------------------------------------------------------------
+
+const TARGET_TYPE_LABELS: Record<string, string> = {
+  collection: "Collections",
+  product: "Products",
+  page: "Pages",
+  blog_article: "Blog articles",
+};
+
+const TARGET_TYPE_ORDER = ["collection", "product", "page", "blog_article"];
+
+function groupByType(options: LinkTargetItem[]): Record<string, LinkTargetItem[]> {
+  const groups: Record<string, LinkTargetItem[]> = {};
+  for (const o of options) {
+    if (!groups[o.type]) groups[o.type] = [];
+    groups[o.type].push(o);
+  }
+  return groups;
+}
+
+function PrimaryTargetEditor({
+  value,
+  options,
+  onChange,
+}: {
+  value: InterlinkTarget | null;
+  options: LinkTargetItem[];
+  onChange: (next: InterlinkTarget | null) => void;
+}) {
+  const groups = useMemo(() => groupByType(options), [options]);
+  const currentKey = value ? `${value.type}:${value.handle}` : "";
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Primary authority page
+      </Label>
+      <select
+        className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-ink focus:border-[#2e6be6] focus:outline-none focus:ring-2 focus:ring-[#2e6be6]/20"
+        value={currentKey}
+        onChange={(e) => {
+          const k = e.target.value;
+          if (!k) {
+            onChange(null);
+            return;
+          }
+          const opt = options.find((o) => `${o.type}:${o.handle}` === k);
+          if (!opt) return;
+          onChange({
+            type: opt.type,
+            handle: opt.handle,
+            title: opt.title,
+            url: opt.url,
+            anchor_keyword: value?.anchor_keyword ?? "",
+            source: "user_override",
+          });
+        }}
+      >
+        <option value="">(none — clear primary target)</option>
+        {TARGET_TYPE_ORDER.filter((t) => groups[t]?.length).map((t) => (
+          <optgroup key={t} label={TARGET_TYPE_LABELS[t] ?? t}>
+            {groups[t].map((o) => (
+              <option key={`${o.type}:${o.handle}`} value={`${o.type}:${o.handle}`}>
+                {o.title || o.handle}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      {value ? (
+        <a
+          href={value.url || "#"}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-[#2e6be6]"
+          title={value.url}
+        >
+          <ExternalLink size={10} />
+          <span className="truncate max-w-[280px]">{value.url}</span>
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+function SecondaryTargetsEditor({
+  values,
+  options,
+  primaryKey,
+  pickerKey,
+  onPickerKeyChange,
+  onAdd,
+  onRemove,
+  onAnchorChange,
+}: {
+  values: InterlinkTarget[];
+  options: LinkTargetItem[];
+  primaryKey: string;
+  pickerKey: string;
+  onPickerKeyChange: (key: string) => void;
+  onAdd: (item: LinkTargetItem) => void;
+  onRemove: (idx: number) => void;
+  onAnchorChange: (idx: number, anchor: string) => void;
+}) {
+  const usedKeys = useMemo(() => {
+    const s = new Set<string>(values.map((v) => `${v.type}:${v.handle}`));
+    if (primaryKey) s.add(primaryKey);
+    return s;
+  }, [values, primaryKey]);
+  const filteredGroups = useMemo(() => {
+    const remaining = options.filter((o) => !usedKeys.has(`${o.type}:${o.handle}`));
+    return groupByType(remaining);
+  }, [options, usedKeys]);
+  const atCap = values.length >= 5;
+  return (
+    <div className="space-y-2">
+      <Label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Related pages ({values.length}/5)
+      </Label>
+      {values.length === 0 ? (
+        <p className="text-xs text-slate-500">
+          No related pages picked. Add up to 5 supporting pages — the drafter will interlink to them with SEO anchor text.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {values.map((v, idx) => (
+            <div
+              key={`${v.type}:${v.handle}`}
+              className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5"
+            >
+              <span className="inline-flex items-center gap-1 rounded bg-white border border-slate-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                {v.type}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs text-ink" title={v.url}>
+                {v.title || v.handle}
+              </span>
+              <Input
+                value={v.anchor_keyword}
+                onChange={(e) => onAnchorChange(idx, e.target.value)}
+                placeholder="anchor keyword (optional)"
+                className="h-7 w-44 text-[11px]"
+              />
+              <button
+                type="button"
+                onClick={() => onRemove(idx)}
+                className="text-[11px] text-slate-400 hover:text-red-600"
+                aria-label="Remove"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {atCap ? (
+        <p className="text-[11px] text-slate-500">Limit of 5 reached. Remove one to add another.</p>
+      ) : (
+        <select
+          className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-ink focus:border-[#2e6be6] focus:outline-none focus:ring-2 focus:ring-[#2e6be6]/20"
+          value={pickerKey}
+          onChange={(e) => {
+            const k = e.target.value;
+            onPickerKeyChange(k);
+            if (!k) return;
+            const opt = options.find((o) => `${o.type}:${o.handle}` === k);
+            if (opt) onAdd(opt);
+          }}
+        >
+          <option value="">+ Add a related page…</option>
+          {TARGET_TYPE_ORDER.filter((t) => filteredGroups[t]?.length).map((t) => (
+            <optgroup key={t} label={TARGET_TYPE_LABELS[t] ?? t}>
+              {filteredGroups[t].map((o) => (
+                <option key={`${o.type}:${o.handle}`} value={`${o.type}:${o.handle}`}>
+                  {o.title || o.handle}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

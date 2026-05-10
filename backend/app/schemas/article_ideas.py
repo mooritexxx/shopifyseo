@@ -203,6 +203,40 @@ class UpdateIdeaStatusRequest(BaseModel):
     new_status: str
 
 
+class UpdateIdeaTargetsRequest(BaseModel):
+    """Body for ``PATCH /article-ideas/{id}/targets``.
+
+    ``primary_target`` may be omitted/null to clear the authority page.
+    ``secondary_targets`` is capped server-side; entries with unknown
+    (type, handle) are rejected.
+    """
+
+    primary_target: InterlinkTarget | None = None
+    secondary_targets: list[InterlinkTarget] = Field(default_factory=list)
+
+
+class UpdateIdeaTargetsPayload(BaseModel):
+    """Response from ``PATCH /article-ideas/{id}/targets`` — the refreshed idea."""
+
+    idea: ArticleIdeaItem
+
+
+class LinkTargetItem(BaseModel):
+    """One row in the store internal-link allowlist."""
+
+    type: str
+    handle: str
+    title: str = ""
+    url: str = ""
+
+
+class LinkTargetsPayload(BaseModel):
+    """Response from ``GET /article-ideas/link-targets`` — picker allowlist."""
+
+    items: list[LinkTargetItem] = Field(default_factory=list)
+    total: int = 0
+
+
 class BulkStatusRequest(BaseModel):
     idea_ids: list[int]
     status: str

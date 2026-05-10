@@ -709,6 +709,25 @@ export const articleIdeasPayloadSchema = z.object({
   total: z.number()
 });
 
+export const linkTargetItemSchema = z.object({
+  type: z.string(),
+  handle: z.string(),
+  title: z.string().default(""),
+  url: z.string().default("")
+});
+export type LinkTargetItem = z.infer<typeof linkTargetItemSchema>;
+
+export const linkTargetsPayloadSchema = z.object({
+  items: z.array(linkTargetItemSchema).default([]),
+  total: z.number().default(0)
+});
+export type LinkTargetsPayload = z.infer<typeof linkTargetsPayloadSchema>;
+
+export const updateIdeaTargetsPayloadSchema = z.object({
+  idea: articleIdeaSchema
+});
+export type UpdateIdeaTargetsPayload = z.infer<typeof updateIdeaTargetsPayloadSchema>;
+
 export const linkedArticleSchema = z.object({
   id: z.number(),
   blog_handle: z.string(),

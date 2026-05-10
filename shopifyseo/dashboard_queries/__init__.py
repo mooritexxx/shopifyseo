@@ -33,6 +33,7 @@ from ..dashboard_article_ideas import (  # noqa: F401
     save_article_ideas,
     save_article_target_keywords,
     update_article_idea_status,
+    update_article_idea_targets,
 )
 from ..dashboard_insights import blended_opportunity, opportunity_priority  # noqa: F401
 from ..dashboard_status import index_status_info  # noqa: F401

@@ -83,14 +83,14 @@ def graphql_post(query: str, variables: dict | None = None) -> dict:
         )
     except HttpRequestError as exc:
         if exc.status:
-            raise SystemExit(f"Shopify API HTTP {exc.status}: {exc.body}") from exc
-        raise SystemExit(f"Shopify API connection error: {exc}") from exc
+            raise RuntimeError(f"Shopify API HTTP {exc.status}: {exc.body}") from exc
+        raise RuntimeError(f"Shopify API connection error: {exc}") from exc
 
 
 def graphql_request(query: str, variables: dict | None = None) -> dict:
     data = graphql_post(query, variables)
     if data.get("errors"):
-        raise SystemExit(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
+        raise RuntimeError(f"GraphQL errors: {json.dumps(data['errors'], indent=2)}")
     return data
 
 

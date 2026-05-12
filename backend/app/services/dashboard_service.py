@@ -9,6 +9,7 @@ Domain-specific services have been extracted to dedicated modules:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -68,6 +69,8 @@ from shopifyseo.dashboard_store import DB_PATH
 from shopifyseo.sidekick import run_sidekick_turn
 
 from backend.app.db import open_db_connection
+
+logger = logging.getLogger(__name__)
 
 
 _ALLOWED_GSC_SEGMENTS = frozenset({"all", "products", "collections", "pages", "blogs"})
@@ -269,20 +272,16 @@ def get_dashboard_summary(
         ga4_site = _ga4_site_overview_for_summary(conn, period)
         indexing_rollup = build_indexing_rollup(facts)
         breakdown_site = _resolve_gsc_site_url_for_breakdowns(conn)
-        gsc_property_breakdowns = _gsc_property_breakdowns_for_signals(conn, breakdown_site, period)
+        try:
+            gsc_property_breakdowns = _gsc_property_breakdowns_for_signals(conn, breakdown_site, period)
+        except Exception as exc:
+            logger.warning("Failed to fetch GSC property breakdowns for dashboard summary", exc_info=True)
+            gsc_property_breakdowns = _empty_gsc_property_breakdowns_for_signals()
+            gsc_property_breakdowns["error"] = str(exc)
+            gsc_property_breakdowns["errors"] = [{"message": str(exc)}]
         if breakdown_site and gsc_site.get("available") and dg.google_configured():
-            anchor_qp, mode_qp, w_cur_qp, _w_prev_qp = _gsc_matched_period_windows(period)
-            gsc_qp_raw = dg.get_gsc_query_page_tables_cached(
-                conn,
-                site_url=breakdown_site,
-                period_mode=mode_qp,
-                anchor=anchor_qp,
-                current_start=w_cur_qp.start,
-                current_end=w_cur_qp.end,
-                url_segment=gsc_segment,
-                refresh=False,
-            )
-            if _gsc_query_page_tables_uncached(gsc_qp_raw):
+            try:
+                anchor_qp, mode_qp, w_cur_qp, _w_prev_qp = _gsc_matched_period_windows(period)
                 gsc_qp_raw = dg.get_gsc_query_page_tables_cached(
                     conn,
                     site_url=breakdown_site,
@@ -291,8 +290,22 @@ def get_dashboard_summary(
                     current_start=w_cur_qp.start,
                     current_end=w_cur_qp.end,
                     url_segment=gsc_segment,
-                    refresh=True,
+                    refresh=False,
                 )
+                if _gsc_query_page_tables_uncached(gsc_qp_raw):
+                    gsc_qp_raw = dg.get_gsc_query_page_tables_cached(
+                        conn,
+                        site_url=breakdown_site,
+                        period_mode=mode_qp,
+                        anchor=anchor_qp,
+                        current_start=w_cur_qp.start,
+                        current_end=w_cur_qp.end,
+                        url_segment=gsc_segment,
+                        refresh=True,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to fetch GSC query/page tables for dashboard summary", exc_info=True)
+                gsc_qp_raw = {"queries": {}, "pages": {}, "window": {}, "error": str(exc)}
             q_slice = gsc_qp_raw.get("queries") or {}
             p_slice = gsc_qp_raw.get("pages") or {}
             if isinstance(q_slice, dict):

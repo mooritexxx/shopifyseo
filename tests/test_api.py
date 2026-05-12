@@ -89,6 +89,19 @@ def test_summary_gsc_segment_products():
     assert r.json()["data"]["gsc_site"]["url_segment"] == "products"
 
 
+def test_summary_handles_gsc_breakdown_refresh_failure(monkeypatch):
+    def fake_breakdowns(*args, **kwargs):
+        raise RuntimeError("Google token refresh failed")
+
+    monkeypatch.setattr(dashboard_service, "_gsc_property_breakdowns_for_signals", fake_breakdowns)
+
+    response = client.get("/api/summary")
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["gsc_property_breakdowns"]["available"] is False
+    assert payload["gsc_property_breakdowns"]["error"] == "Google token refresh failed"
+
+
 def test_summary_gsc_property_breakdowns_follows_gsc_period(monkeypatch):
     calls: list[dict] = []
 

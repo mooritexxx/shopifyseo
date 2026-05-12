@@ -630,4 +630,9 @@ def parse_idea_serp_row_from_db(
         "related_searches": normalize_related_searches_json(_loads_json(_get("related_searches_json"))),
         "ai_overview": parse_ai_overview_json(_get("ai_overview_json")),
         "paa_expansion": normalize_paa_expansion_json(_loads_json(_get("paa_expansion_json"))),
+        # Idea-level structural directives (B). content_format is a single primary format
+        # (buying_guide, comparison, how-to, etc.); source_type tags the gap origin so the
+        # writer can adjust angle (e.g., emphasise differentiation for competitor_gap).
+        "content_format": str(_get("content_format") or "").strip(),
+        "source_type": str(_get("source_type") or "").strip(),
     }

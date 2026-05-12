@@ -425,11 +425,16 @@ def validate_article_draft_compliance(
     body_html: str,
     require_faqpage_ld: bool,
     secondary_urls: list[str],
-    primary_keyword_for_body: str | None,
+    primary_keyword_for_body: str | list[str] | None,
     path_to_canonical: dict[str, str],
     tier1_related_queries: list[str] | None = None,
 ) -> list[str]:
-    """Return a list of human-readable gaps (empty if compliant)."""
+    """Return a list of human-readable gaps (empty if compliant).
+
+    ``primary_keyword_for_body`` may be a single string (legacy) or a list of
+    required keywords. Each non-empty entry is checked against the body via
+    ``primary_keyword_in_body`` and gets its own gap line on miss.
+    """
     gaps: list[str] = []
     if require_faqpage_ld and not faqpage_ld_present(body_html):
         gaps.append("Body must include FAQPage JSON-LD in a script type application/ld+json block (PAA signals were provided).")
@@ -441,8 +446,20 @@ def validate_article_draft_compliance(
             continue
         if not secondary_target_url_in_body(body_html, u, path_to_canonical=path_to_canonical):
             gaps.append(f"Missing required secondary internal link (href) to: {u}")
-    pk = (primary_keyword_for_body or "").strip()
-    if pk and not primary_keyword_in_body(body_html, pk):
+    if isinstance(primary_keyword_for_body, list):
+        required_kws = [str(x).strip() for x in primary_keyword_for_body if str(x or "").strip()]
+    elif primary_keyword_for_body:
+        required_kws = [str(primary_keyword_for_body).strip()]
+    else:
+        required_kws = []
+    seen_lower: set[str] = set()
+    for pk in required_kws:
+        key = pk.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        if primary_keyword_in_body(body_html, pk):
+            continue
         if len(pk) <= PRIMARY_KEYWORD_EXACT_MAX_LEN:
             gaps.append(f"Body must include the primary keyword phrase naturally at least once: {pk!r}")
         else:

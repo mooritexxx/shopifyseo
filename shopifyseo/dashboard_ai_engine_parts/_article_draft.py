@@ -89,6 +89,7 @@ def generate_article_draft(
     idea_serp_context: dict[str, Any] | None = None,
     idea_linked_keywords: list[dict] | None = None,
     request_context: dict[str, Any] | None = None,
+    regeneration_context: dict[str, Any] | None = None,
     draft_run_id: str = "",
     resume_run: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
@@ -139,6 +140,7 @@ def generate_article_draft(
 
     cluster_meta: dict[str, Any] = {}
     cluster_kws: list[str] = []
+    cluster_kw_metrics: list[dict[str, Any]] = []
     target_items: list[dict[str, Any]] = []
     target_metrics_by_keyword: dict[str, dict[str, Any]] = {}
     seo_gap_items: list[dict[str, Any]] = []
@@ -224,6 +226,52 @@ def generate_article_draft(
                 cluster_kws = [str(r[0]).strip() for r in kw_rows if str(r[0] or "").strip()][:24]
             primary_kw = str(cluster_meta.get("primary_keyword") or "")
 
+            # Join cluster_keywords with keyword_metrics so the writer sees volume / KD /
+            # intent / ranking_status / position for each cluster keyword, not just strings.
+            # ORDER: opportunity DESC (with NULLs last) keeps striking-distance / quick-win
+            # entries near the top of the prompt block.
+            try:
+                cluster_kw_metric_rows = conn.execute(
+                    """
+                    SELECT ck.keyword,
+                           COALESCE(km.volume, 0)                     AS volume,
+                           COALESCE(km.difficulty, 0)                 AS difficulty,
+                           COALESCE(km.cpc, 0.0)                      AS cpc,
+                           COALESCE(km.intent, '')                    AS intent,
+                           COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
+                           km.gsc_position,
+                           COALESCE(km.opportunity, 0.0)              AS opportunity,
+                           COALESCE(km.content_format_hint, '')       AS content_format_hint
+                    FROM cluster_keywords ck
+                    LEFT JOIN keyword_metrics km ON LOWER(km.keyword) = LOWER(ck.keyword)
+                    WHERE ck.cluster_id = ?
+                    ORDER BY km.opportunity DESC NULLS LAST, ck.keyword ASC
+                    LIMIT 30
+                    """,
+                    (linked_cluster_id,),
+                ).fetchall()
+                cluster_kw_metrics = [
+                    {
+                        "keyword": (row["keyword"] if hasattr(row, "keys") else row[0]),
+                        "volume": int((row["volume"] if hasattr(row, "keys") else row[1]) or 0),
+                        "difficulty": int((row["difficulty"] if hasattr(row, "keys") else row[2]) or 0),
+                        "cpc": round(float((row["cpc"] if hasattr(row, "keys") else row[3]) or 0.0), 2),
+                        "intent": (row["intent"] if hasattr(row, "keys") else row[4]) or "",
+                        "ranking_status": (row["ranking_status"] if hasattr(row, "keys") else row[5]) or "not_ranking",
+                        "gsc_position": (row["gsc_position"] if hasattr(row, "keys") else row[6]),
+                        "opportunity": round(
+                            float((row["opportunity"] if hasattr(row, "keys") else row[7]) or 0.0), 1
+                        ),
+                        "content_format_hint": (
+                            row["content_format_hint"] if hasattr(row, "keys") else row[8]
+                        ) or "",
+                    }
+                    for row in cluster_kw_metric_rows
+                ]
+            except Exception:
+                logger.debug("Failed to join cluster keywords with metrics; proceeding without table", exc_info=True)
+                cluster_kw_metrics = []
+
             if cluster_kws:
                 gaps = compute_seo_gaps(
                     cluster_kws, {}, target_metrics_by_keyword, "blog_article", primary_kw,
@@ -247,6 +295,258 @@ def generate_article_draft(
                     )
         except Exception:
             logger.debug("Failed to compute SEO gaps for article draft; proceeding without them")
+
+    # Cluster strategic brief — surface the clustering-time narrative so the writer treats this
+    # article as part of a larger topical authority play, not a one-off post.
+    _cluster_brief_section = ""
+    if cluster_meta:
+        _cb_lines: list[str] = []
+        _cb_name = (cluster_meta.get("name") or "").strip()
+        _cb_brief = (cluster_meta.get("content_brief") or "").strip()
+        _cb_intent = (cluster_meta.get("cluster_intent") or "").strip()
+        _cb_role = (cluster_meta.get("cluster_role") or "").strip()
+        if _cb_name or _cb_brief or _cb_intent or _cb_role:
+            _cb_lines.append("\n\nCluster strategy — this article supports a topical authority cluster:")
+            if _cb_name:
+                _cb_lines.append(f"- Cluster: {_cb_name}")
+            if _cb_role:
+                _cb_lines.append(f"- Article role in cluster: {_cb_role}")
+            if _cb_intent:
+                _cb_lines.append(f"- Cluster intent: {_cb_intent}")
+            if _cb_brief:
+                _cb_brief_trim = _cb_brief if len(_cb_brief) <= 1200 else _cb_brief[:1197] + "…"
+                _cb_lines.append(f"- Strategic brief: {_cb_brief_trim}")
+            _cb_lines.append(
+                "Align the article structure with this brief; reinforce the primary authority page and "
+                "naturally link to related cluster pages where the reader benefits."
+            )
+            _cluster_brief_section = "\n".join(_cb_lines)
+
+    # Cluster keyword table (D) — surface per-keyword metrics so the writer can prioritise
+    # striking-distance / quick-win terms over net-new ones. Ordered by opportunity desc.
+    _cluster_kw_table_section = ""
+    if cluster_kw_metrics:
+        _kt_lines: list[str] = [
+            "\n\nCluster keyword strategy table — prioritise terms with a ranking_status of "
+            "'quick_win' or 'striking_distance' (already close to page 1) before net-new terms. "
+            "Treat the table as a coverage checklist for headings and body text:",
+        ]
+        for row in cluster_kw_metrics[:30]:
+            kw = str(row.get("keyword") or "").strip()
+            if not kw:
+                continue
+            vol = int(row.get("volume") or 0)
+            kd = int(row.get("difficulty") or 0)
+            intent = str(row.get("intent") or "").strip()
+            rs = str(row.get("ranking_status") or "").strip() or "not_ranking"
+            pos = row.get("gsc_position")
+            opp = row.get("opportunity")
+            cph = str(row.get("content_format_hint") or "").strip()
+            bits: list[str] = []
+            if vol:
+                bits.append(f"vol:{vol}")
+            if kd:
+                bits.append(f"KD:{kd}")
+            if intent:
+                bits.append(f"intent:{intent}")
+            if rs:
+                bits.append(f"status:{rs}")
+            if pos is not None:
+                try:
+                    pos_f = float(pos)
+                    if pos_f > 0 and pos_f < 900:
+                        bits.append(f"pos:{pos_f:.1f}")
+                except (TypeError, ValueError):
+                    pass
+            if opp is not None:
+                try:
+                    if float(opp) > 0:
+                        bits.append(f"opp:{float(opp):.1f}")
+                except (TypeError, ValueError):
+                    pass
+            if cph:
+                bits.append(f"format:{cph}")
+            tail = " — " + " ".join(bits) if bits else ""
+            prefix = ""
+            if rs in ("quick_win", "striking_distance"):
+                prefix = "  ★ "  # visual cue for opportunity-rich terms
+            else:
+                prefix = "  - "
+            _kt_lines.append(f"{prefix}{kw}{tail}")
+        _cluster_kw_table_section = "\n".join(_kt_lines)
+
+    # Regeneration grounding — when rewriting an existing article, surface what's already
+    # ranking + the current body skeleton so the rewrite preserves earning traffic patterns
+    # instead of starting from a blank page.
+    _regeneration_section = ""
+    if regeneration_context:
+        from .article_draft_compliance import strip_html_for_compliance_search
+
+        _rg_lines: list[str] = []
+        _rg_title = str(regeneration_context.get("existing_title") or "").strip()
+        _rg_position = regeneration_context.get("existing_gsc_position")
+        _rg_queries = regeneration_context.get("existing_gsc_queries") or []
+        _rg_body = str(regeneration_context.get("existing_body_html") or "")
+
+        if _rg_title or _rg_queries or _rg_body:
+            _rg_lines.append("\n\nRegenerating an existing article — preserve what works, fix what doesn't:")
+        if _rg_title:
+            _rg_lines.append(f"- Current title: {_rg_title}")
+        if _rg_position is not None:
+            try:
+                _rg_lines.append(f"- Current average position (GSC): {float(_rg_position):.1f}")
+            except (TypeError, ValueError):
+                pass
+
+        if isinstance(_rg_queries, list) and _rg_queries:
+            ranking_lines: list[str] = []
+            ranking_lines.append(
+                "- Currently ranks for these GSC queries (sorted by clicks, then impressions). "
+                "These already earn traffic — preserve their semantic coverage and the on-page wording "
+                "that resonates with each, even if you reorganise the structure:"
+            )
+            sorted_q = sorted(
+                [q for q in _rg_queries if isinstance(q, dict)],
+                key=lambda q: (
+                    -int(q.get("clicks") or 0),
+                    -int(q.get("impressions") or 0),
+                ),
+            )[:25]
+            for q in sorted_q:
+                kw = str(q.get("query") or "").strip()
+                if not kw:
+                    continue
+                clicks = int(q.get("clicks") or 0)
+                impressions = int(q.get("impressions") or 0)
+                pos_raw = q.get("position")
+                pos_part = ""
+                try:
+                    if pos_raw is not None:
+                        pos_part = f" pos={float(pos_raw):.1f}"
+                except (TypeError, ValueError):
+                    pos_part = ""
+                ranking_lines.append(
+                    f"  - {kw!r} (clicks={clicks}, impressions={impressions}{pos_part})"
+                )
+            _rg_lines.append("\n".join(ranking_lines))
+
+        if _rg_body:
+            # Outline of the current article: keep h2/h3 headings so the model can reuse strong structure.
+            headings: list[str] = []
+            for m in re.finditer(r"<h([23])[^>]*>(.*?)</h\1>", _rg_body, re.IGNORECASE | re.DOTALL):
+                level = m.group(1)
+                txt = re.sub(r"<[^>]+>", " ", m.group(2) or "").strip()
+                if txt:
+                    headings.append(f"  - h{level}: {txt}")
+                if len(headings) >= 30:
+                    break
+            if headings:
+                _rg_lines.append(
+                    "- Current article outline (h2/h3 headings already present — keep the ones with proven coverage, "
+                    "merge or replace weak ones, add new headings to close keyword gaps):\n" + "\n".join(headings)
+                )
+            visible_text = strip_html_for_compliance_search(_rg_body)
+            if visible_text:
+                visible_trim = visible_text if len(visible_text) <= 3500 else visible_text[:3497] + "…"
+                _rg_lines.append(
+                    "- Current article body (visible text excerpt — paraphrase or extend; do not copy verbatim "
+                    "back into the output):\n  " + visible_trim.replace("\n", " ")
+                )
+            _rg_lines.append(
+                "Rewrite guidance: keep sections that already earn clicks for the GSC queries above, refresh stale or "
+                "thin sections, and add new sections for the keyword gaps listed below. Aim for a stronger version of "
+                "this article — not a parallel one."
+            )
+
+        if _rg_lines:
+            _regeneration_section = "\n".join(_rg_lines)
+
+    # Idea-level structural directive — pulled from article_ideas.content_format and source_type.
+    # The clustering pipeline classifies each idea (buying_guide / comparison / how-to / review /
+    # listicle / faq) and tags the gap origin (cluster_gap / competitor_gap / collection_gap /
+    # query_gap). Translate that into a short prose directive so the writer adopts the right
+    # structure and angle from the start instead of inferring it from fuzzy SERP hints alone.
+    _format_directives: dict[str, str] = {
+        "buying_guide": (
+            "Article format: buying guide. Open with a 1–2 sentence direct answer, then a quick "
+            "comparison table or shortlist of top picks, then a per-pick breakdown with pros / cons / "
+            "who-it's-for. Close with selection criteria and a CTA back to the primary collection."
+        ),
+        "comparison": (
+            "Article format: comparison. Use a clear A-vs-B (or A/B/C) structure with parallel sections "
+            "for each contender, an at-a-glance comparison table near the top, and a verdict section "
+            "addressing different reader profiles (budget, beginner, advanced)."
+        ),
+        "how_to": (
+            "Article format: how-to. Structure as a numbered or step-by-step procedure with each step "
+            "as an H3 under a few thematic H2s. Include a 'what you'll need' list near the top and "
+            "troubleshooting / common mistakes near the end."
+        ),
+        "how-to": (
+            "Article format: how-to. Structure as a numbered or step-by-step procedure with each step "
+            "as an H3 under a few thematic H2s. Include a 'what you'll need' list near the top and "
+            "troubleshooting / common mistakes near the end."
+        ),
+        "listicle": (
+            "Article format: listicle. Each item is a clearly numbered H2 (e.g. 'Best for beginners: …'). "
+            "Keep item descriptions parallel in length and depth. End with a short selection-criteria section."
+        ),
+        "review": (
+            "Article format: review. Use H2s for verdict, build quality, performance/flavour, value, and "
+            "pros/cons. Include a final 'Who should buy this' section and link to the product page."
+        ),
+        "faq": (
+            "Article format: FAQ. Each question is an `<h3>` heading followed by a 2–4 sentence answer. "
+            "Open with a 1–2 sentence intro (no H2 for the intro). Add FAQPage JSON-LD at the end."
+        ),
+        "guide": (
+            "Article format: pillar guide. Use a deep, well-scaffolded outline with multiple H2s covering "
+            "background, criteria, options, and decision guidance. Heavier interlinking to supporting pages."
+        ),
+    }
+    _source_angle_directives: dict[str, str] = {
+        "competitor_gap": (
+            "Angle: competitor-gap. Competitors rank but the store doesn't — write the most useful, "
+            "trustworthy answer on this topic. Lead with concrete differentiation (selection, compliance, "
+            "shipping, expertise) without naming competitors; let the depth speak."
+        ),
+        "collection_gap": (
+            "Angle: collection-gap. A store collection earns impressions but lacks supporting content. "
+            "Frame the article as the primer that points readers to that collection with confidence."
+        ),
+        "query_gap": (
+            "Angle: query-gap. Real users are landing on the store for this query but on the wrong page. "
+            "Make the article the unambiguously correct destination — direct answer high up, clear next steps."
+        ),
+        "cluster_gap": (
+            "Angle: cluster-gap. This article fills a planned slot in the topic cluster — write it to "
+            "support the primary authority page, not to compete with it."
+        ),
+    }
+    _structural_section = ""
+    _content_format_raw = ""
+    _source_type_raw = ""
+    if idea_serp_context:
+        _content_format_raw = str(idea_serp_context.get("content_format") or "").strip()
+        _source_type_raw = str(idea_serp_context.get("source_type") or "").strip()
+    _fmt_key = _content_format_raw.lower().replace(" ", "_") if _content_format_raw else ""
+    _src_key = _source_type_raw.lower() if _source_type_raw else ""
+    _fmt_directive = _format_directives.get(_fmt_key) if _fmt_key else None
+    _src_directive = _source_angle_directives.get(_src_key) if _src_key else None
+    if _fmt_directive or _src_directive or _content_format_raw or _source_type_raw:
+        _struct_lines: list[str] = ["\n\nStructural directives (idea-level — keep front of mind):"]
+        if _fmt_directive:
+            _struct_lines.append(f"- {_fmt_directive}")
+        elif _content_format_raw:
+            # Format value is set but not in our dictionary — surface it raw so the writer at least sees it.
+            _struct_lines.append(
+                f"- Article format: {_content_format_raw}. Match this structure throughout."
+            )
+        if _src_directive:
+            _struct_lines.append(f"- {_src_directive}")
+        elif _source_type_raw:
+            _struct_lines.append(f"- Source angle: {_source_type_raw}.")
+        _structural_section = "\n".join(_struct_lines)
 
     keyword_section = ""
     if keywords:
@@ -543,7 +843,21 @@ def generate_article_draft(
                 return True
         return False
 
-    _pk_checklist = (str((idea_serp_context or {}).get("primary_keyword") or "").strip() or _first_plain_keyword())
+    # Build the list of required body keywords once — both the prompt checklist and the
+    # post-draft compliance validator consume this so they stay in sync.
+    _required_body_keywords: list[str] = []
+    _serp_pk_str = str((idea_serp_context or {}).get("primary_keyword") or "").strip()
+    if _serp_pk_str:
+        _required_body_keywords.append(_serp_pk_str)
+    _first_manual = _first_plain_keyword()
+    if _first_manual and _first_manual.lower() not in {x.lower() for x in _required_body_keywords}:
+        _required_body_keywords.append(_first_manual)
+    _pk_checklist_label = (
+        ", ".join(repr(k) for k in _required_body_keywords)
+        if _required_body_keywords
+        else ""
+    )
+    _pk_checklist = _required_body_keywords[0] if _required_body_keywords else ""
 
     _pre_output_lines = [
         "\n\n=== Pre-output compliance (verify before you return JSON) ===\n",
@@ -561,10 +875,16 @@ def generate_article_draft(
         _pre_output_lines.append(
             "- Every secondary URL from INTERLINK STRATEGY must appear verbatim as an `<a href>` in the body.\n"
         )
-    if _pk_checklist:
-        _pre_output_lines.append(
-            f"- Primary keyword for this draft: include {_pk_checklist!r} naturally at least once in body text.\n"
-        )
+    if _required_body_keywords:
+        if len(_required_body_keywords) == 1:
+            _pre_output_lines.append(
+                f"- Primary keyword for this draft: include {_pk_checklist_label} naturally at least once in body text.\n"
+            )
+        else:
+            _pre_output_lines.append(
+                f"- Required keywords for this draft: include EACH of these naturally at least once in body text: "
+                f"{_pk_checklist_label}.\n"
+            )
     if _has_tier1_related_searches(idea_serp_context):
         _pre_output_lines.append(
             "- SERP tier 1–3 related searches: each position 1–3 query from the SERP appendix must appear in an "
@@ -640,7 +960,7 @@ def generate_article_draft(
     seo_brief_block = ""
     user_msg = (
         f"Write a complete SEO-optimised blog article for {_brand} on the following topic:\n\n"
-        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -714,10 +1034,15 @@ def generate_article_draft(
         _outline_checklist_lines.append(
             "- Every secondary URL from INTERLINK STRATEGY must be coverable across the planned sections.\n"
         )
-    if _pk_checklist:
-        _outline_checklist_lines.append(
-            f"- Primary keyword for this draft: plan natural inclusion of {_pk_checklist!r} in on-page copy.\n"
-        )
+    if _required_body_keywords:
+        if len(_required_body_keywords) == 1:
+            _outline_checklist_lines.append(
+                f"- Primary keyword for this draft: plan natural inclusion of {_pk_checklist_label} in on-page copy.\n"
+            )
+        else:
+            _outline_checklist_lines.append(
+                f"- Required keywords for this draft: plan natural inclusion of each: {_pk_checklist_label}.\n"
+            )
     if _has_tier1_related_searches(idea_serp_context):
         _outline_checklist_lines.append(
             "- SERP tier 1–3 related searches: plan headings or body coverage for each position 1–3 query from the appendix.\n"
@@ -726,7 +1051,7 @@ def generate_article_draft(
 
     user_outline_msg = (
         f"Plan a long-form SEO blog article for {_brand} on:\n\n"
-        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -745,7 +1070,7 @@ def generate_article_draft(
 
     _shared_grounding = (
         f"Topic and research inputs for {_brand}:\n\n"
-        f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -896,9 +1221,9 @@ def generate_article_draft(
             on_progress(payload)
 
     secondary_urls_for_compliance = [n["url"] for n in secondary_normalized if (n.get("url") or "").strip()]
-    primary_kw_for_compliance = (
-        str((idea_serp_context or {}).get("primary_keyword") or "").strip() or None
-    )
+
+    # Compliance enforces every required body keyword: SERP-derived primary + first manual keyword.
+    primary_kw_for_compliance = list(_required_body_keywords) or None
     require_faqpage_ld = bool(_is_faq or _has_serp_paa)
     _tier_queries = collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3)
 
@@ -984,9 +1309,28 @@ def generate_article_draft(
             "id": linked_cluster_id,
             "meta": cluster_meta,
             "keywords": cluster_kws,
+            "keyword_metrics": cluster_kw_metrics,
         },
         "target_keyword_metrics": matching_target_metrics,
         "seo_gap_keywords": seo_gap_items,
+        "regeneration": (
+            {
+                "existing_title": str(regeneration_context.get("existing_title") or "").strip(),
+                "existing_gsc_position": regeneration_context.get("existing_gsc_position"),
+                "existing_gsc_queries": [
+                    {
+                        "query": str(q.get("query") or "").strip(),
+                        "clicks": int(q.get("clicks") or 0),
+                        "impressions": int(q.get("impressions") or 0),
+                        "position": q.get("position"),
+                    }
+                    for q in (regeneration_context.get("existing_gsc_queries") or [])
+                    if isinstance(q, dict) and str(q.get("query") or "").strip()
+                ][:25],
+            }
+            if regeneration_context
+            else {}
+        ),
         "serp": {
             "suggested_title": (idea_serp_context or {}).get("suggested_title") or "",
             "brief": (idea_serp_context or {}).get("brief") or "",
@@ -1018,7 +1362,8 @@ def generate_article_draft(
             "availability_phrase": _avail_phrase,
         },
         "required_coverage": {
-            "primary_keyword": primary_kw_for_compliance or _pk_checklist,
+            "primary_keyword": (_required_body_keywords[0] if _required_body_keywords else _pk_checklist),
+            "required_keywords_in_body": list(_required_body_keywords),
             "keywords": all_signal_keywords[:60],
             "faq_questions": required_questions,
             "related_searches": _tier_queries,
@@ -1053,7 +1398,7 @@ def generate_article_draft(
         + json.dumps(seo_brief, ensure_ascii=True)[:18000]
         + "\n"
     )
-    _grounding_anchor = f"{topic.strip()}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+    _grounding_anchor = f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
     if _grounding_anchor:
         user_msg = user_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
         user_outline_msg = user_outline_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
@@ -1213,6 +1558,32 @@ def generate_article_draft(
                 missing.append(q)
         return missing
 
+    # Build a normalized question -> snippet map from PAA top-level + hierarchy children.
+    # This grounds FAQ repair in the SerpAPI snippets that prompted those questions instead
+    # of letting the repair AI guess answers in a vacuum.
+    _paa_snippet_by_question_norm: dict[str, str] = {}
+
+    def _record_paa_snippet(q: object, sn: object) -> None:
+        q_str = str(q or "").strip()
+        sn_str = str(sn or "").strip()
+        if not q_str or not sn_str:
+            return
+        key = _norm_loose(q_str)
+        if not key or key in _paa_snippet_by_question_norm:
+            return
+        _paa_snippet_by_question_norm[key] = sn_str
+
+    for _row in _paa_rows if isinstance(_paa_rows, list) else []:
+        if isinstance(_row, dict):
+            _record_paa_snippet(_row.get("question"), _row.get("snippet"))
+    for _layer in _paa_hierarchy or []:
+        if not isinstance(_layer, dict):
+            continue
+        _record_paa_snippet(_layer.get("parent_question"), _layer.get("snippet"))
+        for _child in _layer.get("children") or []:
+            if isinstance(_child, dict):
+                _record_paa_snippet(_child.get("question"), _child.get("snippet"))
+
     def _append_faq_answers(body_html: str) -> str:
         missing = _questions_missing_from_body(body_html, required_questions)
         if not missing:
@@ -1234,6 +1605,29 @@ def generate_article_draft(
                 "additionalProperties": False,
             },
         }
+        # Pair each missing question with its SerpAPI snippet (when we have one) so the
+        # repair AI can ground its answer in what Google's PAA already surfaces.
+        missing_with_snippets: list[dict[str, str]] = []
+        for q in missing:
+            snippet = _paa_snippet_by_question_norm.get(_norm_loose(q), "")
+            missing_with_snippets.append({"question": q, "snippet": snippet})
+
+        snippets_grounding_lines: list[str] = []
+        for entry in missing_with_snippets:
+            sn = entry["snippet"]
+            if not sn:
+                continue
+            snippets_grounding_lines.append(
+                f"- Question: {entry['question']}\n  SerpAPI snippet (Google PAA — non-authoritative; paraphrase, do not cite as fact): {sn}"
+            )
+        snippets_grounding_block = ""
+        if snippets_grounding_lines:
+            snippets_grounding_block = (
+                "\n\nPAA snippets to paraphrase (synthesise into a richer answer; do NOT copy verbatim "
+                "and do NOT claim the snippet as a source):\n"
+                + "\n".join(snippets_grounding_lines)
+            )
+
         answers: list[str] = []
         try:
             out = _call_ai(
@@ -1245,9 +1639,13 @@ def generate_article_draft(
                     {
                         "role": "user",
                         "content": (
-                            "Write concise FAQ answers for the exact questions below, using the canonical SEO brief "
-                            "and the article context. Return only JSON. Questions:\n"
-                            + json.dumps(missing, ensure_ascii=True)
+                            "Write concise FAQ answers for the exact questions below, in the same order. "
+                            "Use the canonical SEO brief and the article context. When a SerpAPI snippet is provided "
+                            "for a question, treat it as a non-authoritative starting point — paraphrase, expand with "
+                            "store-specific value, and do not cite the snippet as a source. Return only JSON. "
+                            "Questions (each is `{question, snippet}` — snippet may be empty):\n"
+                            + json.dumps(missing_with_snippets, ensure_ascii=True)
+                            + snippets_grounding_block
                             + "\n\nCanonical SEO brief:\n"
                             + json.dumps(seo_brief, ensure_ascii=True)[:12000]
                         ),

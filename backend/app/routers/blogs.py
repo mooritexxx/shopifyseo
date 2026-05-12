@@ -358,7 +358,10 @@ def _run_generate_article_draft(
                        COALESCE(top_ranking_pages_json, '[]') AS top_ranking_pages_json,
                        COALESCE(related_searches_json, '[]') AS related_searches_json,
                        COALESCE(ai_overview_json, '{}') AS ai_overview_json,
-                       COALESCE(linked_keywords_json, '[]') AS linked_keywords_json
+                       COALESCE(paa_expansion_json, '[]') AS paa_expansion_json,
+                       COALESCE(linked_keywords_json, '[]') AS linked_keywords_json,
+                       COALESCE(content_format, '') AS content_format,
+                       COALESCE(source_type, 'cluster_gap') AS source_type
                 FROM article_ideas WHERE id = ?
                 """,
                 (effective_idea_id,),
@@ -390,6 +393,51 @@ def _run_generate_article_draft(
                 idea_serp_context = parse_idea_serp_row_from_db(idea_row)
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
+
+        # For regeneration: pull the existing article's body + GSC queries so the rewrite
+        # preserves the wording that already earns traffic. Only enabled when is_regen=True;
+        # for net-new drafts we leave regeneration_context as None.
+        regeneration_context: dict | None = None
+        if is_regen:
+            regen_ctx: dict = {}
+            existing_article = conn.execute(
+                """
+                SELECT title, seo_title, seo_description, body, gsc_position
+                FROM blog_articles
+                WHERE blog_handle = ? AND handle = ?
+                """,
+                (payload.blog_handle, reg_handle),
+            ).fetchone()
+            if existing_article:
+                regen_ctx["existing_title"] = existing_article["title"] or ""
+                regen_ctx["existing_body_html"] = existing_article["body"] or ""
+                regen_ctx["existing_gsc_position"] = existing_article["gsc_position"]
+            obj_handle = f"{payload.blog_handle}/{reg_handle}"
+            gsc_rows = conn.execute(
+                """
+                SELECT query,
+                       COALESCE(clicks, 0) AS clicks,
+                       COALESCE(impressions, 0) AS impressions,
+                       position
+                FROM gsc_query_rows
+                WHERE object_type = 'blog_article' AND object_handle = ?
+                ORDER BY clicks DESC, impressions DESC
+                LIMIT 25
+                """,
+                (obj_handle,),
+            ).fetchall()
+            regen_ctx["existing_gsc_queries"] = [
+                {
+                    "query": row["query"],
+                    "clicks": int(row["clicks"] or 0),
+                    "impressions": int(row["impressions"] or 0),
+                    "position": row["position"],
+                }
+                for row in gsc_rows
+                if (row["query"] or "").strip()
+            ]
+            if regen_ctx.get("existing_body_html") or regen_ctx.get("existing_gsc_queries"):
+                regeneration_context = regen_ctx
 
         # Close the setup connection before slow AI/image work. Subsequent writes use short-lived connections.
         conn.close()
@@ -428,6 +476,7 @@ def _run_generate_article_draft(
                     idea_serp_context=idea_serp_context,
                     idea_linked_keywords=idea_linked_keywords,
                     request_context=payload.model_dump(),
+                    regeneration_context=regeneration_context,
                     draft_run_id=run_id,
                     resume_run=resume_run,
                     on_progress=on_progress,

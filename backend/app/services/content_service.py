@@ -1,6 +1,7 @@
 """Content domain (collections and pages): listing, detail, and update."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from shopifyseo.dashboard_actions import (
@@ -8,7 +9,11 @@ from shopifyseo.dashboard_actions import (
     clear_last_error,
     record_last_error,
 )
-from shopifyseo.dashboard_live_updates import live_update_collection, live_update_page
+from shopifyseo.dashboard_live_updates import (
+    ShopifyPartialCollectionUpdateError,
+    live_update_collection,
+    live_update_page,
+)
 import shopifyseo.dashboard_queries as dq
 from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
 from backend.app.db import open_db_connection
@@ -163,6 +168,25 @@ def get_content_inspection_link(kind: str, handle: str) -> tuple[bool, str]:
     return get_object_inspection_link(kind, handle)
 
 
+def _smart_collection_partial_message(exc: Exception) -> str:
+    """Human-readable message when SEO saved but ``collectionUpdate`` (title/body) was rejected."""
+    raw = str(exc)
+    detail = raw
+    try:
+        errs = json.loads(raw)
+        if isinstance(errs, list):
+            detail = "; ".join(str(e.get("message") or e) for e in errs if isinstance(e, dict)) or raw
+    except (ValueError, TypeError):
+        pass
+    detail = detail.strip().rstrip(".")
+    return (
+        "Collection SEO title and description were saved to Shopify, but the collection "
+        f"body and title could not be updated because Shopify rejected the collection's rules: {detail}. "
+        "This is usually a stale automated-collection condition — fix the collection's conditions "
+        "in Shopify admin, then save again to push the body."
+    )
+
+
 def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[bool, str]:
     conn = open_db_connection()
     try:
@@ -177,16 +201,22 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
                 return False, "Page not found"
             current = detail["page"]
         try:
+            partial_msg = ""
             with SYNC_LOCK:
                 if kind == "collection":
-                    live_update_collection(
-                        DB_PATH,
-                        current["shopify_id"],
-                        payload.get("title", ""),
-                        payload.get("seo_title", ""),
-                        payload.get("seo_description", ""),
-                        payload.get("body_html", ""),
-                    )
+                    try:
+                        live_update_collection(
+                            DB_PATH,
+                            current["shopify_id"],
+                            payload.get("title", ""),
+                            payload.get("seo_title", ""),
+                            payload.get("seo_description", ""),
+                            payload.get("body_html", ""),
+                        )
+                    except ShopifyPartialCollectionUpdateError as exc:
+                        # SEO metafields saved; only title/body push was rejected. Keep the
+                        # editor draft locally and report a partial save instead of failing.
+                        partial_msg = _smart_collection_partial_message(exc)
                     dq.apply_saved_collection_fields_from_editor(
                         conn,
                         current["shopify_id"],
@@ -221,6 +251,8 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
                 )
                 refresh_object_structured_seo_data(conn, kind, handle)
             clear_last_error()
+            if partial_msg:
+                return True, partial_msg
             return True, f"{kind.title()} saved"
         except (Exception, SystemExit) as exc:
             record_last_error(exc)
@@ -235,7 +267,9 @@ def save_all_collection_meta_to_shopify() -> tuple[bool, str, dict[str, Any]]:
         collections = [dict(row) for row in dq.fetch_all_collections(conn)]
         saved = 0
         skipped = 0
+        partial = 0
         skipped_handles: list[str] = []
+        partial_handles: list[str] = []
 
         try:
             with SYNC_LOCK:
@@ -249,14 +283,20 @@ def save_all_collection_meta_to_shopify() -> tuple[bool, str, dict[str, Any]]:
                         skipped_handles.append(handle)
                         continue
 
-                    live_update_collection(
-                        DB_PATH,
-                        collection["shopify_id"],
-                        "",
-                        seo_title,
-                        seo_description,
-                        str(collection.get("description_html") or ""),
-                    )
+                    try:
+                        live_update_collection(
+                            DB_PATH,
+                            collection["shopify_id"],
+                            "",
+                            seo_title,
+                            seo_description,
+                            str(collection.get("description_html") or ""),
+                        )
+                    except ShopifyPartialCollectionUpdateError:
+                        # SEO metafields saved; only the body push was rejected (smart
+                        # collection with a stale rule). Still counts as saved for SEO.
+                        partial += 1
+                        partial_handles.append(handle)
                     dq.apply_saved_collection_fields_from_editor(
                         conn,
                         collection["shopify_id"],
@@ -269,15 +309,29 @@ def save_all_collection_meta_to_shopify() -> tuple[bool, str, dict[str, Any]]:
                     saved += 1
 
             clear_last_error()
-            return True, f"Saved collection SEO content for {saved} collections", {
+            message = f"Saved collection SEO content for {saved} collections"
+            if partial:
+                message += (
+                    f" ({partial} smart collection{'s' if partial != 1 else ''} saved SEO only — "
+                    "body push was rejected by Shopify's rule validation; fix their conditions in "
+                    "Shopify admin)"
+                )
+            return True, message, {
                 "saved": saved,
                 "skipped": skipped,
+                "partial": partial,
                 "total": len(collections),
                 "skipped_handles": skipped_handles[:25],
+                "partial_handles": partial_handles[:25],
             }
         except (Exception, SystemExit) as exc:
             record_last_error(exc)
-            return False, str(exc), {"saved": saved, "skipped": skipped, "total": len(collections)}
+            return False, str(exc), {
+                "saved": saved,
+                "skipped": skipped,
+                "partial": partial,
+                "total": len(collections),
+            }
     finally:
         conn.close()
 

@@ -20,7 +20,7 @@ run-backend:
 	PYTHONPATH=. uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
 test:
-	PYTHONPATH=. python -m pytest tests/test_api.py -q
+	PYTHONPATH=. python -m pytest tests/ -q
 
 test-api:
 	PYTHONPATH=. python -m pytest tests/test_api.py -q

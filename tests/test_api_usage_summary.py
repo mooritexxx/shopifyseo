@@ -1,6 +1,7 @@
 """Tests for usage summary split between LLM and DataForSEO."""
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -48,6 +49,9 @@ def test_log_api_usage_cost_override_skips_gemini_pricing(conn: sqlite3.Connecti
 
 
 def test_get_usage_summary_splits_llm_and_seo(conn: sqlite3.Connection) -> None:
+    now = datetime.now(timezone.utc)
+    ts_a = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    ts_b = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     conn.executemany(
         """
         INSERT INTO api_usage_log
@@ -55,9 +59,9 @@ def test_get_usage_summary_splits_llm_and_seo(conn: sqlite3.Connection) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("gemini", "gemini-2.5-flash", "chat", "sidekick", 100, 50, 150, 0.01, "2026-04-01 12:00:00"),
-            ("dataforseo", "/labs/foo", "seo_api", "", 0, 0, 0, 0.05, "2026-04-01 12:00:00"),
-            ("dataforseo", "/labs/bar", "seo_api", "", 0, 0, 0, 0.03, "2026-04-02 12:00:00"),
+            ("gemini", "gemini-2.5-flash", "chat", "sidekick", 100, 50, 150, 0.01, ts_a),
+            ("dataforseo", "/labs/foo", "seo_api", "", 0, 0, 0, 0.05, ts_a),
+            ("dataforseo", "/labs/bar", "seo_api", "", 0, 0, 0, 0.03, ts_b),
         ],
     )
     conn.commit()

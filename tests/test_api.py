@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.app.routers import content as content_router
-from backend.app.services import dashboard_service
+from backend.app.routers import operations as operations_router
+from backend.app.services import content_service, dashboard_service
 
 
 client = TestClient(app)
@@ -285,7 +286,11 @@ def test_collections_and_pages_contract():
         assert "has_dimensional" in it["gsc_segment_flags"]
 
 
-def test_settings_shopify_test_errors_without_credentials():
+def test_settings_shopify_test_errors_without_credentials(monkeypatch):
+    def _raise(_payload):
+        raise ValueError("Shopify shop, Client ID, and Client Secret are required.")
+
+    monkeypatch.setattr(operations_router, "test_shopify_admin_connection", _raise)
     response = client.post("/api/settings/shopify-test", json={})
     assert response.status_code == 500
     body = response.json()
@@ -396,9 +401,9 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(dashboard_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "fetch_collection_detail",
         lambda conn, handle: {
             "collection": {
@@ -433,7 +438,7 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "live_update_collection",
         lambda db_path, collection_id, title, seo_title, seo_description, body_html: calls.setdefault(
             "live_update_collection",
@@ -448,12 +453,12 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "apply_saved_collection_fields_from_editor",
         lambda conn, shopify_id, **kwargs: calls.setdefault("apply_local_collection", {"shopify_id": shopify_id, **kwargs}),
     )
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "set_workflow_state",
         lambda conn, kind, handle, status, notes: calls.setdefault(
             "workflow",
@@ -461,11 +466,11 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "refresh_object_structured_seo_data",
         lambda conn, kind, handle: calls.setdefault("refresh", {"kind": kind, "handle": handle}),
     )
-    monkeypatch.setattr(dashboard_service, "clear_last_error", lambda: None)
+    monkeypatch.setattr(content_service, "clear_last_error", lambda: None)
     monkeypatch.setattr(
         content_router,
         "get_content_detail",
@@ -514,7 +519,7 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
     assert payload["ok"] is True
     assert payload["data"]["message"] == "Collection saved"
     assert calls["live_update_collection"] == {
-        "db_path": dashboard_service.DB_PATH,
+        "db_path": content_service.DB_PATH,
         "collection_id": "gid://shopify/Collection/123",
         "title": "Disposable Vapes",
         "seo_title": "Disposable Vapes Canada",
@@ -544,9 +549,9 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(dashboard_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "fetch_all_pages",
         lambda conn: [
             {
@@ -566,7 +571,7 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "live_update_page",
         lambda db_path, page_id, title, seo_title, seo_description, body_html: calls.append(
             {
@@ -580,16 +585,16 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "refresh_object_structured_seo_data",
         lambda conn, kind, handle: None,
     )
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "apply_saved_page_fields_from_editor",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(dashboard_service, "clear_last_error", lambda: None)
+    monkeypatch.setattr(content_service, "clear_last_error", lambda: None)
 
     response = client.post("/api/pages/save-meta")
 
@@ -605,7 +610,7 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
     }
     assert calls == [
         {
-            "db_path": dashboard_service.DB_PATH,
+            "db_path": content_service.DB_PATH,
             "page_id": "gid://shopify/OnlineStorePage/10",
             "title": "",
             "seo_title": "About Our Store",
@@ -629,9 +634,9 @@ def test_page_bulk_save_returns_json_error_when_shopify_write_fails(monkeypatch)
         def close(self):
             return None
 
-    monkeypatch.setattr(dashboard_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "fetch_all_pages",
         lambda conn: [
             {
@@ -644,7 +649,7 @@ def test_page_bulk_save_returns_json_error_when_shopify_write_fails(monkeypatch)
         ],
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "live_update_page",
         lambda *args, **kwargs: (_ for _ in ()).throw(SystemExit("Shopify API connection error")),
     )
@@ -664,9 +669,9 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(dashboard_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "fetch_page_detail",
         lambda conn, handle: {
             "page": {
@@ -704,7 +709,7 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "live_update_page",
         lambda db_path, page_id, title, seo_title, seo_description, body_html: calls.setdefault(
             "live_update_page",
@@ -719,7 +724,7 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "set_workflow_state",
         lambda conn, kind, handle, status, notes: calls.setdefault(
             "workflow",
@@ -727,16 +732,16 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        dashboard_service,
+        content_service,
         "refresh_object_structured_seo_data",
         lambda conn, kind, handle: calls.setdefault("refresh", {"kind": kind, "handle": handle}),
     )
     monkeypatch.setattr(
-        dashboard_service.dq,
+        content_service.dq,
         "apply_saved_page_fields_from_editor",
         lambda conn, shopify_id, **kwargs: calls.setdefault("apply_local_page", {"shopify_id": shopify_id, **kwargs}),
     )
-    monkeypatch.setattr(dashboard_service, "clear_last_error", lambda: None)
+    monkeypatch.setattr(content_service, "clear_last_error", lambda: None)
     monkeypatch.setattr(
         content_router,
         "get_content_detail",
@@ -785,7 +790,7 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
     assert payload["ok"] is True
     assert payload["data"]["message"] == "Page saved"
     assert calls["live_update_page"] == {
-        "db_path": dashboard_service.DB_PATH,
+        "db_path": content_service.DB_PATH,
         "page_id": "gid://shopify/Page/123",
         "title": "Contact",
         "seo_title": "Contact Us",

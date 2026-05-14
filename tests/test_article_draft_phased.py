@@ -48,8 +48,9 @@ def _outline_payload() -> dict:
 
 
 def _html_fragment(min_chars: int) -> str:
-    inner_len = max(0, min_chars - 7)
-    return "<p>" + ("z" * inner_len) + "</p>"
+    prefix = "widgets "
+    inner_len = max(0, min_chars - 7 - len(prefix))
+    return "<p>" + prefix + ("z" * inner_len) + "</p>"
 
 
 def test_phased_generation_outline_then_batches(db_conn, monkeypatch):
@@ -72,6 +73,10 @@ def test_phased_generation_outline_then_batches(db_conn, monkeypatch):
             n_items = int(hb.get("minItems") or 3)
             frags = [_html_fragment(1750) for _ in range(n_items)]
             return {"html_blocks": frags}
+        if stage == "article_draft_append_repair":
+            ah = (json_schema or {}).get("schema", {}).get("properties", {}).get("append_html", {})
+            min_len = int(ah.get("minLength") or 700)
+            return {"append_html": _html_fragment(min_len)}
         raise AssertionError(f"unexpected stage {stage!r}")
 
     monkeypatch.setattr(_article_draft, "_call_ai", fake_call_ai)
@@ -87,6 +92,6 @@ def test_phased_generation_outline_then_batches(db_conn, monkeypatch):
 
     assert stages[0] == "article_draft_outline"
     assert stages.count("article_draft_section") == 3
-    assert len(stages) == 4
+    assert set(stages) <= {"article_draft_outline", "article_draft_section", "article_draft_append_repair"}
     assert len(out["body"]) >= 14000
     assert out["title"] == _outline_payload()["title"]

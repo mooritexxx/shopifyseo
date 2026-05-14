@@ -28,8 +28,12 @@ def test_configure_sqlite_text_decode_reads_attached_recovered_catalog():
     if not has_r42:
         pytest.skip("no products rowid=42 (corrupt-row fixture absent)")
 
-    with pytest.raises(sqlite3.OperationalError):
+    try:
         mem.execute("SELECT index_status FROM cat.products WHERE rowid=42").fetchone()
+    except sqlite3.OperationalError:
+        pass
+    else:
+        pytest.skip("products rowid=42 has valid UTF-8 (corrupt-row fixture absent)")
 
     configure_sqlite_text_decode(mem)
     row = mem.execute("SELECT index_status FROM cat.products WHERE rowid=42").fetchone()

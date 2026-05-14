@@ -76,7 +76,7 @@ def test_refresh_gsc_property_breakdowns_for_site_skips_empty_url(monkeypatch):
         calls.append(kwargs.get("period_mode", ""))
         return {}
 
-    monkeypatch.setattr(dg, "get_gsc_property_breakdowns_cached", fake)
+    monkeypatch.setattr(dg._gsc, "get_gsc_property_breakdowns_cached", fake)
     conn = sqlite3.connect(":memory:")
     dg.refresh_gsc_property_breakdowns_for_site(conn, "")
     dg.refresh_gsc_property_breakdowns_for_site(conn, "   ")
@@ -92,7 +92,7 @@ def test_refresh_gsc_property_breakdowns_refreshes_four_period_modes(monkeypatch
         calls.append(period_mode)
         return {}
 
-    monkeypatch.setattr(dg, "get_gsc_property_breakdowns_cached", fake)
+    monkeypatch.setattr(dg._gsc, "get_gsc_property_breakdowns_cached", fake)
     conn = sqlite3.connect(":memory:")
     dg.refresh_gsc_property_breakdowns_for_site(conn, "https://example.com/")
     assert set(calls) == {"mtd", "full_months", "since_2026_02_15", "rolling_30d"}

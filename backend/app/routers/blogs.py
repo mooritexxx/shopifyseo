@@ -5,6 +5,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -338,10 +339,21 @@ def _run_generate_article_draft(
         secondary_targets_list: list[dict] = []
         idea_serp_context: dict | None = None
         idea_linked_keywords: list[dict] = []
+        # Idea-level scoring signals (volume, KD, intent, opportunity) — separate from SERP
+        # context so the writer can calibrate depth without re-inferring from fuzzy hints.
+        idea_meta: dict[str, Any] = {}
         if effective_idea_id is not None:
             idea_row = conn.execute(
                 """
                 SELECT linked_cluster_id,
+                       COALESCE(linked_cluster_name, '') AS linked_cluster_name,
+                       COALESCE(linked_collection_handle, '') AS linked_collection_handle,
+                       COALESCE(linked_collection_title, '') AS linked_collection_title,
+                       COALESCE(total_volume, 0) AS total_volume,
+                       COALESCE(avg_difficulty, 0) AS avg_difficulty,
+                       COALESCE(opportunity_score, 0) AS opportunity_score,
+                       COALESCE(estimated_monthly_traffic, 0) AS estimated_monthly_traffic,
+                       COALESCE(search_intent, '') AS search_intent,
                        COALESCE(primary_target_type, '') AS primary_target_type,
                        COALESCE(primary_target_handle, '') AS primary_target_handle,
                        COALESCE(primary_target_title, '') AS primary_target_title,
@@ -391,8 +403,73 @@ def _run_generate_article_draft(
                 except (json.JSONDecodeError, TypeError):
                     idea_linked_keywords = []
                 idea_serp_context = parse_idea_serp_row_from_db(idea_row)
+                idea_meta = {
+                    "linked_cluster_name": idea_row["linked_cluster_name"] or "",
+                    "linked_collection_handle": idea_row["linked_collection_handle"] or "",
+                    "linked_collection_title": idea_row["linked_collection_title"] or "",
+                    "total_volume": int(idea_row["total_volume"] or 0),
+                    "avg_difficulty": float(idea_row["avg_difficulty"] or 0),
+                    "opportunity_score": float(idea_row["opportunity_score"] or 0),
+                    "estimated_monthly_traffic": int(idea_row["estimated_monthly_traffic"] or 0),
+                    "search_intent": idea_row["search_intent"] or "",
+                }
         if cluster_id is None and is_regen:
             cluster_id = _first_matched_cluster_id_for_blog_article(conn, payload.blog_handle, reg_handle)
+
+        # Gap 7: when the idea has no primary_target, fall back to the cluster's own
+        # match page — that's the canonical authority destination the clustering
+        # pipeline already chose, so the "primary authority link" gate should fire on it.
+        if primary_target_dict is None and cluster_id is not None:
+            cluster_match_row = conn.execute(
+                """
+                SELECT COALESCE(match_type, '') AS match_type,
+                       COALESCE(match_handle, '') AS match_handle,
+                       COALESCE(match_title, '') AS match_title
+                FROM clusters WHERE id = ?
+                """,
+                (cluster_id,),
+            ).fetchone()
+            if cluster_match_row:
+                mt = cluster_match_row["match_type"] or ""
+                mh = cluster_match_row["match_handle"] or ""
+                if mt and mh:
+                    primary_target_dict = {
+                        "type": mt,
+                        "handle": mh,
+                        "title": cluster_match_row["match_title"] or "",
+                        "url": "",
+                    }
+
+        # Gap 10: surface sibling articles in the same cluster so the writer can prioritise
+        # them for interlinking over noisier RAG matches.
+        cluster_sibling_articles: list[dict] = []
+        if cluster_id is not None:
+            sibling_rows = conn.execute(
+                """
+                SELECT ia.article_handle, ia.blog_handle, ba.title
+                FROM idea_articles ia
+                LEFT JOIN article_ideas ai ON ai.id = ia.idea_id
+                LEFT JOIN blog_articles ba
+                       ON ba.handle = ia.article_handle
+                      AND ba.blog_handle = ia.blog_handle
+                WHERE ai.linked_cluster_id = ?
+                  AND NOT (ia.article_handle = ? AND ia.blog_handle = ?)
+                ORDER BY ia.created_at DESC
+                LIMIT 12
+                """,
+                (cluster_id, reg_handle if is_regen else "", payload.blog_handle),
+            ).fetchall()
+            for row in sibling_rows:
+                ah = (row["article_handle"] or "").strip()
+                bh = (row["blog_handle"] or "").strip()
+                title = (row["title"] or "").strip()
+                if not ah or not bh:
+                    continue
+                cluster_sibling_articles.append({
+                    "blog_handle": bh,
+                    "article_handle": ah,
+                    "title": title,
+                })
 
         # For regeneration: pull the existing article's body + GSC queries so the rewrite
         # preserves the wording that already earns traffic. Only enabled when is_regen=True;
@@ -402,7 +479,9 @@ def _run_generate_article_draft(
             regen_ctx: dict = {}
             existing_article = conn.execute(
                 """
-                SELECT title, seo_title, seo_description, body, gsc_position
+                SELECT title, seo_title, seo_description, body,
+                       gsc_position, gsc_clicks, gsc_impressions, gsc_ctr,
+                       ga4_sessions, ga4_views, ga4_avg_session_duration
                 FROM blog_articles
                 WHERE blog_handle = ? AND handle = ?
                 """,
@@ -410,8 +489,18 @@ def _run_generate_article_draft(
             ).fetchone()
             if existing_article:
                 regen_ctx["existing_title"] = existing_article["title"] or ""
+                regen_ctx["existing_seo_title"] = existing_article["seo_title"] or ""
+                regen_ctx["existing_seo_description"] = existing_article["seo_description"] or ""
                 regen_ctx["existing_body_html"] = existing_article["body"] or ""
                 regen_ctx["existing_gsc_position"] = existing_article["gsc_position"]
+                regen_ctx["existing_gsc_clicks"] = int(existing_article["gsc_clicks"] or 0)
+                regen_ctx["existing_gsc_impressions"] = int(existing_article["gsc_impressions"] or 0)
+                regen_ctx["existing_gsc_ctr"] = float(existing_article["gsc_ctr"] or 0)
+                regen_ctx["existing_ga4_sessions"] = int(existing_article["ga4_sessions"] or 0)
+                regen_ctx["existing_ga4_views"] = int(existing_article["ga4_views"] or 0)
+                regen_ctx["existing_ga4_avg_session_duration"] = float(
+                    existing_article["ga4_avg_session_duration"] or 0
+                )
             obj_handle = f"{payload.blog_handle}/{reg_handle}"
             gsc_rows = conn.execute(
                 """
@@ -475,6 +564,8 @@ def _run_generate_article_draft(
                     secondary_targets=secondary_targets_list,
                     idea_serp_context=idea_serp_context,
                     idea_linked_keywords=idea_linked_keywords,
+                    idea_meta=idea_meta,
+                    cluster_sibling_articles=cluster_sibling_articles,
                     request_context=payload.model_dump(),
                     regeneration_context=regeneration_context,
                     draft_run_id=run_id,

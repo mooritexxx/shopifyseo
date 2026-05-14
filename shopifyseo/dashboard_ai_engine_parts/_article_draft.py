@@ -88,6 +88,8 @@ def generate_article_draft(
     secondary_targets: list[dict] | None = None,
     idea_serp_context: dict[str, Any] | None = None,
     idea_linked_keywords: list[dict] | None = None,
+    idea_meta: dict[str, Any] | None = None,
+    cluster_sibling_articles: list[dict] | None = None,
     request_context: dict[str, Any] | None = None,
     regeneration_context: dict[str, Any] | None = None,
     draft_run_id: str = "",
@@ -183,29 +185,67 @@ def generate_article_draft(
                 if "core_keywords_json" in cluster_cols
                 else ", '[]' AS core_keywords_json, '[]' AS supporting_keywords_json, '[]' AS extended_keywords_json, '' AS cluster_role, '' AS cluster_intent"
             )
+            # Gap 6: strategic cluster metrics — surface cannibalization risk, detected
+            # entity, and scoring numbers so the writer can differentiate from existing
+            # pages and anchor on a specific brand/product entity.
+            extra_select_pieces: list[str] = []
+            for col in (
+                "cannibalization_risk",
+                "detected_entity",
+                "avg_cps",
+                "priority_score",
+                "quality_score",
+                "avg_difficulty",
+                "avg_opportunity",
+                "total_volume",
+            ):
+                if col in cluster_cols:
+                    extra_select_pieces.append(f"{col}")
+                else:
+                    if col == "cannibalization_risk":
+                        extra_select_pieces.append("'none' AS cannibalization_risk")
+                    elif col == "detected_entity":
+                        extra_select_pieces.append("'' AS detected_entity")
+                    else:
+                        extra_select_pieces.append(f"0 AS {col}")
+            extra_select = ", " + ", ".join(extra_select_pieces)
             cluster_row = conn.execute(
                 """
                 SELECT id, name, primary_keyword, content_brief, dominant_serp_features, content_format_hints
-                       {tier_select}
+                       {tier_select}{extra_select}
                 FROM clusters WHERE id = ?
-                """.format(tier_select=tier_select),
+                """.format(tier_select=tier_select, extra_select=extra_select),
                 (linked_cluster_id,),
             ).fetchone()
             if cluster_row:
                 from backend.app.services.keyword_clustering import parse_keyword_tier
 
+                def _crow(name: str, default: Any = "") -> Any:
+                    if hasattr(cluster_row, "keys") and name in cluster_row.keys():
+                        val = cluster_row[name]
+                        return val if val is not None else default
+                    return default
+
                 cluster_meta = {
                     "id": linked_cluster_id,
-                    "name": cluster_row["name"] if "name" in cluster_row.keys() else cluster_row[1],
-                    "primary_keyword": cluster_row["primary_keyword"] if "primary_keyword" in cluster_row.keys() else cluster_row[2],
-                    "content_brief": cluster_row["content_brief"] if "content_brief" in cluster_row.keys() else cluster_row[3],
-                    "dominant_serp_features": cluster_row["dominant_serp_features"] if "dominant_serp_features" in cluster_row.keys() else "",
-                    "content_format_hints": cluster_row["content_format_hints"] if "content_format_hints" in cluster_row.keys() else "",
-                    "core_keywords": parse_keyword_tier(cluster_row["core_keywords_json"] if "core_keywords_json" in cluster_row.keys() else "[]"),
-                    "supporting_keywords": parse_keyword_tier(cluster_row["supporting_keywords_json"] if "supporting_keywords_json" in cluster_row.keys() else "[]"),
-                    "extended_keywords": parse_keyword_tier(cluster_row["extended_keywords_json"] if "extended_keywords_json" in cluster_row.keys() else "[]"),
-                    "cluster_role": cluster_row["cluster_role"] if "cluster_role" in cluster_row.keys() else "",
-                    "cluster_intent": cluster_row["cluster_intent"] if "cluster_intent" in cluster_row.keys() else "",
+                    "name": _crow("name"),
+                    "primary_keyword": _crow("primary_keyword"),
+                    "content_brief": _crow("content_brief"),
+                    "dominant_serp_features": _crow("dominant_serp_features"),
+                    "content_format_hints": _crow("content_format_hints"),
+                    "core_keywords": parse_keyword_tier(_crow("core_keywords_json", "[]") or "[]"),
+                    "supporting_keywords": parse_keyword_tier(_crow("supporting_keywords_json", "[]") or "[]"),
+                    "extended_keywords": parse_keyword_tier(_crow("extended_keywords_json", "[]") or "[]"),
+                    "cluster_role": _crow("cluster_role"),
+                    "cluster_intent": _crow("cluster_intent"),
+                    "cannibalization_risk": _crow("cannibalization_risk", "none") or "none",
+                    "detected_entity": _crow("detected_entity"),
+                    "avg_cps": float(_crow("avg_cps", 0) or 0),
+                    "priority_score": float(_crow("priority_score", 0) or 0),
+                    "quality_score": float(_crow("quality_score", 0) or 0),
+                    "avg_difficulty": float(_crow("avg_difficulty", 0) or 0),
+                    "avg_opportunity": float(_crow("avg_opportunity", 0) or 0),
+                    "total_volume": int(_crow("total_volume", 0) or 0),
                 }
 
             kw_rows = conn.execute(
@@ -230,6 +270,10 @@ def generate_article_draft(
             # intent / ranking_status / position for each cluster keyword, not just strings.
             # ORDER: opportunity DESC (with NULLs last) keeps striking-distance / quick-win
             # entries near the top of the prompt block.
+            # Gap 5: include the high-leverage signals that keyword_metrics already stores —
+            # gsc_clicks lets the writer know which terms NOT to drop on regen, serp_features
+            # lets it shape sections for featured-snippet capture, traffic_potential helps
+            # rank order net-new vs known winners, competitor_url tells it whom to outrank.
             try:
                 cluster_kw_metric_rows = conn.execute(
                     """
@@ -240,6 +284,13 @@ def generate_article_draft(
                            COALESCE(km.intent, '')                    AS intent,
                            COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
                            km.gsc_position,
+                           COALESCE(km.gsc_clicks, 0)                 AS gsc_clicks,
+                           COALESCE(km.gsc_impressions, 0)            AS gsc_impressions,
+                           COALESCE(km.traffic_potential, 0)          AS traffic_potential,
+                           COALESCE(km.serp_features, '')             AS serp_features,
+                           COALESCE(km.competitor_url, '')            AS competitor_url,
+                           COALESCE(km.competitor_position, 0)        AS competitor_position,
+                           COALESCE(km.competitor_domain, '')         AS competitor_domain,
                            COALESCE(km.opportunity, 0.0)              AS opportunity,
                            COALESCE(km.content_format_hint, '')       AS content_format_hint
                     FROM cluster_keywords ck
@@ -252,19 +303,22 @@ def generate_article_draft(
                 ).fetchall()
                 cluster_kw_metrics = [
                     {
-                        "keyword": (row["keyword"] if hasattr(row, "keys") else row[0]),
-                        "volume": int((row["volume"] if hasattr(row, "keys") else row[1]) or 0),
-                        "difficulty": int((row["difficulty"] if hasattr(row, "keys") else row[2]) or 0),
-                        "cpc": round(float((row["cpc"] if hasattr(row, "keys") else row[3]) or 0.0), 2),
-                        "intent": (row["intent"] if hasattr(row, "keys") else row[4]) or "",
-                        "ranking_status": (row["ranking_status"] if hasattr(row, "keys") else row[5]) or "not_ranking",
-                        "gsc_position": (row["gsc_position"] if hasattr(row, "keys") else row[6]),
-                        "opportunity": round(
-                            float((row["opportunity"] if hasattr(row, "keys") else row[7]) or 0.0), 1
-                        ),
-                        "content_format_hint": (
-                            row["content_format_hint"] if hasattr(row, "keys") else row[8]
-                        ) or "",
+                        "keyword": row["keyword"],
+                        "volume": int(row["volume"] or 0),
+                        "difficulty": int(row["difficulty"] or 0),
+                        "cpc": round(float(row["cpc"] or 0.0), 2),
+                        "intent": row["intent"] or "",
+                        "ranking_status": row["ranking_status"] or "not_ranking",
+                        "gsc_position": row["gsc_position"],
+                        "gsc_clicks": int(row["gsc_clicks"] or 0),
+                        "gsc_impressions": int(row["gsc_impressions"] or 0),
+                        "traffic_potential": int(row["traffic_potential"] or 0),
+                        "serp_features": row["serp_features"] or "",
+                        "competitor_url": row["competitor_url"] or "",
+                        "competitor_position": int(row["competitor_position"] or 0),
+                        "competitor_domain": row["competitor_domain"] or "",
+                        "opportunity": round(float(row["opportunity"] or 0.0), 1),
+                        "content_format_hint": row["content_format_hint"] or "",
                     }
                     for row in cluster_kw_metric_rows
                 ]
@@ -305,6 +359,8 @@ def generate_article_draft(
         _cb_brief = (cluster_meta.get("content_brief") or "").strip()
         _cb_intent = (cluster_meta.get("cluster_intent") or "").strip()
         _cb_role = (cluster_meta.get("cluster_role") or "").strip()
+        _cb_entity = (cluster_meta.get("detected_entity") or "").strip()
+        _cb_cann = (cluster_meta.get("cannibalization_risk") or "").strip().lower()
         if _cb_name or _cb_brief or _cb_intent or _cb_role:
             _cb_lines.append("\n\nCluster strategy — this article supports a topical authority cluster:")
             if _cb_name:
@@ -313,6 +369,16 @@ def generate_article_draft(
                 _cb_lines.append(f"- Article role in cluster: {_cb_role}")
             if _cb_intent:
                 _cb_lines.append(f"- Cluster intent: {_cb_intent}")
+            if _cb_entity:
+                _cb_lines.append(
+                    f"- Anchor entity (use naturally as the article's E-E-A-T centrepiece): {_cb_entity}"
+                )
+            if _cb_cann and _cb_cann not in ("none", "low", ""):
+                _cb_lines.append(
+                    f"- Cannibalization risk: {_cb_cann}. DIFFERENTIATE clearly from existing store pages on this "
+                    "topic — lean on the unique angle for this slot (role + intent above); do not repeat coverage "
+                    "the primary authority page already owns."
+                )
             if _cb_brief:
                 _cb_brief_trim = _cb_brief if len(_cb_brief) <= 1200 else _cb_brief[:1197] + "…"
                 _cb_lines.append(f"- Strategic brief: {_cb_brief_trim}")
@@ -321,6 +387,147 @@ def generate_article_draft(
                 "naturally link to related cluster pages where the reader benefits."
             )
             _cluster_brief_section = "\n".join(_cb_lines)
+
+    # Gap 10: sibling articles already published in this cluster — prioritise these
+    # for interlinking before falling back to noisier RAG matches.
+    _cluster_siblings_section = ""
+    _siblings = [s for s in (cluster_sibling_articles or []) if isinstance(s, dict)]
+    if _siblings:
+        _sib_lines: list[str] = [
+            "\n\nSibling cluster articles — PRIORITISE these for interlinking when the topic fits "
+            "(they reinforce topical authority within this cluster more than generic store links):",
+        ]
+        for s in _siblings[:10]:
+            bh = (s.get("blog_handle") or "").strip()
+            ah = (s.get("article_handle") or "").strip()
+            title = (s.get("title") or ah).strip()
+            if not bh or not ah:
+                continue
+            _sib_lines.append(f"  - {title} → /blogs/{bh}/{ah}")
+        if len(_sib_lines) > 1:
+            _cluster_siblings_section = "\n".join(_sib_lines)
+
+    # Gap 1: idea-level scoring signals (total_volume / KD / opportunity / search_intent /
+    # estimated_monthly_traffic / linked collection) — let the writer calibrate depth
+    # and informational-vs-transactional framing without re-inferring from fuzzy SERP cues.
+    _idea_meta_section = ""
+    _im = idea_meta or {}
+    if _im:
+        _im_lines: list[str] = []
+        total_vol = int(_im.get("total_volume") or 0)
+        avg_kd = float(_im.get("avg_difficulty") or 0)
+        opp_score = float(_im.get("opportunity_score") or 0)
+        est_traffic = int(_im.get("estimated_monthly_traffic") or 0)
+        intent = (_im.get("search_intent") or "").strip()
+        coll_handle = (_im.get("linked_collection_handle") or "").strip()
+        coll_title = (_im.get("linked_collection_title") or "").strip()
+        depth_hint = ""
+        if total_vol >= 10000:
+            depth_hint = "Head-volume topic — plan a comprehensive, long-form treatment (multiple H2s + comparison content)."
+        elif total_vol >= 1000:
+            depth_hint = "Mid-volume topic — go deep on a focused angle rather than trying to cover everything."
+        elif total_vol > 0:
+            depth_hint = "Long-tail topic — keep it tight and specific; a focused answer outperforms a sprawling guide."
+        bits: list[str] = []
+        if total_vol:
+            bits.append(f"total_volume:{total_vol}")
+        if avg_kd:
+            bits.append(f"avg_KD:{avg_kd:.0f}")
+        if opp_score:
+            bits.append(f"opportunity:{opp_score:.1f}")
+        if est_traffic:
+            bits.append(f"est_monthly_traffic:{est_traffic}")
+        if intent:
+            bits.append(f"intent:{intent}")
+        if bits or coll_handle or depth_hint:
+            _im_lines.append("\n\nIdea scoring signals — calibrate scope and framing:")
+            if bits:
+                _im_lines.append("- " + " ".join(bits))
+            if intent:
+                # Translate the search intent into a concrete framing directive.
+                intent_lower = intent.lower()
+                if "transactional" in intent_lower or "commercial" in intent_lower:
+                    _im_lines.append(
+                        "- Search intent is commercial — lead with the buying decision (criteria, "
+                        "shortlist, comparison); educational background goes after the recommendation."
+                    )
+                elif "informational" in intent_lower:
+                    _im_lines.append(
+                        "- Search intent is informational — lead with the direct answer and explanation; "
+                        "save promotional CTAs and product comparisons for later sections."
+                    )
+                elif "navigational" in intent_lower:
+                    _im_lines.append(
+                        "- Search intent is navigational — make the destination unambiguous; the primary "
+                        "authority link is the article's most important conversion path."
+                    )
+            if depth_hint:
+                _im_lines.append("- " + depth_hint)
+            if coll_handle:
+                if coll_title:
+                    _im_lines.append(
+                        f"- Linked store collection: {coll_title} (/collections/{coll_handle}) — "
+                        "reinforce this collection as the natural next step for the reader."
+                    )
+                else:
+                    _im_lines.append(
+                        f"- Linked store collection: /collections/{coll_handle} — reinforce it as "
+                        "the natural next step for the reader."
+                    )
+            _idea_meta_section = "\n".join(_im_lines)
+
+    # Gap 4: idea-level linked keywords with their per-keyword metrics. The cluster table
+    # above shows cluster-wide keywords; this section shows the keywords the idea itself
+    # is targeting, with the same striking-distance / quick-win markers the UI uses.
+    _linked_kw_section = ""
+    if linked_keyword_rows:
+        _lk_lines: list[str] = [
+            "\n\nIdea-level target keywords — additional priority signals for these specific terms "
+            "(complements the cluster keyword table; do not duplicate coverage):",
+        ]
+        # Sort by opportunity desc so the writer sees the highest-priority ones first.
+        def _opp_key(r: dict[str, Any]) -> float:
+            try:
+                return -float(r.get("opportunity") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        for r in sorted(linked_keyword_rows, key=_opp_key)[:15]:
+            kw = str(r.get("keyword") or "").strip()
+            if not kw:
+                continue
+            vol = r.get("volume")
+            kd = r.get("difficulty")
+            rs = str(r.get("ranking_status") or "").strip().lower()
+            opp = r.get("opportunity")
+            pos = r.get("gsc_position")
+            bits: list[str] = []
+            try:
+                if vol is not None and int(vol) > 0:
+                    bits.append(f"vol:{int(vol)}")
+            except (TypeError, ValueError):
+                pass
+            try:
+                if kd is not None and float(kd) > 0:
+                    bits.append(f"KD:{int(float(kd))}")
+            except (TypeError, ValueError):
+                pass
+            if rs:
+                bits.append(f"status:{rs}")
+            try:
+                if pos is not None and 0 < float(pos) < 900:
+                    bits.append(f"pos:{float(pos):.1f}")
+            except (TypeError, ValueError):
+                pass
+            try:
+                if opp is not None and float(opp) > 0:
+                    bits.append(f"opp:{float(opp):.1f}")
+            except (TypeError, ValueError):
+                pass
+            prefix = "  ★ " if rs in ("quick_win", "striking_distance") else "  - "
+            tail = " — " + " ".join(bits) if bits else ""
+            _lk_lines.append(f"{prefix}{kw}{tail}")
+        if len(_lk_lines) > 1:
+            _linked_kw_section = "\n".join(_lk_lines)
 
     # Cluster keyword table (D) — surface per-keyword metrics so the writer can prioritise
     # striking-distance / quick-win terms over net-new ones. Ordered by opportunity desc.
@@ -342,6 +549,10 @@ def generate_article_draft(
             pos = row.get("gsc_position")
             opp = row.get("opportunity")
             cph = str(row.get("content_format_hint") or "").strip()
+            gsc_clicks = int(row.get("gsc_clicks") or 0)
+            gsc_impressions = int(row.get("gsc_impressions") or 0)
+            traffic_pot = int(row.get("traffic_potential") or 0)
+            serp_features = str(row.get("serp_features") or "").strip()
             bits: list[str] = []
             if vol:
                 bits.append(f"vol:{vol}")
@@ -358,6 +569,16 @@ def generate_article_draft(
                         bits.append(f"pos:{pos_f:.1f}")
                 except (TypeError, ValueError):
                     pass
+            if gsc_clicks:
+                bits.append(f"gsc_clicks:{gsc_clicks}")
+            if gsc_impressions:
+                bits.append(f"gsc_impr:{gsc_impressions}")
+            if traffic_pot:
+                bits.append(f"tp:{traffic_pot}")
+            if serp_features:
+                # Truncate to keep prompt compact when SERP features is a long CSV.
+                sf_short = serp_features if len(serp_features) <= 60 else serp_features[:57] + "…"
+                bits.append(f"serp:{sf_short}")
             if opp is not None:
                 try:
                     if float(opp) > 0:
@@ -368,7 +589,10 @@ def generate_article_draft(
                 bits.append(f"format:{cph}")
             tail = " — " + " ".join(bits) if bits else ""
             prefix = ""
-            if rs in ("quick_win", "striking_distance"):
+            if gsc_clicks > 0 and rs != "ranking":
+                # Existing-earner: highest priority — never drop these terms on regen.
+                prefix = "  ⭐ "
+            elif rs in ("quick_win", "striking_distance"):
                 prefix = "  ★ "  # visual cue for opportunity-rich terms
             else:
                 prefix = "  - "
@@ -388,15 +612,66 @@ def generate_article_draft(
         _rg_queries = regeneration_context.get("existing_gsc_queries") or []
         _rg_body = str(regeneration_context.get("existing_body_html") or "")
 
-        if _rg_title or _rg_queries or _rg_body:
+        # Gap 2: surface the existing meta so the writer can preserve wording that already
+        # earns clicks on the SERP rather than reinventing the meta tags from scratch.
+        _rg_seo_title = str(regeneration_context.get("existing_seo_title") or "").strip()
+        _rg_seo_desc = str(regeneration_context.get("existing_seo_description") or "").strip()
+        # Gap 3: existing GSC/GA4 totals tell the writer whether to expand carefully
+        # (high-traffic article) or rebuild aggressively (low-traffic article).
+        _rg_clicks = int(regeneration_context.get("existing_gsc_clicks") or 0)
+        _rg_impressions = int(regeneration_context.get("existing_gsc_impressions") or 0)
+        try:
+            _rg_ctr = float(regeneration_context.get("existing_gsc_ctr") or 0)
+        except (TypeError, ValueError):
+            _rg_ctr = 0.0
+        _rg_ga4_sessions = int(regeneration_context.get("existing_ga4_sessions") or 0)
+        _rg_ga4_views = int(regeneration_context.get("existing_ga4_views") or 0)
+        try:
+            _rg_ga4_duration = float(regeneration_context.get("existing_ga4_avg_session_duration") or 0)
+        except (TypeError, ValueError):
+            _rg_ga4_duration = 0.0
+
+        if _rg_title or _rg_queries or _rg_body or _rg_seo_title or _rg_seo_desc:
             _rg_lines.append("\n\nRegenerating an existing article — preserve what works, fix what doesn't:")
         if _rg_title:
             _rg_lines.append(f"- Current title: {_rg_title}")
+        if _rg_seo_title:
+            _rg_lines.append(
+                f"- Current meta title (preserve verbatim if it already earns clicks; only revise if it "
+                f"violates the new keyword/format constraints): {_rg_seo_title}"
+            )
+        if _rg_seo_desc:
+            _rg_lines.append(
+                f"- Current meta description (preserve if it still fits — small tweaks only when the new "
+                f"primary keyword demands them): {_rg_seo_desc}"
+            )
         if _rg_position is not None:
             try:
                 _rg_lines.append(f"- Current average position (GSC): {float(_rg_position):.1f}")
             except (TypeError, ValueError):
                 pass
+        # Performance snapshot drives rewrite stance — surface counts only when non-zero so
+        # we don't pad the prompt for brand-new pages with no data yet.
+        if _rg_clicks or _rg_impressions or _rg_ga4_sessions:
+            perf_bits: list[str] = []
+            if _rg_clicks or _rg_impressions:
+                perf_bits.append(
+                    f"GSC clicks={_rg_clicks}, impressions={_rg_impressions}, ctr={_rg_ctr:.2%}"
+                )
+            if _rg_ga4_sessions or _rg_ga4_views:
+                perf_bits.append(f"GA4 sessions={_rg_ga4_sessions}, views={_rg_ga4_views}")
+            if _rg_ga4_duration:
+                perf_bits.append(f"GA4 avg session duration={_rg_ga4_duration:.0f}s")
+            stance = (
+                "high-traffic article — expand carefully and preserve every section that maps to the "
+                "GSC queries above; do NOT delete proven copy"
+                if _rg_clicks >= 100 or _rg_ga4_sessions >= 200
+                else "low-traffic article — rebuild aggressively for stronger coverage and angle; "
+                "current copy is not winning enough to be protective of it"
+            )
+            _rg_lines.append(
+                "- Current performance — " + "; ".join(perf_bits) + ". Rewrite stance: " + stance + "."
+            )
 
         if isinstance(_rg_queries, list) and _rg_queries:
             ranking_lines: list[str] = []
@@ -665,6 +940,26 @@ def generate_article_draft(
     _brand = _store_name or "the store"
     _base_url = (_dq._base_store_url(conn) or "").strip().rstrip("/")
 
+    # Gap 9: load the store_description setting so the writer can adopt the
+    # store's positioning / brand voice instead of producing generic e-commerce prose.
+    _store_description = ""
+    try:
+        from shopifyseo.dashboard_google import get_service_setting as _get_ss_brand
+        _store_description = (_get_ss_brand(conn, "store_description") or "").strip()
+    except Exception:
+        logger.debug("Failed to load store_description for article draft brand voice")
+
+    # Gap 8: respect author_name when supplied — switch the Article JSON-LD author from
+    # Organization to Person for E-E-A-T author signals, and give the writer a byline
+    # directive so the article opens with the named author's voice when appropriate.
+    _author_name = (author_name or "").strip()
+    if _author_name:
+        _author_ld = (
+            f"\"author\":{{\"@type\":\"Person\",\"name\":\"{_author_name}\"}}"
+        )
+    else:
+        _author_ld = f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}}"
+
     link_targets, _, _ = _dq.build_store_internal_link_allowlist(conn, _base_url, rag_results=rag_results)
     try:
         conn.close()
@@ -907,6 +1202,23 @@ def generate_article_draft(
 
     _body_aim_chars = MIN_ARTICLE_BODY_HTML_CHARS + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
 
+    # Brand voice block — small system-level addition so positioning and named author
+    # both influence tone without crowding the per-section user prompt.
+    _brand_voice_lines: list[str] = []
+    if _store_description:
+        _store_desc_trim = (
+            _store_description if len(_store_description) <= 600 else _store_description[:597] + "…"
+        )
+        _brand_voice_lines.append(
+            f"Brand positioning for {_brand} (reflect this voice naturally; do not quote verbatim): {_store_desc_trim}"
+        )
+    if _author_name:
+        _brand_voice_lines.append(
+            f"Named author: {_author_name}. Write with a single named-author perspective (first-person plural is "
+            f"fine for opinions), and let the byline carry the credibility — do not invent biographical claims."
+        )
+    _brand_voice_block = (" " + " ".join(_brand_voice_lines) + " ") if _brand_voice_lines else ""
+
     system_msg = (
         f"You are an expert SEO content writer for {_brand}. "
         "Write high-quality, editorial blog content that ranks well on Google. "
@@ -918,7 +1230,8 @@ def generate_article_draft(
         "use well-known industry patterns rather than invented figures. "
         "Write at a Grade 8–10 reading level. Be helpful, specific, and commercially relevant. "
         "When choosing internal links, prefer store destinations that clearly match the article topic and any "
-        "reference list provided in the user message over unrelated catalog URLs. "
+        "reference list provided in the user message over unrelated catalog URLs."
+        f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
     )
@@ -928,7 +1241,8 @@ def generate_article_draft(
         "Phase 1 returns JSON only: article title, meta fields, and a detailed section outline (headings + beats). "
         "Later phases write full HTML in batches from your outline — beats must be actionable for a writer. "
         f"{spelling_variant(_market_code)} "
-        "Do not fabricate statistics, specific study results, or invented data. "
+        "Do not fabricate statistics, specific study results, or invented data."
+        f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
     )
@@ -943,7 +1257,8 @@ def generate_article_draft(
         "write each assigned fragment generously with multiple `<p>` paragraphs and optional lists or small tables. "
         f"{spelling_variant(_market_code)} "
         "Do not fabricate statistics, specific study results, or invented data. "
-        "Write at a Grade 8–10 reading level. "
+        "Write at a Grade 8–10 reading level."
+        f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
     )
@@ -960,7 +1275,7 @@ def generate_article_draft(
     seo_brief_block = ""
     user_msg = (
         f"Write a complete SEO-optimised blog article for {_brand} on the following topic:\n\n"
-        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_cluster_siblings_section}{_idea_meta_section}{_linked_kw_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -1001,7 +1316,7 @@ def generate_article_draft(
         "<script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Article\","
         "\"headline\":\"TITLE\","
         "\"description\":\"SEO_DESCRIPTION\","
-        f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}},"
+        f"{_author_ld},"
         f"{_publisher_ld},"
         f"\"inLanguage\":\"{_lang_code}\","
         "\"datePublished\":\"DATE_ISO8601\"}"
@@ -1014,7 +1329,7 @@ def generate_article_draft(
         "<script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Article\","
         "\"headline\":\"TITLE\","
         "\"description\":\"SEO_DESCRIPTION\","
-        f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}},"
+        f"{_author_ld},"
         f"{_publisher_ld},"
         f"\"inLanguage\":\"{_lang_code}\","
         "\"datePublished\":\"DATE_ISO8601\"}"
@@ -1051,7 +1366,7 @@ def generate_article_draft(
 
     user_outline_msg = (
         f"Plan a long-form SEO blog article for {_brand} on:\n\n"
-        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_cluster_siblings_section}{_idea_meta_section}{_linked_kw_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -1070,7 +1385,7 @@ def generate_article_draft(
 
     _shared_grounding = (
         f"Topic and research inputs for {_brand}:\n\n"
-        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+        f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_cluster_siblings_section}{_idea_meta_section}{_linked_kw_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
         f"{seo_brief_block}"
         f"{_serp_user_block}\n\n"
         f"{_faq_instruction}{_paa_faq_instruction}"
@@ -1300,6 +1615,7 @@ def generate_article_draft(
         "intent": (idea_serp_context or {}).get("content_format_hints") or "",
         "request": dict(request_context or {}),
         "manual_target_keywords": manual_keyword_texts,
+        "idea_meta": dict(idea_meta or {}),
         "idea_keywords": {
             "primary_keyword": str((idea_serp_context or {}).get("primary_keyword") or "").strip(),
             "supporting_keywords": idea_supporting_keywords,
@@ -1310,13 +1626,20 @@ def generate_article_draft(
             "meta": cluster_meta,
             "keywords": cluster_kws,
             "keyword_metrics": cluster_kw_metrics,
+            "sibling_articles": list(cluster_sibling_articles or []),
         },
         "target_keyword_metrics": matching_target_metrics,
         "seo_gap_keywords": seo_gap_items,
         "regeneration": (
             {
                 "existing_title": str(regeneration_context.get("existing_title") or "").strip(),
+                "existing_seo_title": str(regeneration_context.get("existing_seo_title") or "").strip(),
+                "existing_seo_description": str(regeneration_context.get("existing_seo_description") or "").strip(),
                 "existing_gsc_position": regeneration_context.get("existing_gsc_position"),
+                "existing_gsc_clicks": int(regeneration_context.get("existing_gsc_clicks") or 0),
+                "existing_gsc_impressions": int(regeneration_context.get("existing_gsc_impressions") or 0),
+                "existing_ga4_sessions": int(regeneration_context.get("existing_ga4_sessions") or 0),
+                "existing_ga4_views": int(regeneration_context.get("existing_ga4_views") or 0),
                 "existing_gsc_queries": [
                     {
                         "query": str(q.get("query") or "").strip(),
@@ -1361,6 +1684,10 @@ def generate_article_draft(
             "shipping_phrase": _ship_phrase,
             "availability_phrase": _avail_phrase,
         },
+        "brand_voice": {
+            "store_description": _store_description,
+            "author_name": _author_name,
+        },
         "required_coverage": {
             "primary_keyword": (_required_body_keywords[0] if _required_body_keywords else _pk_checklist),
             "required_keywords_in_body": list(_required_body_keywords),
@@ -1398,7 +1725,7 @@ def generate_article_draft(
         + json.dumps(seo_brief, ensure_ascii=True)[:18000]
         + "\n"
     )
-    _grounding_anchor = f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
+    _grounding_anchor = f"{topic.strip()}{_cluster_brief_section}{_cluster_kw_table_section}{_cluster_siblings_section}{_idea_meta_section}{_linked_kw_section}{_structural_section}{_regeneration_section}{keyword_section}{_seo_gap_section}{_rag_reference_block}"
     if _grounding_anchor:
         user_msg = user_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
         user_outline_msg = user_outline_msg.replace(_grounding_anchor, _grounding_anchor + seo_brief_block, 1)
@@ -1413,6 +1740,19 @@ def generate_article_draft(
         out = strip_faqpage_jsonld_blocks(out)
         return out
 
+    # Gap 11: require a minimum count of approved-target links so silent sanitizer
+    # strips don't leave the article underlinked. Required-by-name links (primary +
+    # secondaries) form the floor; we add 2 generic supporting links when the
+    # allowlist is large enough to keep room for natural interlinking.
+    _required_link_floor = (1 if primary_normalized and primary_normalized.get("url") else 0) + len(
+        secondary_urls_for_compliance
+    )
+    _min_internal_links = (
+        _required_link_floor + (2 if len(link_targets) >= 4 else 0)
+        if link_targets
+        else 0
+    )
+
     def _compliance_gaps(body_html: str) -> list[str]:
         return validate_article_draft_compliance(
             body_html=body_html,
@@ -1421,6 +1761,7 @@ def generate_article_draft(
             primary_keyword_for_body=primary_kw_for_compliance,
             path_to_canonical=path_to_canonical,
             tier1_related_queries=_tier_queries,
+            min_internal_links=_min_internal_links,
         )
 
     resume_checkpoints = resume_run.get("checkpoints") if isinstance(resume_run, dict) else {}
@@ -1486,12 +1827,17 @@ def generate_article_draft(
         }
 
     def _render_article_jsonld(title: str, seo_description: str) -> str:
+        author_node: dict[str, str] = (
+            {"@type": "Person", "name": _author_name}
+            if _author_name
+            else {"@type": "Organization", "name": _brand}
+        )
         payload: dict[str, Any] = {
             "@context": "https://schema.org",
             "@type": "Article",
             "headline": title,
             "description": seo_description,
-            "author": {"@type": "Organization", "name": _brand},
+            "author": author_node,
             "publisher": {"@type": "Organization", "name": _brand},
             "inLanguage": _lang_code,
             "datePublished": datetime.date.today().isoformat(),

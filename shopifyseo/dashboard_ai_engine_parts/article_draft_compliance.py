@@ -420,6 +420,32 @@ def tier1_related_search_heading_gaps(body_html: str, queries: list[str]) -> lis
     return gaps
 
 
+def count_storefront_internal_links(
+    body_html: str,
+    *,
+    path_to_canonical: dict[str, str],
+) -> int:
+    """Count `<a href>` tags whose path resolves to an approved storefront URL.
+
+    Used by ``validate_article_draft_compliance`` to verify that link sanitization
+    didn't silently strip a meaningful number of internal links — a sign that the
+    model invented URLs which then got unwrapped, leaving the article underlinked.
+    """
+    if not body_html:
+        return 0
+    approved_paths = set(path_to_canonical.keys() or [])
+    if not approved_paths:
+        return 0
+    count = 0
+    for href in collect_hrefs(body_html):
+        if not href:
+            continue
+        path = _path_key(href)
+        if path in approved_paths:
+            count += 1
+    return count
+
+
 def validate_article_draft_compliance(
     *,
     body_html: str,
@@ -428,12 +454,19 @@ def validate_article_draft_compliance(
     primary_keyword_for_body: str | list[str] | None,
     path_to_canonical: dict[str, str],
     tier1_related_queries: list[str] | None = None,
+    min_internal_links: int | None = None,
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
     ``primary_keyword_for_body`` may be a single string (legacy) or a list of
     required keywords. Each non-empty entry is checked against the body via
     ``primary_keyword_in_body`` and gets its own gap line on miss.
+
+    ``min_internal_links`` (optional): when set, the body must contain at least
+    this many `<a href>` links resolving to approved storefront URLs after
+    sanitization. Guards against the failure mode where the writer hallucinated
+    paths that ``sanitize_article_internal_links`` then stripped, leaving the
+    article with fewer interlinks than planned.
     """
     gaps: list[str] = []
     if require_faqpage_ld and not faqpage_ld_present(body_html):
@@ -469,6 +502,15 @@ def validate_article_draft_compliance(
     tq = tier1_related_queries or []
     if tq:
         gaps.extend(tier1_related_search_heading_gaps(body_html, tq))
+    if min_internal_links and path_to_canonical:
+        actual = count_storefront_internal_links(body_html, path_to_canonical=path_to_canonical)
+        if actual < min_internal_links:
+            gaps.append(
+                f"Article must include at least {min_internal_links} approved storefront internal "
+                f"`<a href>` links (currently {actual}). Any extra links that don't appear here were "
+                "stripped by link sanitization because they used invented or external URLs — switch "
+                "those anchors to URLs from approved_internal_link_targets exactly."
+            )
     n = len(body_html or "")
     if n < MIN_ARTICLE_BODY_HTML_CHARS:
         deficit = MIN_ARTICLE_BODY_HTML_CHARS - n

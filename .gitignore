@@ -73,6 +73,8 @@ frontend/.vitest/
 *.sqlite3-shm
 *.sqlite3-wal
 *.sqlite3.corrupt-*
+*.sqlite3.corrupted
+*.corrupted
 *.db
 *.sqlite
 shopify_image_cache/

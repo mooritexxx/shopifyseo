@@ -509,7 +509,7 @@ export function AppShell({ children }: PropsWithChildren) {
             title: syncStatus?.stage === "cancelled" ? "Sync cancelled" : "All services up to date",
             subtitle: `${Math.max(orderedScopes.length, activeSelectedScopes.length)} services finished`,
             finishedIn: `${(elapsedMs / 1000).toFixed(1)}s`,
-            relative: syncFinishedAt ? formatRelativeTimestamp(syncFinishedAt) : "—"
+            relative: syncStatus?.finished_at ? formatRelativeTimestamp(syncStatus.finished_at) : "—"
           }
         : undefined,
     errorHero:

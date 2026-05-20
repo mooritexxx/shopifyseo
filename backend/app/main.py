@@ -1,3 +1,11 @@
+# Setup SSL certificate fallback for macOS using certifi
+import os
+try:
+    import certifi
+    os.environ["SSL_CERT_FILE"] = certifi.where()
+except ImportError:
+    pass
+
 import logging
 import sqlite3
 from contextlib import asynccontextmanager

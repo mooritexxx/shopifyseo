@@ -167,30 +167,82 @@ describe("ProductsPage", () => {
     );
   });
 
-  it("requests a new sort when a column header is clicked", async () => {
+  it("reorders rows locally when a column header is clicked, without refetching", async () => {
+    const row = (handle: string, title: string, gsc_clicks: number) => ({
+      handle,
+      title,
+      vendor: "Vendor",
+      status: "active",
+      updated_at: "2026-03-10",
+      score: 50,
+      priority: "High",
+      reasons: [],
+      total_inventory: 1,
+      body_length: 200,
+      seo_title: "SEO title",
+      seo_description: "SEO description",
+      gsc_clicks,
+      gsc_impressions: 10,
+      gsc_ctr: 0.1,
+      gsc_position: 5,
+      ga4_sessions: 1,
+      ga4_views: 1,
+      ga4_avg_session_duration: 30,
+      index_status: "Indexed",
+      index_coverage: "",
+      google_canonical: "",
+      pagespeed_performance: 80,
+      pagespeed_desktop_performance: 90,
+      pagespeed_status: "fresh",
+      workflow_status: "Needs fix",
+      workflow_notes: "",
+      gsc_segment_flags: { has_dimensional: false }
+    });
+
+    mockedGetJson.mockResolvedValue({
+      items: [row("low-clicks", "Low Clicks", 1), row("high-clicks", "High Clicks", 99)],
+      total: 2,
+      limit: null,
+      offset: 0,
+      query: "",
+      sort: "score",
+      direction: "desc",
+      summary: { visible_rows: 2, high_priority: 2, index_issues: 0, average_score: 50 }
+    });
+
+    renderWithProviders(<ProductsPage />);
+    await screen.findByText("Low Clicks");
+    const callsBefore = mockedGetJson.mock.calls.length;
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /clicks/i }))[0]);
+
+    // Descending by clicks puts the 99-click row first.
+    const links = await screen.findAllByRole("link", { name: /Clicks$/ });
+    expect(links.map((el) => el.textContent)).toEqual(["High Clicks", "Low Clicks"]);
+    // Ordering is client-side, so no additional request was issued.
+    expect(mockedGetJson.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("keeps the list request independent of the chosen sort column", async () => {
     mockedGetJson.mockResolvedValue({
       items: [],
       total: 0,
       limit: null,
       offset: 0,
       query: "",
-      sort: "gsc_impressions",
+      sort: "score",
       direction: "desc",
-      summary: {
-        visible_rows: 0,
-        high_priority: 0,
-        index_issues: 0,
-        average_score: 0
-      }
+      summary: { visible_rows: 0, high_priority: 0, index_issues: 0, average_score: 0 }
     });
 
     renderWithProviders(<ProductsPage />);
+    await screen.findAllByRole("button", { name: /clicks/i });
 
-    fireEvent.click((await screen.findAllByRole("button", { name: /clicks/i }))[0]);
-
-    expect(mockedGetJson).toHaveBeenCalledWith(
-      expect.stringContaining("sort=gsc_clicks&direction=desc"),
-      expect.anything()
-    );
+    for (const call of mockedGetJson.mock.calls) {
+      const url = String(call[0]);
+      if (url.startsWith("/api/products")) {
+        expect(url).toContain("sort=score&direction=desc");
+      }
+    }
   });
 });

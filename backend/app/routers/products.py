@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from backend.app.routers import field_regen_errors
 from backend.app.schemas.common import SuccessResponse, success_response
-from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.product import (
     FieldRegenerateRequest,
     FieldRegenerateResult,
@@ -43,16 +42,16 @@ def products(
 
 
 @router.get("/{handle}", response_model=SuccessResponse[ProductDetailPayload])
-def product_detail(handle: str, gsc_period: GscPeriodMode = "mtd"):
-    detail = get_product_detail(handle, gsc_period=gsc_period)
+def product_detail(handle: str):
+    detail = get_product_detail(handle)
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     return success_response(detail)
 
 
 @router.post("/{handle}/refresh", response_model=SuccessResponse[ProductActionResult])
-def refresh_product_route(handle: str, payload: ProductRefreshRequest, gsc_period: GscPeriodMode = "mtd"):
-    ok, result = refresh_product(handle, payload.step, gsc_period=gsc_period)
+def refresh_product_route(handle: str, payload: ProductRefreshRequest):
+    ok, result = refresh_product(handle, payload.step)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result["message"])
     return success_response(result)
@@ -83,13 +82,13 @@ def regenerate_field_start_route(handle: str, payload: FieldRegenerateRequest):
 
 
 @router.post("/{handle}/update", response_model=SuccessResponse[ProductActionResult])
-def update_product_route(handle: str, payload: ProductUpdatePayload, gsc_period: GscPeriodMode = "mtd"):
+def update_product_route(handle: str, payload: ProductUpdatePayload):
     ok, message = update_product(handle, payload.model_dump())
     if not ok:
         if message == "Product not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
-    detail = get_product_detail(handle, gsc_period=gsc_period)
+    detail = get_product_detail(handle)
     return success_response({"message": message, "result": detail})
 
 

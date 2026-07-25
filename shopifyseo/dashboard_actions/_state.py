@@ -19,13 +19,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GSC_SYNC_THROTTLE_SECONDS = 0.1
-GSC_SYNC_WORKERS = 5
-GSC_SYNC_RATE_LIMIT_PER_MINUTE = 100
-GA4_SYNC_WORKERS = 4
-GA4_SYNC_RATE_LIMIT_PER_MINUTE = 120
+# GSC and GA4 no longer fan out one request per URL — they pull the whole property in a
+# handful of paginated calls — so their worker-pool and per-minute constants are gone.
 PAGESPEED_SYNC_THROTTLE_SECONDS = 0.4
-INDEX_SYNC_WORKERS = 5
-INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 55
+# URL Inspection is latency-bound, not rate-limited. Measured against the live API
+# (scripts/probe_index_inspection_rate.py, 550 real inspections):
+#
+#   median response time  6.3 s  — identical at 10 and at 20 workers
+#   10 workers ->  91.9/min, 2 transient HTTP 500s in 300
+#   20 workers -> 182.9/min, 0 errors in 250
+#
+# Google never returned a 429, so throughput is simply workers / latency. The old 5
+# workers gave ~48/min, which the old 55/min cap sat just above — meaning the cap was
+# never the real limit and raising it alone would have changed nothing.
+#
+# The cap is kept as a safety net: if Google's latency ever drops sharply, 20 workers
+# could otherwise exceed the documented 600/min ceiling. 300 leaves room for the
+# measured ~183/min without binding, at half the documented limit.
+#
+# The separate daily quota (~2000 inspections) is unaffected by pacing — a full pass
+# over 980 catalog URLs uses roughly half of it either way.
+INDEX_SYNC_WORKERS = 20
+INDEX_SYNC_RATE_LIMIT_PER_MINUTE = 300
 # PageSpeed Insights often returns HTTP 500 when overloaded. Fewer concurrent calls + lower RPM reduce 5xx.
 # Rolling cap on every runPagespeed HTTP request process-wide (bulk sync, per-object refresh, retries).
 PAGESPEED_SYNC_RATE_LIMIT_PER_MINUTE = 240

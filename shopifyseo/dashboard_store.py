@@ -4,14 +4,15 @@ import os
 import sqlite3
 import time
 import uuid
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 from . import dashboard_google as dg
 from . import dashboard_queries as dq
 from .dashboard_config import apply_runtime_settings
 from .dashboard_status import index_status_info
+from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
 from .sqlite_utf8 import configure_sqlite_text_decode
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
 
@@ -32,7 +33,7 @@ def _parse_iso_date_only(raw: str | None) -> date | None:
         return None
 
 
-def _gsc_window_for_dimensional_fetch(gsc_detail: dict | None, gsc_period: str = "mtd") -> tuple[date, date]:
+def _gsc_window_for_dimensional_fetch(gsc_detail: dict | None, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> tuple[date, date]:
     gd = gsc_detail or {}
     s = _parse_iso_date_only(gd.get("start_date"))
     e = _parse_iso_date_only(gd.get("end_date"))
@@ -208,6 +209,31 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
         ON gsc_query_dimension_rows(object_type, object_handle, dimension_kind)
         """
     )
+    # Daily per-page Search Console history. The catalog columns hold only a current
+    # snapshot, so trend ("is this page improving?") was unanswerable. Google retains
+    # ~16 months, so this can be backfilled rather than accumulated.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gsc_page_daily (
+          date TEXT NOT NULL,
+          page_url TEXT NOT NULL,
+          object_type TEXT NOT NULL DEFAULT '',
+          object_handle TEXT NOT NULL DEFAULT '',
+          clicks INTEGER NOT NULL DEFAULT 0,
+          impressions INTEGER NOT NULL DEFAULT 0,
+          ctr REAL NOT NULL DEFAULT 0,
+          position REAL NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(date, page_url)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_gsc_page_daily_object
+        ON gsc_page_daily(object_type, object_handle, date)
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS seo_recommendations (
@@ -321,6 +347,27 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (keyword, competitor_domain)
         )
         """
+    )
+    # The keyword joins compare LOWER(keyword) on both sides, which no plain
+    # index on `keyword` can serve. Expression indexes match those predicates
+    # exactly, so results are unchanged while the planner stops doing a
+    # three-way nested-loop scan. _fetch_competitor_gaps measured 4.4 s per
+    # object before these and under 0.1 ms after.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_keyword_metrics_keyword_lower"
+        " ON keyword_metrics(LOWER(keyword))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_keyword_page_map_keyword_lower"
+        " ON keyword_page_map(LOWER(keyword))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_competitor_gaps_keyword_lower"
+        " ON competitor_keyword_gaps(LOWER(keyword))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_keyword_page_map_object"
+        " ON keyword_page_map(object_type, object_handle)"
     )
     conn.execute(
         """
@@ -641,6 +688,246 @@ def _resolve_ga4_metrics_for_url(
     )
 
 
+GSC_TREND_WINDOW_DAYS = 30
+GSC_TREND_SPARKLINE_POINTS = 30
+
+
+def upsert_gsc_page_daily(
+    conn: sqlite3.Connection,
+    rows: list[dict],
+    targets_by_url: dict[str, tuple[str, str]] | None = None,
+    *,
+    batch_size: int = 500,
+) -> int:
+    """Store daily per-page rows, tagging each with its catalog object when known."""
+    by_url = targets_by_url or {}
+    written = 0
+    for i, row in enumerate(rows, 1):
+        url = str(row.get("page_url") or "")
+        day = str(row.get("date") or "")
+        if not url or not day:
+            continue
+        kind, handle = by_url.get(url, ("", ""))
+        conn.execute(
+            """
+            INSERT INTO gsc_page_daily(
+              date, page_url, object_type, object_handle, clicks, impressions, ctr, position, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(date, page_url) DO UPDATE SET
+              object_type = excluded.object_type,
+              object_handle = excluded.object_handle,
+              clicks = excluded.clicks,
+              impressions = excluded.impressions,
+              ctr = excluded.ctr,
+              position = excluded.position,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                day,
+                url,
+                kind,
+                handle,
+                int(row.get("clicks") or 0),
+                int(row.get("impressions") or 0),
+                float(row.get("ctr") or 0.0),
+                float(row.get("position") or 0.0),
+            ),
+        )
+        written += 1
+        if i % batch_size == 0:
+            conn.commit()
+    conn.commit()
+    return written
+
+
+def _pct_change(current: float, previous: float) -> float | None:
+    """Percent change, or None when there is no baseline to compare against."""
+    if previous <= 0:
+        return None if current <= 0 else 100.0
+    return round(((current - previous) / previous) * 100.0, 1)
+
+
+def gsc_page_trend_map(
+    conn: sqlite3.Connection,
+    *,
+    window_days: int = GSC_TREND_WINDOW_DAYS,
+    today: date | None = None,
+    keys: Sequence[tuple[str, str]] | None = None,
+) -> dict[tuple[str, str], dict]:
+    """Per catalog object: current vs prior window totals, plus a daily click series.
+
+    Keyed by ``(object_type, object_handle)``. Objects with no history are absent, so
+    callers should treat a miss as "no trend yet" rather than zero.
+
+    ``keys`` restricts the aggregate to specific objects. Detail views want a
+    single object and would otherwise aggregate the whole table (16k+ rows) to
+    read one entry. Passing an empty sequence returns ``{}``.
+    """
+    anchor = today or date.today()
+    cur_start = anchor - timedelta(days=window_days - 1)
+    prev_start = cur_start - timedelta(days=window_days)
+
+    key_clause = ""
+    key_params: tuple[str, ...] = ()
+    if keys is not None:
+        if not keys:
+            return {}
+        uniq = list(dict.fromkeys(keys))
+        key_clause = " AND (%s)" % " OR ".join(
+            "(object_type = ? AND object_handle = ?)" for _ in uniq
+        )
+        key_params = tuple(part for pair in uniq for part in pair)
+
+    out: dict[tuple[str, str], dict] = {}
+    rows = conn.execute(
+        f"""
+        SELECT object_type, object_handle,
+               SUM(CASE WHEN date >= ? THEN clicks ELSE 0 END)      AS cur_clicks,
+               SUM(CASE WHEN date >= ? THEN impressions ELSE 0 END) AS cur_impr,
+               SUM(CASE WHEN date <  ? THEN clicks ELSE 0 END)      AS prev_clicks,
+               SUM(CASE WHEN date <  ? THEN impressions ELSE 0 END) AS prev_impr
+        FROM gsc_page_daily
+        WHERE object_type != '' AND object_handle != ''
+          AND date >= ? AND date <= ?{key_clause}
+        GROUP BY object_type, object_handle
+        """,
+        (
+            cur_start.isoformat(),
+            cur_start.isoformat(),
+            cur_start.isoformat(),
+            cur_start.isoformat(),
+            prev_start.isoformat(),
+            anchor.isoformat(),
+            *key_params,
+        ),
+    ).fetchall()
+
+    for r in rows:
+        key = (r["object_type"], r["object_handle"])
+        cur_clicks = int(r["cur_clicks"] or 0)
+        prev_clicks = int(r["prev_clicks"] or 0)
+        cur_impr = int(r["cur_impr"] or 0)
+        prev_impr = int(r["prev_impr"] or 0)
+        out[key] = {
+            "clicks_current": cur_clicks,
+            "clicks_previous": prev_clicks,
+            "clicks_delta_pct": _pct_change(cur_clicks, prev_clicks),
+            "impressions_current": cur_impr,
+            "impressions_previous": prev_impr,
+            "impressions_delta_pct": _pct_change(cur_impr, prev_impr),
+            "series": [],
+        }
+
+    # Daily click series for the sparkline, zero-filled so gaps read as flat, not missing.
+    spark_start = anchor - timedelta(days=GSC_TREND_SPARKLINE_POINTS - 1)
+    series_rows = conn.execute(
+        f"""
+        SELECT object_type, object_handle, date, SUM(clicks) AS clicks
+        FROM gsc_page_daily
+        WHERE object_type != '' AND object_handle != ''
+          AND date >= ? AND date <= ?{key_clause}
+        GROUP BY object_type, object_handle, date
+        """,
+        (spark_start.isoformat(), anchor.isoformat(), *key_params),
+    ).fetchall()
+
+    by_day: dict[tuple[str, str], dict[str, int]] = {}
+    for r in series_rows:
+        by_day.setdefault((r["object_type"], r["object_handle"]), {})[r["date"]] = int(r["clicks"] or 0)
+
+    days = [(spark_start + timedelta(days=i)).isoformat() for i in range(GSC_TREND_SPARKLINE_POINTS)]
+    for key, entry in out.items():
+        daily = by_day.get(key, {})
+        entry["series"] = [daily.get(d, 0) for d in days]
+    return out
+
+
+# Denormalized signal columns, in the order every signal UPDATE writes them.
+_SIGNAL_COLUMNS = (
+    "gsc_clicks",
+    "gsc_impressions",
+    "gsc_ctr",
+    "gsc_position",
+    "gsc_last_fetched_at",
+    "ga4_sessions",
+    "ga4_views",
+    "ga4_avg_session_duration",
+    "ga4_last_fetched_at",
+    "index_status",
+    "index_coverage",
+    "google_canonical",
+    "index_last_fetched_at",
+)
+
+
+def _signal_values_preserving_known(
+    conn: sqlite3.Connection,
+    table: str,
+    where_sql: str,
+    where_params: tuple,
+    *,
+    gsc_row: dict | None,
+    gsc_fetched_at: object,
+    ga4_sessions: int | None,
+    ga4_views: int | None,
+    ga4_avg_dur: float | None,
+    ga4_fetched_at: object,
+    idx: dict,
+    index_label: object,
+    index_fetched_at: object,
+) -> tuple:
+    """Build the signal-column values, keeping stored data for any signal with nothing fresh.
+
+    "No rows in the cached payload" means *we have nothing to say right now*, not *this
+    object scored zero* — the GSC MTD window is legitimately empty for the first days of
+    every month, and a failed or partial scope leaves objects without a payload. Writing
+    NULL in those cases destroys the only stored copy of the number.
+
+    Each signal is preserved as a group (values **and** their ``*_last_fetched_at``) so a
+    preserved value never appears freshly fetched. A payload that genuinely reports zero
+    still overwrites, because that is real data.
+    """
+    has_gsc = gsc_row is not None
+    has_ga4 = ga4_sessions is not None or ga4_views is not None or ga4_avg_dur is not None
+    has_index = bool(idx.get("indexingState") or idx.get("coverageState"))
+
+    fresh = (
+        int(gsc_row.get("clicks", 0)) if gsc_row else None,
+        int(gsc_row.get("impressions", 0)) if gsc_row else None,
+        float(gsc_row.get("ctr", 0)) if gsc_row else None,
+        float(gsc_row.get("position", 0)) if gsc_row else None,
+        gsc_fetched_at,
+        ga4_sessions,
+        ga4_views,
+        ga4_avg_dur,
+        ga4_fetched_at,
+        index_label,
+        idx.get("coverageState"),
+        idx.get("googleCanonical"),
+        index_fetched_at,
+    )
+    if has_gsc and has_ga4 and has_index:
+        return fresh
+
+    row = conn.execute(
+        f"SELECT {', '.join(_SIGNAL_COLUMNS)} FROM {table} WHERE {where_sql}",
+        where_params,
+    ).fetchone()
+    if row is None:
+        return fresh
+
+    # Positional access: callers may or may not set row_factory = sqlite3.Row.
+    stored = tuple(row)
+    merged = list(fresh)
+    if not has_gsc:
+        merged[0:5] = stored[0:5]
+    if not has_ga4:
+        merged[5:9] = stored[5:9]
+    if not has_index:
+        merged[9:13] = stored[9:13]
+    return tuple(merged)
+
+
 def _refresh_object_signals_into_table(
     conn: sqlite3.Connection,
     table: str,
@@ -668,17 +955,22 @@ def _refresh_object_signals_into_table(
     inspection_meta = (inspection_detail or {}).get("_cache") or {}
     idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
     index_label, _, _ = index_status_info(inspection_detail)
-    has_inspection_data = bool(idx.get("indexingState") or idx.get("coverageState"))
 
-    if not has_inspection_data:
-        existing = conn.execute(
-            f"SELECT index_status, index_coverage, google_canonical, index_last_fetched_at FROM {table} WHERE handle = ?",
-            (handle,),
-        ).fetchone()
-        if existing and (existing[0] or existing[1] or existing[2]):
-            index_label = existing[0]
-            idx = {"coverageState": existing[1], "googleCanonical": existing[2]}
-            inspection_meta = {"fetched_at": existing[3]}
+    values = _signal_values_preserving_known(
+        conn,
+        table,
+        "handle = ?",
+        (handle,),
+        gsc_row=gsc_row,
+        gsc_fetched_at=gsc_meta.get("fetched_at"),
+        ga4_sessions=ga4_sessions,
+        ga4_views=ga4_views,
+        ga4_avg_dur=ga4_avg_dur,
+        ga4_fetched_at=ga4_fetched_at,
+        idx=idx,
+        index_label=index_label,
+        index_fetched_at=inspection_meta.get("fetched_at"),
+    )
 
     conn.execute(
         f"""
@@ -699,22 +991,7 @@ def _refresh_object_signals_into_table(
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE handle = ?
         """,
-        (
-            int(gsc_row.get("clicks", 0)) if gsc_row else None,
-            int(gsc_row.get("impressions", 0)) if gsc_row else None,
-            float(gsc_row.get("ctr", 0)) if gsc_row else None,
-            float(gsc_row.get("position", 0)) if gsc_row else None,
-            gsc_meta.get("fetched_at"),
-            ga4_sessions,
-            ga4_views,
-            ga4_avg_dur,
-            ga4_fetched_at,
-            index_label,
-            idx.get("coverageState"),
-            idx.get("googleCanonical"),
-            inspection_meta.get("fetched_at"),
-            handle,
-        ),
+        (*values, handle),
     )
 
     _write_gsc_per_url_query_caches(
@@ -737,11 +1014,23 @@ def _write_gsc_per_url_query_caches(
     include_query_dimensions: bool = False,
 ) -> None:
     gsc_meta = (gsc_detail or {}).get("_cache") or {}
+    # exists=False is _cache_meta(None): we looked and found no cache row. That means "we
+    # have nothing to say about this object", not "this object has no queries", so
+    # rewriting from the empty payload would silently wipe rows a previous sync stored.
+    # Expired-but-present payloads are still applied — they carry the last known data, and
+    # _load_cached_payload returns them regardless of expiry.
+    if gsc_meta.get("exists") is False:
+        return
+
     conn.execute(
         "DELETE FROM gsc_query_rows WHERE object_type = ? AND object_handle = ?",
         (object_type, handle),
     )
-    for row in (gsc_detail or {}).get("query_rows", []):
+    # The cached payload deliberately keeps a superset (see GSC_BULK_QUERY_ROWS_PER_PAGE)
+    # so richer history survives, but only the rows readers actually consume are
+    # materialised here — every consumer bounds its query by GSC_PER_URL_QUERY_ROW_LIMIT.
+    query_rows = (gsc_detail or {}).get("query_rows", [])[:GSC_PER_URL_QUERY_ROW_LIMIT]
+    for row in query_rows:
         query = (row.get("keys") or [""])[0]
         if not query:
             continue
@@ -772,7 +1061,7 @@ def _write_gsc_per_url_query_caches(
             url,
             fetched_at=gsc_meta.get("fetched_at"),
             gsc_detail=gsc_detail,
-            gsc_period=(gsc_detail or {}).get("period_mode") or "mtd",
+            gsc_period=(gsc_detail or {}).get("period_mode") or GSC_CATALOG_PERIOD_MODE,
         )
 
 
@@ -861,7 +1150,7 @@ def _refresh_gsc_query_dimensions_into_table(
     *,
     fetched_at: int | None,
     gsc_detail: dict | None = None,
-    gsc_period: str = "mtd",
+    gsc_period: str = GSC_CATALOG_PERIOD_MODE,
 ) -> None:
     site_url = (dg.get_service_setting(conn, "search_console_site") or "").strip()
     if not site_url:
@@ -1103,6 +1392,23 @@ def _refresh_blog_article_signals_into_table(
     inspection_meta = (inspection_detail or {}).get("_cache") or {}
     idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
     index_label, _, _ = index_status_info(inspection_detail)
+
+    values = _signal_values_preserving_known(
+        conn,
+        "blog_articles",
+        "blog_handle = ? AND handle = ?",
+        (blog_h, art_h),
+        gsc_row=gsc_row,
+        gsc_fetched_at=gsc_meta.get("fetched_at"),
+        ga4_sessions=ga4_sessions,
+        ga4_views=ga4_views,
+        ga4_avg_dur=ga4_avg_dur,
+        ga4_fetched_at=ga4_fetched_at,
+        idx=idx,
+        index_label=index_label,
+        index_fetched_at=inspection_meta.get("fetched_at"),
+    )
+
     conn.execute(
         """
         UPDATE blog_articles
@@ -1122,23 +1428,7 @@ def _refresh_blog_article_signals_into_table(
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE blog_handle = ? AND handle = ?
         """,
-        (
-            int(gsc_row.get("clicks", 0)) if gsc_row else None,
-            int(gsc_row.get("impressions", 0)) if gsc_row else None,
-            float(gsc_row.get("ctr", 0)) if gsc_row else None,
-            float(gsc_row.get("position", 0)) if gsc_row else None,
-            gsc_meta.get("fetched_at"),
-            ga4_sessions,
-            ga4_views,
-            ga4_avg_dur,
-            ga4_fetched_at,
-            index_label,
-            idx.get("coverageState"),
-            idx.get("googleCanonical"),
-            inspection_meta.get("fetched_at"),
-            blog_h,
-            art_h,
-        ),
+        (*values, blog_h, art_h),
     )
     _write_gsc_per_url_query_caches(
         conn,

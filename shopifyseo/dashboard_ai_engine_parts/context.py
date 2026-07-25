@@ -233,7 +233,30 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
     }[object_type](conn, handle)
     if not detail:
         raise RuntimeError(f"{object_type} not found: {handle}")
-    fact = next(item for item in dq.fetch_seo_facts(conn, object_type) if item["handle"] == handle)
+    # Build the fact from the detail row already in hand. This used to call
+    # fetch_seo_facts() for the entire catalog and keep one entry, which cost
+    # seconds per object on a full-catalog AI run.
+    #
+    # fetch_seo_facts reads workflow as {status, notes} only, while
+    # _fetch_workflow also returns updated_at -- narrow it so the fact stays
+    # byte-identical to what the old full-catalog lookup produced.
+    _wf_row = detail.get("workflow")
+    _wf = {"status": _wf_row["status"], "notes": _wf_row["notes"]} if _wf_row else None
+    if object_type == "collection":
+        fact = dq.build_seo_fact(
+            "collection",
+            detail["collection"],
+            _wf,
+            detail.get("recommendation"),
+            product_count=len(detail["products"]),
+        )
+    else:
+        fact = dq.build_seo_fact(
+            object_type,
+            detail[object_type],
+            _wf,
+            detail.get("recommendation"),
+        )
     query_rows = [
         dict(row)
         for row in conn.execute(

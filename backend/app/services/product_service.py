@@ -17,11 +17,13 @@ from shopifyseo.dashboard_live_updates import live_update_product
 import shopifyseo.dashboard_queries as dq
 import shopifyseo.dashboard_ai as dai
 from shopifyseo.dashboard_status import index_status_bucket_from_strings
-from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
+from shopifyseo.dashboard_store import DB_PATH, gsc_page_trend_map, refresh_object_structured_seo_data
 from backend.app.db import open_db_connection
+from shopifyseo.gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
 from backend.app.services.object_signals import load_object_signals, parse_tags_json
 from backend.app.services._catalog_helpers import (
+    EMPTY_TREND,
     PRODUCT_SORTERS,
     _normalize_list_focus,
     _apply_list_focus,
@@ -47,8 +49,12 @@ def list_products(
     focus_norm = _normalize_list_focus(focus, allow_thin_body=True)
     conn = open_db_connection()
     try:
-        rows = {row["handle"]: dict(row) for row in dq.fetch_all_products(conn)}
-        facts = dq.fetch_seo_facts(conn, "product")
+        # One narrow scan feeds both the row lookup and the fact builder; this
+        # used to be two full `SELECT *` passes over products.
+        product_rows = dq.fetch_products_for_facts(conn)
+        rows = {row["handle"]: dict(row) for row in product_rows}
+        facts = dq.fetch_seo_facts(conn, "product", rows=product_rows)
+        trends = gsc_page_trend_map(conn)
 
         items: list[dict[str, Any]] = []
         for fact in facts:
@@ -83,6 +89,7 @@ def list_products(
                 "pagespeed_status": fact.get("pagespeed_status") or "",
                 "workflow_status": (fact.get("workflow") or {}).get("status") or "Needs fix",
                 "workflow_notes": (fact.get("workflow") or {}).get("notes") or "",
+                "trend": trends.get(("product", fact["handle"]), EMPTY_TREND),
             }
             items.append(item)
 
@@ -125,7 +132,7 @@ def list_products(
     }
 
 
-def get_product_detail(handle: str, gsc_period: str = "mtd") -> dict[str, Any] | None:
+def get_product_detail(handle: str, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> dict[str, Any] | None:
     period = normalize_gsc_period_mode(gsc_period)
     conn = open_db_connection()
     try:
@@ -150,6 +157,9 @@ def get_product_detail(handle: str, gsc_period: str = "mtd") -> dict[str, Any] |
             "recommendation": parts["recommendation"],
             "recommendation_history": parts["recommendation_history"],
             "signal_cards": _signal_cards_for(conn, "product", product, gsc_period=period, signals=signals),
+            "trend": gsc_page_trend_map(conn, keys=[("product", handle)]).get(
+                ("product", handle), EMPTY_TREND
+            ),
             "collections": [dict(row) for row in detail["collections"]],
             "variants": [dict(row) for row in detail["variants"]],
             "metafields": [dict(row) for row in detail["metafields"]],
@@ -186,7 +196,7 @@ def start_product_field_regeneration(handle: str, field: str, accepted_fields: d
     return False, "AI generation already running", state
 
 
-def refresh_product(handle: str, step: str | None = None, gsc_period: str = "mtd") -> tuple[bool, dict[str, Any]]:
+def refresh_product(handle: str, step: str | None = None, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> tuple[bool, dict[str, Any]]:
     period = normalize_gsc_period_mode(gsc_period)
     try:
         if step:

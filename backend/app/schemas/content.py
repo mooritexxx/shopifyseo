@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.schemas.gsc_segments import GscSegmentFlagsPayload, GscSegmentSummaryPayload
 from backend.app.schemas.product import MetafieldPayload, OpportunityPayload, RecommendationHistoryPayload
+from backend.app.schemas.trend import TrendPayload
 
 
 class ContentListItem(BaseModel):
@@ -33,6 +34,7 @@ class ContentListItem(BaseModel):
     workflow_notes: str = ""
     product_count: int = 0
     gsc_segment_flags: GscSegmentFlagsPayload = Field(default_factory=GscSegmentFlagsPayload)
+    trend: TrendPayload = Field(default_factory=TrendPayload)
 
 
 class ContentListPayload(BaseModel):
@@ -97,6 +99,7 @@ class ContentDetailPayload(BaseModel):
     related_items: list[ContentRelatedItemPayload]
     metafields: list[MetafieldPayload]
     opportunity: OpportunityPayload
+    trend: TrendPayload = Field(default_factory=TrendPayload)
     gsc_segment_summary: GscSegmentSummaryPayload = Field(default_factory=GscSegmentSummaryPayload)
     gsc_queries: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -5,6 +5,7 @@ PageSpeed Insights (which shares the same OAuth token) and the shared
 ``clear_google_caches`` utility.
 """
 
+import logging
 import os
 import random
 import sqlite3
@@ -17,7 +18,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from ..dashboard_http import HttpRequestError
-from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
+from ..gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
 from ._cache import (
     CACHE_TTLS,
     GSC_PROPERTY_BREAKDOWN_ROW_CAP,
@@ -38,6 +39,9 @@ from ._auth import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 def _pkg():
     """Return the shopifyseo.dashboard_google package namespace."""
     return sys.modules["shopifyseo.dashboard_google"]
@@ -56,7 +60,7 @@ def _summary_cache_key(site_url: str) -> str:
     return f"search_console_summary::{site_url}"
 
 
-def _url_detail_cache_key(site_url: str, url: str, period_mode: str = "mtd") -> str:
+def _url_detail_cache_key(site_url: str, url: str, period_mode: str = GSC_CATALOG_PERIOD_MODE) -> str:
     mode = _normalize_gsc_period_mode(period_mode)
     return f"search_console_url::{site_url}::{mode}::{url}"
 
@@ -910,7 +914,7 @@ def gsc_url_detail_cache_meta_for_sync(
     url: str,
     *,
     site_url: str,
-    gsc_period: str = "mtd",
+    gsc_period: str = GSC_CATALOG_PERIOD_MODE,
 ) -> dict:
     """Return ``_cache``-style meta matching ``get_search_console_url_detail(..., refresh=False)`` (memory then SQLite), without network."""
     if not (site_url or "").strip():
@@ -935,7 +939,7 @@ def gsc_url_detail_needs_refresh(
     url: str,
     *,
     site_url: str,
-    gsc_period: str = "mtd",
+    gsc_period: str = GSC_CATALOG_PERIOD_MODE,
 ) -> bool:
     """True unless per-URL GSC cache exists and is not stale (same rule as bulk sync skip when not forcing)."""
     meta = gsc_url_detail_cache_meta_for_sync(conn, url, site_url=site_url, gsc_period=gsc_period)
@@ -951,7 +955,7 @@ def get_search_console_url_detail(
     object_handle: str = "",
     site_url_override: str = "",
     access_token_override: str = "",
-    gsc_period: str = "mtd",
+    gsc_period: str = GSC_CATALOG_PERIOD_MODE,
 ) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     site_url = site_url_override or get_service_setting(conn, "search_console_site")
@@ -1018,6 +1022,214 @@ def get_search_console_url_detail(
     payload = {**payload, "_cache": meta}
     gsc_cache["per_url"][mem_key] = payload
     return payload
+
+
+# -- Bulk per-URL GSC via property-wide dimension pulls ------------------------
+#
+# ``get_search_console_url_detail`` spends two filtered ``searchAnalytics/query``
+# calls per URL. Both datasets are retrievable property-wide: ``["page"]`` gives
+# every page's totals and ``["page","query"]`` gives every page's query
+# breakdown. Paginating those to exhaustion costs a handful of calls for the
+# whole catalog and returns a strict superset of the per-URL responses (which
+# were capped at ``GSC_PER_URL_QUERY_ROW_LIMIT`` = 20 rows each).
+
+GSC_BULK_ROW_LIMIT = 25000
+# Query rows retained per page. Well above the 20 the per-URL path stored, so the
+# downstream top-20 slice is always contained; keeps payloads bounded on big sites.
+GSC_BULK_QUERY_ROWS_PER_PAGE = 100
+# Safety valve so a pathological property cannot page forever.
+GSC_BULK_MAX_REQUESTS = 200
+
+
+def _iter_gsc_bulk_rows(
+    site_url: str,
+    access_token: str,
+    start: date,
+    end: date,
+    dimensions: list[str],
+    *,
+    cancel_check: Callable[[], None] | None = None,
+    row_limit: int = GSC_BULK_ROW_LIMIT,
+):
+    """Yield ``searchAnalytics/query`` row batches, paging with ``startRow`` until exhausted."""
+    endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{quote(site_url, safe='')}/searchAnalytics/query"
+    start_row = 0
+    for _ in range(GSC_BULK_MAX_REQUESTS):
+        if cancel_check is not None:
+            cancel_check()
+        body = {
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "dimensions": dimensions,
+            "rowLimit": row_limit,
+            "startRow": start_row,
+        }
+        rows = google_api_post(endpoint, access_token, body).get("rows") or []
+        if not rows:
+            return
+        yield rows
+        if len(rows) < row_limit:
+            return
+        start_row += len(rows)
+    logger.warning(
+        "GSC bulk pull for dimensions=%s hit the %s-request cap; results may be truncated",
+        dimensions,
+        GSC_BULK_MAX_REQUESTS,
+    )
+
+
+def fetch_gsc_all_page_rows(
+    site_url: str,
+    access_token: str,
+    start: date,
+    end: date,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict[str, dict]:
+    """Map page URL → its ``dimensions=["page"]`` row (same shape the per-URL call returned)."""
+    out: dict[str, dict] = {}
+    for batch in _iter_gsc_bulk_rows(
+        site_url, access_token, start, end, ["page"], cancel_check=cancel_check
+    ):
+        for row in batch:
+            keys = row.get("keys") or []
+            if not keys:
+                continue
+            out[str(keys[0])] = row
+    return out
+
+
+def _gsc_query_row_sort_key(row: dict) -> tuple[float, float]:
+    return (-float(row.get("clicks") or 0), -float(row.get("impressions") or 0))
+
+
+def fetch_gsc_all_page_query_rows(
+    site_url: str,
+    access_token: str,
+    start: date,
+    end: date,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+    rows_per_page: int = GSC_BULK_QUERY_ROWS_PER_PAGE,
+) -> dict[str, list[dict]]:
+    """Map page URL → its top query rows, reshaped to match ``dimensions=["query"]`` output.
+
+    Rows are trimmed to ``rows_per_page`` per page as batches arrive, so memory stays
+    proportional to pages × ``rows_per_page`` rather than to the property's total
+    page × query cardinality.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for batch in _iter_gsc_bulk_rows(
+        site_url, access_token, start, end, ["page", "query"], cancel_check=cancel_check
+    ):
+        touched: set[str] = set()
+        for row in batch:
+            keys = row.get("keys") or []
+            if len(keys) < 2:
+                continue
+            page = str(keys[0])
+            # Reshape to the single-dimension ["query"] form callers already parse.
+            grouped.setdefault(page, []).append(
+                {
+                    "keys": [str(keys[1])],
+                    "clicks": row.get("clicks", 0),
+                    "impressions": row.get("impressions", 0),
+                    "ctr": row.get("ctr", 0),
+                    "position": row.get("position", 0),
+                }
+            )
+            touched.add(page)
+        for page in touched:
+            rows = grouped[page]
+            if len(rows) > rows_per_page:
+                rows.sort(key=_gsc_query_row_sort_key)
+                del rows[rows_per_page:]
+    for rows in grouped.values():
+        rows.sort(key=_gsc_query_row_sort_key)
+    return grouped
+
+
+def fetch_gsc_page_daily_rows(
+    site_url: str,
+    access_token: str,
+    start: date,
+    end: date,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Daily per-page rows via ``dimensions=["date","page"]``, paged to exhaustion.
+
+    Same cost profile as the other bulk pulls — a handful of requests for the whole
+    property — but returns history instead of a single aggregate per page.
+    """
+    out: list[dict[str, Any]] = []
+    for batch in _iter_gsc_bulk_rows(
+        site_url, access_token, start, end, ["date", "page"], cancel_check=cancel_check
+    ):
+        for row in batch:
+            keys = row.get("keys") or []
+            if len(keys) < 2:
+                continue
+            out.append(
+                {
+                    "date": str(keys[0]),
+                    "page_url": str(keys[1]),
+                    "clicks": int(row.get("clicks") or 0),
+                    "impressions": int(row.get("impressions") or 0),
+                    "ctr": float(row.get("ctr") or 0.0),
+                    "position": float(row.get("position") or 0.0),
+                }
+            )
+    return out
+
+
+def build_gsc_url_detail(
+    url: str,
+    site_url: str,
+    *,
+    page_row: dict | None,
+    query_rows: list[dict] | None,
+    start: date,
+    end: date,
+    period_mode: str,
+) -> dict:
+    """Assemble the payload ``get_search_console_url_detail(refresh=True)`` would have produced."""
+    return {
+        "url": url,
+        "site_url": site_url,
+        "page_rows": [page_row] if page_row else [],
+        "query_rows": list(query_rows or []),
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "period_mode": period_mode,
+    }
+
+
+def write_gsc_url_detail_cache(
+    conn: sqlite3.Connection,
+    payload: dict,
+    *,
+    site_url: str,
+    period_mode: str = GSC_CATALOG_PERIOD_MODE,
+    object_type: str = "",
+    object_handle: str = "",
+) -> dict:
+    """Persist a derived per-URL payload under the key ``get_search_console_url_detail`` uses."""
+    url = payload.get("url") or ""
+    cache_key = _url_detail_cache_key(site_url, url, period_mode)
+    meta = _write_cache_payload(
+        conn,
+        cache_key=cache_key,
+        cache_type="search_console_url",
+        payload=payload,
+        ttl_seconds=CACHE_TTLS["search_console_url"],
+        object_type=object_type,
+        object_handle=object_handle,
+        url=url,
+    )
+    out = {**payload, "_cache": meta}
+    _pkg().GSC_CACHE["per_url"][_per_url_memory_cache_key(period_mode, url)] = out
+    return out
 
 
 # -- Per-URL query × second dimension -----------------------------------------
@@ -1203,6 +1415,61 @@ def _hybrid_429_post_slowdown_wait_seconds(
     return min(120.0, max(5.0, max(hdr, adaptive)))
 
 
+# Audit fields worth keeping. Everything a Lighthouse audit reports as a *number* stays;
+# what gets dropped is presentation data this app has no UI for — the `details` tables,
+# the base64 full-page screenshot, i18n strings, timing traces and stack packs. A full
+# PSI response is ~350 KB, almost all of it that presentation payload, and it was being
+# stored verbatim for every URL and strategy.
+_PAGESPEED_AUDIT_KEEP = ("id", "title", "score", "scoreDisplayMode", "numericValue", "numericUnit", "displayValue")
+_PAGESPEED_LIGHTHOUSE_KEEP = (
+    "requestedUrl",
+    "finalUrl",
+    "mainDocumentUrl",
+    "fetchTime",
+    "lighthouseVersion",
+    "userAgent",
+    "configSettings",
+    "categories",
+    "categoryGroups",
+    "runWarnings",
+    "runtimeError",
+)
+
+
+def trim_pagespeed_payload(payload: dict) -> dict:
+    """Keep every PageSpeed number, drop the presentation payload.
+
+    Preserves ``lighthouseResult.categories`` (what the catalog columns read), every
+    audit's score/numericValue/displayValue, and the CrUX field data. Safe on partial or
+    unexpected responses: anything it does not recognise is passed through untouched.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    lh = payload.get("lighthouseResult")
+    if not isinstance(lh, dict):
+        # Nothing to trim (e.g. the rate-limited placeholder); hand it back untouched.
+        return payload
+
+    out = {k: v for k, v in payload.items() if k != "lighthouseResult"}
+
+    slim_lh = {k: lh[k] for k in _PAGESPEED_LIGHTHOUSE_KEEP if k in lh}
+    audits = lh.get("audits")
+    if isinstance(audits, dict):
+        slim_audits: dict = {}
+        for audit_id, audit in audits.items():
+            if not isinstance(audit, dict):
+                continue
+            # fullPageScreenshot is the single largest field in a PSI response.
+            if audit_id in ("full-page-screenshot", "screenshot-thumbnails", "final-screenshot"):
+                continue
+            slim_audits[audit_id] = {k: audit[k] for k in _PAGESPEED_AUDIT_KEEP if k in audit}
+        slim_lh["audits"] = slim_audits
+
+    out["lighthouseResult"] = slim_lh
+    return out
+
+
 def _finalize_pagespeed_rate_limited(
     conn: sqlite3.Connection,
     *,
@@ -1384,6 +1651,9 @@ def get_pagespeed(
                 raise
         else:
             raise
+    # Store the numbers, not the screenshots. Also keeps the in-process cache small —
+    # this dict is unbounded and was holding a full Lighthouse report per URL.
+    payload = trim_pagespeed_payload(payload)
     meta = _write_cache_payload(
         conn,
         cache_key=db_cache_key,

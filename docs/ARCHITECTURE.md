@@ -30,10 +30,10 @@ flowchart LR
 
 1. Browser loads the SPA from `/app/`.
 2. API calls go to `/api/...` (see routers in `backend/app/routers/`).
-3. Services open a DB connection, read settings (including credentials mirrored from env where applicable), and call into `shopifyseo` modules.
+3. Services open a DB connection (`backend/app/db.py`), read settings (including credentials mirrored from env where applicable), and call into `shopifyseo` modules. Schema creation and env mirroring happen on the **first** connection to a given database file, not on every request.
 
 ## Further reading
 
-- [TECHNICAL_DOC.md](../TECHNICAL_DOC.md) — deeper technical reference when present in the tree
+- [TECHNICAL_DOC.md](../TECHNICAL_DOC.md) — deeper technical reference when present in the tree; see its **Performance Invariants** section before changing catalog read paths, the AI context builder, or the list tables
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — dev setup and PR expectations
 - [AGENTS.md](../AGENTS.md) — maintainer/agent workflow for building and testing locally

@@ -12,10 +12,17 @@ import { Toast, type ToastVariant } from "../components/ui/toast";
 import { detectToastVariant } from "../lib/toast-utils";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, postJson } from "../lib/api";
+import {
+  CANONICAL_LIST_DIRECTION,
+  CANONICAL_LIST_SORT,
+  sortListRows
+} from "../lib/list-sort";
 import { formatNumber } from "../lib/utils";
 import { contentListSchema } from "../types/api";
 
 const CONTENT_SORT_KEYS = new Set([
+  "gsc_clicks_delta",
+  "gsc_impressions_delta",
   "score",
   "title",
   "updated_at",
@@ -40,6 +47,7 @@ const columns: Column[] = [
   { key: "index_status", label: "Status", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[9%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[9%]" },
   { key: "ga4_sessions", label: "Sessions", align: "center", widthClass: "w-[9%]" },
   { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[7%]" },
@@ -62,17 +70,19 @@ export function ContentListPage({ kind, title }: { kind: "collections" | "pages"
     directionParam === "asc" || directionParam === "desc" ? directionParam : "desc";
   const focus = searchParams.get("focus") === "missing_meta" ? "missing_meta" : null;
 
+  // Ordering is applied client-side over the full result set, so the request
+  // stays sort-independent and column clicks no longer refetch the list.
   const listUrl = useMemo(() => {
     const p = new URLSearchParams();
     if (queryText.trim()) p.set("query", queryText.trim());
-    p.set("sort", sort);
-    p.set("direction", direction);
+    p.set("sort", CANONICAL_LIST_SORT);
+    p.set("direction", CANONICAL_LIST_DIRECTION);
     if (focus) p.set("focus", focus);
     return `/api/${kind}?${p.toString()}`;
-  }, [kind, queryText, sort, direction, focus]);
+  }, [kind, queryText, focus]);
 
   const query = useQuery({
-    queryKey: [kind, queryText, sort, direction, focus],
+    queryKey: [kind, queryText, focus],
     queryFn: () => getJson(listUrl, contentListSchema)
   });
 
@@ -143,7 +153,10 @@ export function ContentListPage({ kind, title }: { kind: "collections" | "pages"
     onError: (mutationError) => setToast((mutationError as Error).message)
   });
 
-  const rows = query.data?.items ?? [];
+  const rows = useMemo(
+    () => sortListRows(query.data?.items ?? [], sort, direction),
+    [query.data, sort, direction]
+  );
   const summary = useMemo(
     () => ({
       visible_rows: rows.length,

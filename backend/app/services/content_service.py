@@ -15,11 +15,13 @@ from shopifyseo.dashboard_live_updates import (
     live_update_page,
 )
 import shopifyseo.dashboard_queries as dq
-from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
+from shopifyseo.dashboard_store import DB_PATH, gsc_page_trend_map, refresh_object_structured_seo_data
 from backend.app.db import open_db_connection
+from shopifyseo.gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
 from backend.app.services.object_signals import load_object_signals
 from backend.app.services._catalog_helpers import (
+    EMPTY_TREND,
     CONTENT_SORTERS,
     _normalize_list_focus,
     _apply_list_focus,
@@ -76,14 +78,20 @@ def list_content(
     focus_norm = _normalize_list_focus(focus, allow_thin_body=False)
     conn = open_db_connection()
     try:
+        # One narrow scan feeds both the row lookup and the fact builder.
         if kind == "collection":
-            rows = {row["handle"]: dict(row) for row in dq.fetch_all_collections(conn)}
+            content_rows = dq.fetch_collections_for_facts(conn)
         else:
-            rows = {row["handle"]: dict(row) for row in dq.fetch_all_pages(conn)}
-        facts = dq.fetch_seo_facts(conn, kind)
+            content_rows = dq.fetch_pages_for_facts(conn)
+        rows = {row["handle"]: dict(row) for row in content_rows}
+        facts = dq.fetch_seo_facts(conn, kind, rows=content_rows)
+        trends = gsc_page_trend_map(conn)
 
         items = [
-            _build_content_item(kind, fact, rows[fact["handle"]])
+            {
+                **_build_content_item(kind, fact, rows[fact["handle"]]),
+                "trend": trends.get((kind, fact["handle"]), EMPTY_TREND),
+            }
             for fact in facts
             if fact["handle"] in rows
         ]
@@ -114,7 +122,7 @@ def list_content(
     }
 
 
-def get_content_detail(kind: str, handle: str, gsc_period: str = "mtd") -> dict[str, Any] | None:
+def get_content_detail(kind: str, handle: str, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> dict[str, Any] | None:
     period = normalize_gsc_period_mode(gsc_period)
     conn = open_db_connection()
     try:
@@ -154,6 +162,9 @@ def get_content_detail(kind: str, handle: str, gsc_period: str = "mtd") -> dict[
             "recommendation": parts["recommendation"],
             "recommendation_history": parts["recommendation_history"],
             "signal_cards": _signal_cards_for(conn, kind, current, gsc_period=period, signals=signals),
+            "trend": gsc_page_trend_map(conn, keys=[(kind, current["handle"])]).get(
+                (kind, current["handle"]), EMPTY_TREND
+            ),
             "related_items": related_items,
             "metafields": metafields,
             "opportunity": serialize_opportunity(fact),

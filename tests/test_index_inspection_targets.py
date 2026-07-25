@@ -57,3 +57,25 @@ def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch):
     assert len(targets) == 1
     assert targets[0][0] == "blog_article"
     assert targets[0][1] == "news/post-2"
+
+
+def test_index_rate_cap_does_not_throttle_the_worker_pool() -> None:
+    """The per-minute cap must sit above what the workers can actually produce.
+
+    URL Inspection is latency-bound (~6.3s per call, measured), so real throughput is
+    workers / latency. A cap below that silently re-introduces the old bottleneck, where
+    5 workers and a 55/min cap made the sync take ~20 minutes for no reason.
+    """
+    from shopifyseo.dashboard_actions._state import (
+        INDEX_SYNC_RATE_LIMIT_PER_MINUTE,
+        INDEX_SYNC_WORKERS,
+    )
+
+    measured_latency_seconds = 6.3
+    achievable_per_min = INDEX_SYNC_WORKERS * (60 / measured_latency_seconds)
+    assert INDEX_SYNC_RATE_LIMIT_PER_MINUTE >= achievable_per_min, (
+        f"cap {INDEX_SYNC_RATE_LIMIT_PER_MINUTE}/min throttles "
+        f"{INDEX_SYNC_WORKERS} workers, which can do ~{achievable_per_min:.0f}/min"
+    )
+    # ...but stay clear of Google's documented 600/min ceiling.
+    assert achievable_per_min <= 600, "worker pool could exceed the documented API rate limit"

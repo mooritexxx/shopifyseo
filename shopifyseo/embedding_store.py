@@ -1175,38 +1175,58 @@ def find_cannibalization_candidates(
 
     candidates = []
     n = len(meta)
-    for i in range(n):
-        for j in range(i + 1, n):
-            content_sim = float(sim_matrix[i, j])
-            if content_sim < threshold:
-                continue
 
-            a_key = f"{meta[i]['object_type']}:{meta[i]['object_handle']}"
-            b_key = f"{meta[j]['object_type']}:{meta[j]['object_handle']}"
-            query_sim = 0.0
-            if gsc_normed is not None and a_key in gsc_lookup and b_key in gsc_lookup:
-                ai, bi = gsc_lookup[a_key], gsc_lookup[b_key]
-                query_sim = float(gsc_normed[ai] @ gsc_normed[bi])
+    # Select the qualifying pairs with numpy instead of walking all n*(n+1)/2 of
+    # them in Python (~533k iterations at catalog scale, nearly all discarded by
+    # the threshold). triu_indices yields the upper triangle in the same
+    # row-major order the nested loops used, which matters because the stable
+    # sort below leaves equal-similarity pairs in discovery order.
+    row_idx, col_idx = np.triu_indices(n, k=1)
+    qualifying = sim_matrix[row_idx, col_idx] >= threshold
+    row_idx = row_idx[qualifying]
+    col_idx = col_idx[qualifying]
 
-            shared_queries = []
-            if query_sim > 0.8:
-                a_queries = {r["query"] for r in conn.execute(
+    # Query sets are re-read for every pair a page takes part in; memoize per
+    # object so a page appearing in many pairs is fetched once.
+    query_set_cache: dict[tuple[str, str], set[str]] = {}
+
+    def _queries_for(object_type: str, object_handle: str) -> set[str]:
+        key = (object_type, object_handle)
+        cached = query_set_cache.get(key)
+        if cached is None:
+            cached = {
+                r["query"]
+                for r in conn.execute(
                     "SELECT query FROM gsc_query_rows WHERE object_type = ? AND object_handle = ?",
-                    (meta[i]["object_type"], meta[i]["object_handle"]),
-                ).fetchall()}
-                b_queries = {r["query"] for r in conn.execute(
-                    "SELECT query FROM gsc_query_rows WHERE object_type = ? AND object_handle = ?",
-                    (meta[j]["object_type"], meta[j]["object_handle"]),
-                ).fetchall()}
-                shared_queries = sorted(a_queries & b_queries)
+                    (object_type, object_handle),
+                ).fetchall()
+            }
+            query_set_cache[key] = cached
+        return cached
 
-            candidates.append({
-                "object_a": {"type": meta[i]["object_type"], "handle": meta[i]["object_handle"]},
-                "object_b": {"type": meta[j]["object_type"], "handle": meta[j]["object_handle"]},
-                "content_similarity": round(content_sim, 4),
-                "query_similarity": round(query_sim, 4),
-                "shared_queries": shared_queries[:10],
-            })
+    for i, j in zip(row_idx.tolist(), col_idx.tolist()):
+        content_sim = float(sim_matrix[i, j])
+
+        a_key = f"{meta[i]['object_type']}:{meta[i]['object_handle']}"
+        b_key = f"{meta[j]['object_type']}:{meta[j]['object_handle']}"
+        query_sim = 0.0
+        if gsc_normed is not None and a_key in gsc_lookup and b_key in gsc_lookup:
+            ai, bi = gsc_lookup[a_key], gsc_lookup[b_key]
+            query_sim = float(gsc_normed[ai] @ gsc_normed[bi])
+
+        shared_queries = []
+        if query_sim > 0.8:
+            a_queries = _queries_for(meta[i]["object_type"], meta[i]["object_handle"])
+            b_queries = _queries_for(meta[j]["object_type"], meta[j]["object_handle"])
+            shared_queries = sorted(a_queries & b_queries)
+
+        candidates.append({
+            "object_a": {"type": meta[i]["object_type"], "handle": meta[i]["object_handle"]},
+            "object_b": {"type": meta[j]["object_type"], "handle": meta[j]["object_handle"]},
+            "content_similarity": round(content_sim, 4),
+            "query_similarity": round(query_sim, 4),
+            "shared_queries": shared_queries[:10],
+        })
 
     candidates.sort(key=lambda x: x["content_similarity"], reverse=True)
     return candidates

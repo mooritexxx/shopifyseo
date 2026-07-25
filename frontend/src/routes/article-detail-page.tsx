@@ -14,6 +14,7 @@ import { SearchPreview } from "../components/ui/search-preview";
 import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
 import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
+import { GscTrendSection } from "../components/gsc-trend-section";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { RichBodyEditor } from "../components/ui/rich-body-editor";
@@ -29,7 +30,6 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { useSidekickBinding } from "../components/sidekick/sidekick-context";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, patchJson, postJson } from "../lib/api";
-import { useDashboardGscPeriodSync } from "../lib/gsc-period";
 import { isSearchConsoleInspectionLink } from "../lib/search-console";
 import { cleanSeoTitle } from "../lib/utils";
 import { actionSchema, contentDetailSchema, keywordCoveragePayloadSchema, messageSchema, type KeywordCoveragePayload } from "../types/api";
@@ -220,11 +220,10 @@ function KeywordCoverageSection({ blogHandle, articleHandle }: { blogHandle: str
 export function ArticleDetailPage() {
   const { blogHandle = "", articleHandle = "" } = useParams();
   const queryClient = useQueryClient();
-  const gscPeriod = useDashboardGscPeriodSync();
   const storeUrl = useStoreUrl();
   const apiBase = `/api/articles/${encodeURIComponent(blogHandle)}/${encodeURIComponent(articleHandle)}`;
   const sidekickCompositeHandle = `${blogHandle}/${articleHandle}`;
-  const detailQueryKey = ["article", blogHandle, articleHandle, gscPeriod] as const;
+  const detailQueryKey = ["article", blogHandle, articleHandle] as const;
   const [fieldModalOpen, setFieldModalOpen] = useState(false);
   const [activeFieldRegeneration, setActiveFieldRegeneration] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -253,7 +252,7 @@ export function ArticleDetailPage() {
   const [articleImagePreviewOpen, setArticleImagePreviewOpen] = useState(false);
   const detailQuery = useQuery({
     queryKey: detailQueryKey,
-    queryFn: () => getJson(`${apiBase}?gsc_period=${gscPeriod}`, contentDetailSchema),
+    queryFn: () => getJson(apiBase, contentDetailSchema),
     staleTime: 0,
     structuralSharing: false
   });
@@ -286,7 +285,7 @@ export function ArticleDetailPage() {
 
   const saveMutation = useMutation({
     mutationFn: (payload: typeof emptyDraft) =>
-      postJson(`${apiBase}/update?gsc_period=${gscPeriod}`, actionSchema, payload),
+      postJson(`${apiBase}/update`, actionSchema, payload),
     onSuccess: (data, variables) => {
       setToast(data.message);
       // Trust the payload we just saved — API `result.draft` can lag SQLite/Shopify sync and would show stale text.
@@ -301,7 +300,7 @@ export function ArticleDetailPage() {
     onError: (error) => setToast((error as Error).message)
   });
   const refreshMutation = useMutation({
-    mutationFn: (step?: string) => postJson(`${apiBase}/refresh?gsc_period=${gscPeriod}`, actionSchema, { step }),
+    mutationFn: (step?: string) => postJson(`${apiBase}/refresh`, actionSchema, { step }),
     onMutate: () => {
       setToast(null);
     },
@@ -675,7 +674,8 @@ export function ArticleDetailPage() {
           ))}
         </section>
 
-        <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
+        <GscTrendSection trend={detail.trend} />
+        <GscTopQueriesSection queries={detail.gsc_queries} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

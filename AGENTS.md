@@ -3,12 +3,30 @@
 ## Before proposing new features — consult TECHNICAL_DOC.md
 
 [TECHNICAL_DOC.md](TECHNICAL_DOC.md) is the canonical map of what already ships:
-routes (§9), screens (§10), services (§5.5), domain-library modules (§5.2–§5.4),
-tables (§8), background jobs (§7), settings (§4). Skim the relevant section before
-suggesting "we should add X" — it is probably already there.
+"API Routes", "Screens / Pages", "Services", "Database Tables",
+"Utilities & Constants", "External Integrations", "Environment Configs". Skim the
+relevant section before suggesting "we should add X" — it is probably already
+there. (Sections are referenced by name because the doc's headings are unnumbered
+and any insertion shifts positional `§` numbers.)
 
 If you add a router, service, table, or screen, update the matching section in the
-**same PR** (see §14 "Keeping this doc in sync" for the trigger table).
+**same PR** — see "Keeping This Doc in Sync" at the end of the doc.
+
+## Before touching catalog reads, the AI context builder, or the list tables
+
+Read **"Performance Invariants"** in [TECHNICAL_DOC.md](TECHNICAL_DOC.md). Several
+hot paths depend on constraints that look like they can be tidied up but cost
+seconds per request when removed — notably: never `SELECT *` on `products` in a
+list or scoring path, never build a whole-catalog collection to read one object,
+keep the `LOWER(keyword)` expression indexes, and pass `keys=` to
+`gsc_page_trend_map` from detail views. Each row in that table lists the measured
+regression if the invariant is broken.
+
+When changing anything on those paths, confirm the API response is unchanged
+rather than assuming it — comparing captured before/after payloads caught two
+output-changing bugs that the test suite did not (an extra `workflow.updated_at`
+key altering the fact for 277 of 920 objects, and a Python-vs-SQLite `LOWER()`
+mismatch on non-ASCII keywords).
 
 ## Live testing — **do this after code changes** (project default)
 

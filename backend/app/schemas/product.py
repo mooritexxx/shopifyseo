@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.app.schemas.gsc_segments import GscSegmentFlagsPayload, GscSegmentSummaryPayload
+from backend.app.schemas.trend import TrendPayload
 
 
 class OpportunityPayload(BaseModel):
@@ -49,6 +50,7 @@ class ProductListItem(BaseModel):
     workflow_status: str = "Needs fix"
     workflow_notes: str = ""
     gsc_segment_flags: GscSegmentFlagsPayload = Field(default_factory=GscSegmentFlagsPayload)
+    trend: TrendPayload = Field(default_factory=TrendPayload)
     battery_size: str = ""
     charging_port: str = ""
     coil: str = ""
@@ -198,6 +200,7 @@ class ProductDetailPayload(BaseModel):
     metafields: list[MetafieldPayload]
     product_images: list[ProductImagePayload] = Field(default_factory=list)
     opportunity: OpportunityPayload
+    trend: TrendPayload = Field(default_factory=TrendPayload)
     gsc_segment_summary: GscSegmentSummaryPayload = Field(default_factory=GscSegmentSummaryPayload)
     gsc_queries: list[dict[str, Any]] = Field(default_factory=list)
 

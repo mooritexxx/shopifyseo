@@ -14,6 +14,7 @@ from shopifyseo.dashboard_actions import (
 from shopifyseo.dashboard_http import HttpRequestError
 import shopifyseo.dashboard_queries as dq
 from backend.app.db import open_db_connection
+from shopifyseo.gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
 from backend.app.services.index_status import index_status_info, inspection_for_catalog_index_display
 from backend.app.services.object_signals import load_object_signals
@@ -42,6 +43,23 @@ PRODUCT_SORTERS: dict[str, Any] = {
     "pagespeed_desktop_performance": lambda item: item["pagespeed_desktop_performance"]
     if item["pagespeed_desktop_performance"] is not None
     else -1,
+    # Trend sorts. A page with no stored history sorts as 0 (neither rising nor falling)
+    # so it sits in the middle: "biggest drop" surfaces real declines, and "biggest rise"
+    # surfaces real growth, instead of either end filling up with pages that have no data.
+    # The API still reports null, so the UI can show "—" rather than a fake 0%.
+    "gsc_clicks_delta": lambda item: (item.get("trend") or {}).get("clicks_delta_pct") or 0.0,
+    "gsc_impressions_delta": lambda item: (item.get("trend") or {}).get("impressions_delta_pct") or 0.0,
+}
+
+
+EMPTY_TREND: dict = {
+    "clicks_current": 0,
+    "clicks_previous": 0,
+    "clicks_delta_pct": None,
+    "impressions_current": 0,
+    "impressions_previous": 0,
+    "impressions_delta_pct": None,
+    "series": [],
 }
 
 CONTENT_SORTERS = PRODUCT_SORTERS
@@ -236,7 +254,7 @@ def _signal_cards_for(
     kind: str,
     current: dict[str, Any],
     *,
-    gsc_period: str = "mtd",
+    gsc_period: str = GSC_CATALOG_PERIOD_MODE,
     signals: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if signals is None:

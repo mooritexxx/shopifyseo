@@ -63,7 +63,7 @@ drafts/
 
 # Frontend
 frontend/dist/
-frontend/node_modules/
+node_modules/
 frontend/.vite/
 frontend/.vitest/
 *.local

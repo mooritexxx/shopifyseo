@@ -28,6 +28,8 @@ import { allArticlesSchema, blogShopifyIdSchema } from "../types/api";
 import { z } from "zod";
 
 const ARTICLE_SORT_KEYS = new Set([
+  "gsc_clicks_delta",
+  "gsc_impressions_delta",
   "article_name",
   "title",
   "updated_at",
@@ -53,6 +55,7 @@ const columns: Column[] = [
   { key: "index_status", label: "Status", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[7.6%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[7.6%]" },
   { key: "ga4_sessions", label: "Sessions", align: "center", widthClass: "w-[7.6%]" },
   { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[6.5%]" },

@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.trend import TrendPayload
+
 
 class BlogListItem(BaseModel):
     handle: str
@@ -53,6 +55,7 @@ class AllArticleListItem(BlogArticleListItem):
     workflow_status: str = "Needs fix"
     workflow_notes: str = ""
     gsc_segment_flags: dict = Field(default_factory=lambda: {"has_dimensional": False})
+    trend: TrendPayload = Field(default_factory=TrendPayload)
 
 
 class AllArticlesPayload(BaseModel):

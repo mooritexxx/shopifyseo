@@ -368,8 +368,10 @@ describe("ProductDetailPage", () => {
     fireEvent.click(saveButtons[0]);
 
     await waitFor(() => {
+      // Per-URL endpoints no longer take gsc_period: the sync writes exactly one
+      // window, so a period the UI could request had no cache row behind it.
       expect(mockedPostJson).toHaveBeenCalledWith(
-        "/api/products/sample-product/update?gsc_period=mtd",
+        "/api/products/sample-product/update",
         expect.anything(),
         expect.objectContaining({ title: "Updated Product Title" })
       );

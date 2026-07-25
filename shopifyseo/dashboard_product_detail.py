@@ -70,7 +70,7 @@ def render_product_detail(detail: dict, *, db_connect, verification: dict | None
     workflow = detail.get("workflow")
     conn = db_connect()
     try:
-        signals = load_object_signals("product", product["handle"], conn=conn, gsc_period="mtd")
+        signals = load_object_signals("product", product["handle"], conn=conn)
     finally:
         conn.close()
     recommendation_record = detail.get("recommendation") or {}

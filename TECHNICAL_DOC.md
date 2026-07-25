@@ -26,7 +26,8 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 
 ## Data Flow
 
-1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`).
+0. **Connections:** every request opens a short-lived SQLite connection via `backend/app/db.py`. The first connection to a given DB path runs `ensure_dashboard_schema` (tables + indexes) and `apply_runtime_settings`; later connections skip both. `get_db_path()` performs the same one-time bootstrap for callers that hand the bare path to a helper opening its own connection.
+1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`). Saves re-apply the env mirroring, so the one-time bootstrap above does not stale it.
 2. **Catalog sync:** `POST /api/sync` starts a **background thread** (`shopifyseo/dashboard_actions`) → Shopify Admin GraphQL/REST → rows in catalog tables (`products`, `collections`, `pages`, `blogs`, `blog_articles`, metafields, images, etc.) plus `sync_runs`.
 3. **Signals:** Sync (and refreshes) pull **GSC, GA4, URL Inspection, PageSpeed** into SQLite (`SEO_SIGNAL_COLUMNS` on entities, `google_api_cache`, GSC fact tables). GSC URL sync flushes row-level signal columns incrementally; `gsc_queries` embeddings refresh afterward in a daemon thread so they do not block visible sync completion.
 4. **UI:** React app (basename `/app`) calls `/api/...` with TanStack Query; long AI work uses `**GET /api/ai-stream?job_id=`** (SSE) and/or polling `**GET /api/ai-status**`. Sync progress is shown from `GET /api/sync-status` (counts and stage labels).
@@ -267,9 +268,9 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Settings                                    | `backend/app/services/settings_service.py`       | Read/write settings, probes, Shopify/Google/AI tests                                                                          | `dashboard_ai`, `dashboard_google`, `dashboard_config`, `dashboard_http`, `shopify_admin`                                                   |
 | Google signals UI                           | `backend/app/services/google_signals_service.py` | GSC/GA4 cache payloads for operations                                                                                         | `dashboard_google`, `gsc_overview_calendar`, `index_status`                                                                                 |
 | Store info                                  | `backend/app/services/store_info_service.py`     | Store URL, name, market, timezone                                                                                             | `dashboard_queries`, `dashboard_google`                                                                                                     |
-| Overview metrics                            | `backend/app/services/overview_metrics.py`       | Simple GSC/GA4 aggregates                                                                                                     | Fact rows / helpers                                                                                                                         |
+| Overview metrics                            | `backend/app/services/overview_metrics.py`       | `summarize_gsc` / `summarize_ga4` over fact rows. **No longer on the dashboard path** — `get_dashboard_summary` uses `dq.fetch_signal_totals` (equivalent SQL rollup) instead of materializing a fact per catalog object | Fact rows / helpers                                                                                                                         |
 | Catalog completion                          | `backend/app/services/catalog_completion.py`     | Meta completion % by segment                                                                                                  | SQLite reads                                                                                                                                |
-| Indexing rollup                             | `backend/app/services/indexing_rollup.py`        | URL Inspection buckets by entity                                                                                              | `shopifyseo.dashboard_status`                                                                                                               |
+| Indexing rollup                             | `backend/app/services/indexing_rollup.py`        | URL Inspection buckets by entity. `build_indexing_rollup(facts)` for fact lists; `build_indexing_rollup_from_counts(counts)` for grouped `(object_type, index_status, index_coverage, n)` SQL rows — the classifier is pure over the two strings, so both produce identical output | `shopifyseo.dashboard_status`                                                                                                               |
 | Index status                                | `backend/app/services/index_status.py`           | Re-export cache/index helpers                                                                                                 | `shopifyseo.dashboard_status`                                                                                                               |
 | Object signals                              | `backend/app/services/object_signals.py`         | Detail/signals helpers                                                                                                        | `shopifyseo.dashboard_detail_common`                                                                                                        |
 | Catalog helpers                             | `backend/app/services/_catalog_helpers.py`       | Shared sort/segment/detail/inspection; `gsc_queries_from_detail` serializes per-URL GSC query rows for catalog detail APIs      | `dashboard_google`, `dashboard_actions`, `dashboard_queries`, `object_signals`, `index_status`                                              |
@@ -366,6 +367,29 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `google_api_cache`                                                       | Cached Google API JSON                     | `cache_key`, TTL `expires_at`                    | Optional object refs                             |
 
 
+### Indexes worth knowing
+
+Most lookups ride primary keys. These are the non-obvious ones — all created in
+`ensure_dashboard_schema` (`shopifyseo/dashboard_store.py`), so they appear on
+existing and fresh databases alike.
+
+| Index | Table | Why it exists |
+| ----- | ----- | ------------- |
+| `idx_keyword_metrics_keyword_lower` | `keyword_metrics` | **Expression index on `LOWER(keyword)`.** The keyword joins compare `LOWER(a) = LOWER(b)`, which a plain index on `keyword` cannot serve. |
+| `idx_keyword_page_map_keyword_lower` | `keyword_page_map` | Same; also serves `_cannibalization_risk` in `keyword_clustering/_planning.py`. |
+| `idx_competitor_gaps_keyword_lower` | `competitor_keyword_gaps` | Same. Without all three, `_fetch_competitor_gaps` degrades to a three-way nested-loop scan (measured 4.4 s per object; under 0.1 ms with them). |
+| `idx_keyword_page_map_object` | `keyword_page_map` | `(object_type, object_handle)` — drives the object side of the same joins. |
+| `idx_gsc_page_daily_object` | `gsc_page_daily` | `(object_type, object_handle, date)` — per-object trend lookups. |
+| `idx_gsc_query_dimension_lookup` | `gsc_query_dimension_rows` | `(object_type, object_handle, dimension_kind)`. |
+
+**Do not "simplify" the three `LOWER(...)` indexes into plain column indexes** —
+SQLite only uses an expression index when the indexed expression matches the
+query predicate exactly. If a query is ever rewritten to pre-lowercase in Python
+instead, note that Python's `str.lower()` case-folds non-ASCII that SQLite's
+`LOWER()` leaves alone (`'CAFÉ'` → `café` vs `cafÉ`), which silently changes
+which rows match.
+
+
 ---
 
 ## Utilities & Constants
@@ -380,6 +404,7 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `runArticleDraftStream`                             | Consume article draft SSE, dynamic step fields, and `resume_run_id` retry payloads | `frontend/src/lib/run-article-draft-stream.ts`    |
 | Slug helpers                                        | Align with backend slug rules      | `frontend/src/lib/seo-slug.ts`                    |
 | GSC period helpers                                  | Period modes for charts/API        | `frontend/src/lib/gsc-period.ts`                  |
+| `sortListRows` / `CANONICAL_LIST_SORT`              | Client-side ordering for the product/content list tables; mirrors `PRODUCT_SORTERS` key-for-key so column clicks reorder cached rows instead of refetching | `frontend/src/lib/list-sort.ts`                    |
 | Settings connection localStorage                    | Persist connection test state      | `frontend/src/lib/settings-connection-storage.ts` |
 | Toast helpers                                       | Sonner wrappers                    | `frontend/src/lib/toast-utils.ts`                 |
 | `cn` / class merge                                  | Tailwind class merging             | `frontend/src/lib/utils.ts`                       |
@@ -400,6 +425,8 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `dashboard_ai_engine_parts/prompts.py` | Full + slim prompt assembly; slim `seo_description` adds `gsc_query_highlights` (top GSC queries, JSON size cap) |
 | `gsc_query_limits.py`                   | `GSC_PER_URL_QUERY_ROW_LIMIT` (20) shared by GSC fetch, context SQL, `gsc_queries` embeddings |
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
+| `dashboard_queries/_basic_fetchers.py` | `*_FACT_COLUMNS` + `fetch_*_for_facts` (narrow reads for list/fact paths), `fetch_signal_totals`, `fetch_index_status_counts`, `fetch_catalog_meta_metrics` (SQL rollups for the dashboard) |
+| `backend/app/db.py`                   | `open_db_connection`; schema migration + `apply_runtime_settings` run **once per DB path**, not per connection |
 
 
 ---
@@ -449,12 +476,40 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 
 ---
 
+## Performance Invariants
+
+These hold today and are easy to undo by accident. Each has a measured cost if
+broken, taken against a catalog of 830 products / 980 objects.
+
+| Invariant | Where | Cost if broken |
+| --------- | ----- | -------------- |
+| **Schema migration runs once per DB path, not per connection.** `open_db_connection` gates `ensure_dashboard_schema` + `apply_runtime_settings` on `_bootstrapped_paths`. Settings changes still propagate: `settings_service.save_settings` and the OAuth callbacks call `apply_runtime_settings` themselves. | `backend/app/db.py` | 15 ms → 1.6 ms per connection, on every request |
+| **List and fact paths read narrow columns.** Use `fetch_*_for_facts`, never `SELECT *`, for products/collections/pages/articles list or scoring. `products.raw_json` alone is 11.5 MB of a 16 MB table. | `dashboard_queries/_basic_fetchers.py` | 131 ms → 20 ms per products scan |
+| **The table is scanned once per list request.** `list_products` / `list_content` pass their rows into `fetch_seo_facts(..., rows=...)` rather than letting it re-query. | `product_service.py`, `content_service.py` | one extra full scan per request |
+| **`build_seo_fact` ignores `recommendation`.** No field reads it. Do not add a query to supply it — `fetch_seo_facts` used to load every stored recommendation (4.4 MB of `details_json` for products) and discard it. | `dashboard_queries/_seo_facts.py` | ~12 ms + 4.4 MB per call |
+| **Never build a whole-catalog collection to read one object.** `object_context` builds its fact from the detail row already in hand. Note it must narrow the workflow dict to `{status, notes}` — `_fetch_workflow` also returns `updated_at`, which would change the fact for objects that have a stored workflow row. | `dashboard_ai_engine_parts/context.py` | ~190 ms per object, per AI run |
+| **Detail views pass `keys=` to `gsc_page_trend_map`.** Without it the function aggregates all of `gsc_page_daily` to read one entry. | `dashboard_store.py` and the three `*_service.py` detail paths | 48 ms → 0.35 ms per detail load |
+| **The `LOWER(...)` expression indexes stay.** See "Indexes worth knowing" above. | `dashboard_store.py` | 4.4 s → 0.05 ms for `_fetch_competitor_gaps` |
+| **List sorting happens client-side and must match the server key-for-key.** `sortListRows` mirrors `PRODUCT_SORTERS`; the query keys for the products/content lists deliberately exclude `sort`/`direction`. Ties fall back to input index because Python's `sorted(reverse=True)` is stable and negating a JS comparator is not. Verified: 34/34 orderings identical to the API. | `frontend/src/lib/list-sort.ts` (+ `list-sort.test.ts`) | a full ~1 MB refetch per column click |
+| **`DataTable` rows are memoized on resolved string props.** Row links are passed as strings, not callbacks, so the inline arrows the list pages pass cannot invalidate the memo. | `frontend/src/components/ui/data-table.tsx` | 1,508 ms → 698 ms re-sort at 830 rows |
+| **No row windowing in `DataTable`.** All rows stay in the DOM so browser find-in-page and screen-reader row counts cover the whole list. `data-table.perf.test.tsx` asserts `tbody tr` equals the row count. | `frontend/src/components/ui/data-table.tsx` | find-in-page silently stops covering off-screen rows |
+| **Any field a service returns must be declared on its Pydantic response model.** FastAPI's `response_model` drops undeclared keys with no error. This silently emptied the Trend column on every catalog table for as long as `trend` went undeclared. Assert new fields over HTTP (`TestClient`), not at the service call — a service-level test passes while the field is being dropped. | `backend/app/schemas/*`, `tests/test_trend_response_contract.py` | field vanishes from the API; UI renders a placeholder and any sort on it becomes a no-op |
+
+`QueryClient` sets a default `staleTime` of 30 s (`frontend/src/app/providers.tsx`)
+so remounting a route does not refetch. This does not weaken post-mutation
+freshness — `invalidateQueries` marks queries stale regardless of `staleTime`,
+and detail pages that must always read through set `staleTime: 0` themselves.
+
+---
+
 ## Tech Debt / Known Issues
 
 - **Process model:** Sync and AI state live **in-memory** in the server process (`shopifyseo/dashboard_actions`); restarts lose in-flight job UI unless persisted paths recover.
 - **Security:** API routes are **not** behind app-level JWT/API keys; treat as trusted-network or add a reverse proxy with auth for production.
 - **AI HTTP timeouts:** Settings docs note a **fixed long timeout** for AI calls in engine code (verify `dashboard_ai_engine_parts` when tuning).
 - **Moz:** `moz_api_token` may appear in settings mapping; confirm whether Moz APIs are fully wired before relying on them.
+- **`GET /api/settings` costs ~1.7 s, all of it network.** `settings_service.get_settings_data` issues **9 sequential** provider model-listing requests (~196 ms each); profiling attributes 1.787 s of 1.791 s to `requests`. Running them concurrently would bring it to roughly one round trip (~200 ms). Left as-is because it changes external-API concurrency and per-provider error handling — the frontend masks it with `staleTime: 30_000`.
+- **`overview_metrics.summarize_gsc` / `summarize_ga4` are no longer called** anywhere after the dashboard moved to `dq.fetch_signal_totals`. Kept as a documented service API and covered by the fact-based path; delete when confirmed unused externally.
 
 ---
 
@@ -517,3 +572,15 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 ## Keeping This Doc in Sync
 
 When adding a **router**, **service**, **table**, or **screen**, update the matching section in the **same change** as the code. Prefer verifying paths against `backend/app/routers/*.py`, `frontend/src/app/router.tsx`, and `shopifyseo/dashboard_store.py` / `shopify_catalog_sync/db.py`.
+
+Also in the same change:
+
+| You changed | Update |
+| ----------- | ------ |
+| An index in `ensure_dashboard_schema` | "Indexes worth knowing" under **Database Tables** |
+| A field added to a service's returned dict | The matching model in `backend/app/schemas/` — otherwise `response_model` drops it silently — **and** the Zod schema in `frontend/src/types/api.ts` |
+| A hot read path listed under **Performance Invariants** | That row — including the measured cost, or drop the row if the constraint no longer applies |
+| A frontend helper in `frontend/src/lib/` | **Utilities & Constants → Frontend** |
+| A sort key in `PRODUCT_SORTERS` / `CONTENT_SORTERS` | `frontend/src/lib/list-sort.ts` **and** its test — the two must stay key-for-key identical or list ordering silently diverges from the API |
+
+Reference sections by **name**, not `§` number: the headings are unnumbered, so positional numbers go stale as soon as a section is inserted.

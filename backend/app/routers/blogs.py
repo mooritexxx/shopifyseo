@@ -25,7 +25,6 @@ from backend.app.schemas.blog import (
 from backend.app.routers import field_regen_errors
 from backend.app.schemas.article_ideas import KeywordCoveragePayload
 from backend.app.schemas.common import SuccessResponse, success_response
-from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.content import ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
@@ -1023,8 +1022,8 @@ def get_article_draft_run_detail(run_id: str):
 
 
 @router.get("/articles/{blog_handle}/{article_handle}", response_model=SuccessResponse[ContentDetailPayload])
-def article_detail(blog_handle: str, article_handle: str, gsc_period: GscPeriodMode = "mtd"):
-    detail = get_blog_article_detail(blog_handle, article_handle, gsc_period=gsc_period)
+def article_detail(blog_handle: str, article_handle: str):
+    detail = get_blog_article_detail(blog_handle, article_handle)
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
     return success_response(detail)
@@ -1046,14 +1045,14 @@ def article_keyword_coverage(blog_handle: str, article_handle: str):
 
 @router.post("/articles/{blog_handle}/{article_handle}/update", response_model=SuccessResponse[ProductActionResult])
 def article_update(
-    blog_handle: str, article_handle: str, payload: ContentUpdatePayload, gsc_period: GscPeriodMode = "mtd"
+    blog_handle: str, article_handle: str, payload: ContentUpdatePayload
 ):
     ok, message = update_blog_article(blog_handle, article_handle, payload.model_dump())
     if not ok:
         if message == "Article not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
-    detail = get_blog_article_detail(blog_handle, article_handle, gsc_period=gsc_period)
+    detail = get_blog_article_detail(blog_handle, article_handle)
     return success_response({"message": message, "result": detail})
 
 
@@ -1100,11 +1099,11 @@ def article_inspection_link(blog_handle: str, article_handle: str):
 
 @router.post("/articles/{blog_handle}/{article_handle}/refresh", response_model=SuccessResponse[ProductActionResult])
 def article_refresh(
-    blog_handle: str, article_handle: str, payload: dict | None = None, gsc_period: GscPeriodMode = "mtd"
+    blog_handle: str, article_handle: str, payload: dict | None = None
 ):
     composite = dq.blog_article_composite_handle(blog_handle, article_handle)
     step = payload.get("step") if payload else None
-    ok, result = refresh_object("blog_article", composite, step, gsc_period=gsc_period)
+    ok, result = refresh_object("blog_article", composite, step)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result.get("message", "Refresh failed"))
     return success_response(result)

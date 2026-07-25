@@ -34,11 +34,11 @@ from shopifyseo.dashboard_actions._state import refresh_pagespeed_http_calls_win
 import shopifyseo.dashboard_queries as dq
 import shopifyseo.dashboard_ai as dai
 import shopifyseo.dashboard_google as dg
+from shopifyseo.gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from backend.app.schemas.dashboard import normalize_gsc_period_mode
 from backend.app.services.gsc_overview_calendar import DEFAULT_DASHBOARD_TZ, gsc_anchor_date_local
-from backend.app.services.overview_metrics import summarize_ga4, summarize_gsc
 from backend.app.services.catalog_completion import build_catalog_completion
-from backend.app.services.indexing_rollup import build_indexing_rollup
+from backend.app.services.indexing_rollup import build_indexing_rollup_from_counts
 from backend.app.services.google_signals_service import (
     _cache_payload,
     _empty_gsc_property_breakdowns_for_signals,
@@ -264,13 +264,16 @@ def get_dashboard_summary(
         recent_runs = [dict(row) for row in dq.fetch_recent_runs(conn)]
         last_sync_raw = (dg.get_service_setting(conn, "last_dashboard_sync_finished_at") or "").strip()
         last_dashboard_sync_at = last_sync_raw or None
-        overview = dq.fetch_overview_metrics(conn)
+        # Only the meta counters are read from here: fetch_overview_metrics also
+        # derives GSC/GA4 keys, but signal_totals below overwrites every one of
+        # them, so computing them twice was wasted work.
+        overview = dq.fetch_catalog_meta_metrics(conn)
         articles_missing_meta = dq.count_blog_articles_missing_meta(conn)
-        facts = dq.fetch_seo_facts(conn)
+        signal_totals = dq.fetch_signal_totals(conn)
         top_pages = dq.fetch_top_organic_pages(conn)
         gsc_site = _gsc_site_overview_for_summary(conn, period, gsc_segment)
         ga4_site = _ga4_site_overview_for_summary(conn, period)
-        indexing_rollup = build_indexing_rollup(facts)
+        indexing_rollup = build_indexing_rollup_from_counts(dq.fetch_index_status_counts(conn))
         breakdown_site = _resolve_gsc_site_url_for_breakdowns(conn)
         try:
             gsc_property_breakdowns = _gsc_property_breakdowns_for_signals(conn, breakdown_site, period)
@@ -333,12 +336,9 @@ def get_dashboard_summary(
     finally:
         conn.close()
 
-    gsc = summarize_gsc(facts)
-    ga4 = summarize_ga4(facts)
     metrics = {
         **overview,
-        **gsc,
-        **ga4,
+        **signal_totals,
     }
     catalog_completion = build_catalog_completion(
         counts,
@@ -497,7 +497,7 @@ def start_object_field_regeneration(kind: str, handle: str, field: str, accepted
     return False, "AI generation already running", state
 
 
-def refresh_object(kind: str, handle: str, step: str | None = None, gsc_period: str = "mtd") -> tuple[bool, dict[str, Any]]:
+def refresh_object(kind: str, handle: str, step: str | None = None, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> tuple[bool, dict[str, Any]]:
     period = normalize_gsc_period_mode(gsc_period)
     try:
         label = "Article" if kind == "blog_article" else kind.title()

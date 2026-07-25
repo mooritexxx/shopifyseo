@@ -228,6 +228,18 @@ export const summarySchema = z.object({
   gsc_performance_error: z.string().default("")
 });
 
+export const trendSchema = z.object({
+  clicks_current: z.number(),
+  clicks_previous: z.number(),
+  clicks_delta_pct: z.number().nullable(),
+  impressions_current: z.number(),
+  impressions_previous: z.number(),
+  impressions_delta_pct: z.number().nullable(),
+  series: z.array(z.number())
+});
+
+export type Trend = z.infer<typeof trendSchema>;
+
 export const productListItemSchema = z.object({
   handle: z.string(),
   title: z.string(),
@@ -260,6 +272,8 @@ export const productListItemSchema = z.object({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const productListSchema = z.object({
@@ -374,6 +388,8 @@ export const productDetailSchema = z.object({
   opportunity: z.record(z.any()),
   gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
   gsc_queries: z.array(gscQueryRowSchema).default([])
+,
+  trend: trendSchema.optional()
 });
 
 export const contentListItemSchema = z.object({
@@ -406,6 +422,8 @@ export const contentListItemSchema = z.object({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const contentListSchema = z.object({
@@ -474,6 +492,8 @@ export const allArticleListItemSchema = blogArticleListItemSchema.extend({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const allArticlesSchema = z.object({
@@ -839,6 +859,8 @@ export const contentDetailSchema = z.object({
   opportunity: z.record(z.any()),
   gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
   gsc_queries: z.array(gscQueryRowSchema).default([])
+,
+  trend: trendSchema.optional()
 });
 
 /** Shared row shape for PageSpeed + multi-service sync queue tables (`*_queue_details`). */

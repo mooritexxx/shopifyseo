@@ -19,7 +19,9 @@ from .. import dashboard_google as dg
 from .. import dashboard_queries as dq
 from ..dashboard_status import index_status_bucket_from_strings
 from ..dashboard_store import (
+    GSC_TREND_WINDOW_DAYS,
     refresh_ga4_signal_data_for_objects,
+    upsert_gsc_page_daily,
     refresh_gsc_signal_data_for_objects,
     refresh_index_signal_data_for_objects,
     refresh_structured_seo_data,
@@ -35,10 +37,6 @@ from ..shopify_catalog_sync.discovery import discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
 from ._rpm_limiter import PerMinuteRateLimiter
 from ._state import (
-    GA4_SYNC_RATE_LIMIT_PER_MINUTE,
-    GA4_SYNC_WORKERS,
-    GSC_SYNC_RATE_LIMIT_PER_MINUTE,
-    GSC_SYNC_WORKERS,
     IMAGE_CACHE_WORKERS,
     INDEX_SYNC_RATE_LIMIT_PER_MINUTE,
     INDEX_SYNC_WORKERS,
@@ -68,6 +66,7 @@ from ._sync_queue import (
     sync_queue_reset_all,
     sync_queue_seed,
 )
+from ..gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from ..exceptions import SyncCancelledError
 
 # Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
@@ -543,7 +542,66 @@ def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool) 
 # ---------------------------------------------------------------------------
 
 
+# Days of daily history refreshed on every sync.
+#
+# Must cover BOTH halves of the trend comparison (current window + prior window), or the
+# prior bucket is only partly filled and every page looks like it is growing. Derived
+# from the trend window so the two cannot drift apart. The extra fortnight absorbs
+# Google's restatement of recent days and any gap between syncs.
+#
+# Use backfill_gsc_page_daily for the full ~16 months Google retains.
+GSC_DAILY_REFRESH_DAYS = (GSC_TREND_WINDOW_DAYS * 2) + 15
+GSC_BACKFILL_MAX_DAYS = 480
+
+
+def _gsc_trend_history_start(end_date, days: int = GSC_DAILY_REFRESH_DAYS):
+    from datetime import timedelta
+
+    return end_date - timedelta(days=days - 1)
+
+
+def backfill_gsc_page_daily(db_path: str, *, days: int = GSC_BACKFILL_MAX_DAYS) -> dict:
+    """One-shot pull of the daily per-page history Google still retains (~16 months).
+
+    Runs the same paginated ``["date","page"]`` query as the sync, just over a much longer
+    window, so page-level trends work immediately instead of accumulating over months.
+    """
+    from datetime import timedelta
+
+    conn = _db_connect_for_actions(db_path)
+    try:
+        site_url = (dg.get_service_setting(conn, "search_console_site") or "").strip()
+        if not site_url:
+            sites = dg.get_search_console_sites(conn)
+            site_url = dg.preferred_site_url(conn, sites)
+        if not site_url:
+            return {"ok": False, "error": "No Search Console property selected", "rows": 0}
+
+        access_token = dg.get_google_access_token(conn)
+        _start, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
+        start_date = end_date - timedelta(days=max(days, 1) - 1)
+
+        targets_by_url = {url: (kind, handle) for kind, handle, url in _all_object_targets(conn)}
+        rows = dg.fetch_gsc_page_daily_rows(site_url, access_token, start_date, end_date)
+        written = upsert_gsc_page_daily(conn, rows, targets_by_url)
+        return {
+            "ok": True,
+            "rows": written,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+    finally:
+        conn.close()
+
+
 def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, force_refresh: bool = False) -> dict:
+    """Refresh per-URL Search Console data for the whole catalog from property-wide pulls.
+
+    Two paginated ``searchAnalytics/query`` calls (``["page"]`` and ``["page","query"]``)
+    replace the two filtered calls the old implementation made *per URL*. The cache rows
+    written are the same shape, and the retained query rows are a superset of the 20 the
+    per-URL path stored.
+    """
     conn = _db_connect_for_actions(db_path)
     summary = {
         "considered": 0,
@@ -588,86 +646,87 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         all_targets = _all_object_targets(conn)
         summary["eligible"] = len(all_targets)
         SYNC_STATE["gsc_eligible_total"] = len(all_targets)
-        if force_refresh:
-            queue = list(all_targets)
-            precheck_skipped = 0
-        else:
-            queue = [
-                (kind, handle, url)
-                for kind, handle, url in all_targets
-                if dg.gsc_url_detail_needs_refresh(conn, url, site_url=site_url, gsc_period="mtd")
-            ]
-            precheck_skipped = max(len(all_targets) - len(queue), 0)
-        summary["skipped_fresh"] = precheck_skipped
-        summary["queue_total"] = len(queue)
-        SYNC_STATE["gsc_precheck_skipped"] = precheck_skipped
-        SYNC_STATE["gsc_skipped"] = precheck_skipped
-        gsc_pt = max(len(queue), 1)
-        SYNC_STATE["gsc_progress_total"] = gsc_pt
-        SYNC_STATE["gsc_progress_done"] = 0 if queue else gsc_pt
+        # Bulk pulls cover the whole property in a handful of calls, so there is no
+        # per-URL quota left to protect by skipping fresh rows.
+        summary["skipped_fresh"] = 0
+        summary["queue_total"] = len(all_targets)
+        SYNC_STATE["gsc_precheck_skipped"] = 0
+        SYNC_STATE["gsc_skipped"] = 0
+        SYNC_STATE["gsc_progress_total"] = max(len(all_targets), 1)
+        SYNC_STATE["gsc_progress_done"] = 0
+        # The queue panel visualised per-URL HTTP work that no longer exists.
         sync_queue_reset("gsc")
-        sync_queue_seed("gsc", queue)
-        access_token = dg.get_google_access_token(conn)
-        rate_limiter = PerMinuteRateLimiter(
-            GSC_SYNC_RATE_LIMIT_PER_MINUTE,
-            on_granted=lambda ts: record_sync_rate_slot("gsc", ts),
-        )
-        progress_lock = threading.Lock()
 
-        def _run_gsc_target(kind: str, handle: str, url: str) -> str:
+        if not site_url:
+            logger.warning("Search Console bulk sync skipped: no site_url resolved")
+            return summary
+
+        access_token = dg.get_google_access_token(conn)
+        start_date, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
+
+        _sync_current("Search Console: fetching page totals for the whole property…")
+        page_row_by_url = dg.fetch_gsc_all_page_rows(
+            site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
+        )
+        _raise_if_sync_cancelled()
+        _sync_current(f"Search Console: fetching query breakdowns ({len(page_row_by_url)} pages with data)…")
+        query_rows_by_url = dg.fetch_gsc_all_page_query_rows(
+            site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
+        )
+        _raise_if_sync_cancelled()
+
+        # Daily history so catalog rows can show direction, not just a current level.
+        targets_by_url = {url: (kind, handle) for kind, handle, url in all_targets}
+        _sync_current("Search Console: fetching daily history…")
+        try:
+            daily_rows = dg.fetch_gsc_page_daily_rows(
+                site_url,
+                access_token,
+                _gsc_trend_history_start(end_date),
+                end_date,
+                cancel_check=_raise_if_sync_cancelled,
+            )
+            written = upsert_gsc_page_daily(conn, daily_rows, targets_by_url)
+            summary["daily_rows"] = written
+            _sync_current(f"Search Console: stored {written} daily page rows")
+        except SyncCancelledError:
+            raise
+        except Exception:
+            logger.warning("GSC daily history refresh failed (non-fatal)", exc_info=True)
+        _raise_if_sync_cancelled()
+
+        for kind, handle, url in all_targets:
             _raise_if_sync_cancelled()
-            rk = catalog_sync_row_key(kind, handle, url)
-            ok = False
-            err_msg: str | None = None
-            worker_conn = _db_connect_for_actions(db_path)
+            summary["considered"] += 1
             try:
-                rate_limiter.acquire(_raise_if_sync_cancelled)
-                _raise_if_sync_cancelled()
-                sync_queue_mark_running("gsc", rk)
-                dg.get_search_console_url_detail(
-                    worker_conn,
+                payload = dg.build_gsc_url_detail(
                     url,
-                    refresh=True,
+                    site_url,
+                    page_row=page_row_by_url.get(url),
+                    query_rows=query_rows_by_url.get(url),
+                    start=start_date,
+                    end=end_date,
+                    period_mode=GSC_CATALOG_PERIOD_MODE,
+                )
+                dg.write_gsc_url_detail_cache(
+                    conn,
+                    payload,
+                    site_url=site_url,
+                    period_mode=GSC_CATALOG_PERIOD_MODE,
                     object_type=kind,
                     object_handle=handle,
-                    site_url_override=site_url,
-                    access_token_override=access_token,
-                    gsc_period="mtd",
                 )
-                ok = True
-                return "refreshed"
+                summary["refreshed"] += 1
+                SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
             except Exception as exc:
-                err_msg = str(exc) or "request failed"
-                raise
-            finally:
-                worker_conn.close()
-                sync_queue_mark_done("gsc", rk, ok, err_msg, pop_completed=ok)
-
-        with ThreadPoolExecutor(max_workers=GSC_SYNC_WORKERS) as executor:
-            future_to_target = {
-                executor.submit(_run_gsc_target, kind, handle, url): (kind, handle)
-                for kind, handle, url in queue
-            }
-
-            for future in as_completed(future_to_target):
-                kind, handle = future_to_target[future]
-                _raise_if_sync_cancelled()
-                summary["considered"] += 1
-                _sync_current(f"Search Console: {kind}:{handle}")
-                try:
-                    future.result()
-                    summary["refreshed"] += 1
-                    SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
-                    touched_targets.append((kind, handle))
-                except Exception:
-                    summary["errors"] += 1
-                    SYNC_STATE["gsc_errors"] = summary["errors"]
-                    touched_targets.append((kind, handle))
-                pending_signal_targets.append((kind, handle))
-                if len(pending_signal_targets) >= GSC_SIGNAL_BATCH_SIZE:
-                    _flush_gsc_signal_targets()
-                with progress_lock:
-                    SYNC_STATE["gsc_progress_done"] = summary["refreshed"] + summary["errors"]
+                logger.warning("GSC cache write failed for %s:%s — %s", kind, handle, exc)
+                summary["errors"] += 1
+                SYNC_STATE["gsc_errors"] = summary["errors"]
+            touched_targets.append((kind, handle))
+            pending_signal_targets.append((kind, handle))
+            if len(pending_signal_targets) >= GSC_SIGNAL_BATCH_SIZE:
+                _flush_gsc_signal_targets()
+            SYNC_STATE["gsc_progress_done"] = summary["considered"]
         _raise_if_sync_cancelled()
         _flush_gsc_signal_targets(final=True)
         if touched_targets:
@@ -682,6 +741,14 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
 
 
 def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
+    """Refresh GA4 metrics for every catalog URL from the summary reports.
+
+    ``get_ga4_summary`` pages every row of two unfiltered ``runReport`` calls, and those
+    rows already carry every metric the old per-URL path re-fetched with 2-3 filtered
+    ``runReport`` calls each. The work list and the resulting ``ga4_url`` cache rows are
+    identical to the per-URL implementation; only the source of the numbers changed
+    (local index instead of one API round trip per URL).
+    """
     conn = _db_connect_for_actions(db_path)
     summary = {
         "considered": 0,
@@ -694,10 +761,15 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         "queue_total": 0,
     }
     try:
-        payload = dg.get_ga4_summary(conn, refresh=force_refresh or True)
+        _sync_current("GA4: fetching property reports (all pages)…")
+        payload = dg.get_ga4_summary(conn, refresh=True)
         page_rows: list = list(payload.get("page_rows") or [])
         summary["rows"] = len(page_rows)
         SYNC_STATE["ga4_rows"] = summary["rows"]
+
+        property_id = dg.get_service_setting(conn, "ga4_property_id")
+        start_date, end_date = dg.ga4_summary_window()
+        index = dg.build_ga4_summary_index(payload)
 
         base = dq._base_store_url(conn)
         by_path = _catalog_targets_by_path(conn)
@@ -716,77 +788,35 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
 
         n = len(work)
         summary["eligible"] = n
-        if force_refresh:
-            queue = list(work)
-            precheck_skipped = 0
-        else:
-            queue = [(kind, handle, url) for kind, handle, url in work if dg.ga4_url_cache_stale(conn, url)]
-            precheck_skipped = max(n - len(queue), 0)
-        summary["skipped_fresh"] = precheck_skipped
-        summary["queue_total"] = len(queue)
-        SYNC_STATE["ga4_precheck_skipped"] = precheck_skipped
-        qn = len(queue)
-        ga4_pt = max(qn, 1)
-        SYNC_STATE["ga4_progress_total"] = ga4_pt
+        summary["queue_total"] = n
+        # No per-URL API calls remain, so nothing is skipped to save quota.
+        SYNC_STATE["ga4_precheck_skipped"] = 0
+        SYNC_STATE["ga4_progress_total"] = max(n, 1)
         SYNC_STATE["ga4_progress_done"] = 0
-
+        # The queue panel visualised per-URL HTTP work that no longer exists.
         sync_queue_reset("ga4")
-        sync_queue_seed("ga4", queue)
-        rate_limiter = PerMinuteRateLimiter(
-            GA4_SYNC_RATE_LIMIT_PER_MINUTE,
-            on_granted=lambda ts: record_sync_rate_slot("ga4", ts),
-        )
 
-        def _run_ga4_target(kind: str, handle: str, url: str) -> str:
+        seen_urls: set[str] = set()
+        for kind, handle, url in work:
             _raise_if_sync_cancelled()
-            rk = catalog_sync_row_key(kind, handle, url)
-            ok = False
-            err_msg: str | None = None
-            worker_conn = _db_connect_for_actions(db_path)
-            try:
-                rate_limiter.acquire(_raise_if_sync_cancelled)
-                _raise_if_sync_cancelled()
-                sync_queue_mark_running("ga4", rk)
-                try:
-                    dg.get_ga4_url_detail(
-                        worker_conn,
-                        url,
-                        refresh=True,
-                        object_type=kind,
-                        object_handle=handle,
-                    )
-                except Exception as exc:
-                    logger.warning("GA4 per-URL fetch failed for %s %s: %s", kind or "(path)", handle or url, exc)
-                    err_msg = str(exc) or "request failed"
-                    return "error"
-                ok = True
-                return "refreshed"
-            finally:
-                worker_conn.close()
-                sync_queue_mark_done("ga4", rk, ok, err_msg, pop_completed=ok)
-
-        if qn == 0:
-            SYNC_STATE["ga4_progress_done"] = 1
-        else:
-            with ThreadPoolExecutor(max_workers=GA4_SYNC_WORKERS) as executor:
-                future_to_target = {
-                    executor.submit(_run_ga4_target, kind, handle, url): (kind, handle)
-                    for kind, handle, url in queue
-                }
-
-                for future in as_completed(future_to_target):
-                    _raise_if_sync_cancelled()
-                    summary["considered"] += 1
-                    try:
-                        result = future.result()
-                        if result == "refreshed":
-                            summary["refreshed"] += 1
-                        else:
-                            summary["errors"] += 1
-                    except Exception as exc:
-                        logger.warning("GA4 target worker failed: %s", exc)
-                        summary["errors"] += 1
-                    SYNC_STATE["ga4_progress_done"] = summary["refreshed"] + summary["errors"]
+            summary["considered"] += 1
+            if url not in seen_urls:
+                seen_urls.add(url)
+                detail = dg.ga4_url_detail_from_index(index, url, start_date=start_date, end_date=end_date)
+                dg.write_ga4_url_detail_cache(
+                    conn,
+                    detail,
+                    property_id=property_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    object_type=kind,
+                    object_handle=handle,
+                )
+                summary["refreshed"] += 1
+            if summary["considered"] % 200 == 0:
+                _sync_current(f"GA4: mapping report rows to catalog {summary['considered']}/{n}")
+            SYNC_STATE["ga4_progress_done"] = summary["considered"]
+        SYNC_STATE["ga4_progress_done"] = max(n, 1)
 
         signal_targets: list[tuple[str, str]] = []
         seen_sig: set[tuple[str, str]] = set()
@@ -795,11 +825,8 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
                 seen_sig.add((kind, handle))
                 signal_targets.append((kind, handle))
         refresh_ga4_signal_data_for_objects(conn, signal_targets)
-        summary["url_errors"] = summary["errors"]
-        SYNC_STATE["ga4_url_errors"] = summary["errors"]
+        SYNC_STATE["ga4_url_errors"] = 0
         SYNC_STATE["ga4_refreshed"] = summary["refreshed"]
-        if summary["errors"]:
-            logger.warning("GA4 per-URL sync completed with %s URL error(s)", summary["errors"])
         return summary
     except Exception:
         SYNC_STATE["ga4_errors"] += 1
@@ -821,6 +848,18 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         targets, skipped_indexed = _index_inspection_targets(conn, force_refresh=force_refresh)
         summary["skipped_indexed"] = skipped_indexed
         SYNC_STATE["index_skipped"] = skipped_indexed
+        # Resolve once. Without these overrides get_url_inspection(refresh=True) runs an
+        # uncached sites.list call for every target — one wasted request per URL.
+        # On failure fall back to empty overrides so each target reports its own error,
+        # rather than failing the whole scope up front.
+        try:
+            sites = dg.get_search_console_sites(conn)
+            site_url = dg.preferred_site_url(conn, sites)
+            access_token = dg.get_google_access_token(conn)
+        except Exception:
+            logger.warning("Could not resolve Search Console site up front for index sync", exc_info=True)
+            site_url = ""
+            access_token = ""
         touched_targets: list[tuple[str, str]] = []
         idx_pt = max(len(targets), 1)
         SYNC_STATE["index_progress_total"] = idx_pt
@@ -844,7 +883,15 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
             sync_queue_mark_running("index", rk)
             try:
                 worker_conn = _db_connect_for_actions(db_path)
-                dg.get_url_inspection(worker_conn, url, refresh=True, object_type=kind, object_handle=handle)
+                dg.get_url_inspection(
+                    worker_conn,
+                    url,
+                    refresh=True,
+                    object_type=kind,
+                    object_handle=handle,
+                    site_url_override=site_url,
+                    access_token_override=access_token,
+                )
                 ok = True
             except Exception as exc:
                 err_msg = str(exc) or "request failed"

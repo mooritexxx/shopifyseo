@@ -4,6 +4,7 @@ import sqlite3
 from textwrap import shorten
 from urllib.parse import quote, urlparse
 
+from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from .dashboard_insights import blended_opportunity
 from .dashboard_http import HttpRequestError
 from . import dashboard_google as dg
@@ -106,7 +107,7 @@ def render_manual_indexing_panel(
     """
 
 
-def load_object_signals(kind: str, handle: str, *, conn: sqlite3.Connection, gsc_period: str = "mtd"):
+def load_object_signals(kind: str, handle: str, *, conn: sqlite3.Connection, gsc_period: str = GSC_CATALOG_PERIOD_MODE):
     site_url = ""
     gsc_detail = None
     inspection_detail = None

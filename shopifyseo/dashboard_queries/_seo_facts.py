@@ -11,10 +11,10 @@ from typing import Any
 from ..dashboard_insights import opportunity_priority
 
 from ._basic_fetchers import (
-    fetch_all_blog_articles,
-    fetch_all_collections,
-    fetch_all_pages,
-    fetch_all_products,
+    fetch_blog_articles_for_facts,
+    fetch_collections_for_facts,
+    fetch_pages_for_facts,
+    fetch_products_for_facts,
 )
 from ._urls import blog_article_composite_handle, object_url
 
@@ -80,16 +80,20 @@ def build_seo_fact(
     object_type: str,
     obj: Any,
     workflow: Any,
-    recommendation: Any,
+    recommendation: Any = None,
     product_count: int = 0,
 ) -> dict[str, Any]:
-    """Build a single SEO fact dict for scoring/prioritization."""
+    """Build a single SEO fact dict for scoring/prioritization.
+
+    ``recommendation`` is accepted for call-site compatibility but does not
+    affect the result -- no field below reads it. Do not add a query to supply
+    it; ``fetch_seo_facts`` used to load every stored recommendation (4.4 MB of
+    ``details_json`` for products alone) only to discard it here.
+    """
     if isinstance(obj, sqlite3.Row):
         obj = dict(obj)
     if isinstance(workflow, sqlite3.Row):
         workflow = dict(workflow)
-    if isinstance(recommendation, sqlite3.Row):
-        recommendation = dict(recommendation)
 
     base_score, reasons = _seo_base_score(object_type, obj, product_count)
     handle = obj.get("handle", "")
@@ -122,48 +126,39 @@ def build_seo_fact(
     }
 
 
-def fetch_seo_facts(conn: sqlite3.Connection, kind: str | None = None) -> list[dict[str, Any]]:
+def fetch_seo_facts(
+    conn: sqlite3.Connection,
+    kind: str | None = None,
+    *,
+    rows: list[Any] | None = None,
+) -> list[dict[str, Any]]:
     """Return SEO facts for all objects (or a specific kind).
 
-    kind: None = all, 'product', 'collection', 'page'
+    kind: None = all, 'product', 'collection', 'page', 'blog_article'
+    rows: pre-fetched rows for a single ``kind``, so a caller that already read
+          the table does not pay for a second scan. Must carry the columns in
+          the matching ``*_FACT_COLUMNS`` tuple.
     """
     facts: list[dict[str, Any]] = []
+    if rows is not None and kind is None:
+        raise ValueError("rows= requires an explicit kind")
 
     def _load_workflow(object_type: str) -> dict[str, Any]:
-        rows = conn.execute(
+        wf_rows = conn.execute(
             "SELECT handle, status, notes FROM seo_workflow_states WHERE object_type = ?",
             (object_type,),
         ).fetchall()
-        return {row["handle"]: {"status": row["status"], "notes": row["notes"]} for row in rows}
-
-    def _load_recommendation(object_type: str) -> dict[str, Any]:
-        rows = conn.execute(
-            """
-            SELECT object_handle, summary, details_json, status, model, created_at
-            FROM seo_recommendations
-            WHERE object_type = ?
-            ORDER BY created_at DESC
-            """,
-            (object_type,),
-        ).fetchall()
-        seen: dict[str, dict] = {}
-        for row in rows:
-            h = row["object_handle"]
-            if h not in seen:
-                seen[h] = dict(row)
-        return seen
+        return {row["handle"]: {"status": row["status"], "notes": row["notes"]} for row in wf_rows}
 
     if kind is None or kind == "product":
         workflows = _load_workflow("product")
-        recs = _load_recommendation("product")
-        for row in fetch_all_products(conn):
+        for row in rows if rows is not None else fetch_products_for_facts(conn):
             obj = dict(row)
             handle = obj["handle"]
-            facts.append(build_seo_fact("product", obj, workflows.get(handle), recs.get(handle)))
+            facts.append(build_seo_fact("product", obj, workflows.get(handle)))
 
     if kind is None or kind == "collection":
         workflows = _load_workflow("collection")
-        recs = _load_recommendation("collection")
         product_counts: dict[str, int] = {}
         for pc_row in conn.execute(
             "SELECT c.handle, COUNT(cp.product_shopify_id) FROM collections c"
@@ -171,28 +166,30 @@ def fetch_seo_facts(conn: sqlite3.Connection, kind: str | None = None) -> list[d
             " GROUP BY c.handle"
         ).fetchall():
             product_counts[pc_row[0]] = pc_row[1]
-        for row in fetch_all_collections(conn):
+        for row in rows if rows is not None else fetch_collections_for_facts(conn):
             obj = dict(row)
             handle = obj["handle"]
-            facts.append(build_seo_fact("collection", obj, workflows.get(handle), recs.get(handle), product_count=product_counts.get(handle, 0)))
+            facts.append(
+                build_seo_fact(
+                    "collection", obj, workflows.get(handle), product_count=product_counts.get(handle, 0)
+                )
+            )
 
     if kind is None or kind == "page":
         workflows = _load_workflow("page")
-        recs = _load_recommendation("page")
-        for row in fetch_all_pages(conn):
+        for row in rows if rows is not None else fetch_pages_for_facts(conn):
             obj = dict(row)
             handle = obj["handle"]
-            facts.append(build_seo_fact("page", obj, workflows.get(handle), recs.get(handle)))
+            facts.append(build_seo_fact("page", obj, workflows.get(handle)))
 
     if kind is None or kind == "blog_article":
         workflows = _load_workflow("blog_article")
-        recs = _load_recommendation("blog_article")
-        for row in fetch_all_blog_articles(conn):
+        for row in rows if rows is not None else fetch_blog_articles_for_facts(conn):
             obj = dict(row)
             blog_h = obj.get("blog_handle") or ""
             art_h = obj.get("handle") or ""
             composite = blog_article_composite_handle(blog_h, art_h)
             obj_for_fact = {**obj, "handle": composite}
-            facts.append(build_seo_fact("blog_article", obj_for_fact, workflows.get(composite), recs.get(composite)))
+            facts.append(build_seo_fact("blog_article", obj_for_fact, workflows.get(composite)))
 
     return facts

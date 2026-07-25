@@ -547,16 +547,24 @@ def _cannibalization_risk(conn: sqlite3.Connection | None, keywords: list[str]) 
         return "none"
     pages: Counter[tuple[str, str]] = Counter()
     good_rank_pages: set[tuple[str, str]] = set()
-    for kw in keywords:
+    # One batched lookup instead of a query per keyword. Only the distinct page
+    # set and good_rank_pages drive the verdict below, so collapsing the
+    # per-keyword loop cannot change the result. LOWER() stays on both sides in
+    # SQL -- Python's str.lower() folds non-ASCII that SQLite's LOWER() leaves
+    # alone, so pre-lowering in Python would silently change which rows match.
+    chunk_size = 400
+    for i in range(0, len(keywords), chunk_size):
+        chunk = keywords[i : i + chunk_size]
+        placeholders = ", ".join("LOWER(?)" for _ in chunk)
         try:
             rows = conn.execute(
-                """
+                f"""
                 SELECT object_type, object_handle, gsc_position
                 FROM keyword_page_map
-                WHERE LOWER(keyword) = LOWER(?)
+                WHERE LOWER(keyword) IN ({placeholders})
                   AND COALESCE(object_handle, '') != ''
                 """,
-                (kw,),
+                tuple(chunk),
             ).fetchall()
         except Exception:
             return "none"

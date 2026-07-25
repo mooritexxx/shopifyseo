@@ -31,6 +31,7 @@ from ._state import (
     _sync_global_ai_state,
     clear_ai_last_error,
 )
+from ..gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from ..exceptions import AICancelledError
 from ..shopify_catalog_sync import sync_products
 
@@ -475,7 +476,7 @@ def generate_ai_for_object(db_connect, db_path: str, object_type: str, handle: s
 
 
 def refresh_object_signal_step(
-    db_connect, kind: str, handle: str, step: str, db_path: str | None = None, *, gsc_period: str = "mtd"
+    db_connect, kind: str, handle: str, step: str, db_path: str | None = None, *, gsc_period: str = GSC_CATALOG_PERIOD_MODE
 ) -> dict:
     conn = db_connect()
     try:
@@ -583,7 +584,7 @@ def refresh_object_signal_step(
 
 
 def refresh_object_signals(
-    db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = "mtd"
+    db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = GSC_CATALOG_PERIOD_MODE
 ) -> dict:
     ordered_steps = ("gsc", "index", "speed", "speed_desktop")
     return {

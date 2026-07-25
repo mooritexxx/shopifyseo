@@ -14,6 +14,7 @@ import { SearchPreview } from "../components/ui/search-preview";
 import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
 import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
+import { GscTrendSection } from "../components/gsc-trend-section";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { RichBodyEditor } from "../components/ui/rich-body-editor";
@@ -28,7 +29,6 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { useSidekickBinding } from "../components/sidekick/sidekick-context";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, postJson } from "../lib/api";
-import { useDashboardGscPeriodSync } from "../lib/gsc-period";
 import { isSearchConsoleInspectionLink } from "../lib/search-console";
 import { cleanSeoTitle } from "../lib/utils";
 import { actionSchema, contentDetailSchema, statusSchema } from "../types/api";
@@ -83,7 +83,6 @@ function firstInlineImageFromDescriptionHtml(html: string): { url: string; alt: 
 export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   const { handle = "" } = useParams();
   const queryClient = useQueryClient();
-  const gscPeriod = useDashboardGscPeriodSync();
   const storeUrl = useStoreUrl();
   const [modalOpen, setModalOpen] = useState(false);
   const [fieldModalOpen, setFieldModalOpen] = useState(false);
@@ -101,9 +100,9 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   const aiStatusQuery = useAiJobStatus(aiJobId);
   const fieldStatusQuery = useAiJobStatus(fieldJobId);
   const detailQuery = useQuery({
-    queryKey: [kind, handle, gscPeriod],
+    queryKey: [kind, handle],
     queryFn: () =>
-      getJson(`/api/${kind}/${encodeURIComponent(handle)}?gsc_period=${gscPeriod}`, contentDetailSchema),
+      getJson(`/api/${kind}/${encodeURIComponent(handle)}`, contentDetailSchema),
     staleTime: 0,
     structuralSharing: false
   });
@@ -170,23 +169,23 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
 
   const saveMutation = useMutation({
     mutationFn: (payload: typeof emptyDraft) =>
-      postJson(`/api/${kind}/${encodeURIComponent(handle)}/update?gsc_period=${gscPeriod}`, actionSchema, payload),
+      postJson(`/api/${kind}/${encodeURIComponent(handle)}/update`, actionSchema, payload),
     onSuccess: (data, variables) => {
       setToast(data.message);
       // Trust the payload we just saved — API `result.draft` can lag SQLite/Shopify sync and would show stale text.
       setSavedDraftBaseline(variables);
       setDraft(variables);
       if (data.result && typeof data.result === "object") {
-        queryClient.setQueryData([kind, handle, gscPeriod], { ...data.result, draft: variables });
+        queryClient.setQueryData([kind, handle], { ...data.result, draft: variables });
       } else {
-        void queryClient.invalidateQueries({ queryKey: [kind, handle, gscPeriod] });
+        void queryClient.invalidateQueries({ queryKey: [kind, handle] });
       }
     },
     onError: (error) => setToast((error as Error).message)
   });
   const refreshMutation = useMutation({
     mutationFn: (step?: string) =>
-      postJson(`/api/${kind}/${encodeURIComponent(handle)}/refresh?gsc_period=${gscPeriod}`, actionSchema, { step }),
+      postJson(`/api/${kind}/${encodeURIComponent(handle)}/refresh`, actionSchema, { step }),
     onMutate: () => {
       setToast(null);
     },
@@ -194,7 +193,7 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
       if (step && step !== "index") {
         setToast(data.message);
       }
-      void queryClient.invalidateQueries({ queryKey: [kind, handle, gscPeriod] });
+      void queryClient.invalidateQueries({ queryKey: [kind, handle] });
     },
     onError: (error) => setToast((error as Error).message)
   });
@@ -329,10 +328,10 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
   // Invalidate detail query when generation completes
   useEffect(() => {
     if (aiStream.done && !aiStream.error) {
-      void queryClient.invalidateQueries({ queryKey: [kind, handle, gscPeriod] });
+      void queryClient.invalidateQueries({ queryKey: [kind, handle] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
-  }, [aiStream.done, aiStream.error, kind, handle, gscPeriod, queryClient]);
+  }, [aiStream.done, aiStream.error, kind, handle, queryClient]);
 
   // Auto-open error modal when status query detects an error
   useEffect(() => {
@@ -988,7 +987,8 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
           </Modal>
         ) : null}
 
-        <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
+        <GscTrendSection trend={detail.trend} />
+        <GscTopQueriesSection queries={detail.gsc_queries} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

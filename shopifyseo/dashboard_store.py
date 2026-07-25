@@ -78,17 +78,6 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
-def _migrate_keyword_research_runs_table(conn: sqlite3.Connection) -> None:
-    """Rename legacy keyword-research run table once if present under a historical name."""
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND name IN ('ahrefs_research_runs', 'keyword_research_runs')"
-    )
-    present = {row[0] for row in cur.fetchall()}
-    if "ahrefs_research_runs" in present and "keyword_research_runs" not in present:
-        conn.execute("ALTER TABLE ahrefs_research_runs RENAME TO keyword_research_runs")
-
-
 def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     ensure_schema(conn)
     dg.ensure_google_cache_schema(conn)
@@ -298,23 +287,6 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "ads_competition": "TEXT",
             "ads_competition_index": "INTEGER",
         },
-    )
-    _migrate_keyword_research_runs_table(conn)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS keyword_research_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            started_at INTEGER NOT NULL,
-            finished_at INTEGER,
-            endpoint TEXT NOT NULL,
-            seed_or_domain TEXT NOT NULL,
-            rows_returned INTEGER DEFAULT 0,
-            rows_new INTEGER DEFAULT 0,
-            rows_updated INTEGER DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'running',
-            error_message TEXT
-        )
-        """
     )
     conn.execute(
         """

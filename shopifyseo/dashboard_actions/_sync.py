@@ -33,7 +33,7 @@ from ..shopify_catalog_sync import (
     sync_products,
 )
 from ..catalog_image_work import count_catalog_image_urls_discover
-from ..shopify_catalog_sync.discovery import discover_shopify_catalog
+from ..shopify_catalog_sync.discovery import MAX_SHOPIFY_PAGE_SIZE, discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
 from ._rpm_limiter import PerMinuteRateLimiter
 from ._state import (
@@ -71,6 +71,11 @@ from ..exceptions import SyncCancelledError
 
 # Canonical execution order (matches sidebar / sync UI). Custom selections are always reordered to this.
 SYNC_PIPELINE_ORDER = ["shopify", "gsc", "ga4", "index", "pagespeed"]
+
+# Shopify allows 250 nodes per page. The heavy product query still fits the per-query
+# cost limit at that size (measured: 772 requested of 1000 allowed), and it cuts the
+# product fetch from 17 requests to 4.
+SHOPIFY_DISCOVERY_PAGE_SIZE = MAX_SHOPIFY_PAGE_SIZE
 
 SHOPIFY_ACTIVE_SCOPES = frozenset({"shopify", "products", "collections", "pages", "blogs"})
 GSC_SIGNAL_BATCH_SIZE = 10
@@ -984,7 +989,9 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
                 _recompute_shopify_scoped_progress()
 
             disc = discover_shopify_catalog(
-                50, cancel_check=_raise_if_sync_cancelled, progress_callback=_discovery_progress
+                SHOPIFY_DISCOVERY_PAGE_SIZE,
+                cancel_check=_raise_if_sync_cancelled,
+                progress_callback=_discovery_progress,
             )
             SYNC_STATE["products_total"] = len(disc.products)
             SYNC_STATE["collections_total"] = len(disc.collections)

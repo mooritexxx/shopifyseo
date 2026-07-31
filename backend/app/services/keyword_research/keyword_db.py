@@ -14,7 +14,7 @@ from .keyword_utils import classify_ranking_status, match_gsc_queries, recompute
 logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_keywords"
-OPPORTUNITY_SCORING_VERSION = 2
+OPPORTUNITY_SCORING_VERSION = 3
 
 
 def load_target_keywords(conn: sqlite3.Connection) -> dict:

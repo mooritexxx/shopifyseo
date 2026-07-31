@@ -135,9 +135,16 @@ def _bounded_log_score(value: int | float | str | None, reference: float) -> flo
 
 
 def _difficulty_ease_score(difficulty: int | float | str | None) -> float:
-    if difficulty is None:
+    """Return an ease score (0-100) from keyword difficulty.
+
+    DataForSEO reports ``0`` when it has no difficulty for a keyword rather than
+    omitting the field, so a literal 0 means "unknown", not "trivially easy".
+    Treating it as maximum ease handed a full ease bonus to the majority of the
+    set and floated head terms with no data to the top of the rankings.
+    """
+    if difficulty is None or _num(difficulty, -1.0) <= 0:
         return 50.0
-    d = max(0.0, min(100.0, _num(difficulty, 50.0)))
+    d = min(100.0, _num(difficulty, 50.0))
     return 100.0 - d
 
 

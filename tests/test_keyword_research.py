@@ -38,9 +38,18 @@ def test_compute_opportunity_none_traffic():
 
 def test_compute_opportunity_missing_difficulty_is_neutral():
     unknown_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
-    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=0)
+    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=5)
     hard_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=80)
     assert hard_kd < unknown_kd < easy_kd
+
+
+def test_compute_opportunity_zero_difficulty_is_unknown_not_easy():
+    """DataForSEO sends 0 for "no difficulty data" - it must not beat a real low KD."""
+    zero_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=0)
+    unknown_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
+    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=5)
+    assert zero_kd == unknown_kd
+    assert zero_kd < easy_kd
 
 
 def test_recompute_opportunity_scores_uses_intent_and_ranking():

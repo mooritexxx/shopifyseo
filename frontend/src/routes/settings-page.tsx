@@ -18,6 +18,7 @@ import {
   fingerprintAiVision,
   fingerprintDataforseo,
   fingerprintGoogleAds,
+  fingerprintOpenPageRank,
   fingerprintSerpapi,
   fingerprintShopify,
   loadConnectionStore,
@@ -74,6 +75,8 @@ export function SettingsPage() {
   const [dfsDetail, setDfsDetail] = useState("");
   const [serpApiStatus, setSerpApiStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [serpApiDetail, setSerpApiDetail] = useState("");
+  const [oprStatus, setOprStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
+  const [oprDetail, setOprDetail] = useState("");
   const [googleAdsStatus, setGoogleAdsStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
   const [googleAdsDetail, setGoogleAdsDetail] = useState("");
   const [shopifyStatus, setShopifyStatus] = useState<"idle" | "checking" | "ok" | "error">("idle");
@@ -260,6 +263,29 @@ export function SettingsPage() {
     } catch (e) {
       setSerpApiStatus("error");
       setSerpApiDetail((e as Error).message);
+    }
+  }
+
+  async function validateOpenPageRank() {
+    setOprStatus("checking");
+    setOprDetail("");
+    try {
+      const res = await postJson("/api/settings/open-page-rank-test", actionSchema, {
+        open_page_rank_api_key: valuesRef.current.open_page_rank_api_key || ""
+      });
+      setOprStatus("ok");
+      setOprDetail(res.message);
+      setConnectionStore((prev) => ({
+        ...prev,
+        openPageRank: {
+          status: "live",
+          fingerprint: fingerprintOpenPageRank(valuesRef.current),
+          validatedAt: new Date().toISOString()
+        }
+      }));
+    } catch (e) {
+      setOprStatus("error");
+      setOprDetail((e as Error).message);
     }
   }
 
@@ -452,6 +478,9 @@ export function SettingsPage() {
     dfsStatus,
     dfsDetail,
     validateDataforseo,
+    oprStatus,
+    oprDetail,
+    validateOpenPageRank,
     serpApiStatus,
     serpApiDetail,
     validateSerpapi,

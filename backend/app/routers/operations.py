@@ -16,6 +16,7 @@ from backend.app.schemas.operations import (
     OllamaModelsRequestPayload,
     SettingsAiTestPayload,
     GoogleAdsTestPayload,
+    OpenPageRankTestPayload,
     SerpapiTestPayload,
     ShopifyShopInfoPayload,
     ShopifyTestPayload,
@@ -130,6 +131,26 @@ def settings_serpapi_test(payload: SerpapiTestPayload):
             detail=str(result.get("detail") or "SerpAPI test failed"),
         )
     return success_response({"message": str(result.get("detail") or "SerpAPI OK"), "result": result})
+
+
+@router.post("/settings/open-page-rank-test", response_model=SuccessResponse[ActionMessagePayload])
+def settings_open_page_rank_test(payload: OpenPageRankTestPayload):
+    from backend.app.services.open_page_rank import (
+        get_open_page_rank_key,
+        validate_open_page_rank_access,
+    )
+
+    key = (payload.open_page_rank_api_key or "").strip()
+    if not key:
+        conn = open_db_connection()
+        try:
+            key = get_open_page_rank_key(conn)
+        finally:
+            conn.close()
+    error = validate_open_page_rank_access(key)
+    if error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
+    return success_response({"message": "Open PageRank API access confirmed.", "result": None})
 
 
 @router.get("/settings/shopify-shop-info", response_model=SuccessResponse[ShopifyShopInfoPayload])

@@ -69,6 +69,12 @@ function LabsMetricHeaders() {
       >
         Org. rows
       </TableHead>
+      <TableHead
+        className={metricTh}
+        title="Open PageRank domain authority (0–10) from the Common Crawl open web graph. — means the domain is not in the index or has not been scored yet."
+      >
+        Auth.
+      </TableHead>
       <TableHead className={metricTh} title="Labs serp_competitors rating">
         Labs rt
       </TableHead>
@@ -95,6 +101,11 @@ function LabsMetricCells({ row }: { row: CompetitorProfileRow }) {
       <TableCell className={metricTd}>{fmtInt(row.keywords_common)}</TableCell>
       <TableCell className={metricTd}>{fmtInt(row.keywords_we_have)}</TableCell>
       <TableCell className={metricTd}>{fmtInt(row.keywords_they_have)}</TableCell>
+      <TableCell className={metricTd}>
+        {row.authority_score === null || row.authority_score === undefined
+          ? "—"
+          : row.authority_score.toFixed(2)}
+      </TableCell>
       <TableCell className={metricTd}>{fmtInt(row.labs_rating)}</TableCell>
       <TableCell className={metricTd}>{fmtVis(row.labs_visibility)}</TableCell>
       <TableCell className={metricTd}>{fmtInt(row.labs_avg_position)}</TableCell>
@@ -172,6 +183,17 @@ export function CompetitorsPanel({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
       setDiscoverError(null);
+    },
+    onError: (e: Error) => setDiscoverError(e.message)
+  });
+
+  const authorityMutation = useMutation({
+    mutationFn: () =>
+      postJson("/api/keywords/competitors/authority-refresh", competitorPayloadSchema, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["competitor-domains"] });
+      setDiscoverError(null);
+      setDiscoverNote("Domain authority updated from Open PageRank.");
     },
     onError: (e: Error) => setDiscoverError(e.message)
   });
@@ -346,6 +368,15 @@ export function CompetitorsPanel({
           >
             <Sparkles className="mr-1.5 h-3.5 w-3.5" />
             {researchStatus === "running" ? "Running…" : "Run research"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            title="Score every competitor domain with Open PageRank domain authority (needs an API key in Settings)."
+            disabled={authorityMutation.isPending}
+            onClick={() => authorityMutation.mutate()}
+          >
+            {authorityMutation.isPending ? "Scoring…" : "Refresh authority"}
           </Button>
         </div>
       </div>

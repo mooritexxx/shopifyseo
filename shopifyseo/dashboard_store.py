@@ -393,6 +393,11 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "labs_seed_etv": "INTEGER DEFAULT 0",
             "labs_bulk_etv": "INTEGER DEFAULT 0",
             "labs_rating": "INTEGER DEFAULT 0",
+            # Open PageRank domain authority. NULL = never fetched or the domain
+            # is not in the index; 0.0 is a real score, so these must stay nullable.
+            "authority_score": "REAL",
+            "authority_rank": "INTEGER",
+            "authority_updated_at": "INTEGER",
         },
     )
     conn.execute(

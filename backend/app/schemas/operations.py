@@ -70,6 +70,7 @@ class SettingsValuesPayload(BaseModel):
     shopify_client_secret: str = ""
     dataforseo_api_login: str = ""
     dataforseo_api_password: str = ""
+    open_page_rank_api_key: str = ""
     serpapi_api_key: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -173,6 +174,14 @@ class SerpapiTestPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     serpapi_api_key: str = ""
+
+
+class OpenPageRankTestPayload(BaseModel):
+    """Optional key from the form; when empty, the server uses the saved ``open_page_rank_api_key``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    open_page_rank_api_key: str = ""
 
 
 class ShopifyTestPayload(BaseModel):

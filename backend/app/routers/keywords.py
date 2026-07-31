@@ -247,6 +247,8 @@ _COMPETITOR_PROFILE_COLS = [
     "labs_seed_etv",
     "labs_bulk_etv",
     "labs_rating",
+    "authority_score",
+    "authority_rank",
 ]
 _COMPETITOR_PROFILE_SELECT = ", ".join(_COMPETITOR_PROFILE_COLS)
 
@@ -267,6 +269,9 @@ def _zero_competitor_profile(domain: str) -> dict:
         "labs_seed_etv": 0,
         "labs_bulk_etv": 0,
         "labs_rating": 0,
+        # NULL, not 0 — an unscored domain is unknown, not zero authority.
+        "authority_score": None,
+        "authority_rank": None,
     }
 
 
@@ -430,6 +435,23 @@ def reject_pending_competitor(domain: str):
         save_competitor_discovery_pending(conn, [p for p in pending if norm_competitor_domain(str(p.get("domain", ""))) != norm])
         add_competitor_to_blocklist(conn, norm)
         return {"ok": True, "data": _competitors_response_data(conn)}
+    finally:
+        conn.close()
+
+
+@router.post("/competitors/authority-refresh", response_model=dict)
+def refresh_competitor_authority_scores():
+    """Score every competitor domain with Open PageRank domain authority."""
+    from backend.app.services.open_page_rank import refresh_competitor_authority
+
+    conn = open_db_connection()
+    try:
+        stats = refresh_competitor_authority(conn)
+        data = _competitors_response_data(conn)
+        data["authority_refresh"] = stats
+        return {"ok": True, "data": data}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     finally:
         conn.close()
 

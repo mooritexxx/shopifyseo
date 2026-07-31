@@ -1011,6 +1011,7 @@ export const settingsSchema = z.object({
     anthropic_api_key: z.string().default(""),
     dataforseo_api_login: z.string().default(""),
     dataforseo_api_password: z.string().default(""),
+    open_page_rank_api_key: z.string().default(""),
     serpapi_api_key: z.string().default(""),
     openrouter_api_key: z.string().default(""),
     ollama_api_key: z.string().default(""),

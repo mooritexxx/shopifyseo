@@ -81,6 +81,10 @@ export const competitorProfileSchema = z.object({
   labs_seed_etv: z.number().optional().default(0),
   labs_bulk_etv: z.number().optional().default(0),
   labs_rating: z.number().optional().default(0),
+  // Open PageRank domain authority. Nullable: null = never fetched or the domain
+  // is not in the index. 0 is a real score, so it must not stand in for unknown.
+  authority_score: z.number().nullable().optional().default(null),
+  authority_rank: z.number().nullable().optional().default(null),
 });
 
 export const competitorResearchMetaSchema = z

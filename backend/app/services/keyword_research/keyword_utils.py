@@ -134,18 +134,24 @@ def _bounded_log_score(value: int | float | str | None, reference: float) -> flo
     return min(100.0, math.log1p(v) / math.log1p(reference) * 100.0)
 
 
-def _difficulty_ease_score(difficulty: int | float | str | None) -> float:
-    """Return an ease score (0-100) from keyword difficulty.
+def _difficulty_ease_score(difficulty: int | float | str | None) -> float | None:
+    """Return an ease score (0-100), or ``None`` when difficulty is unknown.
 
-    DataForSEO reports ``0`` when it has no difficulty for a keyword rather than
+    DataForSEO sends ``0`` when it has not computed a difficulty rather than
     omitting the field, so a literal 0 means "unknown", not "trivially easy".
-    Treating it as maximum ease handed a full ease bonus to the majority of the
-    set and floated head terms with no data to the top of the rankings.
+    Ingest normalizes that to ``None`` (see ``_normalize_keyword_difficulty``);
+    this guard also covers rows stored before that change.
+
+    Unknown returns ``None`` rather than a substituted mid-range value:
+    ``compute_opportunity`` drops the ease term and renormalizes the remaining
+    weights, so a missing input neither rewards nor penalizes the keyword.
     """
-    if difficulty is None or _num(difficulty, -1.0) <= 0:
-        return 50.0
-    d = min(100.0, _num(difficulty, 50.0))
-    return 100.0 - d
+    if difficulty is None:
+        return None
+    d = _num(difficulty, -1.0)
+    if d <= 0:
+        return None
+    return 100.0 - min(100.0, d)
 
 
 def _intent_opportunity_score(intent: str | None) -> float:
@@ -195,27 +201,28 @@ def compute_opportunity(
     """Return an un-normalized 0-100 keyword opportunity score.
 
     Demand and traffic potential are log-scaled so one head term does not
-    flatten the whole keyword set. Difficulty is an ease signal, with missing
-    KD treated as neutral instead of "free." GSC ranking and intent make the
-    score useful for prioritizing actual SEO work, not just theoretical volume.
+    flatten the whole keyword set. GSC ranking and intent make the score useful
+    for prioritizing actual SEO work, not just theoretical volume.
+
+    Difficulty contributes an ease signal only when it is known. When it is
+    unknown the ease term is dropped and the remaining weights are renormalized,
+    so no value is invented for it in either direction.
     """
     v = max(_num(volume), 0.0)
     if v <= 0:
         return 0.0
     tp = max(_num(traffic_potential, v), 0.0) or v
-    demand_score = _bounded_log_score(v, 10000.0)
-    traffic_score = _bounded_log_score(tp, 10000.0)
+    components: list[tuple[float, float]] = [
+        (0.35, _bounded_log_score(v, 10000.0)),
+        (0.20, _bounded_log_score(tp, 10000.0)),
+        (0.15, _ranking_opportunity_score(ranking_status, gsc_position)),
+        (0.10, _intent_opportunity_score(intent)),
+    ]
     ease_score = _difficulty_ease_score(difficulty)
-    ranking_score = _ranking_opportunity_score(ranking_status, gsc_position)
-    intent_score = _intent_opportunity_score(intent)
-    return round(
-        (0.35 * demand_score)
-        + (0.20 * traffic_score)
-        + (0.20 * ease_score)
-        + (0.15 * ranking_score)
-        + (0.10 * intent_score),
-        4,
-    )
+    if ease_score is not None:
+        components.append((0.20, ease_score))
+    total_weight = sum(w for w, _ in components)
+    return round(sum(w * s for w, s in components) / total_weight, 4)
 
 
 def _percentile(values: list[float], pct: float) -> float:

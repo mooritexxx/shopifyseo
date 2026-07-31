@@ -223,7 +223,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         kw_base_sql = """
                 SELECT ck.keyword,
                        COALESCE(km.volume, 0)               AS volume,
-                       COALESCE(km.difficulty, 0)            AS difficulty,
+                       km.difficulty                         AS difficulty,
                        COALESCE(km.cpc, 0.0)                 AS cpc,
                        COALESCE(km.intent, 'informational')  AS intent,
                        COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
@@ -259,7 +259,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             {
                 "keyword": kw[0],
                 "volume": int(kw[1] or 0),
-                "difficulty": int(kw[2] or 0),
+                "difficulty": int(kw[2]) if kw[2] is not None else None,
                 "cpc": round(float(kw[3] or 0), 2),
                 "intent": kw[4],
                 "ranking_status": kw[5],

@@ -664,7 +664,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
             continue
         # Overwrite metrics from fresh data
         item["volume"] = fresh.get("volume", item.get("volume", 0))
-        item["difficulty"] = fresh.get("difficulty", item.get("difficulty", 0))
+        item["difficulty"] = fresh.get("difficulty", item.get("difficulty"))
         item["traffic_potential"] = fresh.get("traffic_potential", item.get("traffic_potential", 0))
         item["cpc"] = fresh.get("cpc", item.get("cpc"))
         # Update intent classification

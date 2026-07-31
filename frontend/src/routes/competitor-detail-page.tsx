@@ -202,7 +202,7 @@ export function CompetitorDetailPage() {
                       <TableRow key={gap.keyword} className="border-b border-line/50">
                         <TableCell className="py-2.5 pr-4 font-medium text-ink">{gap.keyword}</TableCell>
                         <TableCell className="py-2.5 pr-4 text-right tabular-nums text-slate-600">{fmt(gap.volume)}</TableCell>
-                        <TableCell className="py-2.5 pr-4 text-right tabular-nums text-slate-600">{gap.difficulty}</TableCell>
+                        <TableCell className="py-2.5 pr-4 text-right tabular-nums text-slate-600">{gap.difficulty > 0 ? gap.difficulty : "—"}</TableCell>
                         <TableCell className="py-2.5 pr-4 text-right tabular-nums text-slate-600">{gap.competitor_position ?? "—"}</TableCell>
                         <TableCell className="py-2.5 pr-4 text-center">
                           {gap.our_ranking_status === "not_ranking" ? (

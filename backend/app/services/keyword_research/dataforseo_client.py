@@ -201,6 +201,25 @@ def _serp_item_types_to_feature_counts(types_val: Any) -> dict[str, int] | None:
     return {str(t): 1 for t in types_val if t}
 
 
+def _normalize_keyword_difficulty(kd_raw) -> int | None:
+    """Return keyword difficulty, or ``None`` when DataForSEO has no value.
+
+    DataForSEO sends ``keyword_difficulty: 0`` rather than omitting the field
+    when it has not computed a difficulty — verified against
+    ``keyword_overview/live`` and ``bulk_keyword_difficulty/live``, both of which
+    return 0 for head terms such as "vaping near me" (165k/mo). Storing that 0
+    made unknown keywords read as trivially easy everywhere downstream, so it is
+    normalized to NULL at ingest and "unknown" stays a distinct state.
+    """
+    if kd_raw is None:
+        return None
+    try:
+        kd = int(kd_raw)
+    except (TypeError, ValueError):
+        return None
+    return kd if kd > 0 else None
+
+
 def _keyword_data_block_to_explorer_row(
     kw_data: dict,
     *,
@@ -226,8 +245,7 @@ def _keyword_data_block_to_explorer_row(
     serp = kw_data.get("serp_info") or {}
     serp_features = _serp_item_types_to_feature_counts(serp.get("serp_item_types"))
     vol = int(ki.get("search_volume") or 0)
-    kd_raw = kp.get("keyword_difficulty")
-    difficulty = int(kd_raw) if kd_raw is not None else None
+    difficulty = _normalize_keyword_difficulty(kp.get("keyword_difficulty"))
     tp = traffic_potential_override if traffic_potential_override is not None else vol
     return {
         "keyword": (kw_data.get("keyword") or "").strip(),
@@ -780,8 +798,7 @@ def _ranked_item_to_site_explorer_row(item: dict, domain: str) -> dict | None:
     serp = kw_data.get("serp_info") or {}
     serp_features = _serp_item_types_to_feature_counts(serp.get("serp_item_types"))
     vol = int(ki.get("search_volume") or 0)
-    kd_raw = kp.get("keyword_difficulty")
-    difficulty = int(kd_raw) if kd_raw is not None else None
+    difficulty = _normalize_keyword_difficulty(kp.get("keyword_difficulty"))
     rse = item.get("ranked_serp_element") or {}
     serp_item = rse.get("serp_item") if isinstance(rse, dict) else None
     rank_group = None

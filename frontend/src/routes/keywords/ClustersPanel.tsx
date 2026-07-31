@@ -423,7 +423,9 @@ export function ClustersPanel() {
                 </span>
                 <span>
                   Avg difficulty:{" "}
-                  <span className="font-medium text-ink">{cluster.avg_difficulty}</span>
+                  <span className="font-medium text-ink">
+                    {cluster.avg_difficulty > 0 ? cluster.avg_difficulty : "—"}
+                  </span>
                 </span>
                 <span>
                   Priority:{" "}

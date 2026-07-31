@@ -215,7 +215,17 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 
 **Keyword clustering planning:** generation now applies entity/intent guardrails before the AI pass, using Shopify vendors/collections plus known keyword variants to keep competing brands separate unless comparison intent is explicit. Post-processing uses guarded embedding merges, repairs oversized or mixed-intent clusters, and stores optional content-planning fields on `clusters`: `detected_entity`, `cluster_intent`, `cluster_role`, `quality_score`, keyword tiers (`core_keywords_json`, `supporting_keywords_json`, `extended_keywords_json`), and `cannibalization_risk`. Downstream article/page generation reads the keyword tiers when present and falls back to raw `cluster_keywords` for older data.
 
-**`difficulty = 0` means "no data", not "easy":** DataForSEO returns `0` rather than omitting `keyword_difficulty` when it has no value, and the majority of Site Explorer rows come back that way. `_difficulty_ease_score` in `keyword_utils` therefore scores `0` the same as `None` (neutral 50), not as maximum ease — otherwise head terms with no difficulty data outrank genuinely low-KD keywords. Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring model; `refresh_opportunity_scores` re-scores the stored set on the next read when the version differs.
+**Unknown keyword difficulty is `NULL`, never `0`:** DataForSEO returns `keyword_difficulty: 0` rather than omitting the field when it has not computed a difficulty — confirmed against both `keyword_overview/live` and `bulk_keyword_difficulty/live`, which return 0 for head terms such as "vaping near me" (165k/mo). Only ~21% of the keyword set has a real KD.
+
+`_normalize_keyword_difficulty` in `dataforseo_client` converts that 0 to `None` at ingest, so "unknown" stays distinct from "easy" everywhere downstream. Rules that follow from it:
+
+* **Never `COALESCE(difficulty, 0)`** — it recreates the bug. Let NULL propagate.
+* **Scoring:** `_difficulty_ease_score` returns `None` for unknown; `compute_opportunity` then drops the ease term and renormalizes the remaining weights, so a missing input neither rewards nor penalizes. No substitute value is invented.
+* **Averages** (`clusters.avg_difficulty`) exclude unknowns. The column is `NOT NULL`, so clusters with no known KD store `0.0` as a sentinel and the UI renders it as `—`.
+* **UI:** `0` and `null` both render `—`; the KD filter has a separate "Unknown" option and Easy/Medium/Hard exclude unknowns.
+* **AI prompts:** `_difficulty_label` in `keyword_clustering/_context` emits `unknown`, never `0`.
+
+Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring model; `refresh_opportunity_scores` re-scores the stored set on the next read when the version differs. Historical rows were converted by `scripts/normalize_unknown_keyword_difficulty.py`, which must update the `target_keywords` JSON blob as well as the tables — otherwise the next `sync_keyword_metrics_to_db` writes the zeros straight back.
 
 **`parent_topic` on target keywords / `keyword_metrics`:** legacy column name. Filled from **DataForSEO** `keyword_properties.core_keyword` when metrics are ingested or refreshed via DataForSEO (`dataforseo_client` maps it to `parent_topic`). **Google Ads** Keyword Planner refresh updates Ads metrics only, not this field. Keyword clustering still uses `parent_topic` as one bucketing signal, but entity/intent guardrails run first so empty or broad parent topics do not create giant mixed-brand buckets.
 

@@ -70,7 +70,7 @@ const TIP_VOLUME =
   "Monthly search volume from DataForSEO Labs (keyword overview: keyword_info.search_volume) for your configured market. Updated when you run Refresh metrics.";
 
 const TIP_KD =
-  "Keyword difficulty (0–100) from DataForSEO Labs (keyword_properties.keyword_difficulty). Updated when you run Refresh metrics.";
+  "Keyword difficulty (1–100) from DataForSEO Labs (keyword_properties.keyword_difficulty). Shown as — when DataForSEO has no difficulty for the keyword, which is most of the set; unknown is not the same as easy. Updated when you run Refresh metrics.";
 
 const TIP_TRAFFIC_POT =
   "DataForSEO Labs. For keyword overview / explorer-style rows this field is the same Labs search volume as Volume; for some competitor ranked-keyword imports it can use estimated organic traffic (ETV) from SERP data. Updated when you run Refresh metrics.";
@@ -348,7 +348,10 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (difficultyFilter !== "all") {
       list = list.filter((i) => {
         const kd = i.difficulty;
-        if (kd === null) return false;
+        // 0 means DataForSEO has no difficulty for the keyword, not "easy".
+        const unknown = kd === null || kd === 0;
+        if (difficultyFilter === "unknown") return unknown;
+        if (unknown) return false;
         if (difficultyFilter === "easy") return kd <= 20;
         if (difficultyFilter === "medium") return kd >= 21 && kd <= 50;
         if (difficultyFilter === "hard") return kd >= 51 && kd <= 70;

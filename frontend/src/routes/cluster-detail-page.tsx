@@ -281,7 +281,10 @@ export function ClusterDetailPage() {
             Volume: <span className="font-medium text-ink">{cluster.total_volume.toLocaleString()}</span>
           </span>
           <span>
-            Avg difficulty: <span className="font-medium text-ink">{cluster.avg_difficulty}</span>
+            Avg difficulty:{" "}
+            <span className="font-medium text-ink">
+              {cluster.avg_difficulty > 0 ? cluster.avg_difficulty : "—"}
+            </span>
           </span>
           <span>
             Priority:{" "}

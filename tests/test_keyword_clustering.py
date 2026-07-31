@@ -987,7 +987,11 @@ def test_format_cluster_context_empty_list():
 
 
 def test_format_cluster_context_missing_metrics():
-    """Keywords not in target_data get 0 for volume and difficulty."""
+    """Keywords not in target_data get volume 0 and difficulty "unknown".
+
+    Difficulty must not reach the model as 0 — DataForSEO has no KD for most
+    keywords, and 0 reads as trivially easy.
+    """
     clusters = [
         {
             "name": "Test",
@@ -1001,7 +1005,8 @@ def test_format_cluster_context_missing_metrics():
     result = _format_cluster_context(clusters, target_data)
     assert result is not None
     assert "volume: 0" in result
-    assert "difficulty: 0" in result
+    assert "difficulty: unknown" in result
+    assert "difficulty: 0" not in result
 
 
 # --- _find_clusters_for_product tests ---

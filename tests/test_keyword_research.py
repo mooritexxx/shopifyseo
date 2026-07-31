@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from backend.app.services.keyword_research import (
     classify_intent,
     classify_ranking_status,
@@ -50,6 +52,41 @@ def test_compute_opportunity_zero_difficulty_is_unknown_not_easy():
     easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=5)
     assert zero_kd == unknown_kd
     assert zero_kd < easy_kd
+
+
+def test_unknown_difficulty_renormalizes_instead_of_substituting():
+    """Unknown KD drops the ease term; it must not invent a mid-range value.
+
+    The score for an unknown-KD keyword should equal the weighted average of the
+    four known components alone, so a missing input neither helps nor hurts.
+    """
+    from backend.app.services.keyword_research.keyword_utils import (
+        _bounded_log_score,
+        _intent_opportunity_score,
+        _ranking_opportunity_score,
+    )
+
+    expected = (
+        (0.35 * _bounded_log_score(1000, 10000.0))
+        + (0.20 * _bounded_log_score(2000, 10000.0))
+        + (0.15 * _ranking_opportunity_score(None, None))
+        + (0.10 * _intent_opportunity_score(None))
+    ) / 0.80
+    actual = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
+    assert actual == pytest.approx(expected, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(0, None), (None, None), (45, 45), ("0", None), ("32", 32), ("junk", None), (-5, None)],
+)
+def test_normalize_keyword_difficulty(raw, expected):
+    """Ingest turns DataForSEO's 0 sentinel into NULL so unknown stays distinct."""
+    from backend.app.services.keyword_research.dataforseo_client import (
+        _normalize_keyword_difficulty,
+    )
+
+    assert _normalize_keyword_difficulty(raw) == expected
 
 
 def test_recompute_opportunity_scores_uses_intent_and_ranking():

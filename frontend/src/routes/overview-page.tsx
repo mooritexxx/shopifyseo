@@ -165,6 +165,11 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-8 pb-8">
+      {/* Open PageRank domain authority for the storefront */}
+      <section>
+        <SiteAuthorityCard />
+      </section>
+
       {/* Site-level GSC — property totals + trend (Phase 1) */}
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -853,11 +858,6 @@ export function OverviewPage() {
             />
           </div>
         ) : null}
-      </section>
-
-      {/* Open PageRank domain authority for the storefront */}
-      <section>
-        <SiteAuthorityCard />
       </section>
 
       {/* Indexing rollup — stored URL Inspection fields on synced entities */}

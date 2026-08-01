@@ -127,3 +127,127 @@ def test_refresh_requires_key(tmp_path):
     with pytest.raises(RuntimeError, match="API key is required"):
         opr.refresh_competitor_authority(conn)
     conn.close()
+
+
+# --- storefront's own authority ---
+
+
+def _site_conn(tmp_path, name, **settings):
+    conn = sqlite3.connect(tmp_path / name)
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+    for k, v in settings.items():
+        conn.execute("INSERT INTO service_settings (key, value) VALUES (?, ?)", (k, v))
+    conn.commit()
+    return conn
+
+
+@pytest.mark.parametrize(
+    "settings,expected",
+    [
+        ({"store_custom_domain": "https://www.Vapely.ca/"}, "vapely.ca"),
+        ({"store_custom_domain": "", "shopify_shop": "x-1.myshopify.com"}, "x-1.myshopify.com"),
+        ({}, ""),
+    ],
+)
+def test_resolve_site_domain(tmp_path, settings, expected):
+    conn = _site_conn(tmp_path, f"r{abs(hash(expected))}.sqlite3", **settings)
+    assert opr.resolve_site_domain(conn) == expected
+    conn.close()
+
+
+def test_fetch_site_authority_returns_sorted_history(monkeypatch):
+    monkeypatch.setattr(
+        opr,
+        "request_json",
+        lambda url, **kw: {
+            "as_of": "2026-07-01",
+            "results": [
+                {
+                    "domain": "d.ca", "found": True, "open_page_rank": 4.2, "rank": 130,
+                    "referring_domains": 96,
+                    "history": [
+                        {"date": "2026-07-01", "open_page_rank": 4.2, "estimated": False},
+                        {"date": "2018-01-01", "open_page_rank": 3.1, "estimated": True},
+                    ],
+                }
+            ],
+        },
+    )
+    out = opr.fetch_site_authority("k", "D.ca")
+    assert out["found"] is True
+    assert out["authority"] == 4.2
+    assert out["as_of"] == "2026-07-01"
+    assert [p["date"] for p in out["history"]] == ["2018-01-01", "2026-07-01"]
+    assert out["history"][0]["estimated"] is True
+
+
+def test_unindexed_site_reports_not_found_not_zero(monkeypatch, tmp_path):
+    """An unindexed storefront has no score — it must not be stored as 0."""
+    conn = _site_conn(
+        tmp_path, "site1.sqlite3",
+        store_custom_domain="vapely.ca",
+        open_page_rank_api_key="opr_live_x",
+    )
+    monkeypatch.setattr(
+        opr,
+        "request_json",
+        lambda url, **kw: {
+            "as_of": "2026-07-01",
+            "results": [{"domain": "vapely.ca", "found": False, "open_page_rank": None,
+                         "rank": None, "referring_domains": None, "history": []}],
+        },
+    )
+    out = opr.refresh_site_authority(conn)
+    assert out["found"] is False
+    assert out["authority"] is None
+    assert out["history"] == []
+    row = conn.execute("SELECT found, authority_score FROM site_authority").fetchone()
+    assert row["found"] == 0
+    assert row["authority_score"] is None
+    conn.close()
+
+
+def test_refresh_site_authority_persists_and_reloads(monkeypatch, tmp_path):
+    conn = _site_conn(
+        tmp_path, "site2.sqlite3",
+        store_custom_domain="d.ca",
+        open_page_rank_api_key="opr_live_x",
+    )
+    monkeypatch.setattr(
+        opr,
+        "fetch_site_authority",
+        lambda key, dom: {
+            "domain": "d.ca", "found": True, "authority": 4.2, "rank": 130,
+            "referring_domains": 96, "as_of": "2026-07-01",
+            "history": [
+                {"date": "2026-06-01", "authority": 4.1, "estimated": False},
+                {"date": "2026-07-01", "authority": 4.2, "estimated": False},
+            ],
+        },
+    )
+    opr.refresh_site_authority(conn)
+    reloaded = opr.load_site_authority(conn)
+    assert reloaded["found"] is True
+    assert reloaded["authority"] == 4.2
+    assert len(reloaded["history"]) == 2
+
+    # Re-running must upsert history rather than duplicate it.
+    opr.refresh_site_authority(conn)
+    assert len(opr.load_site_authority(conn)["history"]) == 2
+    conn.close()
+
+
+def test_competitor_authority_benchmark_ignores_unscored(tmp_path):
+    conn = _site_conn(tmp_path, "bench.sqlite3")
+    conn.executemany(
+        "INSERT INTO competitor_profiles (domain, authority_score) VALUES (?, ?)",
+        [("a.ca", 2.0), ("b.ca", 6.0), ("c.ca", None)],
+    )
+    conn.commit()
+    b = opr.competitor_authority_benchmark(conn)
+    assert b["scored_competitors"] == 2
+    assert b["avg_authority"] == 4.0
+    assert b["max_authority"] == 6.0
+    assert b["top_domain"] == "b.ca"
+    conn.close()

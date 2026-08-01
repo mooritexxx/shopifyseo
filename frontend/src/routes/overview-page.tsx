@@ -28,6 +28,7 @@ import {
   overviewCacheHint
 } from "../components/overview/overview-cards";
 import { OverviewOnboarding, overviewShowsOnboarding } from "../components/overview/overview-onboarding";
+import { SiteAuthorityCard } from "../components/overview/site-authority-card";
 import {
   CHART_GRID,
   CHART_META_COMPLETE,
@@ -852,6 +853,11 @@ export function OverviewPage() {
             />
           </div>
         ) : null}
+      </section>
+
+      {/* Open PageRank domain authority for the storefront */}
+      <section>
+        <SiteAuthorityCard />
       </section>
 
       {/* Indexing rollup — stored URL Inspection fields on synced entities */}

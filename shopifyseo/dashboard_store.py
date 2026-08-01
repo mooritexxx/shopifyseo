@@ -401,6 +401,32 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "authority_updated_at": "INTEGER",
         },
     )
+    # Storefront's own Open PageRank authority. `found = 0` means Open PageRank
+    # has no entry for the domain; the score columns stay NULL rather than 0.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS site_authority (
+            domain TEXT PRIMARY KEY,
+            found INTEGER NOT NULL DEFAULT 0,
+            authority_score REAL,
+            authority_rank INTEGER,
+            referring_domains INTEGER,
+            as_of TEXT,
+            checked_at INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS site_authority_history (
+            domain TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            authority_score REAL NOT NULL,
+            estimated INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (domain, as_of)
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS competitor_top_pages (

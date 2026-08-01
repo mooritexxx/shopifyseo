@@ -153,6 +153,41 @@ def settings_open_page_rank_test(payload: OpenPageRankTestPayload):
     return success_response({"message": "Open PageRank API access confirmed.", "result": None})
 
 
+@router.get("/site-authority", response_model=dict)
+def get_site_authority():
+    """Stored Open PageRank authority for the storefront, plus competitor context."""
+    from backend.app.services.open_page_rank import (
+        competitor_authority_benchmark,
+        load_site_authority,
+    )
+
+    conn = open_db_connection()
+    try:
+        data = load_site_authority(conn)
+        data["benchmark"] = competitor_authority_benchmark(conn)
+        return {"ok": True, "data": data}
+    finally:
+        conn.close()
+
+
+@router.post("/site-authority/refresh", response_model=dict)
+def post_site_authority_refresh():
+    from backend.app.services.open_page_rank import (
+        competitor_authority_benchmark,
+        refresh_site_authority,
+    )
+
+    conn = open_db_connection()
+    try:
+        data = refresh_site_authority(conn)
+        data["benchmark"] = competitor_authority_benchmark(conn)
+        return {"ok": True, "data": data}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    finally:
+        conn.close()
+
+
 @router.get("/settings/shopify-shop-info", response_model=SuccessResponse[ShopifyShopInfoPayload])
 def settings_shopify_shop_info():
     return success_response(get_shopify_shop_info())

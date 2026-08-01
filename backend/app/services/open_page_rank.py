@@ -122,6 +122,199 @@ def _raise_opr_http_error(status: int | None, body: str) -> None:
     raise RuntimeError(f"Open PageRank HTTP error ({status or '?'}): {body}") from None
 
 
+def resolve_site_domain(conn: sqlite3.Connection) -> str:
+    """Storefront domain to score: the custom domain, else the myshopify host."""
+    for key in ("store_custom_domain", "shopify_shop"):
+        raw = (get_service_setting(conn, key) or "").strip().lower()
+        if not raw:
+            continue
+        for prefix in ("https://", "http://"):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix) :]
+        if raw.startswith("www."):
+            raw = raw[4:]
+        raw = raw.split("/")[0].strip()
+        if raw:
+            return raw
+    return ""
+
+
+def fetch_site_authority(api_key: str, domain: str) -> dict:
+    """Return the current score plus full monthly history for one domain.
+
+    ``found`` is False when Open PageRank has no entry for the domain — new or
+    lightly-linked sites are simply absent from the Common Crawl web graph. That
+    is reported as-is; it is not an authority of zero.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        raise RuntimeError("Open PageRank API key is required. Add it in Settings > Integrations.")
+    dom = (domain or "").strip().lower()
+    if not dom:
+        return {"domain": "", "found": False, "history": []}
+
+    try:
+        resp = request_json(
+            OPR_BULK_URL,
+            method="POST",
+            headers=_auth_headers(key),
+            payload={"domains": [dom], "include_history": True},
+            timeout=60,
+        )
+    except HttpRequestError as exc:
+        _raise_opr_http_error(exc.status, (exc.body or "")[:300])
+    if not isinstance(resp, dict):
+        raise RuntimeError("Open PageRank returned a non-object response.")
+
+    row = next(
+        (r for r in (resp.get("results") or []) if isinstance(r, dict)),
+        None,
+    )
+    if not row or not row.get("found"):
+        return {"domain": dom, "found": False, "history": []}
+
+    history = []
+    for point in row.get("history") or []:
+        if not isinstance(point, dict):
+            continue
+        date = (point.get("date") or "").strip()
+        raw = point.get("open_page_rank")
+        if not date or raw in (None, "", "N/A"):
+            continue
+        try:
+            history.append(
+                {
+                    "date": date,
+                    "authority": float(raw),
+                    "estimated": bool(point.get("estimated")),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    history.sort(key=lambda p: p["date"])
+
+    try:
+        authority = float(row.get("open_page_rank"))
+    except (TypeError, ValueError):
+        authority = None
+    return {
+        "domain": dom,
+        "found": True,
+        "authority": authority,
+        "rank": _opt_int(row.get("rank")),
+        "referring_domains": _opt_int(row.get("referring_domains")),
+        "as_of": (resp.get("as_of") or "").strip() or None,
+        "history": history,
+    }
+
+
+def refresh_site_authority(conn: sqlite3.Connection) -> dict:
+    """Fetch and persist the storefront's own authority plus monthly history."""
+    api_key = get_open_page_rank_key(conn)
+    if not api_key:
+        raise RuntimeError("Open PageRank API key is required. Add it in Settings > Integrations.")
+    domain = resolve_site_domain(conn)
+    if not domain:
+        raise RuntimeError(
+            "No storefront domain configured. Set Store custom domain in Settings > Data Sources."
+        )
+
+    result = fetch_site_authority(api_key, domain)
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO site_authority (domain, found, authority_score, authority_rank,
+                                    referring_domains, as_of, checked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(domain) DO UPDATE SET
+            found = excluded.found,
+            authority_score = excluded.authority_score,
+            authority_rank = excluded.authority_rank,
+            referring_domains = excluded.referring_domains,
+            as_of = excluded.as_of,
+            checked_at = excluded.checked_at
+        """,
+        (
+            domain,
+            1 if result.get("found") else 0,
+            result.get("authority"),
+            result.get("rank"),
+            result.get("referring_domains"),
+            result.get("as_of"),
+            now,
+        ),
+    )
+    for point in result.get("history") or []:
+        conn.execute(
+            """
+            INSERT INTO site_authority_history (domain, as_of, authority_score, estimated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(domain, as_of) DO UPDATE SET
+                authority_score = excluded.authority_score,
+                estimated = excluded.estimated
+            """,
+            (domain, point["date"], point["authority"], 1 if point["estimated"] else 0),
+        )
+    conn.commit()
+    return load_site_authority(conn)
+
+
+def load_site_authority(conn: sqlite3.Connection) -> dict:
+    """Read the stored storefront authority snapshot + history for the dashboard."""
+    domain = resolve_site_domain(conn)
+    if not domain:
+        return {"domain": "", "found": False, "history": [], "checked_at": None}
+    row = conn.execute(
+        """
+        SELECT domain, found, authority_score, authority_rank, referring_domains, as_of, checked_at
+          FROM site_authority WHERE domain = ?
+        """,
+        (domain,),
+    ).fetchone()
+    history = [
+        {"date": r[0], "authority": r[1], "estimated": bool(r[2])}
+        for r in conn.execute(
+            "SELECT as_of, authority_score, estimated FROM site_authority_history"
+            " WHERE domain = ? ORDER BY as_of",
+            (domain,),
+        )
+    ]
+    if not row:
+        return {"domain": domain, "found": False, "history": history, "checked_at": None}
+    return {
+        "domain": row[0],
+        "found": bool(row[1]),
+        "authority": row[2],
+        "rank": row[3],
+        "referring_domains": row[4],
+        "as_of": row[5],
+        "checked_at": row[6],
+        "history": history,
+    }
+
+
+def competitor_authority_benchmark(conn: sqlite3.Connection) -> dict:
+    """Scored-competitor context so the dashboard card is useful before indexing."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*), ROUND(AVG(authority_score), 2), MAX(authority_score)
+          FROM competitor_profiles WHERE authority_score IS NOT NULL
+        """
+    ).fetchone()
+    top = conn.execute(
+        """
+        SELECT domain, authority_score FROM competitor_profiles
+         WHERE authority_score IS NOT NULL ORDER BY authority_score DESC LIMIT 1
+        """
+    ).fetchone()
+    return {
+        "scored_competitors": row[0] or 0,
+        "avg_authority": row[1],
+        "max_authority": row[2],
+        "top_domain": top[0] if top else None,
+    }
+
+
 def refresh_competitor_authority(conn: sqlite3.Connection) -> dict:
     """Fetch Open PageRank authority for every competitor domain and store it.
 

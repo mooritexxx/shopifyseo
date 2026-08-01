@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart2, Check, Download, LoaderCircle, RefreshCw, Search, Sparkles, X } from "lucide-react";
+import { BarChart2, Check, Download, Info, LoaderCircle, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -60,6 +60,11 @@ const STATUS_TABS: { id: TargetStatusTab; label: string }[] = [
   { id: "dismissed", label: "Dismissed" },
 ];
 
+const SRC_APP = "This app";
+const SRC_LABS = "DataForSEO Labs";
+const SRC_ADS = "Google Ads · Keyword Planner";
+const SRC_GSC = "Google Search Console";
+
 const TIP_SELECT =
   "Select rows for bulk actions. Selection is kept in this app only and is not sent to Shopify or external APIs.";
 
@@ -108,69 +113,81 @@ const TIP_RANKING =
 const TIP_STATUS =
   "Workflow state (New / Approved / Dismissed) stored in this app. Does not sync to Shopify or external APIs.";
 
-function KwSortHeader({
-  tip,
-  label,
-  sortKey,
-  activeSortKey,
-  sortDir,
-  buttonClassName,
-  spanClassName,
-  onSort,
-}: {
-  tip: string;
-  label: string;
-  sortKey: SortKey;
-  activeSortKey: SortKey;
-  sortDir: SortDir;
-  buttonClassName: string;
-  spanClassName: string;
-  onSort: (key: SortKey) => void;
-}) {
-  const ind = activeSortKey === sortKey ? (sortDir === "asc" ? " ↑" : " ↓") : null;
+function ColInfo({ label, source, tip }: { label: string; source: string; tip: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className={buttonClassName} onClick={() => onSort(sortKey)}>
-          <span className={spanClassName}>
-            {label}
-            {ind}
-          </span>
+        <button
+          type="button"
+          aria-label={`About ${label}`}
+          className="shrink-0 cursor-help rounded text-slate-400 outline-none transition-colors hover:text-ocean focus-visible:ring-2 focus-visible:ring-ocean/30"
+        >
+          <Info size={12} aria-hidden />
         </button>
       </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
-        {tip}
+      <TooltipContent side="top" className="max-w-[300px] text-left text-xs leading-snug">
+        <span className="block text-[10px] font-semibold uppercase tracking-wide opacity-70">{source}</span>
+        <span className="mt-1 block normal-case">{tip}</span>
       </TooltipContent>
     </Tooltip>
   );
 }
 
-function KwHeaderTip({
+function KwSortHeader({
   tip,
-  className,
-  children,
+  source,
+  label,
+  sortKey,
+  activeSortKey,
+  sortDir,
+  align = "right",
+  onSort,
 }: {
   tip: string;
-  className?: string;
-  children: ReactNode;
+  source: string;
+  label: string;
+  sortKey: SortKey;
+  activeSortKey: SortKey;
+  sortDir: SortDir;
+  align?: "left" | "center" | "right";
+  onSort: (key: SortKey) => void;
 }) {
+  const ind = activeSortKey === sortKey ? (sortDir === "asc" ? " ↑" : " ↓") : null;
+  const justify =
+    align === "left" ? "justify-start" : align === "center" ? "justify-center" : "justify-end";
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          className={cn(
-            "cursor-help rounded px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-ocean/30",
-            className,
-          )}
-        >
-          {children}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
-        {tip}
-      </TooltipContent>
-    </Tooltip>
+    <div className={cn("flex min-h-10 min-w-0 items-center gap-1 py-2", justify)}>
+      <button
+        type="button"
+        className="min-w-0 cursor-pointer truncate hover:text-ink"
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        {ind}
+      </button>
+      <ColInfo label={label} source={source} tip={tip} />
+    </div>
+  );
+}
+
+function KwHeaderTip({
+  tip,
+  source,
+  label,
+  align = "center",
+}: {
+  tip: string;
+  source: string;
+  label: string;
+  align?: "left" | "center" | "right";
+}) {
+  const justify =
+    align === "left" ? "justify-start" : align === "center" ? "justify-center" : "justify-end";
+  return (
+    <div className={cn("flex min-h-10 min-w-0 items-center gap-1 py-2", justify)}>
+      <span className="min-w-0 truncate">{label}</span>
+      <ColInfo label={label} source={source} tip={tip} />
+    </div>
   );
 }
 
@@ -839,134 +856,118 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
               </div>
               <KwSortHeader
                 tip={TIP_KEYWORD}
+                source={SRC_APP}
                 label="Keyword"
                 sortKey="keyword"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 text-left hover:text-ink"
-                spanClassName="block w-full truncate text-left"
+                align="left"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_VOLUME}
+                source={SRC_LABS}
                 label="Volume"
                 sortKey="volume"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_KD}
+                source={SRC_LABS}
                 label="KD"
                 sortKey="difficulty"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-center tabular-nums"
+                align="center"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_TRAFFIC_POT}
+                source={SRC_LABS}
                 label="Traffic pot."
                 sortKey="traffic_potential"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_CPC}
+                source={SRC_LABS}
                 label="CPC"
                 sortKey="cpc"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_ADS_SEARCHES}
+                source={SRC_ADS}
                 label="Ads searches"
                 sortKey="ads_avg_monthly_searches"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_ADS_IDX}
+                source={SRC_ADS}
                 label="Ads idx"
                 sortKey="ads_competition_index"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
-              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
-                <KwHeaderTip tip={TIP_INTENT} className="block w-full truncate text-center">
-                  Intent
-                </KwHeaderTip>
-              </div>
-              <div className="flex min-h-10 min-w-0 items-center justify-start py-2">
-                <KwHeaderTip tip={TIP_CONTENT_TYPE} className="block w-full truncate text-left">
-                  Content type
-                </KwHeaderTip>
-              </div>
+              <KwHeaderTip tip={TIP_INTENT} source={SRC_LABS} label="Intent" align="center" />
+              <KwHeaderTip tip={TIP_CONTENT_TYPE} source={SRC_APP} label="Content type" align="left" />
               <KwSortHeader
                 tip={TIP_OPPORTUNITY}
+                source={SRC_APP}
                 label="Opportunity"
                 sortKey="opportunity"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-center"
+                align="center"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_POSITION}
+                source={SRC_GSC}
                 label="Position"
                 sortKey="gsc_position"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_CLICKS}
+                source={SRC_GSC}
                 label="Clicks"
                 sortKey="gsc_clicks"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_IMP}
+                source={SRC_GSC}
                 label="Imp."
                 sortKey="gsc_impressions"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
-              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
-                <KwHeaderTip tip={TIP_RANKING} className="block w-full truncate text-center">
-                  Ranking
-                </KwHeaderTip>
-              </div>
-              <div className="flex min-h-10 min-w-0 items-center justify-start py-2 pr-2">
-                <KwHeaderTip tip={TIP_STATUS} className="block w-full truncate text-left">
-                  Status
-                </KwHeaderTip>
-              </div>
+              <KwHeaderTip tip={TIP_RANKING} source={SRC_APP} label="Ranking" align="center" />
+              <KwHeaderTip tip={TIP_STATUS} source={SRC_APP} label="Status" align="left" />
             </div>
 
             <div

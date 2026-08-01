@@ -174,9 +174,16 @@ function KwHeaderTip({
   );
 }
 
-/** Shared grid for header + virtual rows so columns stay aligned with horizontal scroll. */
+/** Shared grid for header + virtual rows so columns stay aligned with horizontal scroll.
+ *
+ * The header and every virtual row are separate grid containers, so no track may
+ * be content-sized: `auto` resolves against each container's own content, which
+ * made each row compute different widths (and shifted the `fr` tracks with it).
+ * Every track here is therefore a fixed width or an `fr` share, so all containers
+ * resolve identically and the columns line up vertically.
+ */
 const TARGET_KW_GRID_TEMPLATE =
-  "40px minmax(160px,2fr) minmax(4rem,0.75fr) minmax(2.5rem,auto) minmax(4.5rem,0.85fr) minmax(3.5rem,0.7fr) minmax(4.5rem,0.85fr) minmax(3rem,auto) minmax(7rem,1fr) minmax(10rem,1.5fr) minmax(4.5rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(4.5rem,auto) minmax(6.25rem,1fr)";
+  "40px minmax(160px,2fr) minmax(4rem,0.75fr) 3rem minmax(4.5rem,0.85fr) minmax(3.5rem,0.7fr) minmax(4.5rem,0.85fr) 4.25rem minmax(7rem,1fr) minmax(10rem,1.5fr) 5.5rem 4.5rem 3.5rem 3.25rem 6.75rem minmax(6.25rem,1fr)";
 
 export type TargetKeywordsPanelProps = {
   /** True while seed keyword research (SSE) is running from the Seed Keywords tab. */

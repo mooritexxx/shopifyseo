@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Plus, RotateCcw, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Check, Info, Plus, RotateCcw, Search, Sparkles, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Button } from "../../components/ui/button";
@@ -13,6 +13,12 @@ import {
   TableHeader,
   TableRow
 } from "../../components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger
+} from "../../components/ui/tooltip";
 import type { z } from "zod";
 
 import { getJson, postJson } from "../../lib/api";
@@ -42,57 +48,126 @@ function fmtShare(s: number): string {
   return `${(s * 100).toFixed(1)}%`;
 }
 
+/** Column title with an (i) affordance explaining the metric and where it comes from. */
+function ColHeader({
+  label,
+  source,
+  tip,
+  className
+}: {
+  label: string;
+  source: string;
+  tip: string;
+  className?: string;
+}) {
+  return (
+    <TableHead className={className}>
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              tabIndex={0}
+              aria-label={`About ${label}`}
+              className="cursor-help rounded text-slate-400 outline-none transition-colors hover:text-ocean focus-visible:ring-2 focus-visible:ring-ocean/30"
+            >
+              <Info size={12} aria-hidden />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[300px] text-left text-xs leading-snug">
+            <span className="block font-semibold uppercase tracking-wide text-[10px] opacity-70">
+              {source}
+            </span>
+            <span className="mt-1 block normal-case">{tip}</span>
+          </TooltipContent>
+        </Tooltip>
+      </span>
+    </TableHead>
+  );
+}
+
 function LabsMetricHeaders() {
   return (
     <>
-      <TableHead className={metricTh} title="Displayed ETV = max(Labs seed-set ETV, Labs bulk domain ETV)">
-        Traffic
-      </TableHead>
-      <TableHead className={metricTh} title="Labs serp_competitors ETV for your seed keywords">
-        Seed ETV
-      </TableHead>
-      <TableHead className={metricTh} title="Labs bulk traffic estimation (full domain)">
-        Bulk ETV
-      </TableHead>
-      <TableHead className={metricTh} title="keywords_count ÷ seeds sent (capped at 100%)">
-        Share
-      </TableHead>
-      <TableHead className={metricTh} title="Labs keywords_count — seeds this domain ranks for">
-        Seeds hit
-      </TableHead>
-      <TableHead className={metricTh} title="Number of seed keywords sent to Labs (cap 200)">
-        Seed pool
-      </TableHead>
-      <TableHead
+      <ColHeader
         className={metricTh}
-        title="After research: organic keyword sample size. Before research: same as Labs rating from discovery."
-      >
-        Org. rows
-      </TableHead>
-      <TableHead
+        label="Traffic"
+        source="DataForSEO Labs"
+        tip="Estimated monthly organic traffic value. Whichever is larger of Seed ETV and Bulk ETV, so it never under-reports a domain you only have partial data for."
+      />
+      <ColHeader
         className={metricTh}
-        title="Open PageRank domain authority (0–10) from the Common Crawl open web graph. — means the domain is not in the index or has not been scored yet."
-      >
-        Auth.
-      </TableHead>
-      <TableHead
+        label="Seed ETV"
+        source="DataForSEO Labs · serp_competitors"
+        tip="Estimated traffic this domain gets from YOUR seed keywords only. Narrow but directly comparable to you."
+      />
+      <ColHeader
         className={metricTh}
-        title="Open PageRank: authority-weighted count of domains linking to this one."
-      >
-        Ref. dom
-      </TableHead>
-      <TableHead className={metricTh} title="Labs serp_competitors rating">
-        Labs rt
-      </TableHead>
-      <TableHead className={metricTh} title="Labs visibility">
-        Vis.
-      </TableHead>
-      <TableHead className={metricTh} title="Labs average position">
-        Avg
-      </TableHead>
-      <TableHead className={metricTh} title="Labs median position">
-        Med
-      </TableHead>
+        label="Bulk ETV"
+        source="DataForSEO Labs · bulk_traffic_estimation"
+        tip="Estimated traffic across the domain's whole keyword footprint, not just your seeds. Bigger number, less relevant to your niche."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Share"
+        source="Derived"
+        tip="Seeds hit ÷ Seed pool, capped at 100%. What proportion of your seed keywords this domain also ranks for — a rough overlap measure."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Seeds hit"
+        source="DataForSEO Labs · keywords_count"
+        tip="How many of your seed keywords this domain ranks for. The numerator behind Share."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Seed pool"
+        source="Derived"
+        tip="How many of your seed keywords were sent to DataForSEO for this domain (capped at 200). The denominator behind Share."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Org. rows"
+        source="DataForSEO Labs · ranked_keywords"
+        tip="Organic keyword sample size pulled for this domain. Before you run research it mirrors the Labs rating from discovery instead."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Auth."
+        source="Open PageRank"
+        tip="Domain authority 0–10, from the Common Crawl open web graph. Higher means a stronger backlink profile. An em-dash means the domain is not in the index — unknown, not zero."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Ref. dom"
+        source="Open PageRank"
+        tip="Authority-weighted count of distinct domains linking to this one. The main input behind the Auth. score."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Labs rt"
+        source="DataForSEO Labs · serp_competitors"
+        tip="DataForSEO's own competitor rating for this domain against your seed set. Their ranking signal, not ours."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Vis."
+        source="DataForSEO Labs"
+        tip="Visibility across your seed keywords — roughly, share of possible SERP exposure this domain captures."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Avg"
+        source="DataForSEO Labs"
+        tip="Average SERP position across the seed keywords this domain ranks for. Skewed by outliers; compare with Med."
+      />
+      <ColHeader
+        className={metricTh}
+        label="Med"
+        source="DataForSEO Labs"
+        tip="Median SERP position across the seed keywords this domain ranks for. More robust than Avg when a few results rank very deep."
+      />
     </>
   );
 }
@@ -334,6 +409,7 @@ export function CompetitorsPanel({
   }
 
   return (
+    <TooltipProvider delayDuration={200}>
     <div className="rounded-[24px] border border-line/80 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 pb-4">
         <div className="min-w-0">
@@ -554,11 +630,19 @@ export function CompetitorsPanel({
                 <Table className="min-w-[1180px] w-full text-sm">
                   <TableHeader>
                     <TableRow className="border-b border-line text-left text-xs font-medium uppercase tracking-wider text-slate-400">
-                      <TableHead className="pb-2 pr-3 whitespace-nowrap">Domain</TableHead>
+                      <ColHeader
+                        className="pb-2 pr-3 whitespace-nowrap"
+                        label="Domain"
+                        source="Your competitor list"
+                        tip="A competitor storefront. Added manually or promoted from SERP discovery. Deleting one also blocklists it so discovery stops re-suggesting it."
+                      />
                       <LabsMetricHeaders />
-                      <TableHead className="pb-2 pr-2 text-center text-[11px] font-medium uppercase tracking-wide text-slate-400 whitespace-nowrap">
-                        Source
-                      </TableHead>
+                      <ColHeader
+                        className="pb-2 pr-2 text-center text-[11px] font-medium uppercase tracking-wide text-slate-400 whitespace-nowrap"
+                        label="Source"
+                        source="This app"
+                        tip="How the domain entered your list: Manual if you typed it in, otherwise it came from DataForSEO SERP discovery and you approved it."
+                      />
                       <TableHead className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-slate-400 whitespace-nowrap">
                         Actions
                       </TableHead>
@@ -634,7 +718,12 @@ export function CompetitorsPanel({
                   <Table className="min-w-[1180px] w-full text-sm">
                     <TableHeader>
                       <TableRow className="border-b border-line text-left text-xs font-medium uppercase tracking-wider text-slate-400">
-                        <TableHead className="pb-2 pr-3 whitespace-nowrap">Domain</TableHead>
+                        <ColHeader
+                        className="pb-2 pr-3 whitespace-nowrap"
+                        label="Domain"
+                        source="Your competitor list"
+                        tip="A competitor storefront. Added manually or promoted from SERP discovery. Deleting one also blocklists it so discovery stops re-suggesting it."
+                      />
                         <LabsMetricHeaders />
                         <TableHead className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-slate-400 whitespace-nowrap">
                           Actions
@@ -692,7 +781,12 @@ export function CompetitorsPanel({
               <Table className="min-w-[1180px] w-full text-sm">
                 <TableHeader>
                   <TableRow className="border-b border-line text-left text-xs font-medium uppercase tracking-wider text-slate-400">
-                    <TableHead className="pb-2 pr-3 whitespace-nowrap">Domain</TableHead>
+                    <ColHeader
+                        className="pb-2 pr-3 whitespace-nowrap"
+                        label="Domain"
+                        source="Your competitor list"
+                        tip="A competitor storefront. Added manually or promoted from SERP discovery. Deleting one also blocklists it so discovery stops re-suggesting it."
+                      />
                     <LabsMetricHeaders />
                     <TableHead className="pb-2 pr-2 text-center text-[11px] font-medium uppercase tracking-wide text-slate-400 whitespace-nowrap">
                       Source
@@ -734,5 +828,6 @@ export function CompetitorsPanel({
         </div>
       )}
     </div>
+    </TooltipProvider>
   );
 }

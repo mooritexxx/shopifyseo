@@ -249,6 +249,7 @@ _COMPETITOR_PROFILE_COLS = [
     "labs_rating",
     "authority_score",
     "authority_rank",
+    "referring_domains",
 ]
 _COMPETITOR_PROFILE_SELECT = ", ".join(_COMPETITOR_PROFILE_COLS)
 
@@ -272,6 +273,7 @@ def _zero_competitor_profile(domain: str) -> dict:
         # NULL, not 0 — an unscored domain is unknown, not zero authority.
         "authority_score": None,
         "authority_rank": None,
+        "referring_domains": None,
     }
 
 

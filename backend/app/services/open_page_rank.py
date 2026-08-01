@@ -15,14 +15,14 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from urllib.parse import urlencode
 
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_http import HttpRequestError, request_json
 
 logger = logging.getLogger(__name__)
 
-OPR_BASE = "https://openpagerank.keywordseverywhere.com/api/v1.0"
+# POST with a JSON body — see https://openpagerank.keywordseverywhere.com/docs
+OPR_BULK_URL = "https://openpagerank.keywordseverywhere.com/v1/domains/bulk"
 OPR_SETTING_KEY = "open_page_rank_api_key"
 
 # The API accepts up to 100 domains per call.
@@ -43,11 +43,21 @@ def _chunk(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def fetch_domain_authority(api_key: str, domains: list[str]) -> dict[str, dict]:
-    """Return ``{domain: {"authority": float, "rank": int|None}}`` for *domains*.
+def _opt_int(raw) -> int | None:
+    if raw in (None, "", "N/A"):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
-    Domains Open PageRank does not know are omitted from the result rather than
-    returned as 0 — an unranked domain is unknown, not authority zero.
+
+def fetch_domain_authority(api_key: str, domains: list[str]) -> dict[str, dict]:
+    """Return ``{domain: {"authority", "rank", "referring_domains"}}`` for *domains*.
+
+    Domains Open PageRank does not know come back with ``found: false`` and are
+    omitted from the result rather than recorded as 0 — an unindexed domain is
+    unknown, not authority zero.
     """
     key = (api_key or "").strip()
     if not key:
@@ -59,35 +69,36 @@ def fetch_domain_authority(api_key: str, domains: list[str]) -> dict[str, dict]:
     out: dict[str, dict] = {}
     batches = _chunk(uniq, OPR_BATCH_SIZE)
     for idx, batch in enumerate(batches):
-        query = urlencode([("domains[]", d) for d in batch])
-        url = f"{OPR_BASE}/getPageRank?{query}"
         try:
-            resp = request_json(url, method="GET", headers=_auth_headers(key), timeout=60)
+            resp = request_json(
+                OPR_BULK_URL,
+                method="POST",
+                headers=_auth_headers(key),
+                payload={"domains": batch, "include_history": False},
+                timeout=60,
+            )
         except HttpRequestError as exc:
             _raise_opr_http_error(exc.status, (exc.body or "")[:300])
         if not isinstance(resp, dict):
             raise RuntimeError("Open PageRank returned a non-object response.")
-        for row in resp.get("response") or []:
+        for row in resp.get("results") or []:
             if not isinstance(row, dict):
                 continue
             domain = (row.get("domain") or "").strip().lower()
-            if not domain:
+            if not domain or not row.get("found"):
                 continue
-            # status_code 200 means the domain is in the index; 404 means unknown.
-            if int(row.get("status_code") or 0) != 200:
-                continue
-            raw = row.get("page_rank_decimal")
+            raw = row.get("open_page_rank")
             if raw in (None, "", "N/A"):
                 continue
             try:
                 authority = float(raw)
             except (TypeError, ValueError):
                 continue
-            try:
-                rank = int(row.get("rank")) if row.get("rank") not in (None, "", "N/A") else None
-            except (TypeError, ValueError):
-                rank = None
-            out[domain] = {"authority": authority, "rank": rank}
+            out[domain] = {
+                "authority": authority,
+                "rank": _opt_int(row.get("rank")),
+                "referring_domains": _opt_int(row.get("referring_domains")),
+            }
         if idx < len(batches) - 1:
             time.sleep(OPR_BATCH_DELAY_SEC)
     return out
@@ -96,7 +107,10 @@ def fetch_domain_authority(api_key: str, domains: list[str]) -> dict[str, dict]:
 def _raise_opr_http_error(status: int | None, body: str) -> None:
     if status == 401:
         raise RuntimeError(
-            "Open PageRank: authentication failed (401). Check the API key in Settings > Integrations."
+            "Open PageRank: authentication failed (401). Keys for this API start with "
+            "'opr_live_' — a bare 20-character hex string is a legacy domcop key and is no "
+            "longer accepted. Copy the current key from your Open PageRank dashboard into "
+            "Settings > Integrations."
         )
     if status == 403:
         raise RuntimeError(f"Open PageRank: forbidden (403). {body}")
@@ -131,12 +145,14 @@ def refresh_competitor_authority(conn: sqlite3.Connection) -> dict:
         conn.execute(
             """
             UPDATE competitor_profiles
-               SET authority_score = ?, authority_rank = ?, authority_updated_at = ?
+               SET authority_score = ?, authority_rank = ?,
+                   referring_domains = ?, authority_updated_at = ?
              WHERE domain = ?
             """,
             (
                 hit["authority"] if hit else None,
                 hit["rank"] if hit else None,
+                hit["referring_domains"] if hit else None,
                 now,
                 domain,
             ),

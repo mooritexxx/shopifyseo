@@ -75,6 +75,12 @@ function LabsMetricHeaders() {
       >
         Auth.
       </TableHead>
+      <TableHead
+        className={metricTh}
+        title="Open PageRank: authority-weighted count of domains linking to this one."
+      >
+        Ref. dom
+      </TableHead>
       <TableHead className={metricTh} title="Labs serp_competitors rating">
         Labs rt
       </TableHead>
@@ -105,6 +111,11 @@ function LabsMetricCells({ row }: { row: CompetitorProfileRow }) {
         {row.authority_score === null || row.authority_score === undefined
           ? "—"
           : row.authority_score.toFixed(2)}
+      </TableCell>
+      <TableCell className={metricTd}>
+        {row.referring_domains === null || row.referring_domains === undefined
+          ? "—"
+          : fmtInt(row.referring_domains)}
       </TableCell>
       <TableCell className={metricTd}>{fmtInt(row.labs_rating)}</TableCell>
       <TableCell className={metricTd}>{fmtVis(row.labs_visibility)}</TableCell>

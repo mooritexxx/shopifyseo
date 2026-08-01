@@ -397,6 +397,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             # is not in the index; 0.0 is a real score, so these must stay nullable.
             "authority_score": "REAL",
             "authority_rank": "INTEGER",
+            "referring_domains": "INTEGER",
             "authority_updated_at": "INTEGER",
         },
     )

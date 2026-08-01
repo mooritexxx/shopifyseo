@@ -85,6 +85,7 @@ export const competitorProfileSchema = z.object({
   // is not in the index. 0 is a real score, so it must not stand in for unknown.
   authority_score: z.number().nullable().optional().default(null),
   authority_rank: z.number().nullable().optional().default(null),
+  referring_domains: z.number().nullable().optional().default(null),
 });
 
 export const competitorResearchMetaSchema = z

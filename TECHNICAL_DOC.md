@@ -161,6 +161,10 @@ Article draft generation now persists `article_draft_runs` and uses a canonical 
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
 
+**End-to-end data lineage:** [docs/article-draft-data-pipeline.md](docs/article-draft-data-pipeline.md) traces every
+data point behind a drafted article — seed generation → DataForSEO research → GSC enrichment → approve/dismiss →
+clusters → idea generation → SERP snapshot → draft context assembly → compliance gates.
+
 #### Article idea cluster linkage
 
 Article ideas are generated from keyword-cluster data. The generation prompt asks the model for a real
@@ -490,6 +494,7 @@ which rows match.
 
 - **Not inferred from `TODO` comments** in application source (none found in a quick `TODO|FIXME` scan of `*.py` / `*.ts` / `*.tsx` excluding tests).
 - **Operator-maintained gaps:** any roadmap items should be recorded here when known.
+- **`indexing_candidates` is deliberately absent from `/api/summary`.** It was removed during the overview redesign rather than lost. To restore: bring back `build_indexing_candidates` in `overview_metrics.py`, add the fields to `DashboardSummary` + `summarySchema`, compute it in `get_dashboard_summary`, and render it on a dedicated Indexing view — *not* as a queue on the overview, which was the explicit reason for removal. Background: [docs/archive/overview-dashboard-plan.md](docs/archive/overview-dashboard-plan.md).
 
 ---
 

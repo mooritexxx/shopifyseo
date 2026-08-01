@@ -34,6 +34,8 @@ flowchart LR
 
 ## Further reading
 
-- [TECHNICAL_DOC.md](../TECHNICAL_DOC.md) — deeper technical reference when present in the tree; see its **Performance Invariants** section before changing catalog read paths, the AI context builder, or the list tables
+- [TECHNICAL_DOC.md](../TECHNICAL_DOC.md) — deeper technical reference; see its **Performance Invariants** section before changing catalog read paths, the AI context builder, or the list tables
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — dev setup and PR expectations
 - [AGENTS.md](../AGENTS.md) — maintainer/agent workflow for building and testing locally
+- [seo-database-blueprint.md](seo-database-blueprint.md) — per-table index of stored SEO data points
+- [archive/](archive) — completed plans and shipped design specs, kept for decision history

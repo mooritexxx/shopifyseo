@@ -165,11 +165,6 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-8 pb-8">
-      {/* Open PageRank domain authority for the storefront */}
-      <section>
-        <SiteAuthorityCard />
-      </section>
-
       {/* Site-level GSC — property totals + trend (Phase 1) */}
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -242,7 +237,7 @@ export function OverviewPage() {
         ) : (
           <>
             <div
-              className="flex gap-4 overflow-x-auto pb-1 max-sm:snap-x max-sm:snap-mandatory sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-5"
+              className="flex gap-4 overflow-x-auto pb-1 max-sm:snap-x max-sm:snap-mandatory sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-6"
               role="group"
               aria-label="Search Console KPIs"
             >
@@ -314,6 +309,7 @@ export function OverviewPage() {
                 value={gsc.cache.label || "—"}
                 hint={overviewCacheHint(gsc.cache)}
               />
+              <SiteAuthorityCard className="min-w-[220px] shrink-0 sm:min-w-0" />
             </div>
 
             {data.gsc_property_breakdowns.available ? (

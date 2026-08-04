@@ -100,11 +100,11 @@ Two independent pipelines write into the same target keyword store.
 
 Seeds are batched 5 at a time ([`batch_seeds`](../backend/app/services/keyword_research/keyword_utils.py#L354)); all calls filter `max_difficulty=70` and use the primary market's location/language codes.
 
-| DataForSEO Labs endpoint | Purpose | `source_endpoint` tag |
+| DataForSEO endpoint | Purpose | `source_endpoint` tag |
 |---|---|---|
-| `keyword_suggestions` | phrase-match expansions | `keywords_explorer` |
-| `google_autocomplete` | autocomplete expansions | `keywords_explorer` |
-| `keyword_ideas` | related ideas (200 seeds per chunk) | `keywords_explorer` |
+| `keyword_suggestions` (Labs) | phrase-match expansions | `keywords_explorer` |
+| `google_autocomplete` (**SERP API**, not Labs) | autocomplete strings, then enriched for volume/difficulty via a second `keyword_ideas` call | `keywords_explorer` |
+| `keyword_ideas` (Labs) | related ideas (200 seeds per chunk) | `keywords_explorer` |
 
 ### 2b. Competitor research
 
@@ -112,7 +112,7 @@ Seeds are batched 5 at a time ([`batch_seeds`](../backend/app/services/keyword_r
 
 | Endpoint | Purpose | Writes to |
 |---|---|---|
-| `serp_competitors` | discover domains ranking for your seeds | pending suggestions / `competitor_domains` |
+| `serp_competitors` | discover domains ranking for your seeds | auto-merged into `competitor_domains` when run as part of full competitor research; the separate `/discover-from-seed` endpoint is the actual pending-review flow |
 | `bulk_traffic_estimation` | full-domain organic ETV | `competitor_profiles.traffic` |
 | `ranked_keywords` (per domain) | keywords the competitor ranks for | keyword rows tagged `site_explorer` with `competitor_domain`, `competitor_position`, `competitor_url` |
 | `relevant_pages` (per domain) | their top pages by traffic | `competitor_top_pages` |
@@ -148,7 +148,7 @@ Competitor domains pass through a blocklist (`competitor_blocklist.py`) — reje
 
 ### Opportunity score
 
-[`compute_opportunity`](../backend/app/services/keyword_research/keyword_utils.py#L192) — `OPPORTUNITY_SCORING_VERSION = 4`
+[`compute_opportunity`](../backend/app/services/keyword_research/keyword_utils.py#L192) — `OPPORTUNITY_SCORING_VERSION = 4` (constant lives in `keyword_db.py:17`)
 
 | Weight | Component |
 |---|---|
@@ -213,7 +213,7 @@ Statuses: `new` / `approved` / `dismissed`.
 
 Two consequences:
 
-1. **Metric refresh only touches approved keywords** — [`refresh_target_keyword_metrics`](../backend/app/services/keyword_research/research_runner.py#L615) raises if none are approved, and only sends approved keywords to `keyword_overview`.
+1. **Metric refresh only touches approved keywords** — [`refresh_target_keyword_metrics`](../backend/app/services/keyword_research/research_runner.py#L596) raises if none are approved (check at L621), and only sends approved keywords to `keyword_overview`.
 2. **Clustering only reads approved keywords** — [`load_approved_keywords`](../backend/app/services/keyword_research/keyword_db.py#L101) is `SELECT * FROM keyword_metrics WHERE status = 'approved'`.
 
 **A dismissed or never-approved keyword can never reach an article.** Everything from Part 5 onward inherits this filter.
@@ -233,9 +233,9 @@ Status is preserved across re-runs: [`merge_with_existing`](../backend/app/servi
 3. **Entity/intent guardrails** — [`partition_keywords_for_generation`](../backend/app/services/keyword_clustering/_planning.py#L391). Entity rules are built from Shopify vendors + collection titles + alias variants ([`load_entity_rules`](../backend/app/services/keyword_clustering/_planning.py#L192)). Competing brands stay in separate partitions unless the keyword carries a comparison signal ([`_has_comparison_signal`](../backend/app/services/keyword_clustering/_planning.py#L265)).
 4. **Pre-cluster** — partitions >60 keywords go through embedding `pre_cluster` at threshold 0.82.
 5. **LLM per bucket** — up to 4 in parallel. Schema `CLUSTERING_SCHEMA`: `{name, content_type, primary_keyword, content_brief, keywords}`. `content_type` ∈ `collection_page` / `product_page` / `blog_post` / `buying_guide` / `landing_page`. Prompt payload per keyword ([`_build_clustering_prompt`](../backend/app/services/keyword_clustering/_helpers.py#L141)): keyword, volume, difficulty, opportunity, intent, content_type, ranking_status, plus optional cps / format_hint / serp.
-6. **Deterministic re-scoring** — the model's `primary_keyword` is overridden by [`select_primary_keyword`](../backend/app/services/keyword_clustering/_scoring.py#L125), which blends embedding centrality (cosine to cluster centroid), opportunity, and content-type↔intent fit.
+6. **Deterministic re-scoring** — the model's `primary_keyword` is overridden by [`select_primary_keyword`](../backend/app/services/keyword_clustering/_scoring.py#L125). Per-keyword score (`_primary_keyword_score`, `_scoring.py#L96`): `0.45×opportunity + 0.25×centrality (cosine to cluster embedding centroid, lexical Jaccard fallback) + 0.15×log-scaled volume + 0.10×content-type↔intent fit + 0.05×ai_bonus (matches the LLM's originally suggested primary_keyword)`.
 7. **Aggregate stats** — [`_compute_cluster_stats`](../backend/app/services/keyword_clustering/_helpers.py#L81): `total_volume`, `avg_difficulty` (unknowns excluded), `avg_opportunity`, `avg_cps`, `dominant_serp_features` (top 3), `content_format_hints` (top 2).
-8. **Post-process** — merge cos-similar clusters, fold singletons, then [`repair_and_enrich_clusters`](../backend/app/services/keyword_clustering/_planning.py#L780) splits oversized/mixed-intent clusters and writes the planning columns.
+8. **Post-process** — merge cos-similar clusters, fold singletons, then [`repair_and_enrich_clusters`](../backend/app/services/keyword_clustering/_planning.py#L780) splits clusters where `size > max_size` OR `_has_mixed_entities` (mixed brand/product entities, not intent directly — `_planning.py#L796`) OR `quality_score < 68.0`, and writes the planning columns.
 9. **Page matching** — a second LLM call maps each cluster to an existing `collection` / `page` / `blog_article`, or `new`. Result stored as `match_type` / `match_handle` / `match_title`. **This becomes the article's primary internal link target.**
 10. **Save** — `DELETE FROM clusters` (cascades), then re-insert. Clusters are fully regenerated each run; ids change.
 
@@ -247,7 +247,7 @@ Status is preserved across re-runs: [`merge_with_existing`](../backend/app/servi
 | `cluster_intent` | dominant keyword intent |
 | `cluster_role` | e.g. `brand_collection`, `comparison`, `buying_guide`, `troubleshooting`, `faq`, `local`, `generic` |
 | `quality_score` | cluster coherence; multiplies priority |
-| `cannibalization_risk` | `high` (≥3 distinct pages in `keyword_page_map` rank for these keywords), `medium` (2), `low` (1 well-ranked ≤ pos 20), `none` — [`_cannibalization_risk`](../backend/app/services/keyword_clustering/_planning.py#L545) |
+| `cannibalization_risk` | `high` (≥3 distinct pages present in `keyword_page_map` for these keywords, position not considered), `medium` (2, position not considered), `low` (1 page, and only counts if ranked ≤ pos 20), `none` — [`_cannibalization_risk`](../backend/app/services/keyword_clustering/_planning.py#L545) |
 | `core_keywords_json` / `supporting_keywords_json` / `extended_keywords_json` | tiers from [`keyword_tiers`](../backend/app/services/keyword_clustering/_planning.py#L602) |
 | `priority_score` | cluster ordering (distinct from `avg_opportunity`) |
 
@@ -269,7 +269,7 @@ Status is preserved across re-runs: [`merge_with_existing`](../backend/app/servi
 
 | # | Bucket | Rule | Source |
 |---|---|---|---|
-| 1 | `cluster_gaps` | Top 12 clusters with `content_type IN ('blog_post','buying_guide')` and **no** `blog_articles` row whose `title`/`seo_title`/`body` contains the primary keyword. Each enriched with top 8 keywords by opportunity, tiers, coverage ratio vs the matched page's content, and `existing_page` (best-ranking page from `keyword_page_map`) | clusters + keyword_metrics + keyword_page_map |
+| 1 | `cluster_gaps` | Top 12 clusters with `content_type IN ('blog_post','buying_guide')` and **no** `blog_articles` row whose `title`/`seo_title`/`body` contains the primary keyword. Each enriched with top 8 keywords by opportunity (top 5 only when the cluster has no parsed `core_keywords`/`supporting_keywords` tiers — legacy clusters), tiers, coverage ratio vs the matched page's content, and `existing_page` (best-ranking page from `keyword_page_map`). **Only the first 10 of these 12 clusters are re-sorted and rendered into the idea-generation prompt** (`_article_ideas.py:295`, `cluster_candidates[:10]`); all 12 remain available for post-processing / `_best_cluster_for_idea` matching | clusters + keyword_metrics + keyword_page_map |
 | 2 | `collection_gaps` | Collections with `gsc_impressions > 200` and no article mentioning the title/handle. Limit 8 | **GSC** |
 | 3 | `informational_query_gaps` | `gsc_query_rows` on product/collection/page objects where the query starts with how/best/top/what/why/guide/review, or contains `vs`/`difference`/the market country name — and no article title matches. Limit 15 | **GSC** |
 | 4 | `existing_article_titles` | Last 30 by `published_at` — negative examples | Shopify catalog |
@@ -409,7 +409,7 @@ Assembled in this order into a shared grounding string used by every phase:
 | Block | Content | Source |
 |---|---|---|
 | `topic` | the article subject | request |
-| `_cluster_brief_section` | cluster name, `cluster_role` ("article role in cluster"), `cluster_intent`, `detected_entity` as E-E-A-T centrepiece, cannibalization warning (only when `medium`/`high`), `content_brief` (trimmed to 1200 chars) | `clusters` |
+| `_cluster_brief_section` | cluster name, `cluster_role` ("article role in cluster"), `cluster_intent`, `detected_entity` as E-E-A-T centrepiece, cannibalization warning (fires whenever risk is not `none`/`low`/empty — i.e. `medium`/`high` given the current value domain, `_article_draft.py#L376`), `content_brief` (trimmed to 1200 chars) | `clusters` |
 | `_cluster_kw_table_section` | up to 30 keywords ordered by `opportunity DESC NULLS LAST`, each with vol / KD / intent / status / pos / gsc_clicks / gsc_impressions / tp / serp / opp / format. Prefixes: `⭐` = has GSC clicks and not already top-10 (never drop on regen), `★` = quick-win/striking-distance, `-` = other. Framed as a *coverage checklist* | `cluster_keywords ⋈ keyword_metrics` |
 | `_cluster_siblings_section` | up to 10 sibling articles as `/blogs/{blog}/{article}` — prioritized for interlinking over RAG matches | `idea_articles` |
 | `_idea_meta_section` | total_volume, avg KD, opportunity, est. traffic, intent → converted into a **depth directive** (≥10,000 = comprehensive long-form; ≥1,000 = deep on a focused angle; else tight long-tail) and an **intent framing directive** (commercial → lead with the buying decision; informational → lead with the direct answer; navigational → make the destination unambiguous) | `article_ideas` |
@@ -474,7 +474,10 @@ Phased path ([`_try_phased`](../shopifyseo/dashboard_ai_engine_parts/_article_dr
 5. **validation repair** — targeted retries against compliance gaps (Part 9)
 6. **content_checkpoint** — body persisted so a failed run can resume
 7. **images** — featured 16:9 → 1600×900 WebP, inline 3:2 → 1200×800 WebP, with SEO filenames and generated alt text
-8–11. Shopify create/update, local save, keyword persistence, redirect
+8. **insert_body_images** (`blogs.py`, step_index 8, not separately named in earlier drafts of this doc)
+9. **shopify** — Shopify create/update
+10. **attach_featured_image**
+11. **local_save** — includes keyword persistence (`_persist_article_locally` calls `save_article_target_keywords` in the same step). No separate "redirect" step or URL-redirect logic exists anywhere in this pipeline; the earlier "redirect" entry was incorrect.
 
 A single-shot path with retries exists as a fallback ([`_single_shot_with_retries`](../shopifyseo/dashboard_ai_engine_parts/_article_draft.py#L2195)).
 
@@ -519,7 +522,7 @@ So for any drafted article: two keywords are *guaranteed*, tier-1 related search
 | # | Issue | Location |
 |---|---|---|
 | 1 | **Vape-specific hardcoding in generic paths.** The industry seed list, the `{vendor} vape` seed expansions, and the clustering system prompt (`"…for a {country} online vape store"`, example `'Elf Bar Disposable Vapes'`) are baked in, not derived from the catalog or `store_description` | [keywords.py:129,158](../backend/app/routers/keywords.py#L129), [_helpers.py:145](../backend/app/services/keyword_clustering/_helpers.py#L145) |
-| 2 | **Unknown KD leaks as `KD:0` into the idea prompt.** `TECHNICAL_DOC.md` forbids `COALESCE(difficulty, 0)`. Competitor-gap rows use `int(r[3] or 0)` and then render `KD:{difficulty}` unconditionally, so an unknown-difficulty competitor keyword reads to the model as "trivially easy". The cluster paths use the same `COALESCE` but guard with a truthiness check before printing, so they are safe by accident, not by design | [dashboard_article_ideas.py:508](../shopifyseo/dashboard_article_ideas.py#L508) vs [_article_ideas.py:422](../shopifyseo/dashboard_ai_engine_parts/_article_ideas.py#L422) |
+| 2 | **Unknown KD leaks as `KD:0` into the idea prompt — on *both* paths, not just one.** `TECHNICAL_DOC.md` forbids `COALESCE(difficulty, 0)`. Competitor-gap rows use `int(r[3] or 0)` then render `KD:{difficulty}` unconditionally ([_article_ideas.py:422](../shopifyseo/dashboard_ai_engine_parts/_article_ideas.py#L422), competitor_gap_lines) and [dashboard_article_ideas.py:508](../shopifyseo/dashboard_article_ideas.py#L508). The **cluster** keyword render in the same idea-generation prompt ([_article_ideas.py:367](../shopifyseo/dashboard_ai_engine_parts/_article_ideas.py#L367), `top_keywords` loop) is *also* unconditional — no truthiness guard, unlike the neighboring `cpc_str`/`cpc_badge` fields which are guarded. The truthiness-guarded pattern does exist, but only at **draft time** in a different file/prompt: [_article_draft.py:559-560](../shopifyseo/dashboard_ai_engine_parts/_article_draft.py#L559) (`_cluster_kw_table_section`). So the idea-generation prompt (Part 6d) leaks `KD:0` on every keyword path, unguarded; only the later draft-context prompt (Part 8a) is safe | see citations above |
 | 3 | **Only 5 request keywords reach the visible keyword block.** `keywords[:5]` caps `keyword_section`, though all of them reach the canonical brief. Users pasting 10 keywords into the modal will see 5 in that block | [_article_draft.py:828](../shopifyseo/dashboard_ai_engine_parts/_article_draft.py#L828) |
 | 4 | **Cluster ids are unstable.** `generate_clusters` does `DELETE FROM clusters` and re-inserts, so `article_ideas.linked_cluster_id` on older ideas can point at a cluster that no longer means the same thing. The doc already covers manual repair; there is no automatic re-link | [_generation.py:487](../backend/app/services/keyword_clustering/_generation.py#L487) |
 | 5 | **PAA expansion is empty at idea generation.** `expand_paa=False` on the bulk path, so `paa_expansion_json` is `[]` until someone hits "refresh SERP" on the idea. The draft's PAA-hierarchy prompt section is therefore usually absent on first draft | [audience_questions_api.py:968](../shopifyseo/audience_questions_api.py#L968) |

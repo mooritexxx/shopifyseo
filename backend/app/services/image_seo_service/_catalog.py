@@ -438,6 +438,8 @@ def _list_catalog_image_seo_rows_impl(
         )
         if not matches_search(title, handle):
             continue
+        if rt_f and rt_f != "product":
+            continue
         roles, role_for, variant_labels, _is_feat = _role_and_variants(
             prod_id, url, featured_by_product, variants_map
         )
@@ -467,8 +469,6 @@ def _list_catalog_image_seo_rows_impl(
             cached_mime=gallery_cache_info.get(img_id, ("", None))[0],
             file_size_bytes=gallery_cache_info.get(img_id, ("", None))[1],
         )
-        if rt_f and rt_f != "product":
-            continue
         if _passes_filters(row, missing_alt=missing_alt, weak_filename=weak_filename, status=status):
             items.append(row)
 

@@ -518,3 +518,41 @@ def test_sync_competitor_top_pages_from_keyword_metrics_limits_per_domain():
     assert len(rows) == 50
     assert rows[0]["url"] == "https://example.com/page-0"
     assert rows[-1]["url"] == "https://example.com/page-49"
+
+
+def _flat_labs_response(items):
+    """keyword_suggestions / keyword_ideas items are keyword_data blocks directly."""
+    return {
+        "status_code": 20000,
+        "cost": 0.02,
+        "tasks": [{"status_code": 20000, "result": [{"items": items}]}],
+    }
+
+
+_FLAT_LABS_ITEMS = [
+    {
+        "keyword": "elf bar canada",
+        "keyword_info": {"search_volume": 4400, "cpc": 1.25},
+        "keyword_properties": {"keyword_difficulty": 42, "core_keyword": "elf bar"},
+    },
+    {
+        "keyword": "elf bar bc5000",
+        "keyword_info": {"search_volume": 880},
+        "keyword_properties": {"keyword_difficulty": 17},
+    },
+]
+
+
+@pytest.mark.parametrize("func_name", ["call_keyword_suggestions", "call_keyword_ideas"])
+def test_flat_labs_items_parsed_without_keyword_data_wrapper(monkeypatch, func_name):
+    from backend.app.services.keyword_research import dataforseo_client as dfs
+
+    monkeypatch.setattr(dfs, "_dfs_post", lambda *_a, **_kw: _flat_labs_response(_FLAT_LABS_ITEMS))
+    rows, cost = getattr(dfs, func_name)("login", "password", ["elf bar"])
+
+    assert [r["keyword"] for r in rows] == ["elf bar canada", "elf bar bc5000"]
+    assert [r["volume"] for r in rows] == [4400, 880]
+    assert [r["difficulty"] for r in rows] == [42, 17]
+    assert rows[0]["parent_topic"] == "elf bar"
+    assert rows[0]["cpc"] == 1.25
+    assert cost == 0.02

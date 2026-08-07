@@ -380,10 +380,8 @@ def call_keyword_suggestions(
         for t in resp.get("tasks") or []:
             for res in t.get("result") or []:
                 for item in res.get("items") or []:
-                    kd = item.get("keyword_data")
-                    if not isinstance(kd, dict):
-                        continue
-                    row = _keyword_data_block_to_explorer_row(kd, source_endpoint="keywords_explorer")
+                    # keyword_suggestions items ARE keyword_data blocks directly
+                    row = _keyword_data_block_to_explorer_row(item, source_endpoint="keywords_explorer")
                     if row["keyword"]:
                         rows.append(row)
     return rows, total_cost
@@ -461,10 +459,8 @@ def call_keyword_ideas(
         for t in resp.get("tasks") or []:
             for res in t.get("result") or []:
                 for item in res.get("items") or []:
-                    kd = item.get("keyword_data")
-                    if not isinstance(kd, dict):
-                        continue
-                    row = _keyword_data_block_to_explorer_row(kd, source_endpoint="keywords_explorer")
+                    # keyword_ideas items ARE keyword_data blocks directly
+                    row = _keyword_data_block_to_explorer_row(item, source_endpoint="keywords_explorer")
                     if row["keyword"]:
                         all_rows.append(row)
     return all_rows, total_cost

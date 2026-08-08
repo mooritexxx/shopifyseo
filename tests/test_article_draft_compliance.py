@@ -1,5 +1,7 @@
 """Unit tests for article_draft_compliance helpers."""
 
+import html
+
 from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
     COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
     MIN_ARTICLE_BODY_HTML_CHARS,
@@ -10,6 +12,7 @@ from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
     length_only_article_compliance_gaps,
     mixed_length_and_serp_compliance_gaps,
     primary_keyword_in_body,
+    strip_html_for_compliance_search,
     tier1_related_search_heading_gaps,
     validate_article_draft_compliance,
 )
@@ -127,6 +130,30 @@ def test_faqpage_alignment_passes_when_question_in_visible_text():
     )
     body = f"<h2>FAQ</h2><h3>{q}</h3><p>No — check compatibility.</p>" + script + "<p>" + ("x " * 9000) + "</p>"
     assert extract_faqpage_question_names_from_body(body) == [q]
+    assert faqpage_visible_alignment_gaps(body) == []
+
+
+def test_strip_html_for_compliance_search_unescapes_entities():
+    body = "<p>What&#x27;s the best pod &amp; system?</p>"
+    assert strip_html_for_compliance_search(body) == "what's the best pod & system?"
+
+
+def test_faqpage_alignment_passes_when_question_has_escaped_apostrophe_in_visible_text():
+    # _append_faq_answers writes questions into the body via html.escape(q, quote=True),
+    # so the visible text carries entities (&#x27;, &amp;) that must round-trip back to
+    # match the schema's raw question text.
+    q = "What's the best disposable vape & pod system?"
+    escaped_q = html.escape(q)
+    script = (
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@type":"FAQPage","mainEntity":['
+        '{"@type":"Question","name":"' + q.replace('"', '\\"') + '",'
+        '"acceptedAnswer":{"@type":"Answer","text":"It depends on the device."}}]}'
+        "</script>"
+    )
+    body = (
+        f"<h2>FAQ</h2><h3>{escaped_q}</h3><p>It depends on the device.</p>" + script + "<p>" + ("x " * 9000) + "</p>"
+    )
     assert faqpage_visible_alignment_gaps(body) == []
 
 

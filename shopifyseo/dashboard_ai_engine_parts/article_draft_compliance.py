@@ -26,6 +26,7 @@ def strip_html_for_compliance_search(html: str) -> str:
     """Lowercase plain text for substring checks (scripts removed)."""
     s = _SCRIPT_RE.sub(" ", html or "")
     s = _TAG_RE.sub(" ", s)
+    s = html_module.unescape(s)
     s = re.sub(r"\s+", " ", s).strip().lower()
     for ch in ("\u2019", "\u2018", "\u2032", "\u00b4"):
         s = s.replace(ch, "'")

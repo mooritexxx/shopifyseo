@@ -13,7 +13,7 @@ with the code, the code wins and the map is the bug.
 | `shopifyseo/` | 82 | ~33.3k |
 | `frontend/src/` | 123 | ~29.5k |
 | `backend/app/` | 71 | ~17.3k |
-| `tests/` | 73 | ~12.1k |
+| `tests/` | 74 | ~12.3k |
 
 ---
 

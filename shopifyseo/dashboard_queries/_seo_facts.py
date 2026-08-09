@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any
 
 from ..dashboard_insights import opportunity_priority
+from ..dashboard_status import index_status_bucket_from_strings
 
 from ._basic_fetchers import (
     fetch_blog_articles_for_facts,
@@ -67,8 +68,10 @@ def _seo_base_score(object_type: str, obj: dict[str, Any], product_count: int = 
         deductions += 10
         reasons.append("empty collection")
 
-    index_status = (obj.get("index_status") or "").lower()
-    if index_status and "indexed" not in index_status:
+    index_bucket = index_status_bucket_from_strings(
+        obj.get("index_status") or "", obj.get("index_coverage") or ""
+    )
+    if index_bucket == "not_indexed":
         deductions += 20
         reasons.append("not indexed")
 

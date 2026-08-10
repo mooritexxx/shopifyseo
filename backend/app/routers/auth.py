@@ -46,8 +46,11 @@ def google_auth_start(request: Request):
 
 @router.get("/auth/google/callback", name="google_auth_callback")
 def google_auth_callback(request: Request, state: str = "", code: str = ""):
-    if state != dg.GOOGLE_AUTH_STATE["value"]:
+    if not state or state != dg.GOOGLE_AUTH_STATE["value"]:
         return RedirectResponse(url="/app/settings?tab=data-sources&message=Google+OAuth+state+mismatch", status_code=303)
+    # Single-use: consume the state as soon as it validates so it cannot be replayed,
+    # whether or not the code exchange below succeeds.
+    dg.GOOGLE_AUTH_STATE["value"] = ""
     if not code:
         return RedirectResponse(url="/app/settings?tab=data-sources&message=Missing+Google+OAuth+code", status_code=303)
     dg.GOOGLE_REDIRECT_URI = _redirect_uri(request)

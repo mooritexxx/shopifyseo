@@ -177,6 +177,84 @@ def test_cluster_gaps_have_existing_page_from_keyword_page_map(idea_conn: sqlite
     conn.close()
 
 
+def test_cluster_gap_not_suppressed_by_incidental_body_mention(idea_conn: sqlite3.Connection):
+    """An unrelated article that happens to contain the keyword as a body substring
+    must not count as "this cluster already has an article" — only a title/seo_title
+    match is a real coverage signal."""
+    conn = idea_conn
+    conn.execute(
+        """
+        INSERT INTO clusters
+          (name, content_type, primary_keyword, content_brief,
+           total_volume, avg_difficulty, avg_opportunity,
+           match_type, match_handle, match_title, generated_at)
+        VALUES ('E Bar Cluster', 'blog_post', 'e bar', 'Brief.',
+                1000, 20.0, 60.0, NULL, NULL, NULL, '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO blogs (shopify_id, title, handle, tags_json, raw_json, synced_at)
+        VALUES ('gid://shopify/Blog/1', 'News', 'news', '[]', '{}', '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO blog_articles
+          (shopify_id, blog_shopify_id, blog_handle, title, handle,
+           is_published, body, tags_json, raw_json, synced_at)
+        VALUES
+          ('gid://shopify/Article/1', 'gid://shopify/Blog/1', 'news',
+           'What Is a Geek Bar?', 'what-is-a-geek-bar', 1,
+           'This device has lowered the barrier to entry for new vapers.',
+           '[]', '{}', '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.commit()
+
+    data = fetch_article_idea_inputs(conn)
+    names = {cg["name"] for cg in data["cluster_gaps"]}
+    assert "E Bar Cluster" in names
+
+
+def test_cluster_gap_suppressed_by_real_title_match(idea_conn: sqlite3.Connection):
+    """A genuine title/seo_title match for the primary keyword should still count
+    as existing coverage."""
+    conn = idea_conn
+    conn.execute(
+        """
+        INSERT INTO clusters
+          (name, content_type, primary_keyword, content_brief,
+           total_volume, avg_difficulty, avg_opportunity,
+           match_type, match_handle, match_title, generated_at)
+        VALUES ('Covered Cluster', 'blog_post', 'vape news', 'Brief.',
+                1000, 20.0, 60.0, NULL, NULL, NULL, '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO blogs (shopify_id, title, handle, tags_json, raw_json, synced_at)
+        VALUES ('gid://shopify/Blog/1', 'News', 'news', '[]', '{}', '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO blog_articles
+          (shopify_id, blog_shopify_id, blog_handle, title, handle,
+           is_published, body, tags_json, raw_json, synced_at)
+        VALUES
+          ('gid://shopify/Article/2', 'gid://shopify/Blog/1', 'news',
+           'Latest Vape News', 'latest-vape-news', 1,
+           'Some body text.', '[]', '{}', '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.commit()
+
+    data = fetch_article_idea_inputs(conn)
+    names = {cg["name"] for cg in data["cluster_gaps"]}
+    assert "Covered Cluster" not in names
+
+
 def test_article_ideas_schema_has_new_columns(idea_conn: sqlite3.Connection):
     cols = {
         row[1]

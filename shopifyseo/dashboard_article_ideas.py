@@ -201,7 +201,6 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             WHERE (
                 LOWER(ba.title) LIKE '%' || LOWER(c.primary_keyword) || '%'
                 OR LOWER(ba.seo_title) LIKE '%' || LOWER(c.primary_keyword) || '%'
-                OR LOWER(ba.body) LIKE '%' || LOWER(c.primary_keyword) || '%'
             )
         )
         ORDER BY {cluster_order_sql}

@@ -30,9 +30,9 @@ from shopifyseo.embedding_store import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_conn() -> sqlite3.Connection:
-    """In-memory SQLite with all required tables."""
-    conn = sqlite3.connect(":memory:")
+def _make_conn(path: str = ":memory:") -> sqlite3.Connection:
+    """SQLite (in-memory by default) with all required tables."""
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE embeddings (
@@ -333,6 +333,51 @@ class TestSyncEmbeddings:
         result = sync_embeddings(conn, object_type="product")
         assert result.get("reason") == "no_api_key"
         assert result["embedded"] == 0
+
+    def test_commits_stale_chunk_delete_when_nothing_new_to_embed(self, tmp_path):
+        """A shrunk object (fewer chunks than before) must durably lose its trailing
+        chunks even when the surviving chunks are unchanged and nothing gets embedded."""
+        db_path = str(tmp_path / "embeddings_commit.sqlite3")
+        conn = _make_conn(db_path)
+        conn.execute(
+            "INSERT INTO blog_articles (handle, blog_handle, title, seo_title, seo_description, body) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("a1", "news", "Title", "SEO", "Desc", "<p>Body</p>"),
+        )
+        conn.execute("INSERT INTO service_settings (key, value) VALUES ('gemini_api_key', 'test-key')")
+        conn.commit()
+
+        handle = "news/a1"
+        surviving = ["chunk zero text", "chunk one text"]
+        stale = ["stale chunk two", "stale chunk three"]
+        for ci, text in enumerate(surviving + stale):
+            h = _md5(text)
+            conn.execute(
+                "INSERT INTO embeddings (object_type, object_handle, chunk_index, text_hash, model_version, "
+                "embedding, source_text_preview, token_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                ("blog_article", handle, ci, h, EMBEDDING_MODEL, _embed_to_blob([0.0] * EMBEDDING_DIMS), text[:200], 1),
+            )
+        conn.commit()
+
+        with patch("shopifyseo.embedding_store.build_embed_text", return_value=surviving):
+            result = sync_embeddings(conn, object_type="blog_article")
+
+        assert result["embedded"] == 0
+        assert result["skipped"] == len(surviving)
+        conn.close()
+
+        reconn = sqlite3.connect(db_path)
+        remaining = [
+            r[0]
+            for r in reconn.execute(
+                "SELECT chunk_index FROM embeddings WHERE object_type = 'blog_article' AND object_handle = ? "
+                "ORDER BY chunk_index",
+                (handle,),
+            ).fetchall()
+        ]
+        reconn.close()
+        assert remaining == [0, 1]
 
 
 class TestCannibalization:

@@ -803,6 +803,7 @@ def sync_embeddings(
             )
 
             if not texts_to_embed:
+                conn.commit()
                 continue
 
             for batch_start in range(0, len(texts_to_embed), BATCH_SIZE):

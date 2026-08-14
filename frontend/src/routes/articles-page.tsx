@@ -213,7 +213,7 @@ export function ArticlesPage() {
     let items = query.data?.items ?? [];
     if (focusMissingMeta) {
       items = items.filter(
-        (row) => !(row.seo_title || "").trim() && !(row.seo_description || "").trim()
+        (row) => !(row.seo_title || "").trim() || !(row.seo_description || "").trim()
       );
     }
     if (!queryText.trim()) return items;
@@ -277,7 +277,7 @@ export function ArticlesPage() {
           </p>
           {focusMissingMeta ? (
             <p className="mt-2 text-sm font-medium text-[#5746d9]">
-              Showing articles with SEO title and description both empty ·{" "}
+              Showing articles with SEO title or description missing ·{" "}
               <Button
                 variant="link"
                 className="h-auto p-0 text-inherit font-inherit underline-offset-4 hover:underline"

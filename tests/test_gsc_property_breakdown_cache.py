@@ -1,6 +1,32 @@
 import sqlite3
+from datetime import date
 
 from shopifyseo import dashboard_google as dg
+
+
+def test_fetch_gsc_property_breakdown_sorts_by_impressions_not_api_order(monkeypatch):
+    # The live searchAnalytics/query v3 API ignores the orderBys we send and always
+    # returns rows clicks-descending. Confirm the client re-sorts by impressions so
+    # callers reading rows[0] as "top bucket" (e.g. the Overview segment tile) get
+    # the right one even when the top-clicks row isn't the top-impressions row.
+    monkeypatch.setattr(dg._gsc, "get_google_access_token", lambda _conn: "token")
+    monkeypatch.setattr(
+        dg._gsc,
+        "google_api_post",
+        lambda *a, **k: {
+            "rows": [
+                {"keys": ["translated_result"], "clicks": 3, "impressions": 3, "ctr": 1.0, "position": 1.0},
+                {"keys": ["product_snippets"], "clicks": 0, "impressions": 17, "ctr": 0.0, "position": 2.0},
+            ]
+        },
+    )
+    conn = sqlite3.connect(":memory:")
+    rows, err = dg._gsc._fetch_gsc_property_breakdown(
+        conn, "sc-domain:example.com", date(2026, 8, 1), date(2026, 8, 14), dimension="searchAppearance"
+    )
+    assert err is None
+    assert rows[0]["keys"] == ["product_snippets"]
+    assert rows[0]["impressions"] == 17
 
 
 def test_top_bucket_impressions_pct_vs_prior_matches_same_key():

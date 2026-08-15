@@ -439,7 +439,6 @@ def _fetch_gsc_property_breakdown(
         "endDate": end.isoformat(),
         "dimensions": [dimension],
         "rowLimit": row_limit,
-        "orderBys": [{"metric": "IMPRESSIONS", "direction": "DESCENDING"}],
     }
     try:
         resp = google_api_post(
@@ -451,7 +450,11 @@ def _fetch_gsc_property_breakdown(
         return [], str(exc)
     except Exception as exc:
         return [], str(exc)
+    # searchAnalytics/query v3 has no orderBys field; the API always returns rows
+    # clicks-descending, so callers that need the top-impressions bucket (e.g. the
+    # Overview page's segment tile) must sort locally rather than trust row order.
     rows = _normalize_gsc_breakdown_rows(resp.get("rows") or [])
+    rows.sort(key=lambda r: (r["impressions"], r["clicks"]), reverse=True)
     return rows, None
 
 

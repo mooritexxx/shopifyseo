@@ -123,6 +123,8 @@ def _gsc_query_page_tables_uncached(raw: dict[str, Any]) -> bool:
         meta = s.get("_cache") or {}
         if not meta.get("exists"):
             return True
+        if (s.get("error") or "").strip() and meta.get("stale"):
+            return True
     return False
 
 

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from shopifyseo.api_usage import get_usage_summary, log_api_usage
+from shopifyseo.api_usage import _DEFAULT_PRICING, _lookup_pricing, get_usage_summary, log_api_usage
 
 
 @pytest.fixture()
@@ -29,6 +29,33 @@ def conn() -> sqlite3.Connection:
         """
     )
     return c
+
+
+def test_lookup_pricing_prefers_most_specific_key_for_flash_image() -> None:
+    """A dated/preview flash-image model must not be shadowed by the shorter "gemini-2.5-flash" key."""
+    assert _lookup_pricing("gemini-2.5-flash-image-preview") == (0.30, 30.00)
+
+
+def test_lookup_pricing_prefers_most_specific_key_for_flash_lite() -> None:
+    """A dated flash-lite model must not be shadowed by the shorter "gemini-2.5-flash" key."""
+    assert _lookup_pricing("gemini-2.5-flash-lite-preview-06-17") == (0.10, 0.40)
+
+
+def test_lookup_pricing_strips_models_prefix_before_specific_match() -> None:
+    assert _lookup_pricing("models/gemini-2.5-flash-image-preview") == (0.30, 30.00)
+
+
+def test_lookup_pricing_exact_and_family_keys_unchanged() -> None:
+    assert _lookup_pricing("gemini-2.5-flash") == (0.30, 2.50)
+    assert _lookup_pricing("gemini-2.5-flash-image") == (0.30, 30.00)
+    assert _lookup_pricing("gemini-2.5-flash-lite") == (0.10, 0.40)
+    assert _lookup_pricing("gemini-2.5-pro") == (1.25, 10.00)
+    # Prefix fallback still resolves a versioned model with no more specific sibling.
+    assert _lookup_pricing("gemini-2.0-flash-001") == (0.10, 0.40)
+
+
+def test_lookup_pricing_unknown_model_falls_back_to_default() -> None:
+    assert _lookup_pricing("some-unlisted-provider-model") == _DEFAULT_PRICING
 
 
 def test_log_api_usage_cost_override_skips_gemini_pricing(conn: sqlite3.Connection) -> None:

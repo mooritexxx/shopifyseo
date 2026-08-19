@@ -315,13 +315,26 @@ def run_ai_generation(db_path: str, scope: str, job_id: str) -> dict:
                 )
             state["done"] += 1
         _raise_if_ai_cancelled(job_id)
-        _finalize_ai_timeline(state, "complete", "AI generation complete")
+        final_stage = "complete" if state["successes"] else "error"
+        final_label = "AI generation complete" if state["successes"] else "AI generation failed"
+        _finalize_ai_timeline(state, final_stage, final_label)
         state["last_result"] = {
             "job_id": job_id,
             "scope": scope,
             "total": state["total"],
             "successes": state["successes"],
             "failures": state["failures"],
+        }
+        return dict(state["last_result"])
+    except AICancelledError:
+        _finalize_ai_timeline(state, "cancelled", "AI generation cancelled")
+        state["last_result"] = {
+            "job_id": job_id,
+            "scope": scope,
+            "total": state["total"],
+            "successes": state["successes"],
+            "failures": state["failures"],
+            "cancelled": True,
         }
         return dict(state["last_result"])
     finally:

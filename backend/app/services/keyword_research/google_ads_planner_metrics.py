@@ -14,10 +14,9 @@ from typing import Any, Callable
 import sqlite3
 
 from backend.app.services.google_ads_lab_service import invoke_keyword_planning_rpc
-from shopifyseo.dashboard_google import set_service_setting
 from shopifyseo.market_context import get_primary_country_code
 
-from .keyword_db import TARGET_KEY, load_target_keywords, sync_keyword_metrics_to_db
+from .keyword_db import load_target_keywords, save_target_keywords, sync_keyword_metrics_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +196,7 @@ def refresh_google_ads_planner_metrics(
     else:
         data.pop("ads_planner_refresh_errors", None)
 
-    set_service_setting(conn, TARGET_KEY, json.dumps(data, default=str))
+    save_target_keywords(conn, data, default=str)
     conn.commit()
 
     try:

@@ -733,6 +733,9 @@ def enrich_cluster_for_content(
             "is_tobacco": store_fit_result["is_tobacco"],
             "is_local": store_fit_result["is_local"],
             "is_off_niche": store_fit_result["is_off_niche"],
+            "is_wholesale": store_fit_result["is_wholesale"],
+            "is_non_catalog_brand": store_fit_result["is_non_catalog_brand"],
+            "is_ultra_generic": store_fit_result["is_ultra_generic"],
             "penalty_reason": store_fit_result["penalty_reason"],
         }
     base["name"] = _build_cluster_name(base, profile)

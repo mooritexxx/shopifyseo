@@ -14,9 +14,12 @@ from backend.app.services.keyword_research import (
 )
 from backend.app.services.keyword_research.keyword_db import (
     TARGET_KEY,
+    default_content_type_for_intent,
     load_approved_keywords,
     load_target_keywords,
+    normalize_target_keyword_item,
     sync_competitor_top_pages_from_keyword_metrics,
+    upsert_target_keyword,
 )
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_store import ensure_dashboard_schema
@@ -377,6 +380,55 @@ def test_load_target_keywords_null_blob_returns_empty():
     conn.commit()
     data = load_target_keywords(conn)
     assert data == {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+
+
+def test_load_target_keywords_fills_missing_content_type_key():
+    """Manual JSON rows that omit content_type must not break GET /target."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT)")
+    blob = {
+        "items": [
+            {"keyword": "vape shop canada", "status": "approved", "intent": "navigational"},
+            {"keyword": "online vape shop canada", "status": "approved"},
+        ],
+        "total": 2,
+    }
+    import json as _json
+    conn.execute(
+        "INSERT INTO service_settings (key, value) VALUES (?, ?)",
+        (TARGET_KEY, _json.dumps(blob)),
+    )
+    conn.commit()
+    data = load_target_keywords(conn)
+    assert len(data["items"]) == 2
+    assert "content_type" in data["items"][0]
+    assert data["items"][0]["content_type"] == "Brand page"  # from navigational intent
+    assert "content_type" in data["items"][1]
+    assert data["items"][1]["content_type"] == ""  # no intent → key present as ""
+
+
+def test_normalize_target_keyword_item_for_insert_uses_vocabulary():
+    item = normalize_target_keyword_item({"keyword": "x"}, for_insert=True)
+    assert item["content_type"] == "Blog / Guide"
+    assert item["content_type"] == default_content_type_for_intent(None)
+    commercial = normalize_target_keyword_item(
+        {"keyword": "y", "intent": "commercial"}, for_insert=True
+    )
+    assert commercial["content_type"] == "Comparison / Buying guide"
+
+
+def test_upsert_target_keyword_always_sets_content_type():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+    row = upsert_target_keyword(conn, "canadian vape store", intent="navigational")
+    assert row["content_type"] == "Brand page"
+    data = load_target_keywords(conn)
+    assert data["items"][0]["content_type"] == "Brand page"
+    # Second upsert without content_type keeps vocabulary
+    row2 = upsert_target_keyword(conn, "canadian vape store", status="approved")
+    assert row2["content_type"] == "Brand page"
 
 
 def _make_keyword_metrics_db() -> sqlite3.Connection:

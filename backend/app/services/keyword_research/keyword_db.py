@@ -9,12 +9,171 @@ from datetime import datetime, timezone
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
 from .competitor_blocklist import norm_competitor_domain
-from .keyword_utils import classify_ranking_status, match_gsc_queries, recompute_opportunity_scores
+from .keyword_utils import (
+    INTENT_TO_CONTENT,
+    classify_ranking_status,
+    match_gsc_queries,
+    recompute_opportunity_scores,
+)
 
 logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_keywords"
 OPPORTUNITY_SCORING_VERSION = 4
+
+# Canonical content_type labels written by research / upsert helpers.
+# Prefer these over null/"" when inserting new keywords.
+CONTENT_TYPE_VOCAB = (
+    "Blog / Guide",
+    "Product / Collection page",
+    "Comparison / Buying guide",
+    "Brand page",
+    "Local landing page",
+)
+
+# Zod previously required these keys to be present (nullable). Manual JSON inserts
+# that omit the key blank the Target Keywords tab — always materialize them on load/save.
+_NULLABLE_TARGET_FIELDS = (
+    "volume",
+    "difficulty",
+    "traffic_potential",
+    "cpc",
+    "intent",
+    "content_type",
+    "opportunity",
+)
+
+
+def default_content_type_for_intent(intent: str | None) -> str:
+    """Map intent → canonical content_type vocabulary (never None)."""
+    key = (intent or "").strip().lower()
+    if key in INTENT_TO_CONTENT:
+        return INTENT_TO_CONTENT[key]
+    return INTENT_TO_CONTENT["informational"]
+
+
+def normalize_target_keyword_item(item: dict, *, for_insert: bool = False) -> dict:
+    """Ensure fragile keys exist so partial rows cannot break GET /target.
+
+    ``content_type`` rules:
+    - If already a non-empty string, keep it.
+    - Else derive from ``intent`` via INTENT_TO_CONTENT.
+    - On insert/upsert paths (``for_insert=True``), always write a real vocabulary
+      value (default Blog / Guide) — never omit or leave null.
+    - On load of legacy rows, missing/None becomes derived value or "" so the
+      key is always present for the frontend schema.
+    """
+    if not isinstance(item, dict):
+        return item
+    for key in _NULLABLE_TARGET_FIELDS:
+        if key not in item:
+            item[key] = None
+    ct = item.get("content_type")
+    if isinstance(ct, str) and ct.strip():
+        item["content_type"] = ct.strip()
+    else:
+        intent = item.get("intent") if isinstance(item.get("intent"), str) else None
+        derived = default_content_type_for_intent(intent)
+        if for_insert or intent:
+            # New rows always get vocabulary; legacy rows with intent get derived label.
+            item["content_type"] = derived
+        else:
+            # Legacy manual rows with no intent: key must still be present.
+            item["content_type"] = ""
+    if not item.get("status"):
+        item["status"] = "new"
+    if item.get("ranking_status") is None:
+        item["ranking_status"] = "not_ranking"
+    return item
+
+
+def normalize_target_keywords_payload(data: dict, *, for_insert: bool = False) -> dict:
+    items = data.get("items")
+    if not isinstance(items, list):
+        data["items"] = []
+        data["total"] = 0
+        return data
+    clean = [
+        normalize_target_keyword_item(x, for_insert=for_insert)
+        for x in items
+        if isinstance(x, dict)
+    ]
+    data["items"] = clean
+    data["total"] = len(clean)
+    return data
+
+
+def save_target_keywords(conn: sqlite3.Connection, data: dict, *, default=None) -> None:
+    """Normalize then persist the target_keywords JSON blob."""
+    normalize_target_keywords_payload(data)
+    payload = json.dumps(data, default=default) if default is not None else json.dumps(data)
+    set_service_setting(conn, TARGET_KEY, payload)
+
+
+def upsert_target_keyword(
+    conn: sqlite3.Connection,
+    keyword: str,
+    *,
+    status: str = "approved",
+    intent: str | None = None,
+    content_type: str | None = None,
+    **fields,
+) -> dict:
+    """Insert or update one target keyword (manual / GSC-tracker bootstrap).
+
+    Always writes ``content_type`` using the real vocabulary (never omits the key).
+    Pass ``content_type`` explicitly, or it is derived from ``intent`` (default
+    informational → Blog / Guide).
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        raise ValueError("keyword is required")
+    data = load_target_keywords(conn)
+    items = data.get("items") or []
+    intent_val = intent
+    ct_val = (content_type or "").strip() or None
+    if ct_val is None:
+        ct_val = default_content_type_for_intent(intent_val)
+
+    found = None
+    for item in items:
+        if str(item.get("keyword", "")).lower() == kw.lower():
+            found = item
+            break
+    if found is None:
+        found = {
+            "keyword": kw,
+            "volume": None,
+            "difficulty": None,
+            "traffic_potential": None,
+            "cpc": None,
+            "intent": intent_val,
+            "content_type": ct_val,
+            "opportunity": None,
+            "status": status,
+            "ranking_status": "not_ranking",
+            "seed_keywords": [],
+        }
+        items.append(found)
+    else:
+        if intent_val is not None:
+            found["intent"] = intent_val
+        if content_type is not None or not (found.get("content_type") or "").strip():
+            found["content_type"] = ct_val
+        found["status"] = status
+    for k, v in fields.items():
+        if k in ("keyword",):
+            continue
+        found[k] = v
+    normalize_target_keyword_item(found, for_insert=True)
+    data["items"] = items
+    data["total"] = len(items)
+    save_target_keywords(conn, data)
+    try:
+        sync_keyword_metrics_to_db(conn)
+    except Exception:
+        logger.exception("Failed to sync keyword metrics after upsert_target_keyword (non-fatal)")
+    return found
 
 
 def load_target_keywords(conn: sqlite3.Connection) -> dict:
@@ -46,6 +205,7 @@ def load_target_keywords(conn: sqlite3.Connection) -> dict:
         )
     if not clean:
         return {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
+    clean = [normalize_target_keyword_item(x) for x in clean]
     return {**data, "items": clean, "total": len(clean)}
 
 
@@ -64,7 +224,7 @@ def refresh_opportunity_scores(conn: sqlite3.Connection, *, force: bool = False)
     data["total"] = len(items)
     data["opportunity_scoring_version"] = OPPORTUNITY_SCORING_VERSION
     data["opportunity_scored_at"] = datetime.now(timezone.utc).isoformat()
-    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    save_target_keywords(conn, data)
     try:
         sync_keyword_metrics_to_db(conn)
     except Exception:
@@ -133,11 +293,16 @@ def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: st
     for item in data["items"]:
         if item["keyword"].lower() == keyword.lower():
             item["status"] = new_status
+            # Approve / tracker paths must keep a real content_type vocabulary value.
+            if not (item.get("content_type") or "").strip():
+                item["content_type"] = default_content_type_for_intent(
+                    item.get("intent") if isinstance(item.get("intent"), str) else None
+                )
             found = True
             break
     if not found:
         raise ValueError(f"Keyword not found: {keyword}")
-    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    save_target_keywords(conn, data)
     conn.execute(
         "UPDATE keyword_metrics SET status = ?, updated_at = ? WHERE LOWER(keyword) = LOWER(?)",
         (new_status, int(time.time()), keyword),
@@ -153,8 +318,12 @@ def bulk_update_status(conn: sqlite3.Connection, keywords: list[str], new_status
     for item in data["items"]:
         if item["keyword"].lower() in keyword_set:
             item["status"] = new_status
+            if not (item.get("content_type") or "").strip():
+                item["content_type"] = default_content_type_for_intent(
+                    item.get("intent") if isinstance(item.get("intent"), str) else None
+                )
             updated += 1
-    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    save_target_keywords(conn, data)
     now = int(time.time())
     for kw in keywords:
         conn.execute(
@@ -699,7 +868,7 @@ def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
     data["opportunity_scoring_version"] = OPPORTUNITY_SCORING_VERSION
     data["opportunity_scored_at"] = datetime.now(timezone.utc).isoformat()
     data["gsc_crossref_at"] = datetime.now(timezone.utc).isoformat()
-    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    save_target_keywords(conn, data)
     try:
         sync_keyword_metrics_to_db(conn)
     except Exception:

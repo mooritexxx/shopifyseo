@@ -95,8 +95,8 @@ export function PaaMindMap({ rootLabel, branches }: { rootLabel: string; branche
   if (!branches.length) {
     return (
       <p className="text-sm text-slate-400">
-        No People also ask tree yet. Refresh SERP data after saving a SerpAPI key, or the SERP may not have returned
-        questions for this keyword.
+        No People also ask tree yet. SERP data auto-refreshes when stale (&gt;24h) during draft generation, or use
+        Force refresh SERP after saving a SerpAPI key.
       </p>
     );
   }

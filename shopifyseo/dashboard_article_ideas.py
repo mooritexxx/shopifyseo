@@ -1206,10 +1206,11 @@ def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -
         ensure_ascii=False,
     )
     paa_ex_json = json.dumps(normalize_paa_expansion_json(snap.get("paa_expansion")), ensure_ascii=False)
+    now_ts = int(time.time())
     cur = conn.execute(
         "UPDATE article_ideas SET audience_questions_json = ?, top_ranking_pages_json = ?, "
-        "ai_overview_json = ?, related_searches_json = ?, paa_expansion_json = ? WHERE id = ?",
-        (aq_json, trp_json, aio_json, rs_json, paa_ex_json, idea_id),
+        "ai_overview_json = ?, related_searches_json = ?, paa_expansion_json = ?, serp_refreshed_at = ? WHERE id = ?",
+        (aq_json, trp_json, aio_json, rs_json, paa_ex_json, now_ts, idea_id),
     )
     conn.commit()
     if cur.rowcount < 1:
@@ -1608,3 +1609,117 @@ def compute_idea_performance(conn: sqlite3.Connection, idea_id: int) -> dict[str
             "coverage_pct": coverage_pct,
         },
     }
+
+
+# Default SERP freshness window: 24 hours (86400 seconds).
+# Article draft generation auto-refreshes SERP snapshots older than this threshold.
+SERP_FRESHNESS_TTL_SECONDS = 24 * 60 * 60
+
+
+def _idea_has_serp_data(row: sqlite3.Row) -> bool:
+    """Return True if the idea row has any non-empty SERP snapshot columns."""
+    aq = row["audience_questions_json"] if "audience_questions_json" in row.keys() else "[]"
+    trp = row["top_ranking_pages_json"] if "top_ranking_pages_json" in row.keys() else "[]"
+    rs = row["related_searches_json"] if "related_searches_json" in row.keys() else "[]"
+    paa = row["paa_expansion_json"] if "paa_expansion_json" in row.keys() else "[]"
+    aio = row["ai_overview_json"] if "ai_overview_json" in row.keys() else "{}"
+    has_aq = aq and aq not in ("[]", "null", "")
+    has_trp = trp and trp not in ("[]", "null", "")
+    has_rs = rs and rs not in ("[]", "null", "")
+    has_paa = paa and paa not in ("[]", "null", "")
+    has_aio = aio and aio not in ("{}", "null", "")
+    return has_aq or has_trp or has_rs or has_paa or has_aio
+
+
+def ensure_idea_serp_fresh(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    max_age_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Ensure the article idea's SERP snapshot is fresh; auto-refresh if missing or stale.
+
+    This function is called at the start of article draft generation to guarantee
+    that the drafter has up-to-date SERP context without requiring a manual
+    "Refresh SERP" click.
+
+    Args:
+        conn: Database connection.
+        idea_id: The article idea row ID.
+        max_age_seconds: Maximum SERP age in seconds. Defaults to SERP_FRESHNESS_TTL_SECONDS (24h).
+
+    Returns:
+        dict with keys:
+            status: "refreshed", "reused", or "failed"
+            refreshed: bool - whether a refresh was performed
+            reason: str - human-readable explanation
+            error: str | None - error message if status is "failed"
+
+    Raises:
+        LookupError: If the idea does not exist.
+        ValueError: If SerpAPI key is missing or primary keyword is empty (only when refresh is needed).
+    """
+    if max_age_seconds is None:
+        max_age_seconds = SERP_FRESHNESS_TTL_SECONDS
+
+    row = conn.execute(
+        """
+        SELECT id, primary_keyword, serp_refreshed_at,
+               COALESCE(audience_questions_json, '[]') AS audience_questions_json,
+               COALESCE(top_ranking_pages_json, '[]') AS top_ranking_pages_json,
+               COALESCE(related_searches_json, '[]') AS related_searches_json,
+               COALESCE(paa_expansion_json, '[]') AS paa_expansion_json,
+               COALESCE(ai_overview_json, '{}') AS ai_overview_json
+        FROM article_ideas
+        WHERE id = ?
+        """,
+        (idea_id,),
+    ).fetchone()
+
+    if not row:
+        raise LookupError("Article idea not found.")
+
+    pk = (str(row["primary_keyword"] or "")).strip()
+    serp_ts = row["serp_refreshed_at"]
+    has_data = _idea_has_serp_data(row)
+    now = int(time.time())
+
+    needs_refresh = False
+    reason = ""
+
+    if not has_data:
+        needs_refresh = True
+        reason = "SERP snapshot is missing"
+    elif serp_ts is None:
+        needs_refresh = True
+        reason = "SERP snapshot has no timestamp (legacy data)"
+    else:
+        age_seconds = now - int(serp_ts)
+        if age_seconds > max_age_seconds:
+            needs_refresh = True
+            reason = f"SERP snapshot is {age_seconds // 3600}h old (threshold: {max_age_seconds // 3600}h)"
+        else:
+            reason = f"SERP snapshot is fresh ({age_seconds // 60}m old)"
+
+    if not needs_refresh:
+        return {
+            "status": "reused",
+            "refreshed": False,
+            "reason": reason,
+            "error": None,
+        }
+
+    try:
+        refresh_article_idea_serp_snapshot(conn, idea_id)
+        return {
+            "status": "refreshed",
+            "refreshed": True,
+            "reason": reason,
+            "error": None,
+        }
+    except (LookupError, ValueError) as exc:
+        return {
+            "status": "failed",
+            "refreshed": False,
+            "reason": reason,
+            "error": str(exc),
+        }

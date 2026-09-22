@@ -701,7 +701,7 @@ export const articleIdeaSchema = z.object({
     .optional(),
   /** Google ``related_searches`` from the same SerpAPI response (query + SERP position when provided) */
   related_searches: z.preprocess(coerceRelatedSearches, z.array(relatedSearchItemSchema)).default([]),
-  /** Deeper PAA from SerpAPI ``google_related_questions`` (after “Refresh SERP data” on this page) */
+  /** Deeper PAA from SerpAPI ``google_related_questions`` (auto-refreshes when stale during draft; use "Force refresh SERP" to refresh immediately) */
   paa_expansion: z
     .preprocess(
       coercePaaExpansion,

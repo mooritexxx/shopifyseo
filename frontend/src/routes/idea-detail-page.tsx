@@ -633,7 +633,7 @@ export function IdeaDetailPage() {
                 onClick={() => refreshSerpMutation.mutate()}
               >
                 <RefreshCw size={15} className={refreshSerpMutation.isPending ? "animate-spin" : ""} />
-                {refreshSerpMutation.isPending ? "Refreshing…" : "Refresh SERP data"}
+                {refreshSerpMutation.isPending ? "Refreshing…" : "Force refresh SERP"}
               </Button>
               <Button onClick={openDraftModal}>
                 <Sparkles size={15} />
@@ -798,7 +798,7 @@ export function IdeaDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Expanded PAA (SerpAPI google_related_questions) — filled by Refresh SERP data */}
+          {/* Expanded PAA (SerpAPI google_related_questions) — auto-refreshes when stale during draft generation */}
           <Card className="border-[#e2eaf4]">
             <CardHeader className="px-6 pt-6 pb-0">
               <div className="flex items-center gap-2">
@@ -807,8 +807,9 @@ export function IdeaDetailPage() {
               </div>
               <p className="mt-1 text-xs text-slate-400">
                 One level deeper: for each top-level PAA item that includes an expand token, we call SerpAPI{" "}
-                <span className="font-mono text-[11px]">engine=google_related_questions</span> (extra credits). Use{" "}
-                <span className="font-medium text-slate-600">Refresh SERP data</span> above to fetch or update. If Google
+                <span className="font-mono text-[11px]">engine=google_related_questions</span> (extra credits). SERP data
+                auto-refreshes when stale (&gt;24h) during draft generation. Use{" "}
+                <span className="font-medium text-slate-600">Force refresh SERP</span> to fetch immediately. If Google
                 does not return tokens, this section stays empty.
               </p>
             </CardHeader>
@@ -841,8 +842,9 @@ export function IdeaDetailPage() {
                 </div>
               ) : (
                 <p className="text-sm text-slate-400 leading-relaxed">
-                  No expanded questions yet. Click <span className="font-medium text-slate-600">Refresh SERP data</span>{" "}
-                  with a SerpAPI key — we expand up to a few top-level PAA items when SerpAPI provides{" "}
+                  No expanded questions yet. SERP data auto-refreshes when stale (&gt;24h) during draft generation, or click{" "}
+                  <span className="font-medium text-slate-600">Force refresh SERP</span>{" "}
+                  with a SerpAPI key. We expand up to a few top-level PAA items when SerpAPI provides{" "}
                   <span className="font-mono text-[11px]">next_page_token</span> on the main Google result.
                 </p>
               )}
@@ -1086,8 +1088,8 @@ export function IdeaDetailPage() {
                 </div>
               ) : (
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  None stored yet. Use <span className="font-medium text-slate-600">Refresh SERP data</span> above when
-                  a SerpAPI key is saved, or generate a new idea.
+                  None stored yet. SERP data auto-refreshes when stale (&gt;24h) during draft generation, or use{" "}
+                  <span className="font-medium text-slate-600">Force refresh SERP</span> above with a SerpAPI key.
                 </p>
               )}
             </CardContent>

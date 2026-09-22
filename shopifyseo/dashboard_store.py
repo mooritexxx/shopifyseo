@@ -503,6 +503,13 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             "paa_expansion_json": "TEXT NOT NULL DEFAULT '[]'",
         },
     )
+    # serp_refreshed_at: Unix timestamp (seconds) when SERP snapshot was last fetched.
+    # Used by ensure_idea_serp_fresh() to decide whether to auto-refresh before drafting.
+    _ensure_columns(
+        conn,
+        "article_ideas",
+        {"serp_refreshed_at": "INTEGER"},
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS idea_articles (

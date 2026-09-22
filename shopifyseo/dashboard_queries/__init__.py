@@ -19,11 +19,13 @@ from __future__ import annotations
 
 # Re-exports from sibling top-level modules (preserve historical import paths).
 from ..dashboard_article_ideas import (  # noqa: F401
+    SERP_FRESHNESS_TTL_SECONDS,
     bulk_delete_article_ideas,
     bulk_update_idea_status,
     compute_idea_performance,
     compute_keyword_coverage,
     delete_article_idea,
+    ensure_idea_serp_fresh,
     fetch_article_idea_inputs,
     fetch_article_ideas,
     fetch_idea_articles,

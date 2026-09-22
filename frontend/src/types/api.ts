@@ -801,6 +801,38 @@ export const ideaPerformancePayloadSchema = z.object({
 });
 export type IdeaPerformancePayload = z.infer<typeof ideaPerformancePayloadSchema>;
 
+// Cannibalization check schemas
+export const cannibalizationConflictSchema = z.object({
+  key: z.string(),
+  type: z.string(),
+  severity: z.string(),
+  blog_handle: z.string(),
+  article_handle: z.string(),
+  title: z.string().default(""),
+  shopify_id: z.string().default(""),
+  reason: z.string().default(""),
+  matched_keyword: z.string().nullable().optional(),
+  similarity_score: z.number().nullable().optional(),
+});
+export type CannibalizationConflict = z.infer<typeof cannibalizationConflictSchema>;
+
+export const clusterRiskInfoSchema = z.object({
+  cluster_id: z.number(),
+  cluster_name: z.string().default(""),
+  risk_level: z.string(),
+  severity: z.string(),
+  reason: z.string().default(""),
+});
+export type ClusterRiskInfo = z.infer<typeof clusterRiskInfoSchema>;
+
+export const cannibalizationCheckPayloadSchema = z.object({
+  severity: z.string(),
+  conflicts: z.array(cannibalizationConflictSchema).default([]),
+  cluster_risk: clusterRiskInfoSchema.nullable().optional(),
+  message: z.string().default(""),
+});
+export type CannibalizationCheckPayload = z.infer<typeof cannibalizationCheckPayloadSchema>;
+
 export const articleGenerateDraftResultSchema = z.object({
   run_id: z.string().default(""),
   id: z.string(),

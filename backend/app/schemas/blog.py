@@ -102,6 +102,8 @@ class ArticleGenerateDraftRequest(BaseModel):
     """If set, update this existing Shopify article (same handle/URL) instead of articleCreate."""
     resume_run_id: str | None = None
     """If set, resume a persisted article draft run from its last saved checkpoint."""
+    force_cannibalization: bool = False
+    """If True, proceed with draft even when cannibalization is detected (warn-level conflicts). Blocks are never overridable."""
 
 
 class ArticleGenerateDraftResult(BaseModel):

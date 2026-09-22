@@ -34,6 +34,8 @@ export type ArticleDraftStreamPayload = {
   regenerate_article_handle?: string;
   /** If set, resume a persisted draft run from its last checkpoint. */
   resume_run_id?: string;
+  /** If true, proceed with draft even when warn-level cannibalization is detected. Blocks are never overridable. */
+  force_cannibalization?: boolean;
 };
 
 /**

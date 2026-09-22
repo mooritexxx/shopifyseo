@@ -307,7 +307,7 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="prepare_brief",
             step_label="Prepare SEO brief",
-            step_index=2,
+            step_index=3,
             step_total=12,
         )
 
@@ -374,6 +374,97 @@ def _run_generate_article_draft(
                     f"SERP refresh required but failed: {serp_result['error']} — "
                     "add a SerpAPI key in Settings or ensure the idea has a primary keyword."
                 )
+
+        # ── Cannibalization gate (after SERP ensure-fresh in the pipeline) ──
+        # Check if drafting this idea would cannibalize existing published content.
+        if effective_idea_id is not None and not is_regen:
+            p(
+                "Checking for cannibalization conflicts…",
+                "cannibalization",
+                "start",
+                run_id=run_id,
+                step_key="cannibalization_check",
+                step_label="Check cannibalization",
+                step_index=2,
+                step_total=12,
+            )
+            cann_result = dq.check_idea_cannibalization(
+                conn, effective_idea_id, blog_handle=payload.blog_handle
+            )
+            cann_severity = cann_result.get("severity", "ok")
+            cann_conflicts = cann_result.get("conflicts", [])
+            cann_message = cann_result.get("message", "")
+
+            if cann_severity == "block":
+                # Hard block — cannot proceed even with force flag
+                conflict_details = []
+                for c in cann_conflicts[:3]:
+                    title = c.get("title") or c.get("article_handle", "")
+                    url_path = f"/blogs/{c.get('blog_handle')}/{c.get('article_handle')}"
+                    conflict_details.append(f"'{title}' ({url_path})")
+                detail_str = "; ".join(conflict_details) if conflict_details else "existing published article(s)"
+                update_run(
+                    status="failed",
+                    current_step="cannibalization_check",
+                    error_message=f"Cannibalization blocked: {cann_message}",
+                )
+                raise RuntimeError(
+                    f"CANNIBALIZATION BLOCKED: This idea's primary keyword conflicts with {detail_str}. "
+                    f"Publish a differentiated article or dismiss this idea."
+                )
+
+            if cann_severity == "warn" and not payload.force_cannibalization:
+                # Warn-level conflict requires explicit override
+                conflict_titles = [
+                    c.get("title") or c.get("article_handle", "") for c in cann_conflicts[:3]
+                ]
+                update_run(
+                    status="failed",
+                    current_step="cannibalization_check",
+                    error_message=f"Cannibalization warning: {cann_message}",
+                )
+                raise RuntimeError(
+                    f"CANNIBALIZATION WARNING: Potential overlap with: {', '.join(conflict_titles)}. "
+                    f"Set force_cannibalization=true to proceed anyway, or adjust your idea."
+                )
+
+            # Log the check result
+            if cann_severity == "warn" and payload.force_cannibalization:
+                p(
+                    f"Cannibalization warning acknowledged (force=true): {cann_message}",
+                    "cannibalization",
+                    "done",
+                    run_id=run_id,
+                    step_key="cannibalization_check",
+                    step_label="Check cannibalization",
+                    step_index=2,
+                    step_total=12,
+                    result_summary="Warning overridden",
+                )
+            else:
+                p(
+                    cann_message,
+                    "cannibalization",
+                    "done",
+                    run_id=run_id,
+                    step_key="cannibalization_check",
+                    step_label="Check cannibalization",
+                    step_index=2,
+                    step_total=12,
+                    result_summary="No conflicts",
+                )
+        elif is_regen:
+            # Skip cannibalization check for regeneration (updating existing article)
+            p(
+                "Skipping cannibalization check for article regeneration.",
+                "cannibalization",
+                "skipped",
+                run_id=run_id,
+                step_key="cannibalization_check",
+                step_label="Check cannibalization",
+                step_index=2,
+                step_total=12,
+            )
 
         keywords: list = list(payload.keywords or [])
         if is_regen and not keywords:

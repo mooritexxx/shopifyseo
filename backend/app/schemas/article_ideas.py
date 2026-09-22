@@ -294,3 +294,43 @@ class IdeaPerformancePayload(BaseModel):
     articles: list[LinkedArticle] = Field(default_factory=list)
     aggregate: dict = Field(default_factory=dict)
     keyword_coverage: CoverageSummary = Field(default_factory=CoverageSummary)
+
+
+class CannibalizationConflict(BaseModel):
+    """A single conflicting article detected during cannibalization check."""
+
+    key: str  # blog_handle/article_handle
+    type: str  # exact_primary_keyword | keyword_in_title | high_content_similarity
+    severity: str  # block | warn
+    blog_handle: str
+    article_handle: str
+    title: str = ""
+    shopify_id: str = ""
+    reason: str = ""
+    matched_keyword: str | None = None
+    similarity_score: float | None = None
+
+
+class ClusterRiskInfo(BaseModel):
+    """Cluster-level cannibalization risk signal."""
+
+    cluster_id: int
+    cluster_name: str = ""
+    risk_level: str  # high | medium
+    severity: str  # warn | info
+    reason: str = ""
+
+
+class CannibalizationCheckPayload(BaseModel):
+    """Response from ``GET /article-ideas/{id}/cannibalization-check``.
+    
+    Severity rules:
+    - block: Exact/near-match on primary keyword, or very high content similarity (>=0.92)
+    - warn: Keyword in title, or high content similarity (>=0.85), or cluster HIGH risk
+    - ok: No significant overlap detected
+    """
+
+    severity: str  # block | warn | ok
+    conflicts: list[CannibalizationConflict] = Field(default_factory=list)
+    cluster_risk: ClusterRiskInfo | None = None
+    message: str = ""

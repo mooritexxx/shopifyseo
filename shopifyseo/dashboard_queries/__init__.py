@@ -22,6 +22,7 @@ from ..dashboard_article_ideas import (  # noqa: F401
     SERP_FRESHNESS_TTL_SECONDS,
     bulk_delete_article_ideas,
     bulk_update_idea_status,
+    check_idea_cannibalization,
     compute_idea_performance,
     compute_keyword_coverage,
     delete_article_idea,

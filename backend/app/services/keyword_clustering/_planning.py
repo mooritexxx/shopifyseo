@@ -16,6 +16,7 @@ from typing import Any
 
 from ._helpers import _compute_cluster_stats
 from ._scoring import cluster_priority_score, select_primary_keyword
+from ._store_fit import StoreFitContext, compute_cluster_store_fit, load_store_fit_context
 
 MAX_CLUSTER_KEYWORDS = {
     "collection_page": 40,
@@ -671,6 +672,8 @@ def enrich_cluster_for_content(
     conn: sqlite3.Connection,
     keywords_map: dict[str, dict],
     entity_rules: list[dict[str, Any]],
+    *,
+    store_fit_ctx: StoreFitContext | None = None,
 ) -> dict:
     kw_list = [str(k or "").strip() for k in cluster.get("keywords") or [] if str(k or "").strip()]
     stats = _compute_cluster_stats([kw.lower() for kw in kw_list], keywords_map)
@@ -698,6 +701,19 @@ def enrich_cluster_for_content(
         priority *= 0.90
     if any(keywords_map.get(kw.lower(), {}).get("competitor_domain") for kw in kw_list):
         priority += 3.0
+
+    # Apply store-fit scoring: penalize noise clusters, boost catalog-aligned clusters
+    store_fit_result: dict[str, Any] | None = None
+    if store_fit_ctx is not None:
+        store_fit_result = compute_cluster_store_fit(
+            cluster_name=base.get("name") or cluster.get("name") or "",
+            cluster_keywords=kw_list,
+            cluster_role=profile.get("cluster_role") or "",
+            detected_entity=profile.get("detected_entity") or "",
+            context=store_fit_ctx,
+        )
+        priority *= store_fit_result["fit_multiplier"]
+
     base.update(
         {
             "detected_entity": profile["detected_entity"],
@@ -709,6 +725,16 @@ def enrich_cluster_for_content(
             **tiers,
         }
     )
+    # Store store-fit metadata for debugging / UI display
+    if store_fit_result:
+        base["store_fit"] = {
+            "fit_multiplier": store_fit_result["fit_multiplier"],
+            "matched_vendor": store_fit_result["matched_vendor"],
+            "is_tobacco": store_fit_result["is_tobacco"],
+            "is_local": store_fit_result["is_local"],
+            "is_off_niche": store_fit_result["is_off_niche"],
+            "penalty_reason": store_fit_result["penalty_reason"],
+        }
     base["name"] = _build_cluster_name(base, profile)
     base["content_brief"] = _build_content_brief(base, profile, tiers)
     return base
@@ -784,6 +810,7 @@ def repair_and_enrich_clusters(
 ) -> list[dict]:
     """Split unsafe clusters and attach content-generation metadata."""
     entity_rules = load_entity_rules(conn)
+    store_fit_ctx = load_store_fit_context(conn)
     repaired: list[dict] = []
     queue: list[dict] = list(clusters)
     for _ in range(3):
@@ -811,7 +838,9 @@ def repair_and_enrich_clusters(
 
     seen_signature: set[tuple[str, tuple[str, ...]]] = set()
     for cluster in queue:
-        enriched = enrich_cluster_for_content(cluster, conn, keywords_map, entity_rules)
+        enriched = enrich_cluster_for_content(
+            cluster, conn, keywords_map, entity_rules, store_fit_ctx=store_fit_ctx
+        )
         signature = (
             (enriched.get("primary_keyword") or "").lower(),
             tuple(sorted(k.lower() for k in enriched.get("keywords", []))),

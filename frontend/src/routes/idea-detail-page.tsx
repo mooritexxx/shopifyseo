@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   ArrowLeft,
   BarChart2,
   BookOpen,
@@ -13,6 +14,7 @@ import {
   ListOrdered,
   MessagesSquare,
   Search,
+  ShieldAlert,
   Sparkles,
   Tag,
   TrendingUp,
@@ -23,6 +25,7 @@ import { z } from "zod";
 
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
+import { Checkbox } from "../components/ui/checkbox";
 import { Label } from "../components/ui/label";
 import { Input } from "../components/ui/input";
 import { Modal } from "../components/ui/modal";
@@ -55,6 +58,7 @@ import {
 } from "../lib/run-article-draft-stream";
 import { defaultDraftSlugHint } from "../lib/seo-slug";
 import { useStoreInfo } from "../hooks/use-store-info";
+import { useCannibalizationCheck } from "../hooks/use-cannibalization-check";
 import {
   articleIdeasPayloadSchema,
   refreshArticleIdeaSerpSchema,
@@ -66,6 +70,8 @@ import {
   type ArticleIdea,
   type InterlinkTarget,
   type LinkTargetItem,
+  type CannibalizationCheckPayload,
+  type CannibalizationConflict,
 } from "../types/api";
 
 const blogShopifyIdsSchema = z.array(blogShopifyIdSchema);
@@ -112,6 +118,7 @@ const emptyDraftForm = {
   slug: "",
   author_name: "",
   angle_label: "",
+  force_cannibalization: false,
 };
 
 type AiOverviewRef = {
@@ -333,12 +340,16 @@ export function IdeaDetailPage() {
     null | { tone: "ok" | "err"; text: string }
   >(null);
 
+  // Cannibalization check — runs when idea is loaded
+  const cannibalizationQuery = useCannibalizationCheck(numericId);
+
   const refreshSerpMutation = useMutation({
     mutationFn: () =>
       postJson(`/api/article-ideas/${numericId}/refresh-serp`, refreshArticleIdeaSerpSchema, {}),
     onMutate: () => setSerpRefreshBanner(null),
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ["article-ideas"] });
+      void queryClient.invalidateQueries({ queryKey: ["cannibalization-check", numericId] });
       setSerpRefreshBanner({ tone: "ok", text: data.message });
     },
     onError: (e: unknown) => {
@@ -443,6 +454,7 @@ export function IdeaDetailPage() {
       slug: defaultDraftSlugHint(idea.suggested_title, keywords),
       author_name: defaultAuthor,
       angle_label: "",
+      force_cannibalization: false,
     });
     setSlugTouched(false);
     setDraftError("");
@@ -492,7 +504,8 @@ export function IdeaDetailPage() {
           slug_hint: draftForm.slug.trim(),
           idea_id: idea.id,
           angle_label: draftForm.angle_label.trim(),
-          ...(resumeRunId ? { resume_run_id: resumeRunId } : {})
+          ...(resumeRunId ? { resume_run_id: resumeRunId } : {}),
+          ...(draftForm.force_cannibalization ? { force_cannibalization: true } : {}),
         },
         (evt) => {
           if (evt.run_id) setDraftResumeRunId(evt.run_id);
@@ -518,7 +531,15 @@ export function IdeaDetailPage() {
     }
   }
 
-  const canSubmitDraft = draftForm.blog_id.trim() && draftForm.topic.trim() && !draftGenerating;
+  const cannibalization = cannibalizationQuery.data;
+  const hasBlockConflict = cannibalization?.severity === "block";
+  const hasWarnConflict = cannibalization?.severity === "warn";
+  const canSubmitDraft =
+    draftForm.blog_id.trim() &&
+    draftForm.topic.trim() &&
+    !draftGenerating &&
+    !hasBlockConflict &&
+    (!hasWarnConflict || draftForm.force_cannibalization);
 
   const paaBranches: PaaBranch[] = useMemo(
     () => (idea ? buildPaaMindMapBranches(idea) : []),
@@ -635,9 +656,27 @@ export function IdeaDetailPage() {
                 <RefreshCw size={15} className={refreshSerpMutation.isPending ? "animate-spin" : ""} />
                 {refreshSerpMutation.isPending ? "Refreshing…" : "Force refresh SERP"}
               </Button>
-              <Button onClick={openDraftModal}>
-                <Sparkles size={15} />
-                Draft Article
+              <Button
+                onClick={openDraftModal}
+                variant={hasBlockConflict ? "destructive" : hasWarnConflict ? "outline" : "default"}
+                className={
+                  hasWarnConflict && !hasBlockConflict
+                    ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                    : ""
+                }
+              >
+                {hasBlockConflict ? (
+                  <ShieldAlert size={15} />
+                ) : hasWarnConflict ? (
+                  <AlertTriangle size={15} />
+                ) : (
+                  <Sparkles size={15} />
+                )}
+                {hasBlockConflict
+                  ? "Blocked — Conflicts"
+                  : hasWarnConflict
+                  ? "Draft (conflicts)"
+                  : "Draft Article"}
               </Button>
             </div>
             {serpRefreshBanner ? (
@@ -958,6 +997,12 @@ export function IdeaDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Cannibalization conflicts panel */}
+          <CannibalizationConflictsPanel
+            check={cannibalizationQuery.data ?? null}
+            isLoading={cannibalizationQuery.isLoading}
+          />
 
           {/* Metrics */}
           {(idea.total_volume > 0 ||
@@ -1574,6 +1619,89 @@ export function IdeaDetailPage() {
                 />
               </div>
 
+              {/* Cannibalization conflict warning */}
+              {(hasBlockConflict || hasWarnConflict) && cannibalization ? (
+                <div
+                  className={`rounded-lg px-4 py-3 ${
+                    hasBlockConflict ? "bg-red-50 border border-red-200" : "bg-amber-50 border border-amber-200"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {hasBlockConflict ? (
+                      <ShieldAlert size={16} className="mt-0.5 shrink-0 text-red-500" />
+                    ) : (
+                      <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-500" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={`text-sm font-semibold ${
+                          hasBlockConflict ? "text-red-800" : "text-amber-800"
+                        }`}
+                      >
+                        {hasBlockConflict
+                          ? "Drafting blocked — content conflict detected"
+                          : "Warning — potential content overlap"}
+                      </p>
+                      <p
+                        className={`mt-1 text-xs ${
+                          hasBlockConflict ? "text-red-700" : "text-amber-700"
+                        }`}
+                      >
+                        {cannibalization.message}
+                      </p>
+                      {cannibalization.conflicts.slice(0, 3).map((c) => (
+                        <p
+                          key={c.key}
+                          className={`mt-1 text-xs ${
+                            hasBlockConflict ? "text-red-600" : "text-amber-600"
+                          }`}
+                        >
+                          • {c.title || `${c.blog_handle}/${c.article_handle}`}
+                          {c.matched_keyword ? ` (keyword: ${c.matched_keyword})` : ""}
+                          {c.similarity_score != null
+                            ? ` — ${(c.similarity_score * 100).toFixed(0)}% similar`
+                            : ""}
+                        </p>
+                      ))}
+                      {cannibalization.conflicts.length > 3 ? (
+                        <p
+                          className={`mt-1 text-xs ${
+                            hasBlockConflict ? "text-red-600" : "text-amber-600"
+                          }`}
+                        >
+                          + {cannibalization.conflicts.length - 3} more conflict
+                          {cannibalization.conflicts.length - 3 !== 1 ? "s" : ""}
+                        </p>
+                      ) : null}
+                      {hasWarnConflict ? (
+                        <div className="mt-3 flex items-center gap-2">
+                          <Checkbox
+                            id="force-cannibalization"
+                            checked={draftForm.force_cannibalization}
+                            onCheckedChange={(checked) =>
+                              setDraftForm((f) => ({
+                                ...f,
+                                force_cannibalization: checked === true,
+                              }))
+                            }
+                          />
+                          <Label
+                            htmlFor="force-cannibalization"
+                            className="text-xs font-medium text-amber-800 cursor-pointer"
+                          >
+                            I acknowledge the overlap and want to proceed anyway
+                          </Label>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs font-medium text-red-700">
+                          Update the idea keywords or archive the conflicting article to proceed.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {draftError ? (
                 <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
                   {draftError}
@@ -1648,6 +1776,119 @@ export function IdeaDetailPage() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cannibalization conflicts panel — sidebar component
+// ---------------------------------------------------------------------------
+
+function CannibalizationConflictsPanel({
+  check,
+  isLoading,
+}: {
+  check: CannibalizationCheckPayload | null;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Card className="border-slate-200 bg-slate-50/50">
+        <CardHeader className="px-5 pt-5 pb-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={15} className="text-slate-400" />
+            <h4 className="text-sm font-semibold text-slate-500">Conflict check</h4>
+          </div>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-0">
+          <p className="text-xs text-slate-400">Checking for conflicts…</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!check || check.severity === "ok") {
+    return null;
+  }
+
+  const isBlock = check.severity === "block";
+  const borderColor = isBlock ? "border-red-200" : "border-amber-200";
+  const bgColor = isBlock ? "bg-red-50/60" : "bg-amber-50/60";
+  const iconColor = isBlock ? "text-red-500" : "text-amber-500";
+  const titleColor = isBlock ? "text-red-800" : "text-amber-800";
+  const textColor = isBlock ? "text-red-700" : "text-amber-700";
+
+  return (
+    <Card className={`${borderColor} ${bgColor}`}>
+      <CardHeader className="px-5 pt-5 pb-0">
+        <div className="flex items-center gap-2">
+          {isBlock ? (
+            <ShieldAlert size={15} className={iconColor} />
+          ) : (
+            <AlertTriangle size={15} className={iconColor} />
+          )}
+          <h4 className={`text-sm font-semibold ${titleColor}`}>
+            {isBlock ? "Blocked — conflicts detected" : "Warning — potential conflicts"}
+          </h4>
+        </div>
+        <p className={`mt-1 text-xs ${textColor}`}>{check.message}</p>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-3 space-y-3">
+        {check.conflicts.length > 0 ? (
+          <div className="space-y-2">
+            <p className={`text-[11px] font-semibold uppercase tracking-wide ${textColor}`}>
+              Conflicting articles
+            </p>
+            {check.conflicts.map((c) => (
+              <div
+                key={c.key}
+                className="rounded-lg border border-white/50 bg-white/60 px-3 py-2 text-xs"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-medium text-ink truncate" title={c.title}>
+                      {c.title || `${c.blog_handle}/${c.article_handle}`}
+                    </p>
+                    <p className="mt-0.5 text-slate-500">{c.reason}</p>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      c.severity === "block"
+                        ? "bg-red-100 text-red-700"
+                        : "bg-amber-100 text-amber-700"
+                    }`}
+                  >
+                    {c.severity}
+                  </span>
+                </div>
+                {c.matched_keyword ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Keyword: <span className="font-mono">{c.matched_keyword}</span>
+                  </p>
+                ) : null}
+                {c.similarity_score != null ? (
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    Similarity: {(c.similarity_score * 100).toFixed(0)}%
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {check.cluster_risk ? (
+          <div className="rounded-lg border border-white/50 bg-white/60 px-3 py-2 text-xs">
+            <p className={`font-medium ${textColor}`}>
+              Cluster risk: {check.cluster_risk.risk_level}
+            </p>
+            <p className="mt-0.5 text-slate-500">{check.cluster_risk.reason}</p>
+          </div>
+        ) : null}
+        <p className={`text-[11px] ${textColor}`}>
+          {isBlock
+            ? "Drafting is blocked. Update the idea or archive the conflicting article before proceeding."
+            : "You can force override this warning when drafting if the differentiation is intentional."}
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

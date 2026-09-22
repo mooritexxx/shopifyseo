@@ -9,6 +9,9 @@ from backend.app.schemas.article_ideas import (
     ArticleIdeasPayload,
     BulkDeleteRequest,
     BulkStatusRequest,
+    CannibalizationCheckPayload,
+    CannibalizationConflict,
+    ClusterRiskInfo,
     IdeaPerformancePayload,
     LinkTargetItem,
     LinkTargetsPayload,
@@ -247,3 +250,67 @@ def update_idea_targets(idea_id: int, body: UpdateIdeaTargetsRequest):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Idea not found")
     item = ArticleIdeaItem.model_validate(updated)
     return success_response(UpdateIdeaTargetsPayload(idea=item))
+
+
+@router.get("/{idea_id}/cannibalization-check", response_model=SuccessResponse[CannibalizationCheckPayload])
+def check_idea_cannibalization_endpoint(idea_id: int, blog_handle: str | None = None):
+    """Check if drafting this idea would cannibalize existing published content.
+    
+    Compares the idea's primary keyword against published blog articles and
+    uses embedding similarity to find overlapping content. Also checks the
+    linked cluster's cannibalization_risk field.
+    
+    Severity levels:
+    - block: Hard block — exact/near keyword match or very high similarity (>=0.92)
+    - warn: Potential overlap — keyword in title or high similarity (>=0.85)
+    - ok: No significant overlap detected
+    
+    Use this endpoint to show conflicts in the UI before drafting. When drafting,
+    set force_cannibalization=true to override warn-level conflicts (blocks are
+    never overridable).
+    """
+    conn = open_db_connection()
+    try:
+        # Check if idea exists
+        row = conn.execute("SELECT id FROM article_ideas WHERE id = ?", (idea_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Idea not found")
+        
+        result = dq.check_idea_cannibalization(conn, idea_id, blog_handle=blog_handle)
+    finally:
+        conn.close()
+    
+    # Convert to typed schema
+    conflicts = [
+        CannibalizationConflict(
+            key=c.get("key", ""),
+            type=c.get("type", ""),
+            severity=c.get("severity", "warn"),
+            blog_handle=c.get("blog_handle", ""),
+            article_handle=c.get("article_handle", ""),
+            title=c.get("title", ""),
+            shopify_id=c.get("shopify_id", ""),
+            reason=c.get("reason", ""),
+            matched_keyword=c.get("matched_keyword"),
+            similarity_score=c.get("similarity_score"),
+        )
+        for c in result.get("conflicts", [])
+    ]
+    
+    cluster_risk = None
+    cr = result.get("cluster_risk")
+    if cr:
+        cluster_risk = ClusterRiskInfo(
+            cluster_id=cr.get("cluster_id", 0),
+            cluster_name=cr.get("cluster_name", ""),
+            risk_level=cr.get("risk_level", ""),
+            severity=cr.get("severity", "info"),
+            reason=cr.get("reason", ""),
+        )
+    
+    return success_response(CannibalizationCheckPayload(
+        severity=result.get("severity", "ok"),
+        conflicts=conflicts,
+        cluster_risk=cluster_risk,
+        message=result.get("message", ""),
+    ))

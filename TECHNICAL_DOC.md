@@ -161,6 +161,7 @@ Article draft generation now persists `article_draft_runs` and uses a canonical 
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
 | POST   | `/api/article-ideas/{idea_id}/refresh-serp` | —      | `{ ok, data }` | Force refresh SerpAPI snapshot (manual override)       |
+| GET    | `/api/article-ideas/{idea_id}/cannibalization-check` | Query | `{ ok, data }` | Pre-draft cannibalization gate (keyword + embedding) |
 
 #### SERP snapshot auto-refresh during draft generation
 
@@ -197,6 +198,32 @@ UPDATE article_ideas SET linked_cluster_id = 941 WHERE id = 21;
 3. Re-open the idea in the dashboard; the “Cluster not linked” banner should disappear once `linked_cluster_id` is set.
 
 Never bulk-update without verifying `clusters.id` matches the intended gap analysis row.
+
+
+#### Article idea cannibalization gate
+
+A pre-draft cannibalization check runs before article generation to prevent creating content that competes with existing published articles. The gate lives in `shopifyseo.dashboard_article_ideas.check_idea_cannibalization` and is called by:
+
+1. **Draft stream endpoint** (`POST /api/articles/generate-draft-stream`): Runs after SERP ensure-fresh, before content generation.
+2. **UI check endpoint** (`GET /api/article-ideas/{id}/cannibalization-check`): Lets the idea detail page show conflicts before the user opens the draft modal.
+
+**Severity levels:**
+
+| Severity | Trigger | Behavior |
+|----------|---------|----------|
+| `block` | Exact/near-match on primary keyword in a published article's `article_target_keywords`, OR content similarity ≥0.92 | Draft stream fails with error listing conflicts. |
+| `warn` | Keyword found in article title/seo_title, OR content similarity ≥0.85, OR linked cluster has `cannibalization_risk='high'` | Draft proceeds only if `force_cannibalization=true` in request; otherwise blocked. |
+| `ok` | No significant overlap | Draft proceeds normally. |
+
+**Thresholds (in `dashboard_article_ideas.py`):**
+
+- `CANNIBALIZATION_BLOCK_SIMILARITY_THRESHOLD = 0.92`
+- `CANNIBALIZATION_WARN_SIMILARITY_THRESHOLD = 0.85`
+- `CANNIBALIZATION_QUERY_SIMILARITY_THRESHOLD = 0.80` (reserved for future query-similarity checks)
+
+**Force override:** The `force_cannibalization` flag on `ArticleGenerateDraftRequest` allows warn-level conflicts to proceed when intentional differentiation is confirmed (e.g., brand hub vs. product guide). Block-level conflicts are never overridable.
+
+**UI:** The idea detail page sidebar shows a "Conflicts with" panel when conflicts are detected, with severity-appropriate styling. The draft modal surfaces conflicts and requires a checkbox acknowledgment for warn-level before submitting.
 
 
 ### Keywords & clusters

@@ -56,12 +56,13 @@ def normalize_target_keyword_item(item: dict, *, for_insert: bool = False) -> di
     """Ensure fragile keys exist so partial rows cannot break GET /target.
 
     ``content_type`` rules:
-    - If already a non-empty string, keep it.
+    - If already a non-empty string from the real vocabulary, keep it.
     - Else derive from ``intent`` via INTENT_TO_CONTENT.
     - On insert/upsert paths (``for_insert=True``), always write a real vocabulary
       value (default Blog / Guide) — never omit or leave null.
-    - On load of legacy rows, missing/None becomes derived value or "" so the
-      key is always present for the frontend schema.
+    - On load of legacy rows (``for_insert=False``), also default to the derived
+      value so target keywords always have a content_type for the frontend Zod
+      schema — never persist NULL/empty content_type.
     """
     if not isinstance(item, dict):
         return item
@@ -72,14 +73,10 @@ def normalize_target_keyword_item(item: dict, *, for_insert: bool = False) -> di
     if isinstance(ct, str) and ct.strip():
         item["content_type"] = ct.strip()
     else:
+        # Always derive a content_type — never leave it empty.
+        # This ensures target keywords always have a valid content_type.
         intent = item.get("intent") if isinstance(item.get("intent"), str) else None
-        derived = default_content_type_for_intent(intent)
-        if for_insert or intent:
-            # New rows always get vocabulary; legacy rows with intent get derived label.
-            item["content_type"] = derived
-        else:
-            # Legacy manual rows with no intent: key must still be present.
-            item["content_type"] = ""
+        item["content_type"] = default_content_type_for_intent(intent)
     if not item.get("status"):
         item["status"] = "new"
     if item.get("ranking_status") is None:
@@ -103,9 +100,14 @@ def normalize_target_keywords_payload(data: dict, *, for_insert: bool = False) -
     return data
 
 
-def save_target_keywords(conn: sqlite3.Connection, data: dict, *, default=None) -> None:
-    """Normalize then persist the target_keywords JSON blob."""
-    normalize_target_keywords_payload(data)
+def save_target_keywords(conn: sqlite3.Connection, data: dict, *, default=None, for_insert: bool = True) -> None:
+    """Normalize then persist the target_keywords JSON blob.
+
+    ``for_insert=True`` (default) ensures every item receives a real
+    content_type vocabulary value — never NULL/empty — matching the
+    constraint that target keywords must always have a content_type.
+    """
+    normalize_target_keywords_payload(data, for_insert=for_insert)
     payload = json.dumps(data, default=default) if default is not None else json.dumps(data)
     set_service_setting(conn, TARGET_KEY, payload)
 

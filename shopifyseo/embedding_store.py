@@ -1267,6 +1267,137 @@ def build_sidekick_query_vector(
     return None
 
 
+def sync_embedding_for_handle(
+    conn: sqlite3.Connection,
+    object_type: str,
+    handle: str,
+) -> dict[str, Any]:
+    """Upsert embedding(s) for a single object by handle.
+
+    This is a targeted refresh used after publishing an article so that
+    RAG/cannibalization sees the new content without a full refresh.
+
+    For ``blog_article``, the handle is ``{blog_handle}/{article_handle}``.
+
+    Returns a dict with keys: embedded, skipped, error (if any).
+    """
+    api_key = _get_gemini_api_key(conn)
+    if not api_key:
+        logger.warning("gemini_api_key not set — skipping single-handle embedding sync")
+        return {"embedded": 0, "skipped": 0, "error": "no_api_key"}
+
+    if object_type not in EMBEDDABLE_TYPES:
+        return {"embedded": 0, "skipped": 0, "error": f"unknown object_type: {object_type}"}
+
+    # Load the single row for this handle
+    if object_type == "blog_article":
+        if "/" not in handle:
+            return {"embedded": 0, "skipped": 0, "error": "invalid blog_article handle format"}
+        blog_h, art_h = handle.split("/", 1)
+        row = conn.execute(
+            "SELECT * FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+            (blog_h, art_h),
+        ).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "article not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    elif object_type == "product":
+        row = conn.execute("SELECT * FROM products WHERE handle = ?", (handle,)).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "product not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    elif object_type == "collection":
+        row = conn.execute("SELECT * FROM collections WHERE handle = ?", (handle,)).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "collection not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    elif object_type == "page":
+        row = conn.execute("SELECT * FROM pages WHERE handle = ?", (handle,)).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "page not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    elif object_type == "cluster":
+        row = conn.execute("SELECT * FROM clusters WHERE id = ?", (handle,)).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "cluster not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    elif object_type == "article_idea":
+        row = conn.execute("SELECT * FROM article_ideas WHERE id = ?", (handle,)).fetchone()
+        if not row:
+            return {"embedded": 0, "skipped": 0, "error": "article_idea not found"}
+        row_dict = dict(row) | {"_handle": handle}
+    else:
+        # For gsc_queries, keyword, competitor_page — use full sync for that type
+        return {"embedded": 0, "skipped": 0, "error": f"single-handle sync not supported for {object_type}"}
+
+    # Build text and check hash
+    text_or_chunks = build_embed_text(object_type, row_dict, conn)
+    if isinstance(text_or_chunks, str):
+        text_or_chunks = [text_or_chunks]
+
+    # Load existing embeddings for this handle
+    existing = {}
+    for r in conn.execute(
+        "SELECT chunk_index, text_hash, model_version FROM embeddings WHERE object_type = ? AND object_handle = ?",
+        (object_type, handle),
+    ).fetchall():
+        existing[r["chunk_index"]] = (r["text_hash"], r["model_version"])
+
+    # Prune extra chunks if the new content has fewer
+    conn.execute(
+        "DELETE FROM embeddings WHERE object_type = ? AND object_handle = ? AND chunk_index >= ?",
+        (object_type, handle, len(text_or_chunks)),
+    )
+
+    texts_to_embed: list[tuple[str, int]] = []
+    skipped = 0
+
+    for ci, chunk_text in enumerate(text_or_chunks):
+        if not chunk_text.strip():
+            continue
+        h = _md5(chunk_text)
+        prev = existing.get(ci)
+        if prev and prev[0] == h and prev[1] == EMBEDDING_MODEL:
+            skipped += 1
+            continue
+        texts_to_embed.append((chunk_text, ci))
+
+    if not texts_to_embed:
+        conn.commit()
+        return {"embedded": 0, "skipped": skipped, "error": None}
+
+    # Embed the new/changed chunks
+    batch_texts = [item[0] for item in texts_to_embed]
+    try:
+        embeddings = embed_batch(api_key, batch_texts, task_type="RETRIEVAL_DOCUMENT")
+        if len(embeddings) != len(texts_to_embed):
+            return {"embedded": 0, "skipped": skipped, "error": "embedding count mismatch"}
+    except (HttpRequestError, Exception) as exc:
+        logger.warning("Single-handle embedding failed for %s/%s: %s", object_type, handle, exc)
+        return {"embedded": 0, "skipped": skipped, "error": str(exc)}
+
+    embedded = 0
+    for (chunk_text, ci), vec in zip(texts_to_embed, embeddings):
+        blob = _embed_to_blob(vec)
+        preview = chunk_text[:200]
+        token_est = len(chunk_text) // 4
+        conn.execute(
+            """
+            INSERT INTO embeddings (object_type, object_handle, chunk_index, text_hash, model_version, embedding, source_text_preview, token_count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(object_type, object_handle, chunk_index)
+            DO UPDATE SET text_hash=excluded.text_hash, model_version=excluded.model_version,
+                          embedding=excluded.embedding, source_text_preview=excluded.source_text_preview,
+                          token_count=excluded.token_count, updated_at=excluded.updated_at
+            """,
+            (object_type, handle, ci, _md5(chunk_text), EMBEDDING_MODEL, blob, preview, token_est),
+        )
+        embedded += 1
+    conn.commit()
+
+    return {"embedded": embedded, "skipped": skipped, "error": None}
+
+
 def embedding_status(conn: sqlite3.Connection) -> dict:
     """Return aggregate stats about the embedding table for the status page."""
     embed_rows = conn.execute("""

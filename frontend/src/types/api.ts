@@ -1300,3 +1300,44 @@ export const shopifyShopInfoSchema = z.object({
 });
 
 export type ShopifyShopInfo = z.infer<typeof shopifyShopInfoSchema>;
+
+// ---------------------------------------------------------------------------
+// GSC Opportunity Inbox
+// ---------------------------------------------------------------------------
+
+export const opportunityItemSchema = z.object({
+  id: z.string(),
+  query: z.string(),
+  page_url: z.string(),
+  page_type: z.string(),
+  object_type: z.string(),
+  object_handle: z.string(),
+  impressions: z.number(),
+  clicks: z.number(),
+  ctr: z.number(),
+  position: z.number(),
+  opportunity_score: z.number(),
+  suggested_action: z.string(),
+  content_type: z.string(),
+  fetched_at: z.number().nullable().optional()
+});
+
+export const opportunitiesPayloadSchema = z.object({
+  items: z.array(opportunityItemSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+  has_more: z.boolean()
+});
+
+export const opportunityStatsSchema = z.object({
+  total_queries: z.number(),
+  striking_distance: z.number(),
+  quick_wins: z.number(),
+  high_impressions_low_ctr: z.number(),
+  by_page_type: z.record(z.string(), z.number())
+});
+
+export type OpportunityItem = z.infer<typeof opportunityItemSchema>;
+export type OpportunitiesPayload = z.infer<typeof opportunitiesPayloadSchema>;
+export type OpportunityStats = z.infer<typeof opportunityStatsSchema>;

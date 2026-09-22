@@ -2,6 +2,7 @@
 import datetime
 import logging
 import sqlite3
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,120 @@ def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> 
         )
         clusters.append(cluster)
     return clusters
+
+
+def _apply_catalog_quotas(
+    ideas: list[dict],
+    vendor_context: list[dict],
+    total_products: int,
+) -> list[dict]:
+    """Rebalance ideas based on catalog vendor/brand share.
+    
+    Ensures top vendors by SKU count receive proportional representation
+    in the generated ideas, and limits generic (non-brand-specific) ideas.
+    
+    The quota system works as follows:
+    1. Calculate vendor share of catalog (SKU count / total products)
+    2. Score ideas based on whether their content targets a vendor's products
+    3. Ensure top vendors get at least MIN_TOP_VENDOR_SHARE of ideas
+    4. Cap generic ideas at MAX_GENERIC_SHARE
+    """
+    from ..dashboard_config import (
+        IDEA_QUOTA_ENABLED,
+        IDEA_QUOTA_MIN_TOP_VENDOR_SHARE,
+        IDEA_QUOTA_MAX_GENERIC_SHARE,
+        IDEA_QUOTA_MIN_TOP_VENDORS,
+    )
+    
+    if not IDEA_QUOTA_ENABLED:
+        logger.debug("Catalog quota disabled, returning ideas unchanged")
+        return ideas
+    
+    if not ideas or not vendor_context or total_products <= 0:
+        return ideas
+    
+    vendor_share: dict[str, float] = {}
+    for v in vendor_context:
+        vendor = (v.get("vendor") or "").strip().lower()
+        if vendor:
+            vendor_share[vendor] = v.get("product_count", 0) / total_products
+    
+    if not vendor_share:
+        return ideas
+    
+    top_vendors = sorted(
+        vendor_share.keys(),
+        key=lambda v: vendor_share[v],
+        reverse=True,
+    )[:max(IDEA_QUOTA_MIN_TOP_VENDORS, 3)]
+    top_vendor_total_share = sum(vendor_share.get(v, 0) for v in top_vendors)
+    
+    def _idea_vendor_match(idea: dict) -> str | None:
+        """Check if an idea's content targets a specific vendor."""
+        title = (idea.get("suggested_title") or "").lower()
+        brief = (idea.get("brief") or "").lower()
+        keywords = " ".join(str(k).lower() for k in (idea.get("supporting_keywords") or []))
+        primary_kw = (idea.get("primary_keyword") or "").lower()
+        text = f"{title} {brief} {keywords} {primary_kw}"
+        
+        for vendor in vendor_share.keys():
+            vendor_words = vendor.split()
+            if all(word in text for word in vendor_words):
+                return vendor
+        return None
+    
+    idea_vendors = [(idea, _idea_vendor_match(idea)) for idea in ideas]
+    
+    vendor_ideas = [(i, v) for i, v in idea_vendors if v and v in top_vendors]
+    other_vendor_ideas = [(i, v) for i, v in idea_vendors if v and v not in top_vendors]
+    generic_ideas = [(i, None) for i, v in idea_vendors if v is None]
+    
+    n_total = len(ideas)
+    n_top_vendor_min = int(n_total * IDEA_QUOTA_MIN_TOP_VENDOR_SHARE * top_vendor_total_share)
+    n_generic_max = int(n_total * IDEA_QUOTA_MAX_GENERIC_SHARE)
+    
+    rebalanced: list[dict] = []
+    
+    if len(vendor_ideas) < n_top_vendor_min:
+        rebalanced.extend(i for i, _ in vendor_ideas)
+    else:
+        rebalanced.extend(i for i, _ in vendor_ideas[:max(n_top_vendor_min, len(vendor_ideas))])
+    
+    rebalanced.extend(i for i, _ in other_vendor_ideas)
+    
+    n_generic_to_add = min(len(generic_ideas), n_generic_max, n_total - len(rebalanced))
+    rebalanced.extend(i for i, _ in generic_ideas[:n_generic_to_add])
+    
+    remaining_generic = generic_ideas[n_generic_to_add:]
+    remaining_vendor = vendor_ideas[len(rebalanced) - len(other_vendor_ideas):]
+    
+    while len(rebalanced) < n_total and (remaining_generic or remaining_vendor):
+        if remaining_vendor:
+            i, _ = remaining_vendor.pop(0)
+            if i not in rebalanced:
+                rebalanced.append(i)
+        elif remaining_generic:
+            i, _ = remaining_generic.pop(0)
+            if i not in rebalanced:
+                rebalanced.append(i)
+    
+    seen = set()
+    final: list[dict] = []
+    for idea in rebalanced:
+        key = idea.get("suggested_title", "")
+        if key not in seen:
+            seen.add(key)
+            final.append(idea)
+    
+    logger.info(
+        "Catalog quota applied: %d ideas, %d top-vendor, %d other-vendor, %d generic",
+        len(final),
+        len(vendor_ideas),
+        len(other_vendor_ideas),
+        len([i for i, v in idea_vendors if v is None]),
+    )
+    
+    return final[:n_total]
 
 
 def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
@@ -820,4 +935,8 @@ def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
                 "secondary_targets": secondary_targets,
             }
         )
-    return cleaned
+    
+    # Apply catalog-weight quotas (C4.x) to ensure vendor/brand balance
+    vendor_context = gap_data.get("vendor_context", [])
+    total_products = sum(v.get("product_count", 0) for v in vendor_context)
+    return _apply_catalog_quotas(cleaned, vendor_context, total_products)

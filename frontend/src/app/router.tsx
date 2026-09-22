@@ -29,6 +29,9 @@ const ApiUsagePage = lazy(() =>
 const GoogleAdsLabPage = lazy(() =>
   import("../routes/google-ads-lab-page").then((m) => ({ default: m.GoogleAdsLabPage }))
 );
+const OpportunitiesPage = lazy(() =>
+  import("../routes/opportunities-page").then((m) => ({ default: m.OpportunitiesPage }))
+);
 
 function PageFallback() {
   return (
@@ -107,6 +110,10 @@ export const router = createBrowserRouter(
     {
       path: "/article-ideas",
       element: shell(<ArticleIdeasPage />)
+    },
+    {
+      path: "/opportunities",
+      element: shell(<OpportunitiesPage />)
     },
     {
       path: "/article-ideas/:ideaId",

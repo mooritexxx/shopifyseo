@@ -160,6 +160,18 @@ Article draft generation now persists `article_draft_runs` and uses a canonical 
 | PATCH  | `/api/article-ideas/{idea_id}/status`      | Body    | `{ ok, data }` | Set status                                             |
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
+| POST   | `/api/article-ideas/{idea_id}/refresh-serp` | —      | `{ ok, data }` | Force refresh SerpAPI snapshot (manual override)       |
+
+#### SERP snapshot auto-refresh during draft generation
+
+Article draft generation (`POST /api/articles/generate-draft-stream`) automatically ensures the idea's SERP snapshot is fresh before drafting:
+
+- **If SERP is missing** or **older than 24 hours** (configurable via `SERP_FRESHNESS_TTL_SECONDS`), the endpoint refreshes it via SerpAPI before continuing.
+- An SSE progress event `"Ensuring SERP snapshot"` is emitted at step 1 of the draft stream.
+- **If refresh fails** when required (missing/stale SERP), the draft stream **fails with a clear error** rather than proceeding with empty/outdated data.
+- **If SERP is fresh**, it reuses existing data without a SerpAPI call.
+
+The `POST /api/article-ideas/{id}/refresh-serp` endpoint and "Force refresh SERP" button on the idea detail page remain as a manual override to force an immediate refresh regardless of freshness.
 
 **End-to-end data lineage:** [docs/article-draft-data-pipeline.md](docs/article-draft-data-pipeline.md) traces every
 data point behind a drafted article — seed generation → DataForSEO research → GSC enrichment → approve/dismiss →
@@ -379,7 +391,7 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `seo_recommendations`                                                    | AI/SEO recs                                | Per object                                       |                                                  |
 | `keyword_metrics`, `keyword_page_map`                                    | Research + mapping                         | Maps keyword ↔ `object_type`/`object_handle`     |                                                  |
 | `competitor_profiles`, `competitor_top_pages`, `competitor_keyword_gaps` | Competitor analysis                        | Domain-scoped; `competitor_top_pages` carries `top_keyword_volume`, `top_keyword_position`, `page_type` | |
-| `article_ideas`                                                          | Gap-analysis article ideas                 | `id` PK; `linked_cluster_id`, `status`, `linked_article_handle` legacy 1:1 fields | ← `idea_articles`                                |
+| `article_ideas`                                                          | Gap-analysis article ideas                 | `id` PK; `linked_cluster_id`, `status`, `serp_refreshed_at` (Unix ts for auto-refresh); `linked_article_handle` legacy 1:1 fields | ← `idea_articles`                                |
 | `idea_articles`                                                          | N:M idea ↔ article mapping                 | `(idea_id, blog_handle, article_handle)` unique; `angle_label` for multi-angle drafts | → `article_ideas`                                 |
 | `article_target_keywords`                                                | Keywords per article                       | `(blog_handle, article_handle, keyword)` unique; `is_primary`, `source` | → `blog_articles` via handles                    |
 | `article_draft_runs`                                                     | Persisted article draft checkpoints        | `id` run key; request, SEO brief, outline, memory, checkpoints, content, images, Shopify id/handle, validation summary, status/error | Article draft stream/resume                       |

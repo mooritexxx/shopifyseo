@@ -307,8 +307,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="prepare_brief",
             step_label="Prepare SEO brief",
-            step_index=1,
-            step_total=11,
+            step_index=2,
+            step_total=12,
         )
 
         if is_regen:
@@ -328,6 +328,52 @@ def _run_generate_article_draft(
         effective_idea_id = payload.idea_id
         if is_regen and effective_idea_id is None:
             effective_idea_id = _lookup_idea_id_for_article(conn, payload.blog_handle, reg_handle)
+
+        # Auto-ensure SERP snapshot is fresh before drafting (if idea_id is resolved).
+        # Default TTL: 24 hours. If SERP is missing or stale, refresh via SerpAPI.
+        # If refresh fails when required, fail the draft stream with a clear error.
+        if effective_idea_id is not None:
+            p(
+                "Checking SERP snapshot freshness…",
+                "serp",
+                "start",
+                run_id=run_id,
+                step_key="ensure_serp_fresh",
+                step_label="Ensure SERP snapshot",
+                step_index=1,
+                step_total=12,
+            )
+            serp_result = dq.ensure_idea_serp_fresh(conn, effective_idea_id)
+            if serp_result["status"] == "refreshed":
+                p(
+                    f"SERP refreshed: {serp_result['reason']}",
+                    "serp",
+                    "done",
+                    run_id=run_id,
+                    step_key="ensure_serp_fresh",
+                    step_label="Ensure SERP snapshot",
+                    step_index=1,
+                    step_total=12,
+                    result_summary="Refreshed via SerpAPI",
+                )
+            elif serp_result["status"] == "reused":
+                p(
+                    f"SERP snapshot is fresh: {serp_result['reason']}",
+                    "serp",
+                    "done",
+                    run_id=run_id,
+                    step_key="ensure_serp_fresh",
+                    step_label="Ensure SERP snapshot",
+                    step_index=1,
+                    step_total=12,
+                    result_summary="Reused existing",
+                )
+            else:
+                update_run(status="failed", current_step="ensure_serp_fresh", error_message=serp_result["error"] or "SERP refresh failed")
+                raise RuntimeError(
+                    f"SERP refresh required but failed: {serp_result['error']} — "
+                    "add a SerpAPI key in Settings or ensure the idea has a primary keyword."
+                )
 
         keywords: list = list(payload.keywords or [])
         if is_regen and not keywords:
@@ -546,8 +592,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="content_checkpoint",
                 step_label="Save content checkpoint",
-                step_index=6,
-                step_total=11,
+                step_index=7,
+                step_total=12,
                 result_summary=f"Body {len(stored_body):,} chars",
             )
         else:
@@ -581,8 +627,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="images",
             step_label="Generate/upload images",
-            step_index=7,
-            step_total=11,
+            step_index=8,
+            step_total=12,
         )
         conn_img = open_db_connection()
         try:
@@ -596,7 +642,7 @@ def _run_generate_article_draft(
         finally:
             conn_img.close()
         for note in image_notes:
-            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=7, step_total=11)
+            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=8, step_total=12)
         image_failures = [
             note for note in image_notes
             if any(token in note.lower() for token in ("failed", "skipp"))
@@ -634,8 +680,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="images",
             step_label="Generate/upload images",
-            step_index=7,
-            step_total=11,
+            step_index=8,
+            step_total=12,
             result_summary=f"Featured + {len(body_images)} inline image{'s' if len(body_images) != 1 else ''}",
         )
 
@@ -648,8 +694,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
             )
             body_html = inject_article_body_images(body_html, body_images)
             update_run(body=body_html, current_step="insert_body_images", last_completed_step="insert_body_images")
@@ -660,8 +706,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
                 result_summary=f"{len(body_images)} inline image{'s' if len(body_images) != 1 else ''} inserted",
             )
         else:
@@ -672,8 +718,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
             )
 
         conn_titles = open_db_connection()
@@ -725,8 +771,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
         )
         try:
             live_update_article(
@@ -759,8 +805,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
@@ -793,8 +839,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
             result_summary=f"Updated {reg_handle}",
         )
         # live_update_article syncs once; re-sync after optional featured/body fixes.
@@ -827,8 +873,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="shopify",
                 step_label="Create/update Shopify draft",
-                step_index=9,
-                step_total=11,
+                step_index=10,
+                step_total=12,
             )
             try:
                 live_update_article(
@@ -861,8 +907,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="shopify",
                 step_label="Create/update Shopify draft",
-                step_index=9,
-                step_total=11,
+                step_index=10,
+                step_total=12,
             )
             try:
                 result = create_article(
@@ -906,8 +952,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
@@ -920,8 +966,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
 
         article = _sync_article_body_if_needed(article, body_html, p)
@@ -939,8 +985,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
             result_summary=f"Handle {article['handle']}",
         )
 
@@ -951,8 +997,8 @@ def _run_generate_article_draft(
         run_id=run_id,
         step_key="local_save",
         step_label="Save locally",
-        step_index=11,
-        step_total=11,
+        step_index=12,
+        step_total=12,
     )
     try:
         _persist_article_locally(
@@ -986,8 +1032,8 @@ def _run_generate_article_draft(
         run_id=run_id,
         step_key="local_save",
         step_label="Save locally",
-        step_index=11,
-        step_total=11,
+        step_index=12,
+        step_total=12,
         result_summary=f"Ready: {article['handle']}",
     )
 

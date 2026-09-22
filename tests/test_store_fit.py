@@ -732,6 +732,201 @@ class TestOffNicheExpanded:
         assert result["is_off_niche"] is True
 
 
+class TestHomonymPenalty:
+    """Tests for homonym/false-friend pattern penalty (radio stations, games, malls)."""
+
+    def test_radio_station_penalized(self):
+        """KRAZE 101.3 (radio station) should be penalized as homonym."""
+        ctx = StoreFitContext()
+
+        result = compute_cluster_store_fit(
+            cluster_name="KRAZE Products",
+            cluster_keywords=["kraze 101.3", "kraze fm", "kraze radio"],
+            cluster_role="brand_collection",
+            detected_entity="KRAZE",
+            context=ctx,
+        )
+
+        assert result["is_homonym"] is True
+        assert result["fit_multiplier"] == ctx.homonym_penalty
+        assert "homonym" in (result["penalty_reason"] or "").lower()
+
+    def test_video_game_penalized(self):
+        """SNIPER video game titles should be penalized as homonym."""
+        ctx = StoreFitContext()
+
+        result = compute_cluster_store_fit(
+            cluster_name="SNIPER Products",
+            cluster_keywords=["sniper game", "sniper elite", "sniper xbox"],
+            cluster_role="brand_collection",
+            detected_entity="SNIPER",
+            context=ctx,
+        )
+
+        assert result["is_homonym"] is True
+        assert result["fit_multiplier"] == ctx.homonym_penalty
+
+    def test_mall_location_penalized(self):
+        """Mall locations like DIX30 should be penalized as homonym."""
+        ctx = StoreFitContext()
+
+        result = compute_cluster_store_fit(
+            cluster_name="ALLO Products",
+            cluster_keywords=["allo mon coco dix30", "allo quartier dix30"],
+            cluster_role="brand_collection",
+            detected_entity="ALLO",
+            context=ctx,
+        )
+
+        assert result["is_homonym"] is True
+        assert result["fit_multiplier"] == ctx.homonym_penalty
+
+    def test_catalog_brand_overrides_homonym(self):
+        """Catalog brand match should override homonym penalty."""
+        conn = _make_test_db_with_vendors()
+        ctx = load_store_fit_context(conn)
+
+        # ALLO is in catalog, so even if homonym pattern matches,
+        # the catalog match should take precedence
+        result = compute_cluster_store_fit(
+            cluster_name="ALLO Products",
+            cluster_keywords=["allo vape canada", "allo disposable"],  # No homonym
+            cluster_role="brand_collection",
+            detected_entity="ALLO",
+            context=ctx,
+        )
+
+        assert result["is_homonym"] is False
+        assert result["matched_vendor"] is not None
+        assert result["fit_multiplier"] > 1.0  # Boosted
+
+        conn.close()
+
+
+class TestPriorityCap:
+    """Tests for priority cap on non-catalog clusters."""
+
+    def test_non_catalog_has_priority_cap(self):
+        """Non-catalog clusters should have a priority cap returned."""
+        ctx = StoreFitContext()
+
+        result = compute_cluster_store_fit(
+            cluster_name="Generic Topic",
+            cluster_keywords=["vape tips", "vaping guide"],
+            cluster_role="generic",
+            detected_entity="",
+            context=ctx,
+        )
+
+        assert result["priority_cap"] is not None
+        assert result["priority_cap"] == ctx.non_catalog_priority_cap
+
+    def test_catalog_brand_no_priority_cap(self):
+        """Catalog-aligned clusters should not have a priority cap."""
+        conn = _make_test_db_with_vendors()
+        ctx = load_store_fit_context(conn)
+
+        result = compute_cluster_store_fit(
+            cluster_name="Flavour Beast Products",
+            cluster_keywords=["flavour beast canada"],
+            cluster_role="brand_collection",
+            detected_entity="Flavour Beast",
+            context=ctx,
+        )
+
+        assert result["priority_cap"] is None  # No cap for catalog brands
+
+        conn.close()
+
+
+class TestSameEntityMerge:
+    """Tests for same-entity+role aggressive merging."""
+
+    def test_same_entity_role_detected(self):
+        """_same_entity_and_role should detect matching entity+role pairs."""
+        from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
+        from backend.app.services.keyword_clustering._planning import load_entity_rules
+
+        conn = _make_test_db_with_vendors()
+        entity_rules = load_entity_rules(conn)
+        keywords_map = {
+            "flavour beast disposable": {"volume": 1000, "opportunity": 70.0},
+            "flavour beast flavours": {"volume": 800, "opportunity": 65.0},
+        }
+
+        cluster_a = {
+            "name": "Flavour Beast Flavours",
+            "keywords": ["flavour beast flavours", "fb flavour"],
+            "detected_entity": "Flavour Beast",
+            "cluster_role": "flavours",
+        }
+        cluster_b = {
+            "name": "Flavour Beast Tastes",  # Different name but same entity+role
+            "keywords": ["flavour beast tastes", "fb taste"],
+            "detected_entity": "Flavour Beast",
+            "cluster_role": "flavours",
+        }
+        cluster_c = {
+            "name": "Flavour Beast Products",
+            "keywords": ["flavour beast disposable"],
+            "detected_entity": "Flavour Beast",
+            "cluster_role": "brand_collection",  # Different role
+        }
+
+        # Same entity + same role should return True
+        assert _same_entity_and_role(cluster_a, cluster_b, keywords_map, entity_rules) is True
+
+        # Same entity + different role should return False
+        assert _same_entity_and_role(cluster_a, cluster_c, keywords_map, entity_rules) is False
+
+        conn.close()
+
+    def test_different_entity_not_matched(self):
+        """Different entities should not be considered same."""
+        from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
+        from backend.app.services.keyword_clustering._planning import load_entity_rules
+
+        conn = _make_test_db_with_vendors()
+        entity_rules = load_entity_rules(conn)
+        keywords_map = {}
+
+        cluster_a = {
+            "detected_entity": "Flavour Beast",
+            "cluster_role": "flavours",
+        }
+        cluster_b = {
+            "detected_entity": "STLTH",
+            "cluster_role": "flavours",
+        }
+
+        assert _same_entity_and_role(cluster_a, cluster_b, keywords_map, entity_rules) is False
+
+        conn.close()
+
+    def test_empty_entity_not_matched(self):
+        """Empty entities should not match anything."""
+        from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
+        from backend.app.services.keyword_clustering._planning import load_entity_rules
+
+        conn = _make_test_db_with_vendors()
+        entity_rules = load_entity_rules(conn)
+        keywords_map = {}
+
+        cluster_a = {
+            "detected_entity": "",
+            "cluster_role": "generic",
+        }
+        cluster_b = {
+            "detected_entity": "",
+            "cluster_role": "generic",
+        }
+
+        # Empty entities should NOT match (to avoid incorrectly merging generic clusters)
+        assert _same_entity_and_role(cluster_a, cluster_b, keywords_map, entity_rules) is False
+
+        conn.close()
+
+
 class TestPriorityCompetitionExpanded:
     """Integration tests: catalog brands beat all noise types."""
 

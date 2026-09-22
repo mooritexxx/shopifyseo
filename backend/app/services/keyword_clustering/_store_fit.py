@@ -183,6 +183,70 @@ DEFAULT_NON_CATALOG_DEVICE_BRANDS: frozenset[str] = frozenset({
     "myle",
     "phix",
     "ziip",
+    # Additional hardware brands
+    "ovns",
+    "ovns jc01",
+})
+
+# Homonym / false-friend patterns — brand names that collide with unrelated
+# topics like radio stations, video games, or geographic locations. These are
+# penalized when detected without a matching catalog vendor.
+DEFAULT_HOMONYM_PATTERNS: frozenset[str] = frozenset({
+    # Radio stations / media
+    "101.3",
+    "101 3",
+    "fm",
+    "radio",
+    "radio station",
+    "playlist",
+    "spotify",
+    "apple music",
+    # Video games
+    "video game",
+    "game",
+    "xbox",
+    "playstation",
+    "ps4",
+    "ps5",
+    "steam",
+    "call of duty",
+    "fortnite",
+    "apex legends",
+    "valorant",
+    "warzone",
+    "sniper elite",  # SNIPER brand homonym
+    "sniper game",
+    "sniper rifle",
+    # Mall / store locations (Canadian)
+    "dix30",
+    "quartier dix30",
+    "carrefour",
+    "centre",
+    "mall",
+    "plaza",
+    "promenades",
+    "galeries",
+    "fairview",
+    "square one",
+    "eaton centre",
+    "yorkdale",
+    "rideau centre",
+    "pacific centre",
+    "metrotown",
+    # Geographic false friends
+    "mon coco",  # "allo mon coco" is a restaurant chain, not ALLO vape
+    "restaurant",
+    "cafe",
+    "coffee",
+    "bakery",
+    # Years as standalone (not part of model names)
+    "2020",
+    "2021",
+    "2022",
+    "2023",
+    "2024",
+    "2025",
+    "2026",
 })
 
 # Ultra-generic head terms — broad category terms that are nearly impossible
@@ -223,19 +287,27 @@ class StoreFitContext:
     wholesale_patterns: frozenset[str] = DEFAULT_WHOLESALE_PATTERNS
     non_catalog_brands: frozenset[str] = DEFAULT_NON_CATALOG_DEVICE_BRANDS
     ultra_generic_patterns: frozenset[str] = DEFAULT_ULTRA_GENERIC_PATTERNS
+    homonym_patterns: frozenset[str] = DEFAULT_HOMONYM_PATTERNS
 
     # Penalty multipliers (0.0 = exclude, 1.0 = no penalty)
+    # Severity order: off_niche > tobacco > homonym > wholesale > local > non_catalog > ultra_generic
     tobacco_penalty: float = 0.15  # Heavy penalty for tobacco clusters
     local_penalty: float = 0.25  # Heavy penalty for near-me clusters
     off_niche_penalty: float = 0.10  # Very heavy penalty for off-niche
     wholesale_penalty: float = 0.20  # Heavy penalty for B2B/wholesale clusters
-    non_catalog_brand_penalty: float = 0.30  # Penalty for non-catalog brand clusters
+    non_catalog_brand_penalty: float = 0.18  # Stronger penalty for non-catalog brand clusters (was 0.30)
     ultra_generic_penalty: float = 0.35  # Penalty for generic heads without catalog match
+    homonym_penalty: float = 0.18  # Penalty for homonym/false-friend matches
 
     # Catalog boost parameters
     # Clusters matching a catalog vendor get a boost based on SKU share
     vendor_boost_max: float = 1.35  # Max multiplier for high-SKU vendor
     vendor_boost_min: float = 1.08  # Min boost for any catalog vendor match
+
+    # Priority cap for clusters without catalog alignment
+    # Clusters with no catalog vendor match cannot exceed this priority score band
+    # after store-fit adjustment, even with high raw opportunity/volume
+    non_catalog_priority_cap: float = 45.0  # Cap for non-catalog-aligned clusters
 
 
 def load_store_fit_context(conn: sqlite3.Connection) -> StoreFitContext:
@@ -322,6 +394,15 @@ def _has_wholesale_signal(text: str, patterns: frozenset[str]) -> bool:
 
 def _has_ultra_generic_signal(text: str, patterns: frozenset[str]) -> bool:
     """Check if text is an ultra-generic head term."""
+    return _text_contains_any(text, patterns)
+
+
+def _has_homonym_signal(text: str, patterns: frozenset[str]) -> bool:
+    """Check if text contains homonym/false-friend patterns.
+
+    These are brand names that collide with radio stations, video games,
+    or geographic locations (e.g., "kraze 101.3", "sniper game", "allo mon coco dix30").
+    """
     return _text_contains_any(text, patterns)
 
 
@@ -416,7 +497,9 @@ def compute_cluster_store_fit(
             "is_wholesale": bool,
             "is_non_catalog_brand": bool,
             "is_ultra_generic": bool,
+            "is_homonym": bool,
             "penalty_reason": str | None,  # Human-readable reason if penalized
+            "priority_cap": float | None,  # Cap for non-catalog clusters
         }
     """
     # Combine all text for pattern matching
@@ -440,6 +523,13 @@ def compute_cluster_store_fit(
     is_local = _has_local_signal(norm_text, context.local_patterns) or cluster_role == "local"
     is_off_niche = _has_off_niche_signal(norm_text, context.off_niche_patterns)
     is_wholesale = _has_wholesale_signal(norm_text, context.wholesale_patterns)
+
+    # Homonym check: penalize false-friend patterns (radio stations, games, malls)
+    # Only when no catalog vendor match
+    is_homonym = (
+        not matched_vendor
+        and _has_homonym_signal(norm_text, context.homonym_patterns)
+    )
 
     # Non-catalog brand check: only penalize if cluster has NO catalog vendor match
     is_non_catalog_brand = (
@@ -466,6 +556,10 @@ def compute_cluster_store_fit(
     elif is_tobacco:
         fit_multiplier *= context.tobacco_penalty
         penalty_reason = "tobacco/cigarette theme (store sells vape only)"
+    # Homonym/false-friend (radio stations, video games, mall locations)
+    elif is_homonym:
+        fit_multiplier *= context.homonym_penalty
+        penalty_reason = "homonym/false-friend (radio station, game, or location)"
     # Wholesale is heavy penalty for D2C stores
     elif is_wholesale:
         fit_multiplier *= context.wholesale_penalty
@@ -501,6 +595,11 @@ def compute_cluster_store_fit(
     # Ensure multiplier is in reasonable range
     fit_multiplier = max(0.05, min(1.5, fit_multiplier))
 
+    # Determine priority cap for non-catalog clusters
+    priority_cap: float | None = None
+    if not matched_vendor:
+        priority_cap = context.non_catalog_priority_cap
+
     return {
         "fit_multiplier": round(fit_multiplier, 3),
         "matched_vendor": matched_vendor,
@@ -510,7 +609,9 @@ def compute_cluster_store_fit(
         "is_wholesale": is_wholesale,
         "is_non_catalog_brand": is_non_catalog_brand,
         "is_ultra_generic": is_ultra_generic,
+        "is_homonym": is_homonym,
         "penalty_reason": penalty_reason,
+        "priority_cap": priority_cap,
     }
 
 
@@ -529,6 +630,10 @@ def compute_keyword_store_fit(
     is_local = _has_local_signal(norm, context.local_patterns)
     is_off_niche = _has_off_niche_signal(norm, context.off_niche_patterns)
     is_wholesale = _has_wholesale_signal(norm, context.wholesale_patterns)
+    is_homonym = (
+        not matched_vendor
+        and _has_homonym_signal(norm, context.homonym_patterns)
+    )
     is_non_catalog_brand = (
         not matched_vendor
         and _has_non_catalog_brand_signal(norm, context.non_catalog_brands, context.catalog_vendors)
@@ -543,6 +648,8 @@ def compute_keyword_store_fit(
         fit_multiplier = context.off_niche_penalty
     elif is_tobacco:
         fit_multiplier = context.tobacco_penalty
+    elif is_homonym:
+        fit_multiplier = context.homonym_penalty
     elif is_wholesale:
         fit_multiplier = context.wholesale_penalty
     elif is_local:
@@ -564,4 +671,5 @@ def compute_keyword_store_fit(
         "is_wholesale": is_wholesale,
         "is_non_catalog_brand": is_non_catalog_brand,
         "is_ultra_generic": is_ultra_generic,
+        "is_homonym": is_homonym,
     }

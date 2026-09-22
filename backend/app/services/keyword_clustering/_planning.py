@@ -684,6 +684,8 @@ def enrich_cluster_for_content(
         keywords_map,
         ai_primary=cluster.get("primary_keyword", ""),
         content_type=content_type,
+        detected_entity=profile.get("detected_entity", ""),
+        cluster_role=profile.get("cluster_role", ""),
     )
     base = {
         **cluster,
@@ -714,6 +716,12 @@ def enrich_cluster_for_content(
         )
         priority *= store_fit_result["fit_multiplier"]
 
+        # Apply priority cap for non-catalog clusters to prevent high-volume noise
+        # from outranking catalog-aligned clusters
+        priority_cap = store_fit_result.get("priority_cap")
+        if priority_cap is not None and priority > priority_cap:
+            priority = priority_cap
+
     base.update(
         {
             "detected_entity": profile["detected_entity"],
@@ -736,7 +744,9 @@ def enrich_cluster_for_content(
             "is_wholesale": store_fit_result["is_wholesale"],
             "is_non_catalog_brand": store_fit_result["is_non_catalog_brand"],
             "is_ultra_generic": store_fit_result["is_ultra_generic"],
+            "is_homonym": store_fit_result.get("is_homonym", False),
             "penalty_reason": store_fit_result["penalty_reason"],
+            "priority_cap": store_fit_result.get("priority_cap"),
         }
     base["name"] = _build_cluster_name(base, profile)
     base["content_brief"] = _build_content_brief(base, profile, tiers)

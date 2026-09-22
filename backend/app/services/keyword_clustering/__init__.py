@@ -7,6 +7,7 @@ Internal layout:
   _context.py    — cluster context lookup for LLM prompts
   _generation.py — AI-driven cluster generation and page-matching
   _crud.py       — CRUD operations (get_match_options, update/get cluster)
+  _store_fit.py  — store-fit scoring: penalize noise, boost catalog-aligned
 """
 
 from ._crud import get_cluster_detail, get_match_options, update_cluster_match
@@ -17,6 +18,12 @@ from ._postprocess import fold_singletons, merge_similar_clusters
 from ._planning import parse_keyword_tier, repair_and_enrich_clusters
 from ._pre_cluster import pre_cluster
 from ._scoring import cluster_priority_score, select_primary_keyword
+from ._store_fit import (
+    StoreFitContext,
+    compute_cluster_store_fit,
+    compute_keyword_store_fit,
+    load_store_fit_context,
+)
 from ._helpers import (
     _build_clustering_prompt,
     _check_keyword_coverage,
@@ -50,6 +57,11 @@ __all__ = [
     "get_match_options",
     "update_cluster_match",
     "get_cluster_detail",
+    # Store-fit scoring
+    "StoreFitContext",
+    "compute_cluster_store_fit",
+    "compute_keyword_store_fit",
+    "load_store_fit_context",
     # Semi-public (used by other services)
     "_get_matched_cluster_keywords",
     "_load_cluster_context",

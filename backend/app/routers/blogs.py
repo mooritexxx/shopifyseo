@@ -1197,6 +1197,36 @@ class _PublishRequest(BaseModel):
     is_published: bool
 
 
+def _post_publish_embedding_refresh(blog_handle: str, article_handle: str) -> None:
+    """Background task to refresh embeddings for a newly published article.
+
+    Called after successful publish so RAG/cannibalization sees the new content
+    without requiring a manual full refresh. Failures are logged but do not
+    affect the publish result (which already succeeded).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    conn = open_db_connection()
+    try:
+        from shopifyseo.embedding_store import sync_embedding_for_handle
+        composite = dq.blog_article_composite_handle(blog_handle, article_handle)
+        result = sync_embedding_for_handle(conn, "blog_article", composite)
+        if result.get("error"):
+            logger.warning(
+                "Post-publish embedding refresh failed for %s/%s: %s",
+                blog_handle, article_handle, result["error"],
+            )
+        else:
+            logger.info(
+                "Post-publish embedding refresh for %s/%s: embedded=%d, skipped=%d",
+                blog_handle, article_handle, result.get("embedded", 0), result.get("skipped", 0),
+            )
+    except Exception:
+        logger.warning("Post-publish embedding refresh error", exc_info=True)
+    finally:
+        conn.close()
+
+
 @router.patch(
     "/articles/{blog_handle}/{article_handle}/publish",
     response_model=SuccessResponse[ProductActionResult],
@@ -1218,6 +1248,17 @@ def article_publish(blog_handle: str, article_handle: str, payload: _PublishRequ
         publish_article(get_db_path(), shopify_id, is_published=payload.is_published)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    # Post-publish embeddings refresh: enqueue embedding upsert for the article
+    # so RAG/cannibalization sees it without a manual full refresh.
+    # Run in background thread so the publish response is not delayed.
+    if payload.is_published:
+        threading.Thread(
+            target=_post_publish_embedding_refresh,
+            args=(blog_handle, article_handle),
+            daemon=True,
+        ).start()
+
     action = "published" if payload.is_published else "unpublished"
     detail = get_blog_article_detail(blog_handle, article_handle)
     return success_response({"message": f"Article {action}", "result": detail})

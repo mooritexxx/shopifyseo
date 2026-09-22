@@ -391,7 +391,12 @@ def test_auth_start_redirects_when_not_configured():
     assert response.status_code == 303
     location = response.headers["location"]
     assert location
-    assert "/app/google-signals" in location or "accounts.google.com/o/oauth2" in location
+    # When OAuth is not configured, redirect to settings page with message
+    assert (
+        "/app/settings" in location
+        or "/app/google-signals" in location
+        or "accounts.google.com/o/oauth2" in location
+    )
 
 
 def test_collection_update_uses_targeted_refresh(monkeypatch):

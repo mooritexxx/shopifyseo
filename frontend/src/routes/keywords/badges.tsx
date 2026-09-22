@@ -226,10 +226,10 @@ export function FilterDropdown<T extends string>({
   );
 }
 
-export function DifficultyBadge({ kd }: { kd: number | null }) {
+export function DifficultyBadge({ kd }: { kd: number | null | undefined }) {
   // DataForSEO sends 0 when it has no difficulty for a keyword. Show it as
   // unknown, not as a green "0" — that reads as trivially easy.
-  if (kd === null || kd === 0) return <span className="text-slate-400">—</span>;
+  if (kd === null || kd === undefined || kd === 0) return <span className="text-slate-400">—</span>;
   const color =
     kd <= 20
       ? "bg-green-100 text-green-700"
@@ -243,10 +243,10 @@ export function OpportunityBadge({
   opp,
   decimals,
 }: {
-  opp: number | null;
+  opp: number | null | undefined;
   decimals?: number;
 }) {
-  if (opp === null) return <span className="text-slate-400">—</span>;
+  if (opp === null || opp === undefined) return <span className="text-slate-400">—</span>;
   const color =
     opp >= 70
       ? "bg-green-100 text-green-700"
@@ -257,7 +257,7 @@ export function OpportunityBadge({
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${color}`}>{text}</span>;
 }
 
-export function IntentBadge({ intent }: { intent: string | null }) {
+export function IntentBadge({ intent }: { intent: string | null | undefined }) {
   if (!intent) return <span className="text-slate-400">—</span>;
   const color = INTENT_COLORS[intent.toLowerCase()] ?? "bg-slate-100 text-slate-600";
   return (

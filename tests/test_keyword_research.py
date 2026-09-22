@@ -405,7 +405,8 @@ def test_load_target_keywords_fills_missing_content_type_key():
     assert "content_type" in data["items"][0]
     assert data["items"][0]["content_type"] == "Brand page"  # from navigational intent
     assert "content_type" in data["items"][1]
-    assert data["items"][1]["content_type"] == ""  # no intent → key present as ""
+    # No intent → defaults to "Blog / Guide" (informational fallback)
+    assert data["items"][1]["content_type"] == "Blog / Guide"
 
 
 def test_normalize_target_keyword_item_for_insert_uses_vocabulary():

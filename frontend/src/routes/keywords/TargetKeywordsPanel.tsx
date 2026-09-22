@@ -373,7 +373,8 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
       list = list.filter((i) => {
         const kd = i.difficulty;
         // 0 means DataForSEO has no difficulty for the keyword, not "easy".
-        const unknown = kd === null || kd === 0;
+        // undefined/null both indicate missing data.
+        const unknown = kd === null || kd === undefined || kd === 0;
         if (difficultyFilter === "unknown") return unknown;
         if (unknown) return false;
         if (difficultyFilter === "easy") return kd <= 20;
@@ -388,7 +389,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (volumeFilter !== "all") {
       list = list.filter((i) => {
         const v = i.volume;
-        if (v === null) return false;
+        if (v === null || v === undefined) return false;
         if (volumeFilter === "v0") return v === 0;
         if (volumeFilter === "v1_100") return v >= 1 && v <= 100;
         if (volumeFilter === "v101_500") return v >= 101 && v <= 500;
@@ -400,8 +401,8 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (opportunityFilter !== "all") {
       list = list.filter((i) => {
         const o = i.opportunity;
-        if (opportunityFilter === "opp_none") return o === null || o === 0;
-        if (o === null || o === 0) return false;
+        if (opportunityFilter === "opp_none") return o === null || o === undefined || o === 0;
+        if (o === null || o === undefined || o === 0) return false;
         if (opportunityFilter === "opp_high") return o >= 70;
         if (opportunityFilter === "opp_mid") return o >= 30 && o < 70;
         if (opportunityFilter === "opp_low") return o >= 1 && o < 30;
@@ -411,7 +412,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (trafficPotentialFilter !== "all") {
       list = list.filter((i) => {
         const tp = i.traffic_potential;
-        if (tp === null) return false;
+        if (tp === null || tp === undefined) return false;
         if (trafficPotentialFilter === "tp0") return tp === 0;
         if (trafficPotentialFilter === "tp1_500") return tp >= 1 && tp <= 500;
         if (trafficPotentialFilter === "tp501_2000") return tp >= 501 && tp <= 2000;
@@ -1015,7 +1016,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.volume !== null ? item.volume.toLocaleString() : "—"}
+                            {item.volume != null ? item.volume.toLocaleString() : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-center">
@@ -1023,14 +1024,14 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.traffic_potential !== null
+                            {item.traffic_potential != null
                               ? item.traffic_potential.toLocaleString()
                               : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.cpc !== null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
+                            {item.cpc != null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">

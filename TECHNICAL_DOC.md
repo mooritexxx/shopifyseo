@@ -79,6 +79,8 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | POST   | `/api/settings/openrouter-models` | Body                           | `{ ok, data }` | List OpenRouter models                  |
 | GET    | `/api/usage/summary`              | `?days=`                       | `{ ok, data }` | API usage / cost summary                |
 
+**Safe settings save:** When saving settings via `POST /api/settings`, empty or null values for secret fields (API keys, passwords) are treated as "leave unchanged" rather than wiping the stored value. This prevents accidental deletion of credentials via partial POST requests. Secret keys protected: `shopify_client_secret`, `dataforseo_api_password`, `open_page_rank_api_key`, `serpapi_api_key`, `google_client_secret`, `openai_api_key`, `gemini_api_key`, `anthropic_api_key`, `openrouter_api_key`, `ollama_api_key`, `google_ads_developer_token`. See `SECRET_SETTING_KEYS` in `shopifyseo/dashboard_config.py`.
+
 
 ### Products
 
@@ -148,6 +150,31 @@ Generated draft article images use Gemini aspect-ratio hints when Gemini is the 
 Article draft generation now persists `article_draft_runs` and uses a canonical SEO brief for every AI step. The backend flow is: prepare SEO brief → outline → section batches with article memory → server-rendered FAQ/schema → targeted validation repair → saved content checkpoint → optimized WebP images → Shopify create/update → local save. SSE progress events include `run_id`, `step_key`, `step_label`, `step_index`, `step_total`, optional batch counts, and `result_summary`.
 
 
+### GSC Opportunity Inbox
+
+
+| Method | Path                          | Request                                      | Response       | Purpose                                        |
+| ------ | ----------------------------- | -------------------------------------------- | -------------- | ---------------------------------------------- |
+| GET    | `/api/opportunities`          | Query: page_type, min_impressions, sort, pagination | `{ ok, data }` | List scored GSC opportunities |
+| GET    | `/api/opportunities/stats`    | —                                            | `{ ok, data }` | Opportunity summary statistics                 |
+| POST   | `/api/opportunities/create-idea` | Body: query, object_type, object_handle   | `{ ok, data }` | Create article idea from opportunity           |
+
+The Opportunity Inbox scores GSC query×page combinations to surface SEO opportunities. The scoring heuristic favors:
+
+- **Striking distance positions** (4-20): queries where a ranking improvement could reach page 1
+- **High impressions**: queries with significant search volume
+- **CTR below expected**: queries where the title/meta could improve click rates
+
+Each opportunity includes:
+- `opportunity_score` (0-100): Combined score from position, impressions, and CTR gap
+- `suggested_action`: Recommended action based on current metrics
+- `content_type`: Content type hint derived from query patterns
+
+**Service:** `backend/app/services/opportunities_service.py`  
+**Schemas:** `backend/app/schemas/opportunities.py`  
+**Frontend:** `/opportunities` route with filterable table and stats cards
+
+
 ### Article ideas
 
 
@@ -198,6 +225,27 @@ UPDATE article_ideas SET linked_cluster_id = 941 WHERE id = 21;
 3. Re-open the idea in the dashboard; the “Cluster not linked” banner should disappear once `linked_cluster_id` is set.
 
 Never bulk-update without verifying `clusters.id` matches the intended gap analysis row.
+
+#### Catalog-weight idea quotas (C4.x)
+
+Article idea generation applies vendor/brand quotas weighted by catalog SKU share. This ensures that top catalog brands receive proportional representation in the generated ideas and limits generic (non-brand-specific) content.
+
+**Configuration (environment variables or defaults in `shopifyseo/dashboard_config.py`):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IDEA_QUOTA_MIN_TOP_VENDOR_SHARE` | 0.4 | Min share of ideas for top vendors (0.0-1.0) |
+| `IDEA_QUOTA_MAX_GENERIC_SHARE` | 0.3 | Max share of generic ideas (0.0-1.0) |
+| `IDEA_QUOTA_MIN_TOP_VENDORS` | 3 | Minimum number of top vendors to consider |
+| `IDEA_QUOTA_ENABLED` | true | Whether to enable quota balancing |
+
+**Quota logic:**
+1. Calculate vendor share of catalog (SKU count / total products)
+2. Score ideas based on whether their content targets a vendor's products
+3. Ensure top vendors get at least `MIN_TOP_VENDOR_SHARE × vendor_catalog_share` of ideas
+4. Cap generic ideas at `MAX_GENERIC_SHARE`
+
+The quota system does not remove ideas — it reorders them to ensure brand representation.
 
 
 #### Article idea cannibalization gate
@@ -262,6 +310,19 @@ A pre-draft cannibalization check runs before article generation to prevent crea
 
 **Keyword clustering planning:** generation now applies entity/intent guardrails before the AI pass, using Shopify vendors/collections plus known keyword variants to keep competing brands separate unless comparison intent is explicit. Post-processing uses guarded embedding merges, repairs oversized or mixed-intent clusters, and stores optional content-planning fields on `clusters`: `detected_entity`, `cluster_intent`, `cluster_role`, `quality_score`, keyword tiers (`core_keywords_json`, `supporting_keywords_json`, `extended_keywords_json`), and `cannibalization_risk`. Downstream article/page generation reads the keyword tiers when present and falls back to raw `cluster_keywords` for older data.
 
+**Content type defaults from intent (C2.3):** On keyword upsert/import/research insert, `content_type` defaults from keyword intent patterns when missing. The mapping (`INTENT_TO_CONTENT` in `keyword_utils.py`):
+
+| Intent | Default content_type |
+|--------|---------------------|
+| transactional | Product / Collection page |
+| commercial | Comparison / Buying guide |
+| local | Local landing page |
+| informational | Blog / Guide |
+| navigational | Brand page |
+| branded | Brand page |
+
+Target keywords never persist with NULL/empty `content_type` — the normalization runs on load and save paths in `keyword_db.py`. See `default_content_type_for_intent()` and `normalize_target_keyword_item()`.
+
 **Unknown keyword difficulty is `NULL`, never `0`:** DataForSEO returns `keyword_difficulty: 0` rather than omitting the field when it has not computed a difficulty — confirmed against both `keyword_overview/live` and `bulk_keyword_difficulty/live`, which return 0 for head terms such as "vaping near me" (165k/mo). Only ~21% of the keyword set has a real KD.
 
 `_normalize_keyword_difficulty` in `dataforseo_client` converts that 0 to `None` at ingest, so "unknown" stays distinct from "easy" everywhere downstream. Rules that follow from it:
@@ -288,6 +349,9 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 | GET    | `/api/embeddings/semantic-keywords/{object_type}/{handle:path}` | —                                 | `{ ok, data }` | Semantic keyword matches                   |
 | GET    | `/api/embeddings/competitive-gaps/{object_type}/{handle:path}`  | —                                 | `{ ok, data }` | Competitor gap suggestions                 |
 | GET    | `/api/embeddings/cannibalization`                               | Query: threshold                  | `{ ok, data }` | Cannibalization pairs                      |
+
+**Post-publish embeddings refresh (C1.2):** After a successful article publish via `PATCH /api/articles/{blog_handle}/{article_handle}/publish`, the backend triggers a targeted embedding upsert for the published article in a background thread. This ensures RAG/cannibalization sees the new content without requiring a manual full refresh. The hook (`_post_publish_embedding_refresh` in `backend/app/routers/blogs.py`) uses `sync_embedding_for_handle()` from `embedding_store.py` to update embeddings for just that article, not the entire corpus. Failures are logged but do not fail the publish response. The targeted sync is much faster than a full refresh — it only embeds changed/new chunks for a single handle.
+
 | GET    | `/api/image-seo/product-images`                                 | Query: pagination                 | `{ ok, data }` | Image SEO rows + summary                   |
 | POST   | `/api/image-seo/suggest-alt`                                    | Body                              | `{ ok, data }` | Vision-based alt suggestion                |
 | POST   | `/api/image-seo/product-images/draft`                           | Body                              | `{ ok, data }` | Draft optimization steps                   |

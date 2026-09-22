@@ -20,11 +20,11 @@ function metricForSort(detail: TargetKeyword | undefined, key: SortKey): number 
   if (!detail) return null;
   switch (key) {
     case "volume":
-      return detail.volume;
+      return detail.volume ?? null;
     case "difficulty":
-      return detail.difficulty;
+      return detail.difficulty ?? null;
     case "opportunity":
-      return detail.opportunity;
+      return detail.opportunity ?? null;
     default:
       return null;
   }

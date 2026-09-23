@@ -1440,7 +1440,7 @@ def embedding_status(conn: sqlite3.Connection) -> dict:
         chunks = embed_info.get("chunk_count", 0)
         last_up = embed_info.get("last_updated")
         models = embed_info.get("model_versions", "")
-        coverage = round(embedded / source_count * 100, 1) if source_count > 0 else 0.0
+        coverage = min(100.0, round(embedded / source_count * 100, 1)) if source_count > 0 else 0.0
 
         total_objects += embedded
         total_chunks += chunks

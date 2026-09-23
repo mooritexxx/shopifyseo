@@ -22,6 +22,7 @@ from shopifyseo.embedding_store import (
     retrieve_related_by_handle,
     find_semantic_keyword_matches,
     find_cannibalization_candidates,
+    embedding_status,
     _dedup_by_handle,
 )
 
@@ -400,3 +401,71 @@ class TestCannibalization:
         _insert_embedding(conn, "product", "prod-b", np.random.randn(EMBEDDING_DIMS).astype(np.float32))
         results = find_cannibalization_candidates(conn, threshold=0.99)
         assert results == []
+
+
+class TestEmbeddingStatus:
+    """Test embedding_status() coverage calculations."""
+
+    def test_coverage_capped_at_100_percent(self):
+        """When embedded > source (orphans exist), coverage must not exceed 100%."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "p1")
+        _insert_embedding(conn, "product", "p2")
+        _insert_embedding(conn, "product", "orphan1")
+        _insert_embedding(conn, "product", "orphan2")
+        _insert_embedding(conn, "product", "orphan3")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 5
+        assert product_type["source_objects"] == 2
+        assert product_type["coverage_pct"] == 100.0
+
+    def test_coverage_normal_case(self):
+        """Normal case where embedded <= source."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p3', 'P3', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p4', 'P4', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "p1")
+        _insert_embedding(conn, "product", "p2")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 2
+        assert product_type["source_objects"] == 4
+        assert product_type["coverage_pct"] == 50.0
+
+    def test_coverage_zero_source(self):
+        """Coverage is 0 when source is empty."""
+        conn = _make_conn()
+        _insert_embedding(conn, "product", "orphan")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 1
+        assert product_type["source_objects"] == 0
+        assert product_type["coverage_pct"] == 0.0
+
+    def test_prune_reduces_orphans_before_status(self):
+        """Verify prune removes orphans so coverage stays accurate after sync."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('exists', 'P', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "exists")
+        _insert_embedding(conn, "product", "orphan1")
+        _insert_embedding(conn, "product", "orphan2")
+
+        pruned = prune_stale_embeddings(conn, "product")
+        assert pruned == 2
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 1
+        assert product_type["source_objects"] == 1
+        assert product_type["coverage_pct"] == 100.0

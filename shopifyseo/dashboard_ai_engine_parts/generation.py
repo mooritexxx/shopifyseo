@@ -188,6 +188,7 @@ def _generate_single_field_core(
     cancel_callback: CancelCallback | None = None,
     step_index: int = 0,
     step_total: int = 0,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     generation_provider = settings["generation_provider"]
     generation_model = settings["generation_model"]
@@ -210,7 +211,7 @@ def _generate_single_field_core(
     effective_prompt_context = prompt_context_precomputed if prompt_context_precomputed is not None else prompt_context(effective_context)
     field_gen_schema = single_field_response_schema(object_type, field)
     field_rev_schema = field_review_response_schema(object_type, field)
-    sys_prompt = field_system_prompt(object_type, field, prompt_profile)
+    sys_prompt = field_system_prompt(object_type, field, prompt_profile, conn=conn)
     usr_prompt = field_user_prompt(
         object_type,
         field,
@@ -461,7 +462,7 @@ def generate_recommendation(
         full_generation_fields.append("tags")
     elif object_type == "blog_article":
         full_generation_fields.insert(0, "title")
-    step_total = len(full_generation_fields) + 2  # +1 context building, +1 saving
+    step_total = len(full_generation_fields) + 2  # +1 context/QA, +1 saving
     last_error = ""
     priority = context["fact"]["priority"]
     try:
@@ -484,6 +485,7 @@ def generate_recommendation(
                 cancel_callback=cancel_callback,
                 step_index=idx,
                 step_total=step_total,
+                conn=conn,
             )
             generated_fields[field] = result
             review_actions[field] = result.get("review_action") or ""
@@ -603,11 +605,11 @@ def generate_recommendation(
     _raise_if_cancelled(cancel_callback)
     _emit_progress(
         progress_callback,
-        stage="saving_result",
-        step_index=step_total,
+        stage="validating_qa",
+        step_index=step_total - 1,
         step_total=step_total,
-        model="database",
-        message="Saving recommendation result",
+        model="validator",
+        message="Running QA validation",
     )
 
     body_html = generated_fields["body"]["value"]
@@ -624,6 +626,105 @@ def generate_recommendation(
         title_val = generated_fields.get("title", {}).get("value", "")
         if title_val:
             recommendation["title"] = title_val
+
+    # Run QA validation
+    from .qa import _score_body, validate_body_spec_claims
+    from .config import QA_SCORE_FLOOR, BODY_MIN_LENGTH
+    from .context import product_specs as _extract_product_specs
+    qa_score, qa_issues = validate_output(object_type, recommendation)
+    qa_floor = QA_SCORE_FLOOR.get(object_type, 4) / 10.0
+
+    # Check if body specifically fails the floor — retry once if so
+    body_retried = False
+    body_score, body_issues = _score_body(object_type, recommendation["body"])
+    body_min_length = BODY_MIN_LENGTH.get(object_type, 300)
+
+    # For products, also validate spec claims (puff count, nicotine, battery)
+    spec_claim_issues: list[str] = []
+    if object_type == "product":
+        detail_payload = context.get("detail") or {}
+        primary = detail_payload.get("product") or {}
+        specs = _extract_product_specs(primary, detail_payload)
+        _, spec_claim_issues = validate_body_spec_claims(recommendation["body"], specs)
+        if spec_claim_issues:
+            logger.info(f"Body has unsupported spec claims for {object_type}/{handle}: {spec_claim_issues}")
+
+    # Retry body if it fails QA floor OR has unsupported spec claims
+    should_retry_body = body_issues or body_score < 0.7 or spec_claim_issues
+    if should_retry_body:
+        retry_reason = "spec claims" if spec_claim_issues else f"QA score={body_score:.2f}"
+        logger.info(f"Body QA failed ({retry_reason}), attempting retry for {object_type}/{handle}")
+        _emit_progress(
+            progress_callback,
+            stage="retrying_body",
+            step_index=step_total - 1,
+            step_total=step_total,
+            model=_provider_display(generation_provider, generation_model),
+            message=f"Body failed validation ({retry_reason}), retrying once",
+        )
+        try:
+            # Update accepted fields with current values for retry
+            retry_accepted = dict(accepted_fields)
+            retry_accepted["seo_title"] = recommendation["seo_title"]
+            retry_accepted["seo_description"] = recommendation["seo_description"]
+            # Build fresh prompt context with accepted fields
+            retry_context = _context_with_accepted_fields(context, retry_accepted)
+            retry_prompt_ctx = prompt_context(retry_context)
+            # Retry body generation
+            retry_result = _generate_single_field_core(
+                settings=settings,
+                context=context,
+                object_type=object_type,
+                field="body",
+                accepted_fields=retry_accepted,
+                prompt_context_precomputed=retry_prompt_ctx,
+                signal_narrative_precomputed=None,
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+                step_index=step_total - 1,
+                step_total=step_total,
+                conn=conn,
+            )
+            retry_body = ensure_link_titles(retry_result["value"], conn)
+            retry_body_score, retry_body_issues = _score_body(object_type, retry_body)
+
+            # For products, also check spec claims on retry
+            retry_spec_issues: list[str] = []
+            if object_type == "product" and specs:
+                _, retry_spec_issues = validate_body_spec_claims(retry_body, specs)
+
+            # Accept retry if it's better (better score or fewer spec issues)
+            retry_is_better = (
+                (retry_body_score > body_score) or
+                (len(retry_spec_issues) < len(spec_claim_issues))
+            )
+            if retry_is_better:
+                recommendation["body"] = retry_body
+                body_score = retry_body_score
+                body_issues = retry_body_issues
+                spec_claim_issues = retry_spec_issues
+                generated_fields["body"]["value"] = retry_body
+                review_actions["body"] = retry_result.get("review_action", "")
+                body_retried = True
+                logger.info(f"Body retry improved (score={body_score:.2f}, spec_issues={len(spec_claim_issues)}) for {object_type}/{handle}")
+            else:
+                logger.info(f"Body retry did not improve (retry_score={retry_body_score:.2f}, retry_spec_issues={len(retry_spec_issues)}) for {object_type}/{handle}")
+        except Exception as e:
+            logger.warning(f"Body retry failed for {object_type}/{handle}: {e}")
+
+    # Re-run QA validation after potential body retry
+    if body_retried:
+        qa_score, qa_issues = validate_output(object_type, recommendation)
+
+    _emit_progress(
+        progress_callback,
+        stage="saving_result",
+        step_index=step_total,
+        step_total=step_total,
+        model="database",
+        message="Saving recommendation result",
+    )
+
     recommendation["_meta"] = {
         "generation_model": _provider_display(generation_provider, generation_model),
         "review_model": _provider_display(review_provider, review_model),
@@ -633,9 +734,20 @@ def generate_recommendation(
         "prompt_profile": prompt_profile,
         "generated_at": int(time.time()),
         "signal_availability": signal_availability_summary(context),
-        "qa": {},
         "review_actions": review_actions,
         "generation_strategy": "split_single_field_calls",
+    }
+    # Populate _qa with validation results
+    all_issues = list(qa_issues)
+    if spec_claim_issues:
+        all_issues.extend(spec_claim_issues)
+    recommendation["_qa"] = {
+        "score": round(qa_score, 2),
+        "floor": qa_floor,
+        "passed": qa_score >= qa_floor and not spec_claim_issues,
+        "issues": all_issues,
+        "spec_claim_issues": spec_claim_issues,
+        "body_retried": body_retried,
     }
     priority = context["fact"]["priority"]
     insert_recommendation_record(
@@ -732,6 +844,7 @@ def generate_field_recommendation(
             cancel_callback=cancel_callback,
             step_index=1,
             step_total=3,
+            conn=conn,
         )
         final_value = result["value"]
         if field == "body":

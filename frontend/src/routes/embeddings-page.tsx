@@ -46,9 +46,10 @@ function timeAgo(iso: string | null): string {
 }
 
 function CoverageBadge({ pct }: { pct: number }) {
-  if (pct >= 100) return <Badge variant="success">{pct}%</Badge>;
-  if (pct >= 50) return <Badge variant="warning">{pct}%</Badge>;
-  if (pct > 0) return <Badge variant="error">{pct}%</Badge>;
+  const displayPct = Math.min(100, pct);
+  if (displayPct >= 100) return <Badge variant="success">{displayPct}%</Badge>;
+  if (displayPct >= 50) return <Badge variant="warning">{displayPct}%</Badge>;
+  if (displayPct > 0) return <Badge variant="error">{displayPct}%</Badge>;
   return <Badge variant="outline">0%</Badge>;
 }
 
@@ -299,8 +300,11 @@ export default function EmbeddingsPage() {
                 <TableCell className="px-5 py-3 text-right">
                   {(() => {
                     const totalSource = status.types.reduce((s: number, t: EmbeddingTypeStatus) => s + t.source_objects, 0);
-                    const totalEmbed = status.types.reduce((s: number, t: EmbeddingTypeStatus) => s + t.embedded_objects, 0);
-                    const pct = totalSource > 0 ? Math.round(totalEmbed / totalSource * 100) : 0;
+                    const effectiveEmbed = status.types.reduce(
+                      (s: number, t: EmbeddingTypeStatus) => s + Math.min(t.embedded_objects, t.source_objects),
+                      0
+                    );
+                    const pct = totalSource > 0 ? Math.min(100, Math.round(effectiveEmbed / totalSource * 100)) : 0;
                     return <CoverageBadge pct={pct} />;
                   })()}
                 </TableCell>

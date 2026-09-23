@@ -231,3 +231,89 @@ def build_retry_feedback_from_error(
         f"Previous output was: {value[:200]!r}{'...' if len(value) > 200 else ''}\n"
         f"Please regenerate with corrections."
     )
+
+
+def _normalize_spec_value(value: str | None) -> set[str]:
+    """Extract all numeric values from a spec string (handles ranges like '20mg/50mg')."""
+    if not value:
+        return set()
+    import re
+    value_str = str(value).lower().strip()
+    numbers = re.findall(r"\d+(?:\.\d+)?", value_str)
+    return set(numbers)
+
+
+def validate_body_spec_claims(
+    body: str,
+    product_specs: dict,
+) -> tuple[bool, list[str]]:
+    """Validate that numeric spec claims in body are present in product_specs.
+
+    Checks for puff count, nicotine strength, and battery size/capacity claims.
+    Returns (passed, issues).
+    """
+    import re
+    issues: list[str] = []
+    if not body or not product_specs:
+        return True, issues
+
+    text = re.sub(r"<[^>]+>", " ", body).lower()
+
+    # Extract allowed values from product_specs
+    allowed_puff = _normalize_spec_value(product_specs.get("puff_count"))
+    allowed_nicotine = _normalize_spec_value(product_specs.get("nicotine_strength"))
+    allowed_battery = _normalize_spec_value(product_specs.get("battery_size"))
+
+    # Patterns to match spec claims in body text
+    # Puff count patterns: "800 puffs", "8000-puff", "delivers 10000 puffs"
+    puff_patterns = [
+        r"(\d+)\s*[-–]?\s*puff",
+        r"(\d+)\s+puffs?\b",
+        r"delivers\s+(\d+)",
+        r"up\s+to\s+(\d+)\s+puffs?",
+    ]
+    # Nicotine patterns: "20mg", "20 mg", "50mg/ml", "2% nicotine"
+    nicotine_patterns = [
+        r"(\d+(?:\.\d+)?)\s*mg(?:\s*/\s*ml)?(?:\s+nicotine)?",
+        r"(\d+(?:\.\d+)?)\s*%\s*(?:nicotine)?",
+        r"nicotine\s*(?:strength|level)?\s*(?:of|:)?\s*(\d+(?:\.\d+)?)",
+    ]
+    # Battery patterns: "800mAh", "800 mAh", "battery capacity"
+    battery_patterns = [
+        r"(\d+)\s*mah",
+        r"battery\s*(?:capacity|size)?\s*(?:of|:)?\s*(\d+)",
+    ]
+
+    # Check puff count claims
+    if allowed_puff:
+        for pattern in puff_patterns:
+            for match in re.finditer(pattern, text):
+                claimed = match.group(1)
+                if claimed and claimed not in allowed_puff:
+                    issues.append(
+                        f"Body claims '{claimed}' puffs but product_specs.puff_count is '{product_specs.get('puff_count')}'"
+                    )
+
+    # Check nicotine claims
+    if allowed_nicotine:
+        for pattern in nicotine_patterns:
+            for match in re.finditer(pattern, text):
+                claimed = match.group(1)
+                if claimed and claimed not in allowed_nicotine:
+                    issues.append(
+                        f"Body claims '{claimed}' nicotine but product_specs.nicotine_strength is '{product_specs.get('nicotine_strength')}'"
+                    )
+
+    # Check battery claims
+    if allowed_battery:
+        for pattern in battery_patterns:
+            for match in re.finditer(pattern, text):
+                # Some patterns have the number in group 1 or 2
+                claimed = match.group(1) if match.group(1) else (match.group(2) if match.lastindex >= 2 else None)
+                if claimed and claimed not in allowed_battery:
+                    issues.append(
+                        f"Body claims '{claimed}' battery but product_specs.battery_size is '{product_specs.get('battery_size')}'"
+                    )
+
+    passed = len(issues) == 0
+    return passed, issues

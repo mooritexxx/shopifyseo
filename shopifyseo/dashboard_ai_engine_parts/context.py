@@ -333,6 +333,32 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
             ]
             catalog_title_rows.extend(fallback_rows[:needed])
         detail["catalog_title_examples"] = catalog_title_rows[:3]
+
+        # Fetch sibling products from the same collection(s) for internal link targets
+        # Cap at 8 to keep the allowlist manageable
+        _SIBLING_PRODUCT_CAP = 8
+        sibling_products: list[dict] = []
+        product_collections = detail.get("collections") or []
+        if product_collections:
+            collection_handles = [c.get("handle") for c in product_collections if c.get("handle")][:3]
+            if collection_handles:
+                placeholders = ",".join("?" * len(collection_handles))
+                sibling_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT p.handle, p.title
+                    FROM products p
+                    JOIN collection_products cp ON p.shopify_id = cp.product_shopify_id
+                    JOIN collections c ON cp.collection_shopify_id = c.shopify_id
+                    WHERE c.handle IN ({placeholders})
+                      AND p.handle != ?
+                      AND p.status = 'ACTIVE'
+                    ORDER BY p.updated_at DESC
+                    LIMIT ?
+                    """,
+                    (*collection_handles, handle, _SIBLING_PRODUCT_CAP),
+                ).fetchall()
+                sibling_products = [dict(row) for row in sibling_rows]
+        detail["sibling_products"] = sibling_products
     recommendation_history = detail.get("recommendation_history", [])[:5]
     dim_rows = dq.fetch_gsc_query_dimension_rows(conn, object_type, handle)
     gsc_segment_summary = dq.build_gsc_segment_summary_from_rows(dim_rows)
@@ -706,6 +732,9 @@ def prompt_context(context: dict) -> dict:
     collections = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("collections") or detail_payload.get("related_collections") or [])[:12]]
     related_products = [{"handle": row.get("handle") or row.get("product_handle"), "title": row.get("title") or row.get("product_title")} for row in (detail_payload.get("related_products") or detail_payload.get("products") or [])[:12]]
     related_pages = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("related_pages") or [])[:12]]
+    # Sibling products from the same collection(s) — capped at 8 in object_context
+    sibling_products = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("sibling_products") or [])[:8]]
+
     def _link_target(kind: str, row: dict) -> dict | None:
         h = row.get("handle")
         if not h:
@@ -731,6 +760,13 @@ def prompt_context(context: dict) -> dict:
         t = _link_target("product", row)
         if t:
             approved_internal_link_targets.append(t)
+    # Add sibling products from same collection(s) — deduplicated against related_products
+    existing_product_handles = {r.get("handle") for r in related_products if r.get("handle")}
+    for row in sibling_products:
+        if row.get("handle") not in existing_product_handles:
+            t = _link_target("product", row)
+            if t:
+                approved_internal_link_targets.append(t)
     for row in related_pages:
         t = _link_target("page", row)
         if t:

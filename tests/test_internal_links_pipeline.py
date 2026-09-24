@@ -15,7 +15,7 @@ def _conn() -> sqlite3.Connection:
             seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0,
-            seo_title TEXT, seo_description TEXT);
+            seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);
         CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT,
             gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
         CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
@@ -42,6 +42,7 @@ def _conn() -> sqlite3.Connection:
             ai_anchor_html TEXT,
             source_body_hash TEXT,
             score REAL NOT NULL DEFAULT 0,
+            weak_anchor INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
                 CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
             created_at INTEGER NOT NULL,

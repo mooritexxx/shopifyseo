@@ -14,6 +14,8 @@ import {
   useUndoSuggestion,
   useLinkPreview,
   useGraphMapData,
+  useLinkOutcomes,
+  useAutoApplySettings,
   type LinkSuggestion,
   type GraphEntity,
   type AppliedLink,
@@ -523,7 +525,7 @@ function GraphMap({
 
 export function InternalLinksPage() {
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
-  const [tab, setTab] = useState<"suggestions" | "applied" | "orphans" | "graph">("suggestions");
+  const [tab, setTab] = useState<"suggestions" | "applied" | "orphans" | "graph" | "outcomes">("suggestions");
   const [processingId, setProcessingId] = useState<number | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [graphView, setGraphView] = useState<"list" | "map">("list");
@@ -537,6 +539,8 @@ export function InternalLinksPage() {
   const graphMapData = useGraphMapData(
     focusNode ? { focusType: focusNode.type, focusHandle: focusNode.handle } : { maxNodes: 100 }
   );
+  const outcomes = useLinkOutcomes(28);
+  const autoApplySettings = useAutoApplySettings();
   const apply = useApplySuggestion();
   const dismiss = useDismissSuggestion();
   const generate = useGenerateAnchor();
@@ -734,6 +738,16 @@ export function InternalLinksPage() {
         >
           Graph Stats
         </button>
+        <button
+          onClick={() => setTab("outcomes")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "outcomes"
+              ? "border-b-2 border-blue-600 text-blue-600"
+              : "text-muted-foreground hover:text-ink"
+          }`}
+        >
+          Outcomes
+        </button>
       </div>
 
       {/* Suggestions tab */}
@@ -741,6 +755,11 @@ export function InternalLinksPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Link Suggestions</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Suggestions are ranked by similarity, traffic, and target value. 
+              <strong> Prefer phrase wraps</strong> (green badge) over AI-modified copy (amber). 
+              Weak single-word anchors like "products" or "here" are demoted automatically.
+            </p>
           </CardHeader>
           <CardContent>
             {suggestions.isLoading ? (
@@ -1020,6 +1039,108 @@ export function InternalLinksPage() {
                   </div>
                 </div>
               )
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Outcomes tab */}
+      {tab === "outcomes" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Link Outcomes (28 days)</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Measurement of applied links and their impact. Auto-apply is{" "}
+              <strong>{autoApplySettings.data?.enabled ? "enabled" : "disabled"}</strong>
+              {autoApplySettings.data?.enabled && ` (${autoApplySettings.data.applied_today}/${autoApplySettings.data.max_per_day} today)`}.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {outcomes.isLoading ? (
+              <div className="space-y-4">
+                <Skeleton className="h-20" />
+                <Skeleton className="h-40" />
+              </div>
+            ) : outcomes.error ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                <span>Failed to load outcomes: {outcomes.error.message}</span>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <div className="rounded-lg border p-4 text-center">
+                    <div className="text-2xl font-bold text-green-600">{outcomes.data?.applied ?? 0}</div>
+                    <div className="text-sm text-muted-foreground">Applied</div>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <div className="text-2xl font-bold text-blue-600">{outcomes.data?.auto_applied ?? 0}</div>
+                    <div className="text-sm text-muted-foreground">Auto-applied</div>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <div className="text-2xl font-bold text-amber-600">{outcomes.data?.undone ?? 0}</div>
+                    <div className="text-sm text-muted-foreground">Undone</div>
+                  </div>
+                  <div className="rounded-lg border p-4 text-center">
+                    <div className="text-2xl font-bold text-muted-foreground">{outcomes.data?.undo_rate_pct ?? 0}%</div>
+                    <div className="text-sm text-muted-foreground">Undo Rate</div>
+                  </div>
+                </div>
+
+                {/* Clicks comparison */}
+                {outcomes.data?.clicks_comparison && (
+                  <div className="rounded-lg border p-4">
+                    <h4 className="mb-2 font-medium">GSC Clicks (Source Pages)</h4>
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                      <div>
+                        <div className="text-lg font-semibold">{outcomes.data.clicks_comparison.at_apply}</div>
+                        <div className="text-xs text-muted-foreground">At Apply</div>
+                      </div>
+                      <div>
+                        <div className="text-lg font-semibold">{outcomes.data.clicks_comparison.current}</div>
+                        <div className="text-xs text-muted-foreground">Current</div>
+                      </div>
+                      <div>
+                        <div className={`text-lg font-semibold ${outcomes.data.clicks_comparison.change >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {outcomes.data.clicks_comparison.change >= 0 ? "+" : ""}{outcomes.data.clicks_comparison.change}
+                        </div>
+                        <div className="text-xs text-muted-foreground">Change</div>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Based on {outcomes.data.clicks_comparison.link_count} applied links with GSC data.
+                    </p>
+                  </div>
+                )}
+
+                {/* Top targets */}
+                {outcomes.data?.top_targets && outcomes.data.top_targets.length > 0 && (
+                  <div>
+                    <h4 className="mb-2 font-medium">Top Link Targets</h4>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Handle</TableHead>
+                          <TableHead className="text-right">Links</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {outcomes.data.top_targets.map((t, i) => (
+                          <TableRow key={i}>
+                            <TableCell>
+                              <Badge variant="outline">{t.target_type}</Badge>
+                            </TableCell>
+                            <TableCell className="font-mono text-sm">{t.target_handle}</TableCell>
+                            <TableCell className="text-right font-mono text-sm">{t.count}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>

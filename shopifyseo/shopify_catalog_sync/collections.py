@@ -13,6 +13,51 @@ from .db import (
 )
 
 
+def _mark_api_unreachable_collections(
+    conn: sqlite3.Connection, live_collections: list[dict]
+) -> int:
+    """Mark collections not returned by Admin API as api_unreachable.
+    
+    Phase A: Collections may disappear from the API (deleted, smart collection
+    with broken rules, etc.) but we preserve local SEO data. Instead of deleting,
+    we soft-mark them and dismiss pending link_suggestions targeting them.
+    
+    Returns the number of collections marked unreachable.
+    """
+    live_ids = {c["id"] for c in live_collections}
+    
+    # Get local collections that are not in the live set
+    stale_rows = conn.execute(
+        "SELECT shopify_id, handle FROM collections WHERE COALESCE(api_unreachable, 0) = 0"
+    ).fetchall()
+    stale = [row for row in stale_rows if row["shopify_id"] not in live_ids]
+    
+    if not stale:
+        return 0
+    
+    # Mark as unreachable
+    for row in stale:
+        conn.execute(
+            "UPDATE collections SET api_unreachable = 1 WHERE shopify_id = ?",
+            (row["shopify_id"],),
+        )
+        # Dismiss any pending suggestions targeting this collection
+        conn.execute(
+            "UPDATE link_suggestions SET status = 'dismissed' "
+            "WHERE target_type = 'collection' AND target_handle = ? AND status = 'suggested'",
+            (row["handle"],),
+        )
+    
+    # Clear flag for collections that are now visible again
+    for c in live_collections:
+        conn.execute(
+            "UPDATE collections SET api_unreachable = 0 WHERE shopify_id = ?",
+            (c["id"],),
+        )
+    
+    return len(stale)
+
+
 def replace_collection_children(conn: sqlite3.Connection, table: str, collection_id: str) -> None:
     conn.execute(f"DELETE FROM {table} WHERE collection_shopify_id = ?", (collection_id,))
 
@@ -182,6 +227,9 @@ def sync_collections(
                     _sq.sync_queue_mark_done(queue_scope, rk, ok, err_msg, pop_completed=ok)
             if progress_callback is not None:
                 progress_callback("collections", collection_count, len(collections))
+        # Phase A: Mark collections not in live set as api_unreachable
+        unreachable_count = _mark_api_unreachable_collections(conn, collections)
+        
         conn.commit()
         finish_run(
             conn,
@@ -196,6 +244,7 @@ def sync_collections(
             "collections_synced": collection_count,
             "collection_metafields_synced": metafield_count,
             "collection_products_synced": membership_count,
+            "collections_marked_unreachable": unreachable_count,
             "synced_at": synced_at,
             "run_id": run_id,
         }

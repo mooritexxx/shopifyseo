@@ -177,6 +177,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     dg.ensure_google_cache_schema(conn)
     _ensure_columns(conn, "products", SEO_SIGNAL_COLUMNS)
     _ensure_columns(conn, "collections", SEO_SIGNAL_COLUMNS)
+    # Phase A: api_unreachable flag for ghost/API-invisible collections
+    _ensure_columns(conn, "collections", {"api_unreachable": "INTEGER DEFAULT 0"})
     _ensure_columns(conn, "pages", SEO_SIGNAL_COLUMNS)
     _ensure_columns(conn, "blog_articles", SEO_SIGNAL_COLUMNS)
     conn.execute(
@@ -748,8 +750,35 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_columns(conn, "link_suggestions", {"source_body_hash": "TEXT"})
+    # Phase B: weak_anchor flag for demoted suggestions
+    _ensure_columns(conn, "link_suggestions", {"weak_anchor": "INTEGER DEFAULT 0"})
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
+    )
+    # Phase D: link_suggestion_events for measurement/outcomes
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_suggestion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suggestion_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('apply', 'undo', 'dismiss', 'auto_apply')),
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            score REAL,
+            gsc_clicks_at_event INTEGER,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (suggestion_id) REFERENCES link_suggestions(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_created ON link_suggestion_events (created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_suggestion ON link_suggestion_events (suggestion_id)"
     )
     conn.commit()
 

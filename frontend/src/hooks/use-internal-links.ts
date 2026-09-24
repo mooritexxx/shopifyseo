@@ -229,3 +229,54 @@ export function useGraphMapData(params: { focusType?: string; focusHandle?: stri
     queryFn: () => getJson<GraphMapData>(`/api/internal-links/graph-map${query ? `?${query}` : ""}`),
   });
 }
+
+// Phase D: Outcomes for measurement
+export interface LinkOutcomes {
+  days: number;
+  applied: number;
+  auto_applied: number;
+  undone: number;
+  dismissed: number;
+  undo_rate_pct: number;
+  top_targets: Array<{ target_type: string; target_handle: string; count: number }>;
+  clicks_comparison: {
+    at_apply: number;
+    current: number;
+    change: number;
+    link_count: number;
+  } | null;
+}
+
+export function useLinkOutcomes(days: number = 28) {
+  return useQuery({
+    queryKey: ["internal-links", "outcomes", days],
+    queryFn: () => getJson<LinkOutcomes>(`/api/internal-links/outcomes?days=${days}`),
+  });
+}
+
+// Phase E: Auto-apply settings
+export interface AutoApplySettings {
+  enabled: boolean;
+  min_score: number;
+  max_per_day: number;
+  kinds: string[];
+  applied_today: number;
+}
+
+export function useAutoApplySettings() {
+  return useQuery({
+    queryKey: ["internal-links", "auto-apply-settings"],
+    queryFn: () => getJson<AutoApplySettings>("/api/internal-links/auto-apply/settings"),
+  });
+}
+
+export function useRunAutoApply() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (dryRun: boolean = false) =>
+      postJson<{ status: string; applied?: number; skipped?: number }>(
+        `/api/internal-links/auto-apply/run?dry_run=${dryRun}`,
+      ),
+    onSuccess: invalidate,
+  });
+}

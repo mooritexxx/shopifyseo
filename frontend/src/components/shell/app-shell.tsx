@@ -15,6 +15,7 @@ import {
   Layers3,
   LayoutDashboard,
   Lightbulb,
+  Link2,
   LoaderCircle,
   RefreshCw,
   Rss,
@@ -151,6 +152,7 @@ const items: NavItem[] = [
   { to: "/image-seo", label: "Image Optimization", icon: ImageIcon, group: "Research" },
   { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical, group: "Research" },
   { to: "/embeddings", label: "Embeddings", icon: Database, group: "System" },
+  { to: "/internal-links", label: "Internal Links", icon: Link2, group: "System" },
   { to: "/api-usage", label: "API Usage", icon: Activity, group: "System" }
 ];
 

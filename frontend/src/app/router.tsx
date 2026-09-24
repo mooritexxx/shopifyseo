@@ -32,6 +32,9 @@ const GoogleAdsLabPage = lazy(() =>
 const OpportunitiesPage = lazy(() =>
   import("../routes/opportunities-page").then((m) => ({ default: m.OpportunitiesPage }))
 );
+const InternalLinksPage = lazy(() =>
+  import("../routes/internal-links-page").then((m) => ({ default: m.InternalLinksPage }))
+);
 
 function PageFallback() {
   return (
@@ -134,6 +137,10 @@ export const router = createBrowserRouter(
     {
       path: "/api-usage",
       element: shell(<ApiUsagePage />)
+    },
+    {
+      path: "/internal-links",
+      element: shell(<InternalLinksPage />)
     },
     {
       path: "/settings",

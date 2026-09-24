@@ -45,8 +45,11 @@ _SUGGESTION_SOURCES = (
     ("collection", "collections", "handle", "description_html"),
 )
 
-_PROGRESS: dict = {"running": False, "stage": "", "done": 0, "total": 0, "finished_at": None}
+_PROGRESS: dict = {"running": False, "stage": "", "done": 0, "total": 0, "finished_at": None, "error": None}
 _PROGRESS_LOCK = threading.Lock()
+
+DB_LOCK_MAX_RETRIES = 5
+DB_LOCK_INITIAL_BACKOFF_MS = 100
 
 
 def internal_link_sync_progress() -> dict:
@@ -57,6 +60,22 @@ def internal_link_sync_progress() -> dict:
 def _set_progress(**updates) -> None:
     with _PROGRESS_LOCK:
         _PROGRESS.update(updates)
+
+
+def _run_with_db_lock_retry(fn, max_retries=DB_LOCK_MAX_RETRIES):
+    """Run fn(), retrying on sqlite3 database locked errors with exponential backoff."""
+    import time as _time_mod
+    backoff_ms = DB_LOCK_INITIAL_BACKOFF_MS
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                logger.warning("Database locked on attempt %d, retrying in %dms", attempt + 1, backoff_ms)
+                _time_mod.sleep(backoff_ms / 1000.0)
+                backoff_ms *= 2
+            else:
+                raise
 
 
 def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
@@ -176,10 +195,10 @@ def generate_link_suggestions(
     """Run the full pipeline. Returns the number of suggestions inserted."""
     related_fn = related_fn or _default_related
     sim_threshold = _get_sim_threshold(conn)
-    _set_progress(running=True, stage="graph", done=0, total=0)
+    _set_progress(running=True, stage="graph", done=0, total=0, error=None)
     try:
         if rebuild_graph:
-            rebuild_internal_link_graph(conn, base_url=base_url)
+            _run_with_db_lock_retry(lambda: rebuild_internal_link_graph(conn, base_url=base_url))
         conn.execute("DELETE FROM link_suggestions WHERE status = 'suggested'")
         existing_edges = {
             (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
@@ -255,6 +274,12 @@ def generate_link_suggestions(
                     if pending_outgoing >= MAX_OUTGOING:
                         break
         conn.commit()
+        _set_progress(error=None)  # Clear any previous error on success
         return inserted
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.error("generate_link_suggestions failed: %s", error_msg, exc_info=True)
+        _set_progress(error=error_msg)
+        raise
     finally:
         _set_progress(running=False, stage="idle", finished_at=int(time.time()))

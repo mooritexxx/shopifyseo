@@ -151,15 +151,20 @@ export function InternalLinksPage() {
   const rebuild = useRebuildLinks();
   const wasRebuildRunning = useRef(false);
 
-  // When a rebuild finishes (progress.running true → false), toast success.
+  // When a rebuild finishes (progress.running true → false), toast success or error.
   // Sibling queries are invalidated inside useLinkSummary.
   useEffect(() => {
     const running = Boolean(summary.data?.progress?.running);
+    const error = summary.data?.progress?.error;
     if (wasRebuildRunning.current && !running) {
-      setToast({ message: "Link rebuild complete", variant: "success" });
+      if (error) {
+        setToast({ message: `Rebuild failed: ${error}`, variant: "error" });
+      } else {
+        setToast({ message: "Link rebuild complete", variant: "success" });
+      }
     }
     wasRebuildRunning.current = running;
-  }, [summary.data?.progress?.running]);
+  }, [summary.data?.progress?.running, summary.data?.progress?.error]);
 
   const handleApply = async (id: number) => {
     setProcessingId(id);
@@ -239,6 +244,17 @@ export function InternalLinksPage() {
             <RefreshCw size={16} className="animate-spin text-blue-600" />
             <span className="text-sm text-muted-foreground">
               {summary.data.progress.stage}: {summary.data.progress.done}/{summary.data.progress.total}
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
+      {!summary.data?.progress?.running && summary.data?.progress?.error && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="flex items-center gap-3 py-4">
+            <AlertTriangle size={16} className="text-red-600" />
+            <span className="text-sm text-red-700">
+              Last rebuild failed: {summary.data.progress.error}
             </span>
           </CardContent>
         </Card>

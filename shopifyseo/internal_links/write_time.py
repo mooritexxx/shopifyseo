@@ -218,3 +218,52 @@ def prioritize_targets_for_write_time(
         return (type_priority, orphan_priority, t.get("title", "").lower())
     
     return sorted(link_targets, key=_target_key)
+
+
+def is_ai_body_links_enabled(conn: sqlite3.Connection) -> bool:
+    """Check if AI body internal links are enabled in settings."""
+    from ..dashboard_google import get_service_setting
+    
+    try:
+        val = get_service_setting(conn, "internal_link_ai_body_links_enabled", "")
+        return val.lower() in ("1", "true", "yes")
+    except Exception:
+        return False
+
+
+def enhance_prompt_context_with_prioritized_links(
+    conn: sqlite3.Connection,
+    prompt_ctx: dict,
+    object_type: str,
+) -> dict:
+    """Enhance prompt context with prioritized internal links if enabled.
+    
+    Phase C: For product/collection AI body generation, reorder approved_internal_link_targets
+    using the write-time prioritization logic (orphans first, commercial targets preferred).
+    
+    Args:
+        conn: Database connection
+        prompt_ctx: Prompt context dict (will be mutated)
+        object_type: Object type being generated ('product', 'collection', etc.)
+        
+    Returns:
+        The modified prompt_ctx (same object, mutated)
+    """
+    if object_type not in ("product", "collection"):
+        return prompt_ctx
+    
+    if not is_ai_body_links_enabled(conn):
+        return prompt_ctx
+    
+    link_targets = prompt_ctx.get("approved_internal_link_targets") or []
+    if not link_targets:
+        return prompt_ctx
+    
+    try:
+        prioritized = prioritize_targets_for_write_time(conn, link_targets)
+        prompt_ctx["approved_internal_link_targets"] = prioritized
+        logger.debug("Prioritized %d internal link targets for %s AI body", len(prioritized), object_type)
+    except Exception:
+        logger.debug("Could not prioritize internal link targets for AI body", exc_info=True)
+    
+    return prompt_ctx

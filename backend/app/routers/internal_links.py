@@ -638,9 +638,95 @@ def outcomes(days: int = Query(default=28, ge=1, le=365)):
         conn.close()
 
 
+@router.get("/settings", response_model=SuccessResponse[dict])
+def get_internal_link_settings():
+    """Get all internal link settings (thresholds, auto-apply config)."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.dashboard_google import get_service_setting
+        from shopifyseo.internal_links.auto_apply import (
+            get_auto_apply_settings as _get_settings,
+            get_auto_applied_today_count,
+            DEFAULT_AUTO_APPLY_MIN_SCORE,
+            DEFAULT_AUTO_APPLY_MAX_PER_DAY,
+        )
+        from shopifyseo.internal_links.pipeline import DEFAULT_SIM_THRESHOLD
+        
+        # Get similarity threshold
+        sim_raw = get_service_setting(conn, "internal_link_sim_threshold", "")
+        try:
+            sim_threshold = float(sim_raw) if sim_raw else DEFAULT_SIM_THRESHOLD
+        except ValueError:
+            sim_threshold = DEFAULT_SIM_THRESHOLD
+        
+        # Get AI body links setting
+        ai_body_raw = get_service_setting(conn, "internal_link_ai_body_links_enabled", "")
+        ai_body_enabled = ai_body_raw.lower() in ("1", "true", "yes") if ai_body_raw else False
+        
+        # Get auto-apply settings
+        auto_apply = _get_settings(conn)
+        auto_apply["applied_today"] = get_auto_applied_today_count(conn)
+        
+        return success_response({
+            "sim_threshold": sim_threshold,
+            "sim_threshold_default": DEFAULT_SIM_THRESHOLD,
+            "ai_body_links_enabled": ai_body_enabled,
+            "auto_apply_enabled": auto_apply["enabled"],
+            "auto_apply_min_score": auto_apply["min_score"],
+            "auto_apply_min_score_default": DEFAULT_AUTO_APPLY_MIN_SCORE,
+            "auto_apply_max_per_day": auto_apply["max_per_day"],
+            "auto_apply_max_per_day_default": DEFAULT_AUTO_APPLY_MAX_PER_DAY,
+            "auto_apply_kinds": auto_apply["kinds"],
+            "auto_applied_today": auto_apply["applied_today"],
+        })
+    finally:
+        conn.close()
+
+
+@router.put("/settings", response_model=SuccessResponse[dict])
+def save_internal_link_settings(
+    sim_threshold: float | None = Query(default=None, ge=0.1, le=1.0),
+    ai_body_links_enabled: bool | None = Query(default=None),
+    auto_apply_enabled: bool | None = Query(default=None),
+    auto_apply_min_score: float | None = Query(default=None, ge=0.1, le=2.0),
+    auto_apply_max_per_day: int | None = Query(default=None, ge=1, le=1000),
+):
+    """Save internal link settings. Only non-null parameters are updated."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.dashboard_google import set_service_setting
+        
+        saved: dict[str, str | float | int | bool] = {}
+        
+        if sim_threshold is not None:
+            set_service_setting(conn, "internal_link_sim_threshold", str(sim_threshold))
+            saved["sim_threshold"] = sim_threshold
+        
+        if ai_body_links_enabled is not None:
+            set_service_setting(conn, "internal_link_ai_body_links_enabled", "1" if ai_body_links_enabled else "")
+            saved["ai_body_links_enabled"] = ai_body_links_enabled
+        
+        if auto_apply_enabled is not None:
+            set_service_setting(conn, "internal_link_auto_apply_enabled", "1" if auto_apply_enabled else "")
+            saved["auto_apply_enabled"] = auto_apply_enabled
+        
+        if auto_apply_min_score is not None:
+            set_service_setting(conn, "internal_link_auto_apply_min_score", str(auto_apply_min_score))
+            saved["auto_apply_min_score"] = auto_apply_min_score
+        
+        if auto_apply_max_per_day is not None:
+            set_service_setting(conn, "internal_link_auto_apply_max_per_day", str(auto_apply_max_per_day))
+            saved["auto_apply_max_per_day"] = auto_apply_max_per_day
+        
+        conn.commit()
+        return success_response({"saved": saved})
+    finally:
+        conn.close()
+
+
 @router.get("/auto-apply/settings", response_model=SuccessResponse[dict])
 def get_auto_apply_settings():
-    """Phase E: Get auto-apply settings."""
+    """Phase E: Get auto-apply settings (legacy endpoint, use /settings instead)."""
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.auto_apply import (

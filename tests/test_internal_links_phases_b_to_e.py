@@ -347,6 +347,66 @@ class TestPhaseCWriteTime:
         assert result[1]["type"] == "collection"
         assert result[2]["type"] == "page"
 
+    def test_ai_body_links_disabled_by_default(self):
+        """AI body links setting should be disabled by default."""
+        from shopifyseo.internal_links.write_time import is_ai_body_links_enabled
+
+        conn = _make_test_db()
+        assert is_ai_body_links_enabled(conn) is False
+
+    def test_ai_body_links_enabled_when_set(self):
+        """AI body links should be enabled when setting is '1'."""
+        from shopifyseo.internal_links.write_time import is_ai_body_links_enabled
+
+        conn = _make_test_db()
+        conn.execute(
+            "INSERT INTO service_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+            ("internal_link_ai_body_links_enabled", "1"),
+        )
+        conn.commit()
+
+        assert is_ai_body_links_enabled(conn) is True
+
+    def test_enhance_prompt_context_skips_when_disabled(self):
+        """enhance_prompt_context_with_prioritized_links should skip when disabled."""
+        from shopifyseo.internal_links.write_time import enhance_prompt_context_with_prioritized_links
+
+        conn = _make_test_db()
+        original_targets = [
+            {"type": "page", "handle": "test-page", "title": "Test Page"},
+            {"type": "product", "handle": "test-product", "title": "Test Product"},
+        ]
+        prompt_ctx = {"approved_internal_link_targets": original_targets.copy()}
+
+        result = enhance_prompt_context_with_prioritized_links(conn, prompt_ctx, "product")
+
+        # Should be unchanged (still page first) because setting is disabled
+        assert result["approved_internal_link_targets"][0]["type"] == "page"
+
+    def test_enhance_prompt_context_prioritizes_when_enabled(self):
+        """enhance_prompt_context_with_prioritized_links should prioritize when enabled."""
+        from shopifyseo.internal_links.write_time import enhance_prompt_context_with_prioritized_links
+
+        conn = _make_test_db()
+        conn.execute("INSERT INTO products (handle, title) VALUES ('test-product', 'Test Product')")
+        conn.execute("INSERT INTO pages (handle, title) VALUES ('test-page', 'Test Page')")
+        conn.execute(
+            "INSERT INTO service_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+            ("internal_link_ai_body_links_enabled", "1"),
+        )
+        conn.commit()
+
+        original_targets = [
+            {"type": "page", "handle": "test-page", "title": "Test Page"},
+            {"type": "product", "handle": "test-product", "title": "Test Product"},
+        ]
+        prompt_ctx = {"approved_internal_link_targets": original_targets.copy()}
+
+        result = enhance_prompt_context_with_prioritized_links(conn, prompt_ctx, "product")
+
+        # Should be reordered (product first) because setting is enabled
+        assert result["approved_internal_link_targets"][0]["type"] == "product"
+
 
 class TestPhaseEAutoApply:
     """Phase E: Auto-apply settings and logic."""

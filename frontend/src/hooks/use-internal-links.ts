@@ -254,7 +254,7 @@ export function useLinkOutcomes(days: number = 28) {
   });
 }
 
-// Phase E: Auto-apply settings
+// Phase E: Auto-apply settings (legacy)
 export interface AutoApplySettings {
   enabled: boolean;
   min_score: number;
@@ -278,5 +278,54 @@ export function useRunAutoApply() {
         `/api/internal-links/auto-apply/run?dry_run=${dryRun}`,
       ),
     onSuccess: invalidate,
+  });
+}
+
+// Phase B+E: Comprehensive internal link settings
+export interface InternalLinkSettings {
+  sim_threshold: number;
+  sim_threshold_default: number;
+  ai_body_links_enabled: boolean;
+  auto_apply_enabled: boolean;
+  auto_apply_min_score: number;
+  auto_apply_min_score_default: number;
+  auto_apply_max_per_day: number;
+  auto_apply_max_per_day_default: number;
+  auto_apply_kinds: string[];
+  auto_applied_today: number;
+}
+
+export function useInternalLinkSettings() {
+  return useQuery({
+    queryKey: ["internal-links", "settings"],
+    queryFn: () => getJson<InternalLinkSettings>("/api/internal-links/settings"),
+  });
+}
+
+export interface SaveSettingsParams {
+  sim_threshold?: number;
+  ai_body_links_enabled?: boolean;
+  auto_apply_enabled?: boolean;
+  auto_apply_min_score?: number;
+  auto_apply_max_per_day?: number;
+}
+
+export function useSaveInternalLinkSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: SaveSettingsParams) => {
+      const search = new URLSearchParams();
+      if (params.sim_threshold !== undefined) search.set("sim_threshold", String(params.sim_threshold));
+      if (params.ai_body_links_enabled !== undefined) search.set("ai_body_links_enabled", String(params.ai_body_links_enabled));
+      if (params.auto_apply_enabled !== undefined) search.set("auto_apply_enabled", String(params.auto_apply_enabled));
+      if (params.auto_apply_min_score !== undefined) search.set("auto_apply_min_score", String(params.auto_apply_min_score));
+      if (params.auto_apply_max_per_day !== undefined) search.set("auto_apply_max_per_day", String(params.auto_apply_max_per_day));
+      return fetch(`/api/internal-links/settings?${search.toString()}`, { method: "PUT" })
+        .then((r) => r.json())
+        .then((j) => j.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["internal-links"] });
+    },
   });
 }

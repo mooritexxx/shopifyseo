@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle } from "lucide-react";
+import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle, Settings, Save } from "lucide-react";
 
 import {
   useApplySuggestion,
@@ -16,12 +16,15 @@ import {
   useGraphMapData,
   useLinkOutcomes,
   useAutoApplySettings,
+  useInternalLinkSettings,
+  useSaveInternalLinkSettings,
   type LinkSuggestion,
   type GraphEntity,
   type AppliedLink,
   type GraphNode,
   type GraphEdge,
 } from "../hooks/use-internal-links";
+import { Input } from "../components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -523,9 +526,204 @@ function GraphMap({
   );
 }
 
+interface SettingsTabProps {
+  setToast: (toast: { message: string; variant: "success" | "error" | "info" } | null) => void;
+}
+
+function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
+  const settings = useInternalLinkSettings();
+  const saveSettings = useSaveInternalLinkSettings();
+  
+  const [simThreshold, setSimThreshold] = useState<string>("");
+  const [aiBodyEnabled, setAiBodyEnabled] = useState(false);
+  const [autoApplyEnabled, setAutoApplyEnabled] = useState(false);
+  const [autoApplyMinScore, setAutoApplyMinScore] = useState<string>("");
+  const [autoApplyMaxPerDay, setAutoApplyMaxPerDay] = useState<string>("");
+  
+  // Sync state when data loads
+  useEffect(() => {
+    if (settings.data) {
+      setSimThreshold(String(settings.data.sim_threshold));
+      setAiBodyEnabled(settings.data.ai_body_links_enabled);
+      setAutoApplyEnabled(settings.data.auto_apply_enabled);
+      setAutoApplyMinScore(String(settings.data.auto_apply_min_score));
+      setAutoApplyMaxPerDay(String(settings.data.auto_apply_max_per_day));
+    }
+  }, [settings.data]);
+  
+  const handleSave = () => {
+    saveSettings.mutate({
+      sim_threshold: parseFloat(simThreshold) || undefined,
+      ai_body_links_enabled: aiBodyEnabled,
+      auto_apply_enabled: autoApplyEnabled,
+      auto_apply_min_score: parseFloat(autoApplyMinScore) || undefined,
+      auto_apply_max_per_day: parseInt(autoApplyMaxPerDay, 10) || undefined,
+    }, {
+      onSuccess: () => setToast({ message: "Settings saved", variant: "success" }),
+      onError: () => setToast({ message: "Failed to save settings", variant: "error" }),
+    });
+  };
+  
+  if (settings.isLoading) {
+    return (
+      <Card>
+        <CardContent className="py-6">
+          <div className="space-y-4">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Internal Link Settings</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Configure suggestion thresholds and auto-apply behavior.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Similarity Threshold */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium" htmlFor="sim-threshold">
+            Similarity Threshold
+          </label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="sim-threshold"
+              type="number"
+              min={0.1}
+              max={1}
+              step={0.05}
+              value={simThreshold}
+              onChange={(e) => setSimThreshold(e.target.value)}
+              className="w-32"
+            />
+            <span className="text-sm text-muted-foreground">
+              (default: {settings.data?.sim_threshold_default ?? 0.55})
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Minimum semantic similarity score for suggestions. Higher = stricter matching.
+          </p>
+        </div>
+
+        {/* AI Body Links */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              id="ai-body-enabled"
+              type="checkbox"
+              checked={aiBodyEnabled}
+              onChange={(e) => setAiBodyEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+            <label className="text-sm font-medium" htmlFor="ai-body-enabled">
+              Include internal links in AI-generated body HTML
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When enabled, AI body generation for products/collections includes prioritized internal links.
+            Links are never added to SEO title or meta description.
+          </p>
+        </div>
+
+        <hr className="my-4" />
+
+        {/* Auto-Apply Section */}
+        <div className="space-y-4">
+          <h4 className="font-medium">Auto-Apply (Phase E)</h4>
+          
+          <div className="flex items-center gap-2">
+            <input
+              id="auto-apply-enabled"
+              type="checkbox"
+              checked={autoApplyEnabled}
+              onChange={(e) => setAutoApplyEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+            <label className="text-sm font-medium" htmlFor="auto-apply-enabled">
+              Enable automatic link application
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            When enabled, high-confidence phrase_wrap suggestions are automatically applied after each rebuild.
+            AI-modified copy (ai_woven) is <strong>never</strong> auto-applied.
+          </p>
+          
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="auto-min-score">
+                Minimum Score
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="auto-min-score"
+                  type="number"
+                  min={0.1}
+                  max={2}
+                  step={0.1}
+                  value={autoApplyMinScore}
+                  onChange={(e) => setAutoApplyMinScore(e.target.value)}
+                  className="w-24"
+                  disabled={!autoApplyEnabled}
+                />
+                <span className="text-sm text-muted-foreground">
+                  (default: {settings.data?.auto_apply_min_score_default ?? 1.2})
+                </span>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="auto-max-day">
+                Max Per Day
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="auto-max-day"
+                  type="number"
+                  min={1}
+                  max={1000}
+                  step={1}
+                  value={autoApplyMaxPerDay}
+                  onChange={(e) => setAutoApplyMaxPerDay(e.target.value)}
+                  className="w-24"
+                  disabled={!autoApplyEnabled}
+                />
+                <span className="text-sm text-muted-foreground">
+                  ({settings.data?.auto_applied_today ?? 0} applied today)
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          <p className="text-xs text-muted-foreground">
+            Only suggestions with score ≥ minimum, kind=phrase_wrap, and strong anchors are eligible.
+          </p>
+        </div>
+        
+        <div className="pt-4">
+          <Button
+            onClick={handleSave}
+            disabled={saveSettings.isPending}
+            className="gap-2"
+          >
+            <Save size={16} />
+            {saveSettings.isPending ? "Saving..." : "Save Settings"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function InternalLinksPage() {
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
-  const [tab, setTab] = useState<"suggestions" | "applied" | "orphans" | "graph" | "outcomes">("suggestions");
+  const [tab, setTab] = useState<"suggestions" | "applied" | "orphans" | "graph" | "outcomes" | "settings">("suggestions");
   const [processingId, setProcessingId] = useState<number | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [graphView, setGraphView] = useState<"list" | "map">("list");
@@ -747,6 +945,17 @@ export function InternalLinksPage() {
           }`}
         >
           Outcomes
+        </button>
+        <button
+          onClick={() => setTab("settings")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "settings"
+              ? "border-b-2 border-blue-600 text-blue-600"
+              : "text-muted-foreground hover:text-ink"
+          }`}
+        >
+          <Settings size={14} className="mr-1 inline" />
+          Settings
         </button>
       </div>
 
@@ -1145,6 +1354,9 @@ export function InternalLinksPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Settings tab */}
+      {tab === "settings" && <InternalLinkSettingsTab setToast={setToast} />}
 
       {/* Preview Dialog */}
       <PreviewDialog

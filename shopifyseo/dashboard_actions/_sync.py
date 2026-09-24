@@ -218,6 +218,21 @@ def _start_internal_link_refresh(db_path: str) -> threading.Thread:
             from ..internal_links.pipeline import generate_link_suggestions
 
             generate_link_suggestions(conn)
+            
+            # Phase E: Run auto-apply after successful suggestion generation
+            try:
+                from ..internal_links.auto_apply import run_auto_apply, get_auto_apply_settings
+                from ..dashboard_queries._urls import _base_store_url
+                
+                settings = get_auto_apply_settings(conn)
+                if settings.get("enabled"):
+                    base_url = _base_store_url(conn)
+                    result = run_auto_apply(conn, base_url)
+                    if result.get("applied", 0) > 0:
+                        logger.info("Auto-applied %d internal links after rebuild", result["applied"])
+            except Exception:
+                # Never fail the rebuild due to auto-apply errors
+                logger.warning("Auto-apply after link rebuild failed (non-fatal)", exc_info=True)
         except Exception:
             logger.warning("Background internal link refresh failed", exc_info=True)
         finally:

@@ -72,6 +72,99 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row is not None
+
+
+def _get_table_sql(conn: sqlite3.Connection, table: str) -> str | None:
+    """Return the CREATE TABLE statement for a table, or None if it doesn't exist."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row["sql"] if row else None
+
+
+def _migrate_link_suggestions_check_constraint(conn: sqlite3.Connection) -> bool:
+    """Migrate link_suggestions table if it has the old CHECK constraint (without 'undone').
+
+    SQLite cannot ALTER CHECK constraints, so this recreates the table if needed.
+    Returns True if migration was performed, False otherwise.
+    """
+    if not _table_exists(conn, "link_suggestions"):
+        return False
+
+    table_sql = _get_table_sql(conn, "link_suggestions")
+    if table_sql is None:
+        return False
+
+    # Check if the table has the old constraint (without 'undone')
+    # Old: CHECK (status IN ('suggested', 'applied', 'dismissed'))
+    # New: CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone'))
+    if "'undone'" in table_sql:
+        # Already has 'undone' in the CHECK constraint
+        return False
+
+    _LOG.info("Migrating link_suggestions table to add 'undone' status to CHECK constraint")
+
+    # Recreate the table with the new CHECK constraint
+    # 1. Rename old table
+    conn.execute("ALTER TABLE link_suggestions RENAME TO link_suggestions_old")
+
+    # 2. Create new table with correct CHECK constraint
+    conn.execute(
+        """
+        CREATE TABLE link_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
+            anchor_phrase TEXT,
+            ai_anchor_html TEXT,
+            source_body_hash TEXT,
+            score REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'suggested'
+                CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
+            created_at INTEGER NOT NULL,
+            applied_at INTEGER,
+            UNIQUE (source_type, source_handle, target_type, target_handle)
+        )
+        """
+    )
+
+    # 3. Copy data from old table
+    conn.execute(
+        """
+        INSERT INTO link_suggestions (
+            id, source_type, source_handle, target_type, target_handle, kind,
+            anchor_phrase, ai_anchor_html, source_body_hash, score, status,
+            created_at, applied_at
+        )
+        SELECT
+            id, source_type, source_handle, target_type, target_handle, kind,
+            anchor_phrase, ai_anchor_html, source_body_hash, score, status,
+            created_at, applied_at
+        FROM link_suggestions_old
+        """
+    )
+
+    # 4. Drop old table
+    conn.execute("DROP TABLE link_suggestions_old")
+
+    # 5. Recreate the index (it was dropped with the old table)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
+    )
+
+    conn.commit()
+    _LOG.info("Successfully migrated link_suggestions table")
+    return True
+
+
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     existing = _table_columns(conn, table)
     for name, col_type in columns.items():
@@ -631,6 +724,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links (target_type, target_handle)"
     )
+    # Migrate link_suggestions table if it has the old CHECK constraint (without 'undone')
+    _migrate_link_suggestions_check_constraint(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS link_suggestions (

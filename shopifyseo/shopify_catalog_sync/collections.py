@@ -94,23 +94,50 @@ def upsert_collection(conn: sqlite3.Connection, collection: dict, synced_at: str
     return len(metafields)
 
 
-def _prune_deleted_collections(conn: sqlite3.Connection, synced_ids: set[str]) -> int:
-    """Mark local collections as deleted (clear shopify_id) if not in Shopify sync.
+def _mark_api_unreachable_collections(conn: sqlite3.Connection, synced_ids: set[str]) -> int:
+    """Mark local collections as api_unreachable if not returned by Admin API.
 
-    Returns the count of collections marked as deleted.
+    Some collections (e.g., smart collections with metafield-only rules) exist in
+    Shopify Admin and on the storefront but are not visible via Admin GraphQL/REST APIs.
+    We mark them as api_unreachable rather than deleting them, as they are real
+    collections with valuable local SEO data.
+
+    Also clears api_unreachable for collections that ARE now visible via API.
+
+    Returns the count of collections newly marked as unreachable.
     """
+    # Get all local collection IDs that have a shopify_id
     local_ids = {
         r["shopify_id"]
         for r in conn.execute("SELECT shopify_id FROM collections WHERE shopify_id IS NOT NULL").fetchall()
     }
-    deleted_ids = local_ids - synced_ids
-    if not deleted_ids:
-        return 0
-    conn.executemany(
-        "UPDATE collections SET shopify_id = NULL WHERE shopify_id = ?",
-        [(cid,) for cid in deleted_ids],
-    )
-    return len(deleted_ids)
+
+    # Collections in local DB but not in API response -> mark as unreachable
+    unreachable_ids = local_ids - synced_ids
+    newly_unreachable = 0
+    if unreachable_ids:
+        # Only count those that weren't already marked
+        cur = conn.execute(
+            f"SELECT COUNT(*) FROM collections WHERE shopify_id IN ({','.join('?' for _ in unreachable_ids)}) "
+            "AND (api_unreachable IS NULL OR api_unreachable = 0)",
+            list(unreachable_ids),
+        )
+        newly_unreachable = cur.fetchone()[0]
+
+        conn.executemany(
+            "UPDATE collections SET api_unreachable = 1 WHERE shopify_id = ?",
+            [(cid,) for cid in unreachable_ids],
+        )
+
+    # Collections that ARE in API response -> clear unreachable flag if set
+    reachable_ids = local_ids & synced_ids
+    if reachable_ids:
+        conn.executemany(
+            "UPDATE collections SET api_unreachable = 0 WHERE shopify_id = ? AND api_unreachable = 1",
+            [(cid,) for cid in reachable_ids],
+        )
+
+    return newly_unreachable
 
 
 def sync_collections(
@@ -207,8 +234,8 @@ def sync_collections(
             if progress_callback is not None:
                 progress_callback("collections", collection_count, len(collections))
 
-        # Mark any collections that are in local DB but not in Shopify as deleted
-        deleted_count = _prune_deleted_collections(conn, synced_ids)
+        # Mark collections missing from API as api_unreachable (do NOT delete them)
+        unreachable_count = _mark_api_unreachable_collections(conn, synced_ids)
 
         conn.commit()
         finish_run(
@@ -222,7 +249,7 @@ def sync_collections(
         return {
             "db_path": str(db_path),
             "collections_synced": collection_count,
-            "collections_deleted": deleted_count,
+            "collections_api_unreachable": unreachable_count,
             "collection_metafields_synced": metafield_count,
             "collection_products_synced": membership_count,
             "synced_at": synced_at,
@@ -240,24 +267,32 @@ def sync_collections(
             conn.close()
 
 
-class ShopifyCollectionNotFound(RuntimeError):
-    """Raised when a collection is not found in Shopify (likely deleted)."""
+class ShopifyCollectionUnreachable(RuntimeError):
+    """Raised when a collection cannot be accessed via Admin API.
+
+    The collection may still exist in Shopify Admin UI and on the storefront,
+    but the Admin GraphQL/REST APIs cannot read it. This typically affects
+    smart collections with certain metafield-only rule configurations.
+    """
 
     def __init__(self, collection_id: str, handle: str | None = None):
         self.collection_id = collection_id
         self.handle = handle
         handle_part = f" (handle={handle})" if handle else ""
-        super().__init__(f"Collection not found in Shopify: {collection_id}{handle_part}")
+        super().__init__(
+            f"Collection not accessible via Admin API: {collection_id}{handle_part}. "
+            "The collection may still exist in Shopify Admin but is not returned by GraphQL/REST APIs."
+        )
 
 
-def mark_collection_deleted(conn: sqlite3.Connection, collection_id: str) -> str | None:
-    """Mark a collection as deleted by clearing shopify_id. Returns handle if found."""
+def mark_collection_api_unreachable(conn: sqlite3.Connection, collection_id: str) -> str | None:
+    """Mark a collection as api_unreachable (Admin API cannot access it). Returns handle if found."""
     row = conn.execute(
         "SELECT handle FROM collections WHERE shopify_id = ?", (collection_id,)
     ).fetchone()
     if row:
         handle = row["handle"]
-        conn.execute("UPDATE collections SET shopify_id = NULL WHERE shopify_id = ?", (collection_id,))
+        conn.execute("UPDATE collections SET api_unreachable = 1 WHERE shopify_id = ?", (collection_id,))
         conn.commit()
         return handle
     return None
@@ -272,10 +307,11 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
     try:
         collection = fetch_collection_by_id(collection_id)
         if not collection:
+            # Collection is not accessible via Admin API - mark as unreachable but do NOT delete
             conn = open_db(db_path)
-            handle = mark_collection_deleted(conn, collection_id)
-            finish_run(conn, run_id, status="deleted", error_message=f"Collection not found: {collection_id}")
-            raise ShopifyCollectionNotFound(collection_id, handle)
+            handle = mark_collection_api_unreachable(conn, collection_id)
+            finish_run(conn, run_id, status="api_unreachable", error_message=f"Collection not accessible via API: {collection_id}")
+            raise ShopifyCollectionUnreachable(collection_id, handle)
         products = fetch_collection_products(collection["id"], page_size)
 
         conn = open_db(db_path)
@@ -319,7 +355,7 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
             "synced_at": synced_at,
             "run_id": run_id,
         }
-    except ShopifyCollectionNotFound:
+    except ShopifyCollectionUnreachable:
         raise
     except Exception as exc:
         if conn is None:

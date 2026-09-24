@@ -15,7 +15,7 @@ def _conn() -> sqlite3.Connection:
             seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0,
-            seo_title TEXT, seo_description TEXT);
+            seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);
         CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT,
             gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
         CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
@@ -166,16 +166,52 @@ def test_traffic_weighted_scoring_orders_high_traffic_sources_first():
     assert rows[0]["score"] > rows[1]["score"]
 
 
-def test_ghost_collection_targets_are_skipped():
-    """Ghost collections (NULL shopify_id) should not be suggested as targets."""
+def test_api_unreachable_collection_targets_are_skipped():
+    """Collections marked as api_unreachable should not be suggested as targets."""
     conn = _conn()
     conn.execute(
         "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
-        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about ghost collection and more.</p>', 100)"
+        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about unreachable collection and more.</p>', 100)"
     )
-    # Ghost collection: NULL shopify_id (marked as deleted from Shopify)
+    # API-unreachable collection: has shopify_id but marked as unreachable
     conn.execute(
-        "INSERT INTO collections (shopify_id, handle, title) VALUES (NULL, 'ghost-collection', 'Ghost Collection')"
+        "INSERT INTO collections (shopify_id, handle, title, api_unreachable) VALUES "
+        "('gid://shopify/Collection/999', 'unreachable-collection', 'Unreachable Collection', 1)"
+    )
+    # Valid collection: has shopify_id and is reachable
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title, api_unreachable) VALUES "
+        "('gid://shopify/Collection/123', 'valid-collection', 'Valid Collection', 0)"
+    )
+    conn.commit()
+
+    def related(conn_, object_type, handle, top_k=10, type_quotas=None):
+        if (object_type, handle) == ("blog_article", "news/post"):
+            return [
+                {"object_type": "collection", "object_handle": "unreachable-collection", "score": 0.95},
+                {"object_type": "collection", "object_handle": "valid-collection", "score": 0.85},
+            ]
+        return []
+
+    n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+    rows = conn.execute("SELECT target_handle FROM link_suggestions").fetchall()
+    handles = [r["target_handle"] for r in rows]
+    # API-unreachable collection should be skipped, valid one should be suggested
+    assert "unreachable-collection" not in handles
+    assert "valid-collection" in handles
+    assert n == 1
+
+
+def test_null_shopify_id_collection_targets_are_skipped():
+    """Collections with NULL shopify_id should not be suggested as targets."""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about collections.</p>', 100)"
+    )
+    # Collection with NULL shopify_id
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title) VALUES (NULL, 'no-id-collection', 'NoId Collection')"
     )
     # Valid collection: has shopify_id
     conn.execute(
@@ -186,7 +222,7 @@ def test_ghost_collection_targets_are_skipped():
     def related(conn_, object_type, handle, top_k=10, type_quotas=None):
         if (object_type, handle) == ("blog_article", "news/post"):
             return [
-                {"object_type": "collection", "object_handle": "ghost-collection", "score": 0.95},
+                {"object_type": "collection", "object_handle": "no-id-collection", "score": 0.95},
                 {"object_type": "collection", "object_handle": "valid-collection", "score": 0.85},
             ]
         return []
@@ -194,22 +230,17 @@ def test_ghost_collection_targets_are_skipped():
     n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
     rows = conn.execute("SELECT target_handle FROM link_suggestions").fetchall()
     handles = [r["target_handle"] for r in rows]
-    # Ghost collection should be skipped, valid one should be suggested
-    assert "ghost-collection" not in handles
+    assert "no-id-collection" not in handles
     assert "valid-collection" in handles
     assert n == 1
 
 
-def test_ghost_product_targets_are_skipped():
-    """Ghost products (NULL shopify_id or ARCHIVED status) should not be suggested as targets."""
+def test_archived_product_targets_are_skipped():
+    """Products with ARCHIVED status should not be suggested as targets."""
     conn = _conn()
     conn.execute(
         "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
         "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about products.</p>', 100)"
-    )
-    # Ghost product: NULL shopify_id
-    conn.execute(
-        "INSERT INTO products (shopify_id, handle, title, status) VALUES (NULL, 'ghost-product', 'Ghost', 'ACTIVE')"
     )
     # Archived product: has shopify_id but ARCHIVED status
     conn.execute(
@@ -224,7 +255,6 @@ def test_ghost_product_targets_are_skipped():
     def related(conn_, object_type, handle, top_k=10, type_quotas=None):
         if (object_type, handle) == ("blog_article", "news/post"):
             return [
-                {"object_type": "product", "object_handle": "ghost-product", "score": 0.95},
                 {"object_type": "product", "object_handle": "archived-product", "score": 0.90},
                 {"object_type": "product", "object_handle": "valid-product", "score": 0.85},
             ]
@@ -233,29 +263,30 @@ def test_ghost_product_targets_are_skipped():
     n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
     rows = conn.execute("SELECT target_handle FROM link_suggestions").fetchall()
     handles = [r["target_handle"] for r in rows]
-    # Ghost and archived products should be skipped
-    assert "ghost-product" not in handles
+    # Archived products should be skipped
     assert "archived-product" not in handles
     assert "valid-product" in handles
     assert n == 1
 
 
-def test_orphan_list_excludes_ghost_collections():
-    """Orphan target list should not include ghost collections (NULL shopify_id)."""
+def test_orphan_list_excludes_api_unreachable_collections():
+    """Orphan target list should not include api_unreachable collections."""
     from shopifyseo.internal_links.pipeline import _orphan_targets
 
     conn = _conn()
-    # Ghost collection: NULL shopify_id
+    # API-unreachable collection
     conn.execute(
-        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks) VALUES (NULL, 'ghost-collection', 'Ghost', 50)"
+        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks, api_unreachable) VALUES "
+        "('gid://shopify/Collection/999', 'unreachable-collection', 'Unreachable', 50, 1)"
     )
-    # Valid collection: has shopify_id
+    # Valid collection: has shopify_id and is reachable
     conn.execute(
-        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks) VALUES ('gid://shopify/Collection/123', 'valid-collection', 'Valid', 30)"
+        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks, api_unreachable) VALUES "
+        "('gid://shopify/Collection/123', 'valid-collection', 'Valid', 30, 0)"
     )
     conn.commit()
 
     orphans = _orphan_targets(conn)
     handles = [h for _, h, _, _ in orphans]
-    assert "ghost-collection" not in handles
+    assert "unreachable-collection" not in handles
     assert "valid-collection" in handles

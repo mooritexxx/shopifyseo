@@ -191,9 +191,9 @@ def test_apply_rejects_stale_body():
         )
 
 
-def test_apply_rejects_ghost_source_collection():
-    """Apply should reject if the source collection no longer exists in Shopify (ghost)."""
-    from shopifyseo.internal_links.validation import ShopifyResourceMissing
+def test_apply_rejects_api_unreachable_source_collection():
+    """Apply should reject if the source collection is not accessible via Admin API."""
+    from shopifyseo.internal_links.validation import ShopifyResourceUnreachable
 
     body = "<p>Check out our ceramic tanks collection.</p>"
     body_hash = _hash_body(body)
@@ -207,7 +207,7 @@ def test_apply_rejects_ghost_source_collection():
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
             description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
-            seo_title TEXT, seo_description TEXT);
+            seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);
         CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT);
         CREATE TABLE internal_links (
             id INTEGER PRIMARY KEY,
@@ -224,10 +224,10 @@ def test_apply_rejects_ghost_source_collection():
         );
         """
     )
-    # Create a ghost collection (exists locally but NOT in Shopify - simulated by having shopify_id)
+    # Create a collection that is API-unreachable (exists but Admin API can't access it)
     conn.execute(
         "INSERT INTO collections (shopify_id, handle, title, description_html, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Collection/123', 'ghost-collection', 'Ghost', ?, 'st', 'sd')",
+        "VALUES ('gid://shopify/Collection/123', 'unreachable-collection', 'Unreachable', ?, 'st', 'sd')",
         (body,),
     )
     conn.execute(
@@ -237,37 +237,43 @@ def test_apply_rejects_ghost_source_collection():
     conn.execute(
         "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
         "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('collection', 'ghost-collection', 'product', 'some-product', 'phrase_wrap', 'some product', ?, 1.0, 1)",
+        "('collection', 'unreachable-collection', 'product', 'some-product', 'phrase_wrap', 'some product', ?, 1.0, 1)",
         (body_hash,),
     )
     conn.commit()
 
-    # Mock the Shopify check to return False (simulating collection deleted from Shopify)
+    # Mock the API check to return False (simulating API-unreachable collection)
     import shopifyseo.internal_links.validation as validation_mod
-    original_verify = validation_mod.verify_resource_exists_in_shopify
+    original_check = validation_mod.check_resource_api_reachable
 
-    def mock_verify(obj_type, shopify_id):
+    def mock_check(obj_type, shopify_id):
         if obj_type == "collection" and shopify_id == "gid://shopify/Collection/123":
-            return False  # Ghost - doesn't exist in Shopify
+            return False  # API-unreachable - Admin API returns null
         return True
 
-    validation_mod.verify_resource_exists_in_shopify = mock_verify
+    validation_mod.check_resource_api_reachable = mock_check
     try:
         sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-        with pytest.raises(ShopifyResourceMissing) as exc_info:
+        with pytest.raises(ShopifyResourceUnreachable) as exc_info:
             apply_suggestion(conn, sid, base_url="https://s.com", push_fn=lambda *a: {}, sanitize_fn=lambda b: b)
-        assert "ghost-collection" in str(exc_info.value)
+        assert "unreachable-collection" in str(exc_info.value)
         assert "source" in str(exc_info.value).lower()
+        assert "Admin API" in str(exc_info.value)
         # Suggestion status should remain unchanged
         row = conn.execute("SELECT status FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
         assert row["status"] == "suggested"
+        # Collection should now be marked as api_unreachable
+        unreachable = conn.execute(
+            "SELECT api_unreachable FROM collections WHERE handle = 'unreachable-collection'"
+        ).fetchone()["api_unreachable"]
+        assert unreachable == 1
     finally:
-        validation_mod.verify_resource_exists_in_shopify = original_verify
+        validation_mod.check_resource_api_reachable = original_check
 
 
-def test_apply_rejects_source_with_null_shopify_id():
-    """Apply should reject if the source has NULL shopify_id (already marked as deleted)."""
-    from shopifyseo.internal_links.validation import ShopifyResourceMissing
+def test_apply_rejects_source_already_marked_api_unreachable():
+    """Apply should reject if the source is already marked as api_unreachable."""
+    from shopifyseo.internal_links.validation import ShopifyResourceUnreachable
 
     body = "<p>Check out our products.</p>"
     body_hash = _hash_body(body)
@@ -281,7 +287,7 @@ def test_apply_rejects_source_with_null_shopify_id():
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
             description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
-            seo_title TEXT, seo_description TEXT);
+            seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);
         CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT);
         CREATE TABLE internal_links (
             id INTEGER PRIMARY KEY,
@@ -298,10 +304,10 @@ def test_apply_rejects_source_with_null_shopify_id():
         );
         """
     )
-    # Create a collection with NULL shopify_id (already marked as deleted)
+    # Create a collection already marked as api_unreachable
     conn.execute(
-        "INSERT INTO collections (shopify_id, handle, title, description_html) "
-        "VALUES (NULL, 'deleted-collection', 'Deleted', ?)",
+        "INSERT INTO collections (shopify_id, handle, title, description_html, api_unreachable) "
+        "VALUES ('gid://shopify/Collection/123', 'marked-unreachable', 'Marked', ?, 1)",
         (body,),
     )
     conn.execute(
@@ -311,13 +317,72 @@ def test_apply_rejects_source_with_null_shopify_id():
     conn.execute(
         "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
         "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('collection', 'deleted-collection', 'product', 'some-product', 'phrase_wrap', 'some product', ?, 1.0, 1)",
+        "('collection', 'marked-unreachable', 'product', 'some-product', 'phrase_wrap', 'some product', ?, 1.0, 1)",
         (body_hash,),
     )
     conn.commit()
 
     sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    with pytest.raises(ShopifyResourceMissing) as exc_info:
+    # Should fail without making API call since it's already marked as unreachable
+    with pytest.raises(ShopifyResourceUnreachable) as exc_info:
         apply_suggestion(conn, sid, base_url="https://s.com", push_fn=lambda *a: {}, sanitize_fn=lambda b: b)
-    assert "deleted-collection" in str(exc_info.value)
+    assert "marked-unreachable" in str(exc_info.value)
+    assert "source" in str(exc_info.value).lower()
+
+
+def test_apply_rejects_source_with_null_shopify_id():
+    """Apply should reject if the source has NULL shopify_id."""
+    from shopifyseo.internal_links.validation import ShopifyResourceUnreachable
+
+    body = "<p>Check out our products.</p>"
+    body_hash = _hash_body(body)
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
+            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
+        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
+        CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
+            seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);
+        CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT);
+        CREATE TABLE internal_links (
+            id INTEGER PRIMARY KEY,
+            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
+            anchor_text TEXT, href TEXT,
+            UNIQUE (source_type, source_handle, target_type, target_handle, href)
+        );
+        CREATE TABLE link_suggestions (
+            id INTEGER PRIMARY KEY,
+            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
+            kind TEXT, anchor_phrase TEXT, ai_anchor_html TEXT, source_body_hash TEXT,
+            score REAL DEFAULT 0, status TEXT DEFAULT 'suggested', created_at INTEGER, applied_at INTEGER,
+            UNIQUE (source_type, source_handle, target_type, target_handle)
+        );
+        """
+    )
+    # Create a collection with NULL shopify_id
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title, description_html) "
+        "VALUES (NULL, 'no-id-collection', 'NoId', ?)",
+        (body,),
+    )
+    conn.execute(
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES "
+        "('gid://shopify/Product/456', 'some-product', 'Product', 'ACTIVE')"
+    )
+    conn.execute(
+        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
+        "anchor_phrase, source_body_hash, score, created_at) VALUES "
+        "('collection', 'no-id-collection', 'product', 'some-product', 'phrase_wrap', 'some product', ?, 1.0, 1)",
+        (body_hash,),
+    )
+    conn.commit()
+
+    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
+    with pytest.raises(ShopifyResourceUnreachable) as exc_info:
+        apply_suggestion(conn, sid, base_url="https://s.com", push_fn=lambda *a: {}, sanitize_fn=lambda b: b)
+    assert "no-id-collection" in str(exc_info.value)
     assert "source" in str(exc_info.value).lower()

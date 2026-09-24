@@ -66,40 +66,19 @@ def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
 
 
 def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle: str) -> bool:
-    """Check if a target exists locally and is not a ghost (deleted from Shopify).
+    """Check if a target is valid for link suggestions.
 
     A target is considered valid if:
-    - It exists in the local DB
-    - It has a shopify_id (not soft-deleted / ghost)
+    - It exists in the local DB with a shopify_id
+    - It is not marked as api_unreachable (for collections)
     - It is in published/active status
+
+    API-unreachable collections (e.g., smart collections with metafield-only rules)
+    are excluded because Apply cannot push changes to them.
     """
-    if t_type == "product":
-        row = conn.execute(
-            "SELECT shopify_id, status FROM products WHERE handle = ?", (t_handle,)
-        ).fetchone()
-        if not row:
-            return False
-        if not row["shopify_id"]:
-            return False
-        return (row["status"] or "ACTIVE").upper() == "ACTIVE"
-    if t_type == "collection":
-        row = conn.execute(
-            "SELECT shopify_id FROM collections WHERE handle = ?", (t_handle,)
-        ).fetchone()
-        return bool(row) and bool(row["shopify_id"])
-    if t_type == "page":
-        row = conn.execute(
-            "SELECT shopify_id FROM pages WHERE handle = ?", (t_handle,)
-        ).fetchone()
-        return bool(row) and bool(row["shopify_id"])
-    if t_type == "blog_article":
-        blog_h, _, article_h = t_handle.partition("/")
-        row = conn.execute(
-            "SELECT shopify_id, is_published FROM blog_articles WHERE blog_handle = ? AND handle = ?",
-            (blog_h, article_h),
-        ).fetchone()
-        return bool(row) and bool(row["shopify_id"]) and bool(row["is_published"])
-    return False
+    from .validation import is_target_valid_for_suggestions
+
+    return is_target_valid_for_suggestions(conn, t_type, t_handle)
 
 
 def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: str) -> list[str]:
@@ -144,7 +123,12 @@ def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: 
 def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]:
     """Return published entities with no inbound links, sorted by traffic (clicks+impressions desc).
 
-    Excludes ghost entities (those with NULL shopify_id or archived status).
+    Excludes:
+    - Entities without shopify_id
+    - Products with non-ACTIVE status
+    - Collections marked as api_unreachable
+    - Unpublished articles
+
     Returns list of (object_type, handle, gsc_clicks, gsc_impressions).
     """
     linked = {
@@ -161,7 +145,7 @@ def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]
             orphans.append(("product", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM collections WHERE shopify_id IS NOT NULL"
+        "FROM collections WHERE shopify_id IS NOT NULL AND (api_unreachable IS NULL OR api_unreachable = 0)"
     ).fetchall():
         if ("collection", r["h"]) not in linked:
             orphans.append(("collection", r["h"], r["clicks"], r["impr"]))

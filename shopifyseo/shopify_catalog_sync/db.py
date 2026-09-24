@@ -441,6 +441,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "products", "vaping_style_labels_json", "TEXT")
     ensure_column(conn, "product_images", "position", "INTEGER")
     ensure_column(conn, "collections", "image_json", "TEXT")
+    ensure_column(conn, "collections", "api_unreachable", "INTEGER DEFAULT 0")
     ensure_column(conn, "pages", "template_suffix", "TEXT")
     ensure_column(conn, "pages", "template_images_json", "TEXT")
     conn.commit()

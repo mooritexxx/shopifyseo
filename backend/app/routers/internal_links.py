@@ -151,14 +151,15 @@ def apply(suggestion_id: int):
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.apply import apply_suggestion
-        from shopifyseo.internal_links.validation import ShopifyResourceMissing
+        from shopifyseo.internal_links.validation import ShopifyResourceUnreachable
 
         return success_response(apply_suggestion(conn, suggestion_id, base_url=_base_url(conn)))
-    except ShopifyResourceMissing as exc:
+    except ShopifyResourceUnreachable as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot apply: {exc}. The resource may have been deleted from Shopify. "
-            "Please dismiss this suggestion and re-sync your catalog.",
+            detail=f"Cannot apply: {exc}. "
+            "This typically affects smart collections with certain metafield-only rules. "
+            "Dismiss this suggestion until Shopify visibility is resolved.",
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

@@ -8,7 +8,7 @@ import time
 from typing import Callable
 
 from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
-from .validation import ShopifyResourceMissing, verify_source_exists_in_shopify
+from .validation import ShopifyResourceUnreachable, verify_source_api_reachable
 
 
 def _hash_body(body: str) -> str:
@@ -102,10 +102,10 @@ def apply_suggestion(
     """Apply one suggestion: wrap anchor, push to Shopify, then update local DB.
 
     Raises on push failure; local state is only mutated after the push succeeds.
-    Raises ShopifyResourceMissing if the source no longer exists in Shopify.
+    Raises ShopifyResourceUnreachable if the source cannot be accessed via Admin API.
 
     Args:
-        skip_shopify_check: If True, skip the Shopify existence preflight (for tests).
+        skip_shopify_check: If True, skip the Admin API reachability preflight (for tests).
     """
     push_fn = push_fn or _shopify_push
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
@@ -118,10 +118,11 @@ def apply_suggestion(
 
     source_type, source_handle = sug["source_type"], sug["source_handle"]
 
-    # Preflight: verify source still exists in Shopify before attempting mutation.
-    # This catches ghost rows (local-only after Shopify deletion) early with a clear error.
+    # Preflight: verify source is reachable via Admin API before attempting mutation.
+    # Some resources (e.g., smart collections with metafield-only rules) exist in Shopify
+    # but are not accessible via Admin GraphQL/REST APIs. We cannot push changes to them.
     if not skip_shopify_check:
-        verify_source_exists_in_shopify(conn, source_type, source_handle)
+        verify_source_api_reachable(conn, source_type, source_handle)
 
     table, where, body_col, _cols = _SOURCE_META[source_type]
     row = _load_source_row(conn, source_type, source_handle)

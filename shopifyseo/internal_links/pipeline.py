@@ -66,22 +66,39 @@ def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
 
 
 def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle: str) -> bool:
+    """Check if a target exists locally and is not a ghost (deleted from Shopify).
+
+    A target is considered valid if:
+    - It exists in the local DB
+    - It has a shopify_id (not soft-deleted / ghost)
+    - It is in published/active status
+    """
     if t_type == "product":
         row = conn.execute(
-            "SELECT status FROM products WHERE handle = ?", (t_handle,)
+            "SELECT shopify_id, status FROM products WHERE handle = ?", (t_handle,)
         ).fetchone()
-        return bool(row) and (row["status"] or "ACTIVE").upper() == "ACTIVE"
+        if not row:
+            return False
+        if not row["shopify_id"]:
+            return False
+        return (row["status"] or "ACTIVE").upper() == "ACTIVE"
     if t_type == "collection":
-        return conn.execute("SELECT 1 FROM collections WHERE handle = ?", (t_handle,)).fetchone() is not None
+        row = conn.execute(
+            "SELECT shopify_id FROM collections WHERE handle = ?", (t_handle,)
+        ).fetchone()
+        return bool(row) and bool(row["shopify_id"])
     if t_type == "page":
-        return conn.execute("SELECT 1 FROM pages WHERE handle = ?", (t_handle,)).fetchone() is not None
+        row = conn.execute(
+            "SELECT shopify_id FROM pages WHERE handle = ?", (t_handle,)
+        ).fetchone()
+        return bool(row) and bool(row["shopify_id"])
     if t_type == "blog_article":
         blog_h, _, article_h = t_handle.partition("/")
         row = conn.execute(
-            "SELECT is_published FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+            "SELECT shopify_id, is_published FROM blog_articles WHERE blog_handle = ? AND handle = ?",
             (blog_h, article_h),
         ).fetchone()
-        return bool(row) and bool(row["is_published"])
+        return bool(row) and bool(row["shopify_id"]) and bool(row["is_published"])
     return False
 
 
@@ -127,6 +144,7 @@ def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: 
 def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]:
     """Return published entities with no inbound links, sorted by traffic (clicks+impressions desc).
 
+    Excludes ghost entities (those with NULL shopify_id or archived status).
     Returns list of (object_type, handle, gsc_clicks, gsc_impressions).
     """
     linked = {
@@ -136,25 +154,26 @@ def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]
     orphans: list[tuple[str, str, int, int]] = []
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM products WHERE (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"
+        "FROM products WHERE shopify_id IS NOT NULL "
+        "AND (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"
     ).fetchall():
         if ("product", r["h"]) not in linked:
             orphans.append(("product", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM collections"
+        "FROM collections WHERE shopify_id IS NOT NULL"
     ).fetchall():
         if ("collection", r["h"]) not in linked:
             orphans.append(("collection", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM pages"
+        "FROM pages WHERE shopify_id IS NOT NULL"
     ).fetchall():
         if ("page", r["h"]) not in linked:
             orphans.append(("page", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT blog_handle || '/' || handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM blog_articles WHERE is_published = 1"
+        "FROM blog_articles WHERE shopify_id IS NOT NULL AND is_published = 1"
     ).fetchall():
         if ("blog_article", r["h"]) not in linked:
             orphans.append(("blog_article", r["h"], r["clicks"], r["impr"]))

@@ -75,17 +75,20 @@ def _conn() -> sqlite3.Connection:
 
 def _seed(conn):
     conn.execute(
-        "INSERT INTO blog_articles (blog_handle, handle, title, body, gsc_clicks) VALUES "
-        "('news', 'post', 'Post', '<p>All about ceramic tanks and more.</p>', 100)"
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about ceramic tanks and more.</p>', 100)"
     )
     conn.execute(
-        "INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')"
+        "INSERT INTO collections (shopify_id, handle, title) VALUES "
+        "('gid://shopify/Collection/1', 'ceramic-tanks', 'Ceramic Tanks')"
     )
     conn.execute(
-        "INSERT INTO products (handle, title, status) VALUES ('widget', 'Widget Pro', 'ACTIVE')"
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES "
+        "('gid://shopify/Product/1', 'widget', 'Widget Pro', 'ACTIVE')"
     )
     conn.execute(
-        "INSERT INTO products (handle, title, status) VALUES ('hidden', 'Hidden', 'DRAFT')"
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES "
+        "('gid://shopify/Product/2', 'hidden', 'Hidden', 'DRAFT')"
     )
     conn.commit()
 
@@ -145,8 +148,8 @@ def test_traffic_weighted_scoring_orders_high_traffic_sources_first():
     conn = _conn()
     _seed(conn)
     conn.execute(
-        "INSERT INTO blog_articles (blog_handle, handle, title, body, gsc_clicks) VALUES "
-        "('news', 'quiet', 'Quiet', '<p>ceramic tanks here too</p>', 0)"
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('gid://shopify/Article/2', 'news', 'quiet', 'Quiet', '<p>ceramic tanks here too</p>', 0)"
     )
     conn.commit()
 
@@ -161,3 +164,98 @@ def test_traffic_weighted_scoring_orders_high_traffic_sources_first():
     ).fetchall()
     assert rows[0]["source_handle"] == "news/post"  # 100 clicks beats 0 clicks
     assert rows[0]["score"] > rows[1]["score"]
+
+
+def test_ghost_collection_targets_are_skipped():
+    """Ghost collections (NULL shopify_id) should not be suggested as targets."""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about ghost collection and more.</p>', 100)"
+    )
+    # Ghost collection: NULL shopify_id (marked as deleted from Shopify)
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title) VALUES (NULL, 'ghost-collection', 'Ghost Collection')"
+    )
+    # Valid collection: has shopify_id
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/123', 'valid-collection', 'Valid Collection')"
+    )
+    conn.commit()
+
+    def related(conn_, object_type, handle, top_k=10, type_quotas=None):
+        if (object_type, handle) == ("blog_article", "news/post"):
+            return [
+                {"object_type": "collection", "object_handle": "ghost-collection", "score": 0.95},
+                {"object_type": "collection", "object_handle": "valid-collection", "score": 0.85},
+            ]
+        return []
+
+    n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+    rows = conn.execute("SELECT target_handle FROM link_suggestions").fetchall()
+    handles = [r["target_handle"] for r in rows]
+    # Ghost collection should be skipped, valid one should be suggested
+    assert "ghost-collection" not in handles
+    assert "valid-collection" in handles
+    assert n == 1
+
+
+def test_ghost_product_targets_are_skipped():
+    """Ghost products (NULL shopify_id or ARCHIVED status) should not be suggested as targets."""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('gid://shopify/Article/1', 'news', 'post', 'Post', '<p>All about products.</p>', 100)"
+    )
+    # Ghost product: NULL shopify_id
+    conn.execute(
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES (NULL, 'ghost-product', 'Ghost', 'ACTIVE')"
+    )
+    # Archived product: has shopify_id but ARCHIVED status
+    conn.execute(
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES ('gid://shopify/Product/1', 'archived-product', 'Archived', 'ARCHIVED')"
+    )
+    # Valid product: has shopify_id and ACTIVE status
+    conn.execute(
+        "INSERT INTO products (shopify_id, handle, title, status) VALUES ('gid://shopify/Product/2', 'valid-product', 'Valid Product', 'ACTIVE')"
+    )
+    conn.commit()
+
+    def related(conn_, object_type, handle, top_k=10, type_quotas=None):
+        if (object_type, handle) == ("blog_article", "news/post"):
+            return [
+                {"object_type": "product", "object_handle": "ghost-product", "score": 0.95},
+                {"object_type": "product", "object_handle": "archived-product", "score": 0.90},
+                {"object_type": "product", "object_handle": "valid-product", "score": 0.85},
+            ]
+        return []
+
+    n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+    rows = conn.execute("SELECT target_handle FROM link_suggestions").fetchall()
+    handles = [r["target_handle"] for r in rows]
+    # Ghost and archived products should be skipped
+    assert "ghost-product" not in handles
+    assert "archived-product" not in handles
+    assert "valid-product" in handles
+    assert n == 1
+
+
+def test_orphan_list_excludes_ghost_collections():
+    """Orphan target list should not include ghost collections (NULL shopify_id)."""
+    from shopifyseo.internal_links.pipeline import _orphan_targets
+
+    conn = _conn()
+    # Ghost collection: NULL shopify_id
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks) VALUES (NULL, 'ghost-collection', 'Ghost', 50)"
+    )
+    # Valid collection: has shopify_id
+    conn.execute(
+        "INSERT INTO collections (shopify_id, handle, title, gsc_clicks) VALUES ('gid://shopify/Collection/123', 'valid-collection', 'Valid', 30)"
+    )
+    conn.commit()
+
+    orphans = _orphan_targets(conn)
+    handles = [h for _, h, _, _ in orphans]
+    assert "ghost-collection" not in handles
+    assert "valid-collection" in handles

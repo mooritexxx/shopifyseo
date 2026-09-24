@@ -94,6 +94,25 @@ def upsert_collection(conn: sqlite3.Connection, collection: dict, synced_at: str
     return len(metafields)
 
 
+def _prune_deleted_collections(conn: sqlite3.Connection, synced_ids: set[str]) -> int:
+    """Mark local collections as deleted (clear shopify_id) if not in Shopify sync.
+
+    Returns the count of collections marked as deleted.
+    """
+    local_ids = {
+        r["shopify_id"]
+        for r in conn.execute("SELECT shopify_id FROM collections WHERE shopify_id IS NOT NULL").fetchall()
+    }
+    deleted_ids = local_ids - synced_ids
+    if not deleted_ids:
+        return 0
+    conn.executemany(
+        "UPDATE collections SET shopify_id = NULL WHERE shopify_id = ?",
+        [(cid,) for cid in deleted_ids],
+    )
+    return len(deleted_ids)
+
+
 def sync_collections(
     db_path: Path,
     page_size: int,
@@ -135,6 +154,10 @@ def sync_collections(
             )
 
         conn = open_db(db_path)
+
+        # Track synced IDs to prune deleted collections later
+        synced_ids: set[str] = set()
+
         for collection in collections:
             cid = str(collection.get("id") or "").strip()
             rk = (
@@ -173,6 +196,7 @@ def sync_collections(
                 )
                 membership_count += len(products)
                 collection_count += 1
+                synced_ids.add(collection["id"])
             except Exception as exc:
                 ok = False
                 err_msg = str(exc)
@@ -182,6 +206,10 @@ def sync_collections(
                     _sq.sync_queue_mark_done(queue_scope, rk, ok, err_msg, pop_completed=ok)
             if progress_callback is not None:
                 progress_callback("collections", collection_count, len(collections))
+
+        # Mark any collections that are in local DB but not in Shopify as deleted
+        deleted_count = _prune_deleted_collections(conn, synced_ids)
+
         conn.commit()
         finish_run(
             conn,
@@ -194,6 +222,7 @@ def sync_collections(
         return {
             "db_path": str(db_path),
             "collections_synced": collection_count,
+            "collections_deleted": deleted_count,
             "collection_metafields_synced": metafield_count,
             "collection_products_synced": membership_count,
             "synced_at": synced_at,
@@ -211,6 +240,29 @@ def sync_collections(
             conn.close()
 
 
+class ShopifyCollectionNotFound(RuntimeError):
+    """Raised when a collection is not found in Shopify (likely deleted)."""
+
+    def __init__(self, collection_id: str, handle: str | None = None):
+        self.collection_id = collection_id
+        self.handle = handle
+        handle_part = f" (handle={handle})" if handle else ""
+        super().__init__(f"Collection not found in Shopify: {collection_id}{handle_part}")
+
+
+def mark_collection_deleted(conn: sqlite3.Connection, collection_id: str) -> str | None:
+    """Mark a collection as deleted by clearing shopify_id. Returns handle if found."""
+    row = conn.execute(
+        "SELECT handle FROM collections WHERE shopify_id = ?", (collection_id,)
+    ).fetchone()
+    if row:
+        handle = row["handle"]
+        conn.execute("UPDATE collections SET shopify_id = NULL WHERE shopify_id = ?", (collection_id,))
+        conn.commit()
+        return handle
+    return None
+
+
 def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> dict:
     run_conn = open_db(db_path)
     run_id = start_run(run_conn)
@@ -220,7 +272,10 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
     try:
         collection = fetch_collection_by_id(collection_id)
         if not collection:
-            raise RuntimeError(f"Collection not found in Shopify: {collection_id}")
+            conn = open_db(db_path)
+            handle = mark_collection_deleted(conn, collection_id)
+            finish_run(conn, run_id, status="deleted", error_message=f"Collection not found: {collection_id}")
+            raise ShopifyCollectionNotFound(collection_id, handle)
         products = fetch_collection_products(collection["id"], page_size)
 
         conn = open_db(db_path)
@@ -264,6 +319,8 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
             "synced_at": synced_at,
             "run_id": run_id,
         }
+    except ShopifyCollectionNotFound:
+        raise
     except Exception as exc:
         if conn is None:
             conn = open_db(db_path)

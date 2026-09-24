@@ -8,6 +8,7 @@ import time
 from typing import Callable
 
 from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
+from .validation import ShopifyResourceMissing, verify_source_exists_in_shopify
 
 
 def _hash_body(body: str) -> str:
@@ -95,10 +96,16 @@ def apply_suggestion(
     base_url: str,
     push_fn: Callable | None = None,
     sanitize_fn: Callable | None = None,
+    *,
+    skip_shopify_check: bool = False,
 ) -> dict:
     """Apply one suggestion: wrap anchor, push to Shopify, then update local DB.
 
     Raises on push failure; local state is only mutated after the push succeeds.
+    Raises ShopifyResourceMissing if the source no longer exists in Shopify.
+
+    Args:
+        skip_shopify_check: If True, skip the Shopify existence preflight (for tests).
     """
     push_fn = push_fn or _shopify_push
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
@@ -110,6 +117,12 @@ def apply_suggestion(
         raise ValueError(f"suggestion {suggestion_id} is {sug['status']}")
 
     source_type, source_handle = sug["source_type"], sug["source_handle"]
+
+    # Preflight: verify source still exists in Shopify before attempting mutation.
+    # This catches ghost rows (local-only after Shopify deletion) early with a clear error.
+    if not skip_shopify_check:
+        verify_source_exists_in_shopify(conn, source_type, source_handle)
+
     table, where, body_col, _cols = _SOURCE_META[source_type]
     row = _load_source_row(conn, source_type, source_handle)
 

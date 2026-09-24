@@ -21,6 +21,7 @@ import {
   fingerprintAiVision,
   fingerprintDataforseo,
   fingerprintGoogleAds,
+  fingerprintOpenPageRank,
   fingerprintSerpapi,
   fingerprintShopify,
   type ConnectionStatusStore
@@ -125,6 +126,9 @@ export type RenderSettingsTabSectionsProps = {
   openVisionTestModal: () => void;
   aiTestBusy: boolean;
   dfsStatus: "idle" | "checking" | "ok" | "error";
+  oprStatus: "idle" | "checking" | "ok" | "error";
+  oprDetail: string;
+  validateOpenPageRank: () => void | Promise<void>;
   dfsDetail: string;
   validateDataforseo: () => void | Promise<void>;
   serpApiStatus: "idle" | "checking" | "ok" | "error";
@@ -157,6 +161,9 @@ export function renderSettingsTabSections({
   openVisionTestModal,
   aiTestBusy,
   dfsStatus,
+  oprStatus,
+  oprDetail,
+  validateOpenPageRank,
   dfsDetail,
   validateDataforseo,
   serpApiStatus,
@@ -197,6 +204,12 @@ export function renderSettingsTabSections({
         description:
           "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
         fields: ["dataforseo_api_login", "dataforseo_api_password"] as const
+      },
+      {
+        title: "Open PageRank",
+        description:
+          "Optional. Free API key from domcop.com/openpagerank (30,000 domains/month). Scores your competitor domains for authority (0–10) using the Common Crawl open web graph. Domain-level only — it is not a source of keyword difficulty.",
+        fields: ["open_page_rank_api_key"] as const
       },
       {
         title: "SerpAPI",
@@ -283,6 +296,9 @@ export function renderSettingsTabSections({
   const dfsFp = fingerprintDataforseo(values);
   const dfsLive =
     connectionStore.dataforseo?.status === "live" && connectionStore.dataforseo.fingerprint === dfsFp;
+  const oprFp = fingerprintOpenPageRank(values);
+  const oprLive =
+    connectionStore.openPageRank?.status === "live" && connectionStore.openPageRank.fingerprint === oprFp;
   const serpApiFp = fingerprintSerpapi(values);
   const serpApiLive =
     connectionStore.serpapi?.status === "live" && connectionStore.serpapi.fingerprint === serpApiFp;
@@ -334,6 +350,23 @@ export function renderSettingsTabSections({
                 )}
                 <Button variant="secondary" onClick={() => void validateDataforseo()} disabled={dfsStatus === "checking"}>
                   {dfsStatus === "checking" ? "Checking…" : "Validate access"}
+                </Button>
+              </div>
+            );
+          }
+          if (t === "Open PageRank") {
+            const hasKey = !!values.open_page_rank_api_key?.trim();
+            return (
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {!hasKey ? (
+                  <SettingsConnectionBadge label="Not configured" tone="warning" />
+                ) : oprLive ? (
+                  <SettingsConnectionBadge label="Live" tone="success" />
+                ) : (
+                  <SettingsConnectionBadge label="Not tested" tone="neutral" />
+                )}
+                <Button variant="secondary" onClick={() => void validateOpenPageRank()} disabled={oprStatus === "checking"}>
+                  {oprStatus === "checking" ? "Checking…" : "Validate access"}
                 </Button>
               </div>
             );
@@ -619,6 +652,13 @@ export function renderSettingsTabSections({
           className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${dfsStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
         >
           {dfsDetail}
+        </div>
+      ) : null}
+      {section.title === "Open PageRank" && oprStatus !== "idle" && oprStatus !== "checking" ? (
+        <div
+          className={`mb-4 rounded-xl border px-4 py-2.5 text-sm ${oprStatus === "ok" ? "border-green-200 bg-green-50 text-green-700" : "border-red-200 bg-red-50 text-red-600"}`}
+        >
+          {oprDetail}
         </div>
       ) : null}
       {section.title === "SerpAPI" && serpApiStatus !== "idle" && serpApiStatus !== "checking" ? (

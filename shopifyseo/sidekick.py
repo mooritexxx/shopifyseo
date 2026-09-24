@@ -187,13 +187,13 @@ def build_sidekick_context_block(
                     "seo_title": draft.get("seo_title"),
                     "seo_description": draft.get("seo_description"),
                     "tags": draft.get("tags"),
-                    "body_excerpt": _truncate(draft.get("body_html") or "", _BODY_MAX_CONTEXT),
                     "recommendation_status": (detail.get("recommendation") or {}).get("status"),
                     "ai_recommendation_excerpt": _compact_json(
                         {k: rec.get(k) for k in ("seo_title", "seo_description", "body", "tags") if rec.get(k)},
                         4000,
                     ),
                     "opportunity": {"score": opp.get("score"), "priority": opp.get("priority")},
+                    "body_excerpt": _truncate(draft.get("body_html") or "", _BODY_MAX_CONTEXT),
                 },
                 12000,
             )
@@ -208,13 +208,13 @@ def build_sidekick_context_block(
                     "title": draft.get("title"),
                     "seo_title": draft.get("seo_title"),
                     "seo_description": draft.get("seo_description"),
-                    "body_excerpt": _truncate(draft.get("body_html") or "", _BODY_MAX_CONTEXT),
                     "recommendation_status": (detail.get("recommendation") or {}).get("status"),
                     "ai_recommendation_excerpt": _compact_json(
                         {k: rec.get(k) for k in ("seo_title", "seo_description", "body") if rec.get(k)},
                         4000,
                     ),
                     "opportunity": (detail.get("opportunity") or {}),
+                    "body_excerpt": _truncate(draft.get("body_html") or "", _BODY_MAX_CONTEXT),
                 },
                 12000,
             )

@@ -1,6 +1,5 @@
 import { Search } from "lucide-react";
 
-import type { DashboardGscPeriod } from "../lib/gsc-period";
 import { catalogGscWindowDescription } from "../lib/gsc-period";
 import { formatNumber, formatPercent } from "../lib/utils";
 import type { GscQueryRow } from "../types/api";
@@ -9,11 +8,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 
 type Props = {
   queries: GscQueryRow[];
-  gscPeriod: DashboardGscPeriod;
 };
 
-export function GscTopQueriesSection({ queries, gscPeriod }: Props) {
-  const windowHint = catalogGscWindowDescription(gscPeriod);
+export function GscTopQueriesSection({ queries }: Props) {
+  const windowHint = catalogGscWindowDescription();
 
   return (
     <Card className="border-[#e8e4f8] bg-white shadow-[0_2px_20px_rgba(15,23,42,0.04)]">

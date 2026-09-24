@@ -105,9 +105,13 @@ from ._gsc import (  # noqa: E402
     GSC_URL_QUERY_SECOND_DIMS,
     _overview_cache_key,
     _top_bucket_impressions_pct_vs_prior,
+    build_gsc_url_detail,
     clear_google_caches,
     delete_search_console_overview_cache,
     delete_search_console_overview_timeseries_only,
+    fetch_gsc_all_page_query_rows,
+    fetch_gsc_all_page_rows,
+    fetch_gsc_page_daily_rows,
     fetch_gsc_url_query_second_dimension,
     fetch_search_console_summary,
     get_gsc_property_breakdowns_cached,
@@ -124,6 +128,7 @@ from ._gsc import (  # noqa: E402
     invalidate_pagespeed_memory_cache,
     preferred_site_url,
     refresh_gsc_property_breakdowns_for_site,
+    write_gsc_url_detail_cache,
 )
 
 # ---------------------------------------------------------------------------
@@ -131,13 +136,17 @@ from ._gsc import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 from ._ga4 import (  # noqa: E402
+    build_ga4_summary_index,
     delete_ga4_overview_cache,
     ga4_report_page_path_from_row,
+    ga4_summary_window,
+    ga4_url_detail_from_index,
     get_ga4_properties,
     get_ga4_property_overview_cached,
     get_ga4_summary,
     get_ga4_url_detail,
     ga4_url_cache_stale,
+    write_ga4_url_detail_cache,
 )
 
 # ---------------------------------------------------------------------------

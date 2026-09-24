@@ -10,6 +10,7 @@ export type SettingsFieldKey =
   | "ollama_base_url"
   | "dataforseo_api_login"
   | "dataforseo_api_password"
+  | "open_page_rank_api_key"
   | "serpapi_api_key"
   | "ai_generation_provider"
   | "ai_generation_model"
@@ -54,6 +55,7 @@ const SETTINGS_SECRET_FIELD_KEYS_ARR = [
   "openrouter_api_key",
   "ollama_api_key",
   "dataforseo_api_password",
+  "open_page_rank_api_key",
   "serpapi_api_key",
   "shopify_client_secret",
   "google_client_secret",
@@ -107,6 +109,12 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
     label: "DataForSEO API Password",
     hint: "HTTP Basic password from the same API Access page. Stored locally like other integration secrets.",
     detail: "Save settings, then use Validate access. Per-request charges apply on your DataForSEO account."
+  },
+  open_page_rank_api_key: {
+    label: "Open PageRank API Key",
+    hint: "From domcop.com/openpagerank — free tier covers 30,000 domains/month.",
+    detail:
+      "Used to score competitor domain authority (0–10, derived from the Common Crawl open web graph). This is a domain-level metric only — it is not keyword difficulty and is never used to derive one. Sent as a Bearer token. Save settings, then use Validate access."
   },
   serpapi_api_key: {
     label: "SerpAPI API Key",

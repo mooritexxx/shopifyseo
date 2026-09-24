@@ -23,25 +23,14 @@ describe("selectSyncQueueView", () => {
     expect(v.throughputMetricTitle).toBe("PSI HTTP calls (60s)");
   });
 
-  it("maps gsc scope to gsc queue and slot counter", () => {
-    const row = {
-      seq: 1,
-      object_type: "product",
-      handle: "a",
-      url: "https://u",
-      strategy: "",
-      code: "RUN",
-      state: "running"
-    };
-    const v = selectSyncQueueView({
-      active_scope: "gsc",
-      gsc_queue_details: [row],
-      gsc_sync_slots_last_60s: 3
-    });
-    expect(v.queueTitle).toBe("Queue Stream");
-    expect(v.queueItems).toEqual([row]);
-    expect(v.throughputLast60s).toBe(3);
-    expect(v.throughputMetricTitle).toBe("GSC rate slots (60s)");
+  // GSC and GA4 pull the whole property in a few paginated requests, so there is no
+  // per-URL queue to stream and no per-minute rate slots worth reporting.
+  it.each(["gsc", "ga4"])("shows no queue or throughput for %s scope", (scope) => {
+    const v = selectSyncQueueView({ active_scope: scope });
+    expect(v.queueTitle).toBe("Sync queue");
+    expect(v.queueItems).toEqual([]);
+    expect(v.throughputLast60s).toBeNull();
+    expect(v.throughputMetricTitle).toBeUndefined();
   });
 
   it("maps index scope to index queue and Speed throughput label", () => {

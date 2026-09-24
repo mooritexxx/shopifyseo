@@ -3,7 +3,6 @@ from pydantic import BaseModel
 
 from backend.app.routers import field_regen_errors
 from backend.app.schemas.common import SuccessResponse, success_response
-from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.content import ContentDetailPayload, ContentListPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.services.content_service import (
@@ -72,34 +71,34 @@ def list_pages(
 
 
 @router.get("/collections/{handle}", response_model=SuccessResponse[ContentDetailPayload])
-def collection_detail(handle: str, gsc_period: GscPeriodMode = "mtd"):
-    detail = get_content_detail("collection", handle, gsc_period=gsc_period)
+def collection_detail(handle: str):
+    detail = get_content_detail("collection", handle)
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     return success_response(detail)
 
 
 @router.get("/pages/{handle}", response_model=SuccessResponse[ContentDetailPayload])
-def page_detail(handle: str, gsc_period: GscPeriodMode = "mtd"):
-    detail = get_content_detail("page", handle, gsc_period=gsc_period)
+def page_detail(handle: str):
+    detail = get_content_detail("page", handle)
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page not found")
     return success_response(detail)
 
 
 @router.post("/collections/{handle}/update", response_model=SuccessResponse[ProductActionResult])
-def update_collection(handle: str, payload: ContentUpdatePayload, gsc_period: GscPeriodMode = "mtd"):
+def update_collection(handle: str, payload: ContentUpdatePayload):
     ok, message = update_content("collection", handle, payload.model_dump())
     _handle_update_error(ok, message, "Collection not found")
-    detail = get_content_detail("collection", handle, gsc_period=gsc_period)
+    detail = get_content_detail("collection", handle)
     return success_response({"message": message, "result": detail})
 
 
 @router.post("/pages/{handle}/update", response_model=SuccessResponse[ProductActionResult])
-def update_page(handle: str, payload: ContentUpdatePayload, gsc_period: GscPeriodMode = "mtd"):
+def update_page(handle: str, payload: ContentUpdatePayload):
     ok, message = update_content("page", handle, payload.model_dump())
     _handle_update_error(ok, message, "Page not found")
-    detail = get_content_detail("page", handle, gsc_period=gsc_period)
+    detail = get_content_detail("page", handle)
     return success_response({"message": message, "result": detail})
 
 
@@ -120,18 +119,18 @@ def page_inspection_link(handle: str):
 
 
 @router.post("/collections/{handle}/refresh", response_model=SuccessResponse[ProductActionResult])
-def refresh_collection(handle: str, payload: RefreshPayload | None = None, gsc_period: GscPeriodMode = "mtd"):
+def refresh_collection(handle: str, payload: RefreshPayload | None = None):
     step = payload.step if payload else None
-    ok, result = refresh_object("collection", handle, step, gsc_period=gsc_period)
+    ok, result = refresh_object("collection", handle, step)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result.get("message", "Refresh failed"))
     return success_response(result)
 
 
 @router.post("/pages/{handle}/refresh", response_model=SuccessResponse[ProductActionResult])
-def refresh_page(handle: str, payload: RefreshPayload | None = None, gsc_period: GscPeriodMode = "mtd"):
+def refresh_page(handle: str, payload: RefreshPayload | None = None):
     step = payload.step if payload else None
-    ok, result = refresh_object("page", handle, step, gsc_period=gsc_period)
+    ok, result = refresh_object("page", handle, step)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result.get("message", "Refresh failed"))
     return success_response(result)

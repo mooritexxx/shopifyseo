@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from typing import Any
 
@@ -17,6 +18,21 @@ DEFAULT_API_VERSION = "2026-01"
 
 _FILE_STATUS_READY = "READY"
 _FILE_STATUS_FAILED = "FAILED"
+
+# Admin API access tokens are reusable until they expire. Without this cache every
+# GraphQL call paid for a full client_credentials exchange first, doubling the HTTP
+# round trips for the entire catalog sync.
+_TOKEN_CACHE_LOCK = threading.Lock()
+# (shop, client_id) -> (access_token, expires_at_monotonic)
+_TOKEN_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+_TOKEN_FRESHNESS_MARGIN_SECONDS = 120.0
+_TOKEN_FALLBACK_TTL_SECONDS = 3600.0
+
+
+def invalidate_shopify_token_cache() -> None:
+    """Drop cached Admin API tokens (credential change, shop switch, or a 401)."""
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE.clear()
 
 
 def env(name: str, required: bool = True, default: str = "") -> str:
@@ -36,7 +52,7 @@ def normalize_shop_domain(shop: str) -> str:
     return f"{shop}.myshopify.com"
 
 
-def token_request() -> str:
+def token_request(*, force_refresh: bool = False) -> str:
     shop = normalize_shop_domain(env("SHOPIFY_SHOP"))
     client_id = os.getenv("SHOPIFY_CLIENT_ID", "").strip()
     client_secret = os.getenv("SHOPIFY_CLIENT_SECRET", "").strip()
@@ -44,6 +60,13 @@ def token_request() -> str:
         raise SystemExit(
             "Missing Shopify auth. Set both SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET."
         )
+
+    cache_key = (shop, client_id)
+    if not force_refresh:
+        with _TOKEN_CACHE_LOCK:
+            cached = _TOKEN_CACHE.get(cache_key)
+            if cached is not None and cached[1] > time.monotonic():
+                return cached[0]
 
     url = f"https://{shop}/admin/oauth/access_token"
     try:
@@ -64,24 +87,44 @@ def token_request() -> str:
     token = payload.get("access_token", "").strip()
     if not token:
         raise SystemExit(f"Token request failed: {json.dumps(payload, indent=2)}")
+
+    raw_ttl = payload.get("expires_in")
+    try:
+        # Explicit None check: expires_in of 0 is falsy but meaningful.
+        ttl = _TOKEN_FALLBACK_TTL_SECONDS if raw_ttl is None else float(raw_ttl)
+    except (TypeError, ValueError):
+        ttl = _TOKEN_FALLBACK_TTL_SECONDS
+    expires_at = time.monotonic() + max(ttl - _TOKEN_FRESHNESS_MARGIN_SECONDS, 0.0)
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE[cache_key] = (token, expires_at)
     return token
 
 
 def graphql_post(query: str, variables: dict | None = None) -> dict:
     """POST Admin GraphQL and return the full JSON body. Raises only on HTTP/connection errors."""
     shop = normalize_shop_domain(env("SHOPIFY_SHOP"))
-    token = token_request()
     version = env("SHOPIFY_API_VERSION", required=False, default=DEFAULT_API_VERSION)
-
     url = f"https://{shop}/admin/api/{version}/graphql.json"
-    try:
+
+    def _post(force_token_refresh: bool) -> dict:
+        token = token_request(force_refresh=force_token_refresh)
         return request_json(
             url,
             method="POST",
             headers={"X-Shopify-Access-Token": token},
             payload={"query": query, "variables": variables or {}},
         )
+
+    try:
+        return _post(False)
     except HttpRequestError as exc:
+        # A cached token can be revoked or expire early; retry once with a fresh one.
+        if exc.status == 401:
+            invalidate_shopify_token_cache()
+            try:
+                return _post(True)
+            except HttpRequestError as retry_exc:
+                exc = retry_exc
         if exc.status:
             raise RuntimeError(f"Shopify API HTTP {exc.status}: {exc.body}") from exc
         raise RuntimeError(f"Shopify API connection error: {exc}") from exc

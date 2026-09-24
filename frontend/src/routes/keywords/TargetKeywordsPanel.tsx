@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart2, Check, Download, LoaderCircle, RefreshCw, Search, Sparkles, X } from "lucide-react";
+import { BarChart2, Check, Download, Info, LoaderCircle, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -60,6 +60,11 @@ const STATUS_TABS: { id: TargetStatusTab; label: string }[] = [
   { id: "dismissed", label: "Dismissed" },
 ];
 
+const SRC_APP = "This app";
+const SRC_LABS = "DataForSEO Labs";
+const SRC_ADS = "Google Ads · Keyword Planner";
+const SRC_GSC = "Google Search Console";
+
 const TIP_SELECT =
   "Select rows for bulk actions. Selection is kept in this app only and is not sent to Shopify or external APIs.";
 
@@ -70,7 +75,7 @@ const TIP_VOLUME =
   "Monthly search volume from DataForSEO Labs (keyword overview: keyword_info.search_volume) for your configured market. Updated when you run Refresh metrics.";
 
 const TIP_KD =
-  "Keyword difficulty (0–100) from DataForSEO Labs (keyword_properties.keyword_difficulty). Updated when you run Refresh metrics.";
+  "Keyword difficulty (1–100) from DataForSEO Labs (keyword_properties.keyword_difficulty). Shown as — when DataForSEO has no difficulty for the keyword, which is most of the set; unknown is not the same as easy. Updated when you run Refresh metrics.";
 
 const TIP_TRAFFIC_POT =
   "DataForSEO Labs. For keyword overview / explorer-style rows this field is the same Labs search volume as Volume; for some competitor ranked-keyword imports it can use estimated organic traffic (ETV) from SERP data. Updated when you run Refresh metrics.";
@@ -108,75 +113,94 @@ const TIP_RANKING =
 const TIP_STATUS =
   "Workflow state (New / Approved / Dismissed) stored in this app. Does not sync to Shopify or external APIs.";
 
+function ColInfo({ label, source, tip }: { label: string; source: string; tip: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={`About ${label}`}
+          className="shrink-0 cursor-help rounded text-slate-400 outline-none transition-colors hover:text-ocean focus-visible:ring-2 focus-visible:ring-ocean/30"
+        >
+          <Info size={12} aria-hidden />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[300px] text-left text-xs leading-snug">
+        <span className="block text-[10px] font-semibold uppercase tracking-wide opacity-70">{source}</span>
+        <span className="mt-1 block normal-case">{tip}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function KwSortHeader({
   tip,
+  source,
   label,
   sortKey,
   activeSortKey,
   sortDir,
-  buttonClassName,
-  spanClassName,
+  align = "right",
   onSort,
 }: {
   tip: string;
+  source: string;
   label: string;
   sortKey: SortKey;
   activeSortKey: SortKey;
   sortDir: SortDir;
-  buttonClassName: string;
-  spanClassName: string;
+  align?: "left" | "center" | "right";
   onSort: (key: SortKey) => void;
 }) {
   const ind = activeSortKey === sortKey ? (sortDir === "asc" ? " ↑" : " ↓") : null;
+  const justify =
+    align === "left" ? "justify-start" : align === "center" ? "justify-center" : "justify-end";
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button type="button" className={buttonClassName} onClick={() => onSort(sortKey)}>
-          <span className={spanClassName}>
-            {label}
-            {ind}
-          </span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
-        {tip}
-      </TooltipContent>
-    </Tooltip>
+    <div className={cn("flex min-h-10 min-w-0 items-center gap-1 py-2", justify)}>
+      <button
+        type="button"
+        className="min-w-0 cursor-pointer truncate hover:text-ink"
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        {ind}
+      </button>
+      <ColInfo label={label} source={source} tip={tip} />
+    </div>
   );
 }
 
 function KwHeaderTip({
   tip,
-  className,
-  children,
+  source,
+  label,
+  align = "center",
 }: {
   tip: string;
-  className?: string;
-  children: ReactNode;
+  source: string;
+  label: string;
+  align?: "left" | "center" | "right";
 }) {
+  const justify =
+    align === "left" ? "justify-start" : align === "center" ? "justify-center" : "justify-end";
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          className={cn(
-            "cursor-help rounded px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-ocean/30",
-            className,
-          )}
-        >
-          {children}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-[280px] text-left text-xs leading-snug">
-        {tip}
-      </TooltipContent>
-    </Tooltip>
+    <div className={cn("flex min-h-10 min-w-0 items-center gap-1 py-2", justify)}>
+      <span className="min-w-0 truncate">{label}</span>
+      <ColInfo label={label} source={source} tip={tip} />
+    </div>
   );
 }
 
-/** Shared grid for header + virtual rows so columns stay aligned with horizontal scroll. */
+/** Shared grid for header + virtual rows so columns stay aligned with horizontal scroll.
+ *
+ * The header and every virtual row are separate grid containers, so no track may
+ * be content-sized: `auto` resolves against each container's own content, which
+ * made each row compute different widths (and shifted the `fr` tracks with it).
+ * Every track here is therefore a fixed width or an `fr` share, so all containers
+ * resolve identically and the columns line up vertically.
+ */
 const TARGET_KW_GRID_TEMPLATE =
-  "40px minmax(160px,2fr) minmax(4rem,0.75fr) minmax(2.5rem,auto) minmax(4.5rem,0.85fr) minmax(3.5rem,0.7fr) minmax(4.5rem,0.85fr) minmax(3rem,auto) minmax(7rem,1fr) minmax(10rem,1.5fr) minmax(4.5rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(3rem,auto) minmax(4.5rem,auto) minmax(6.25rem,1fr)";
+  "40px minmax(160px,2fr) minmax(4rem,0.75fr) 3rem minmax(4.5rem,0.85fr) minmax(3.5rem,0.7fr) minmax(4.5rem,0.85fr) 4.25rem minmax(7rem,1fr) minmax(10rem,1.5fr) 5.5rem 4.5rem 3.5rem 3.25rem 6.75rem minmax(6.25rem,1fr)";
 
 export type TargetKeywordsPanelProps = {
   /** True while seed keyword research (SSE) is running from the Seed Keywords tab. */
@@ -348,7 +372,11 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (difficultyFilter !== "all") {
       list = list.filter((i) => {
         const kd = i.difficulty;
-        if (kd === null) return false;
+        // 0 means DataForSEO has no difficulty for the keyword, not "easy".
+        // undefined/null both indicate missing data.
+        const unknown = kd === null || kd === undefined || kd === 0;
+        if (difficultyFilter === "unknown") return unknown;
+        if (unknown) return false;
         if (difficultyFilter === "easy") return kd <= 20;
         if (difficultyFilter === "medium") return kd >= 21 && kd <= 50;
         if (difficultyFilter === "hard") return kd >= 51 && kd <= 70;
@@ -361,7 +389,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (volumeFilter !== "all") {
       list = list.filter((i) => {
         const v = i.volume;
-        if (v === null) return false;
+        if (v === null || v === undefined) return false;
         if (volumeFilter === "v0") return v === 0;
         if (volumeFilter === "v1_100") return v >= 1 && v <= 100;
         if (volumeFilter === "v101_500") return v >= 101 && v <= 500;
@@ -373,8 +401,8 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (opportunityFilter !== "all") {
       list = list.filter((i) => {
         const o = i.opportunity;
-        if (opportunityFilter === "opp_none") return o === null || o === 0;
-        if (o === null || o === 0) return false;
+        if (opportunityFilter === "opp_none") return o === null || o === undefined || o === 0;
+        if (o === null || o === undefined || o === 0) return false;
         if (opportunityFilter === "opp_high") return o >= 70;
         if (opportunityFilter === "opp_mid") return o >= 30 && o < 70;
         if (opportunityFilter === "opp_low") return o >= 1 && o < 30;
@@ -384,7 +412,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
     if (trafficPotentialFilter !== "all") {
       list = list.filter((i) => {
         const tp = i.traffic_potential;
-        if (tp === null) return false;
+        if (tp === null || tp === undefined) return false;
         if (trafficPotentialFilter === "tp0") return tp === 0;
         if (trafficPotentialFilter === "tp1_500") return tp >= 1 && tp <= 500;
         if (trafficPotentialFilter === "tp501_2000") return tp >= 501 && tp <= 2000;
@@ -829,134 +857,118 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
               </div>
               <KwSortHeader
                 tip={TIP_KEYWORD}
+                source={SRC_APP}
                 label="Keyword"
                 sortKey="keyword"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 text-left hover:text-ink"
-                spanClassName="block w-full truncate text-left"
+                align="left"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_VOLUME}
+                source={SRC_LABS}
                 label="Volume"
                 sortKey="volume"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_KD}
+                source={SRC_LABS}
                 label="KD"
                 sortKey="difficulty"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-center tabular-nums"
+                align="center"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_TRAFFIC_POT}
+                source={SRC_LABS}
                 label="Traffic pot."
                 sortKey="traffic_potential"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_CPC}
+                source={SRC_LABS}
                 label="CPC"
                 sortKey="cpc"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_ADS_SEARCHES}
+                source={SRC_ADS}
                 label="Ads searches"
                 sortKey="ads_avg_monthly_searches"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_ADS_IDX}
+                source={SRC_ADS}
                 label="Ads idx"
                 sortKey="ads_competition_index"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
-              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
-                <KwHeaderTip tip={TIP_INTENT} className="block w-full truncate text-center">
-                  Intent
-                </KwHeaderTip>
-              </div>
-              <div className="flex min-h-10 min-w-0 items-center justify-start py-2">
-                <KwHeaderTip tip={TIP_CONTENT_TYPE} className="block w-full truncate text-left">
-                  Content type
-                </KwHeaderTip>
-              </div>
+              <KwHeaderTip tip={TIP_INTENT} source={SRC_LABS} label="Intent" align="center" />
+              <KwHeaderTip tip={TIP_CONTENT_TYPE} source={SRC_APP} label="Content type" align="left" />
               <KwSortHeader
                 tip={TIP_OPPORTUNITY}
+                source={SRC_APP}
                 label="Opportunity"
                 sortKey="opportunity"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-center"
+                align="center"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_POSITION}
+                source={SRC_GSC}
                 label="Position"
                 sortKey="gsc_position"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_CLICKS}
+                source={SRC_GSC}
                 label="Clicks"
                 sortKey="gsc_clicks"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
               <KwSortHeader
                 tip={TIP_GSC_IMP}
+                source={SRC_GSC}
                 label="Imp."
                 sortKey="gsc_impressions"
                 activeSortKey={sortKey}
                 sortDir={sortDir}
-                buttonClassName="min-h-10 min-w-0 cursor-pointer truncate py-2 hover:text-ink"
-                spanClassName="block w-full truncate text-right tabular-nums"
+                align="right"
                 onSort={toggleSort}
               />
-              <div className="flex min-h-10 min-w-0 items-center justify-center py-2">
-                <KwHeaderTip tip={TIP_RANKING} className="block w-full truncate text-center">
-                  Ranking
-                </KwHeaderTip>
-              </div>
-              <div className="flex min-h-10 min-w-0 items-center justify-start py-2 pr-2">
-                <KwHeaderTip tip={TIP_STATUS} className="block w-full truncate text-left">
-                  Status
-                </KwHeaderTip>
-              </div>
+              <KwHeaderTip tip={TIP_RANKING} source={SRC_APP} label="Ranking" align="center" />
+              <KwHeaderTip tip={TIP_STATUS} source={SRC_APP} label="Status" align="left" />
             </div>
 
             <div
@@ -1004,7 +1016,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.volume !== null ? item.volume.toLocaleString() : "—"}
+                            {item.volume != null ? item.volume.toLocaleString() : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-center">
@@ -1012,14 +1024,14 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.traffic_potential !== null
+                            {item.traffic_potential != null
                               ? item.traffic_potential.toLocaleString()
                               : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">
                           <span className="block w-full truncate text-right">
-                            {item.cpc !== null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
+                            {item.cpc != null ? `$${(item.cpc / 100).toFixed(2)}` : "—"}
                           </span>
                         </div>
                         <div className="flex min-w-0 items-center justify-end tabular-nums text-slate-600">

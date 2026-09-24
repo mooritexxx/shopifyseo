@@ -26,7 +26,8 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 
 ## Data Flow
 
-1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`).
+0. **Connections:** every request opens a short-lived SQLite connection via `backend/app/db.py`. The first connection to a given DB path runs `ensure_dashboard_schema` (tables + indexes) and `apply_runtime_settings`; later connections skip both. `get_db_path()` performs the same one-time bootstrap for callers that hand the bare path to a helper opening its own connection.
+1. **Settings:** Operator configures Shopify, Google, AI, DataForSEO, etc. via `GET/POST /api/settings` → values persist in `service_settings` and mapped keys override `os.environ` (`shopifyseo/dashboard_config.py`). Saves re-apply the env mirroring, so the one-time bootstrap above does not stale it.
 2. **Catalog sync:** `POST /api/sync` starts a **background thread** (`shopifyseo/dashboard_actions`) → Shopify Admin GraphQL/REST → rows in catalog tables (`products`, `collections`, `pages`, `blogs`, `blog_articles`, metafields, images, etc.) plus `sync_runs`.
 3. **Signals:** Sync (and refreshes) pull **GSC, GA4, URL Inspection, PageSpeed** into SQLite (`SEO_SIGNAL_COLUMNS` on entities, `google_api_cache`, GSC fact tables). GSC URL sync flushes row-level signal columns incrementally; `gsc_queries` embeddings refresh afterward in a daemon thread so they do not block visible sync completion.
 4. **UI:** React app (basename `/app`) calls `/api/...` with TanStack Query; long AI work uses `**GET /api/ai-stream?job_id=`** (SSE) and/or polling `**GET /api/ai-status**`. Sync progress is shown from `GET /api/sync-status` (counts and stage labels).
@@ -67,6 +68,9 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | POST   | `/api/settings/image-model-test`  | —                              | `{ ok, data }` | Test image generation model             |
 | POST   | `/api/settings/vision-model-test` | —                              | `{ ok, data }` | Test vision model                       |
 | POST   | `/api/settings/google-ads-test`   | —                              | `{ ok, data }` | Test Google Ads API                     |
+| POST   | `/api/settings/open-page-rank-test` | Body (optional key)          | `{ ok, data }` | Validate Open PageRank API key          |
+| GET    | `/api/site-authority`             | —                              | `{ ok, data }` | Storefront domain authority + history   |
+| POST   | `/api/site-authority/refresh`     | —                              | `{ ok, data }` | Re-fetch storefront authority           |
 | GET    | `/api/settings/shopify-shop-info` | —                              | `{ ok, data }` | Shopify shop metadata                   |
 | POST   | `/api/settings/shopify-test`      | —                              | `{ ok, data }` | Test Shopify Admin API                  |
 | POST   | `/api/settings/ollama-models`     | Body                           | `{ ok, data }` | List Ollama models                      |
@@ -74,6 +78,8 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | POST   | `/api/settings/gemini-models`     | Body                           | `{ ok, data }` | List Gemini models                      |
 | POST   | `/api/settings/openrouter-models` | Body                           | `{ ok, data }` | List OpenRouter models                  |
 | GET    | `/api/usage/summary`              | `?days=`                       | `{ ok, data }` | API usage / cost summary                |
+
+**Safe settings save:** When saving settings via `POST /api/settings`, empty or null values for secret fields (API keys, passwords) are treated as "leave unchanged" rather than wiping the stored value. This prevents accidental deletion of credentials via partial POST requests. Secret keys protected: `shopify_client_secret`, `dataforseo_api_password`, `open_page_rank_api_key`, `serpapi_api_key`, `google_client_secret`, `openai_api_key`, `gemini_api_key`, `anthropic_api_key`, `openrouter_api_key`, `ollama_api_key`, `google_ads_developer_token`. See `SECRET_SETTING_KEYS` in `shopifyseo/dashboard_config.py`.
 
 
 ### Products
@@ -144,6 +150,31 @@ Generated draft article images use Gemini aspect-ratio hints when Gemini is the 
 Article draft generation now persists `article_draft_runs` and uses a canonical SEO brief for every AI step. The backend flow is: prepare SEO brief → outline → section batches with article memory → server-rendered FAQ/schema → targeted validation repair → saved content checkpoint → optimized WebP images → Shopify create/update → local save. SSE progress events include `run_id`, `step_key`, `step_label`, `step_index`, `step_total`, optional batch counts, and `result_summary`.
 
 
+### GSC Opportunity Inbox
+
+
+| Method | Path                          | Request                                      | Response       | Purpose                                        |
+| ------ | ----------------------------- | -------------------------------------------- | -------------- | ---------------------------------------------- |
+| GET    | `/api/opportunities`          | Query: page_type, min_impressions, sort, pagination | `{ ok, data }` | List scored GSC opportunities |
+| GET    | `/api/opportunities/stats`    | —                                            | `{ ok, data }` | Opportunity summary statistics                 |
+| POST   | `/api/opportunities/create-idea` | Body: query, object_type, object_handle   | `{ ok, data }` | Create article idea from opportunity           |
+
+The Opportunity Inbox scores GSC query×page combinations to surface SEO opportunities. The scoring heuristic favors:
+
+- **Striking distance positions** (4-20): queries where a ranking improvement could reach page 1
+- **High impressions**: queries with significant search volume
+- **CTR below expected**: queries where the title/meta could improve click rates
+
+Each opportunity includes:
+- `opportunity_score` (0-100): Combined score from position, impressions, and CTR gap
+- `suggested_action`: Recommended action based on current metrics
+- `content_type`: Content type hint derived from query patterns
+
+**Service:** `backend/app/services/opportunities_service.py`  
+**Schemas:** `backend/app/schemas/opportunities.py`  
+**Frontend:** `/opportunities` route with filterable table and stats cards
+
+
 ### Article ideas
 
 
@@ -156,6 +187,23 @@ Article draft generation now persists `article_draft_runs` and uses a canonical 
 | PATCH  | `/api/article-ideas/{idea_id}/status`      | Body    | `{ ok, data }` | Set status                                             |
 | PATCH  | `/api/article-ideas/bulk-status`           | Body    | `{ ok, data }` | Bulk status update                                     |
 | GET    | `/api/article-ideas/{idea_id}/performance` | —       | `{ ok, data }` | Performance for linked articles                        |
+| POST   | `/api/article-ideas/{idea_id}/refresh-serp` | —      | `{ ok, data }` | Force refresh SerpAPI snapshot (manual override)       |
+| GET    | `/api/article-ideas/{idea_id}/cannibalization-check` | Query | `{ ok, data }` | Pre-draft cannibalization gate (keyword + embedding) |
+
+#### SERP snapshot auto-refresh during draft generation
+
+Article draft generation (`POST /api/articles/generate-draft-stream`) automatically ensures the idea's SERP snapshot is fresh before drafting:
+
+- **If SERP is missing** or **older than 24 hours** (configurable via `SERP_FRESHNESS_TTL_SECONDS`), the endpoint refreshes it via SerpAPI before continuing.
+- An SSE progress event `"Ensuring SERP snapshot"` is emitted at step 1 of the draft stream.
+- **If refresh fails** when required (missing/stale SERP), the draft stream **fails with a clear error** rather than proceeding with empty/outdated data.
+- **If SERP is fresh**, it reuses existing data without a SerpAPI call.
+
+The `POST /api/article-ideas/{id}/refresh-serp` endpoint and "Force refresh SERP" button on the idea detail page remain as a manual override to force an immediate refresh regardless of freshness.
+
+**End-to-end data lineage:** [docs/article-draft-data-pipeline.md](docs/article-draft-data-pipeline.md) traces every
+data point behind a drafted article — seed generation → DataForSEO research → GSC enrichment → approve/dismiss →
+clusters → idea generation → SERP snapshot → draft context assembly → compliance gates.
 
 #### Article idea cluster linkage
 
@@ -178,6 +226,53 @@ UPDATE article_ideas SET linked_cluster_id = 941 WHERE id = 21;
 
 Never bulk-update without verifying `clusters.id` matches the intended gap analysis row.
 
+#### Catalog-weight idea quotas (C4.x)
+
+Article idea generation applies vendor/brand quotas weighted by catalog SKU share. This ensures that top catalog brands receive proportional representation in the generated ideas and limits generic (non-brand-specific) content.
+
+**Configuration (environment variables or defaults in `shopifyseo/dashboard_config.py`):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IDEA_QUOTA_MIN_TOP_VENDOR_SHARE` | 0.4 | Min share of ideas for top vendors (0.0-1.0) |
+| `IDEA_QUOTA_MAX_GENERIC_SHARE` | 0.3 | Max share of generic ideas (0.0-1.0) |
+| `IDEA_QUOTA_MIN_TOP_VENDORS` | 3 | Minimum number of top vendors to consider |
+| `IDEA_QUOTA_ENABLED` | true | Whether to enable quota balancing |
+
+**Quota logic:**
+1. Calculate vendor share of catalog (SKU count / total products)
+2. Score ideas based on whether their content targets a vendor's products
+3. Ensure top vendors get at least `MIN_TOP_VENDOR_SHARE × vendor_catalog_share` of ideas
+4. Cap generic ideas at `MAX_GENERIC_SHARE`
+
+The quota system does not remove ideas — it reorders them to ensure brand representation.
+
+
+#### Article idea cannibalization gate
+
+A pre-draft cannibalization check runs before article generation to prevent creating content that competes with existing published articles. The gate lives in `shopifyseo.dashboard_article_ideas.check_idea_cannibalization` and is called by:
+
+1. **Draft stream endpoint** (`POST /api/articles/generate-draft-stream`): Runs after SERP ensure-fresh, before content generation.
+2. **UI check endpoint** (`GET /api/article-ideas/{id}/cannibalization-check`): Lets the idea detail page show conflicts before the user opens the draft modal.
+
+**Severity levels:**
+
+| Severity | Trigger | Behavior |
+|----------|---------|----------|
+| `block` | Exact/near-match on primary keyword in a published article's `article_target_keywords`, OR content similarity ≥0.92 | Draft stream fails with error listing conflicts. |
+| `warn` | Keyword found in article title/seo_title, OR content similarity ≥0.85, OR linked cluster has `cannibalization_risk='high'` | Draft proceeds only if `force_cannibalization=true` in request; otherwise blocked. |
+| `ok` | No significant overlap | Draft proceeds normally. |
+
+**Thresholds (in `dashboard_article_ideas.py`):**
+
+- `CANNIBALIZATION_BLOCK_SIMILARITY_THRESHOLD = 0.92`
+- `CANNIBALIZATION_WARN_SIMILARITY_THRESHOLD = 0.85`
+- `CANNIBALIZATION_QUERY_SIMILARITY_THRESHOLD = 0.80` (reserved for future query-similarity checks)
+
+**Force override:** The `force_cannibalization` flag on `ArticleGenerateDraftRequest` allows warn-level conflicts to proceed when intentional differentiation is confirmed (e.g., brand hub vs. product guide). Block-level conflicts are never overridable.
+
+**UI:** The idea detail page sidebar shows a "Conflicts with" panel when conflicts are detected, with severity-appropriate styling. The draft modal surfaces conflicts and requires a checkbox acknowledgment for warn-level before submitting.
+
 
 ### Keywords & clusters
 
@@ -194,6 +289,7 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 | PUT    | `/api/keywords/competitors/discovery-seed`       | Body: `{ url }`   | `{ ok, data }` | Save competitor-discovery seed URL             |
 | POST   | `/api/keywords/competitors/discover-from-seed`   | Body: `{ url? }`  | `{ ok, data }` | Run DataForSEO SERP discovery → pending list   |
 | POST   | `/api/keywords/competitors/pending/clear`        | —                 | `{ ok, data }` | Clear all pending competitor suggestions       |
+| POST   | `/api/keywords/competitors/authority-refresh`    | —                 | `{ ok, data }` | Score competitor domains via Open PageRank     |
 | POST   | `/api/keywords/competitors/pending/{domain:path}/approve` | — | `{ ok, data }` | Approve pending suggestion → active competitor |
 | POST   | `/api/keywords/competitors/pending/{domain:path}/reject` | — | `{ ok, data }` | Drop a pending suggestion                      |
 | POST   | `/api/keywords/competitors/research`             | Body              | SSE            | Site Explorer–style research                   |
@@ -214,6 +310,31 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 
 **Keyword clustering planning:** generation now applies entity/intent guardrails before the AI pass, using Shopify vendors/collections plus known keyword variants to keep competing brands separate unless comparison intent is explicit. Post-processing uses guarded embedding merges, repairs oversized or mixed-intent clusters, and stores optional content-planning fields on `clusters`: `detected_entity`, `cluster_intent`, `cluster_role`, `quality_score`, keyword tiers (`core_keywords_json`, `supporting_keywords_json`, `extended_keywords_json`), and `cannibalization_risk`. Downstream article/page generation reads the keyword tiers when present and falls back to raw `cluster_keywords` for older data.
 
+**Content type defaults from intent (C2.3):** On keyword upsert/import/research insert, `content_type` defaults from keyword intent patterns when missing. The mapping (`INTENT_TO_CONTENT` in `keyword_utils.py`):
+
+| Intent | Default content_type |
+|--------|---------------------|
+| transactional | Product / Collection page |
+| commercial | Comparison / Buying guide |
+| local | Local landing page |
+| informational | Blog / Guide |
+| navigational | Brand page |
+| branded | Brand page |
+
+Target keywords never persist with NULL/empty `content_type` — the normalization runs on load and save paths in `keyword_db.py`. See `default_content_type_for_intent()` and `normalize_target_keyword_item()`.
+
+**Unknown keyword difficulty is `NULL`, never `0`:** DataForSEO returns `keyword_difficulty: 0` rather than omitting the field when it has not computed a difficulty — confirmed against both `keyword_overview/live` and `bulk_keyword_difficulty/live`, which return 0 for head terms such as "vaping near me" (165k/mo). Only ~21% of the keyword set has a real KD.
+
+`_normalize_keyword_difficulty` in `dataforseo_client` converts that 0 to `None` at ingest, so "unknown" stays distinct from "easy" everywhere downstream. Rules that follow from it:
+
+* **Never `COALESCE(difficulty, 0)`** — it recreates the bug. Let NULL propagate.
+* **Scoring:** `_difficulty_ease_score` returns `None` for unknown; `compute_opportunity` then drops the ease term and renormalizes the remaining weights, so a missing input neither rewards nor penalizes. No substitute value is invented.
+* **Averages** (`clusters.avg_difficulty`) exclude unknowns. The column is `NOT NULL`, so clusters with no known KD store `0.0` as a sentinel and the UI renders it as `—`.
+* **UI:** `0` and `null` both render `—`; the KD filter has a separate "Unknown" option and Easy/Medium/Hard exclude unknowns.
+* **AI prompts:** `_difficulty_label` in `keyword_clustering/_context` emits `unknown`, never `0`.
+
+Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring model; `refresh_opportunity_scores` re-scores the stored set on the next read when the version differs. Historical rows were converted by `scripts/normalize_unknown_keyword_difficulty.py`, which must update the `target_keywords` JSON blob as well as the tables — otherwise the next `sync_keyword_metrics_to_db` writes the zeros straight back.
+
 **`parent_topic` on target keywords / `keyword_metrics`:** legacy column name. Filled from **DataForSEO** `keyword_properties.core_keyword` when metrics are ingested or refreshed via DataForSEO (`dataforseo_client` maps it to `parent_topic`). **Google Ads** Keyword Planner refresh updates Ads metrics only, not this field. Keyword clustering still uses `parent_topic` as one bucketing signal, but entity/intent guardrails run first so empty or broad parent topics do not create giant mixed-brand buckets.
 
 
@@ -228,6 +349,9 @@ Never bulk-update without verifying `clusters.id` matches the intended gap analy
 | GET    | `/api/embeddings/semantic-keywords/{object_type}/{handle:path}` | —                                 | `{ ok, data }` | Semantic keyword matches                   |
 | GET    | `/api/embeddings/competitive-gaps/{object_type}/{handle:path}`  | —                                 | `{ ok, data }` | Competitor gap suggestions                 |
 | GET    | `/api/embeddings/cannibalization`                               | Query: threshold                  | `{ ok, data }` | Cannibalization pairs                      |
+
+**Post-publish embeddings refresh (C1.2):** After a successful article publish via `PATCH /api/articles/{blog_handle}/{article_handle}/publish`, the backend triggers a targeted embedding upsert for the published article in a background thread. This ensures RAG/cannibalization sees the new content without requiring a manual full refresh. The hook (`_post_publish_embedding_refresh` in `backend/app/routers/blogs.py`) uses `sync_embedding_for_handle()` from `embedding_store.py` to update embeddings for just that article, not the entire corpus. Failures are logged but do not fail the publish response. The targeted sync is much faster than a full refresh — it only embeds changed/new chunks for a single handle.
+
 | GET    | `/api/image-seo/product-images`                                 | Query: pagination                 | `{ ok, data }` | Image SEO rows + summary                   |
 | POST   | `/api/image-seo/suggest-alt`                                    | Body                              | `{ ok, data }` | Vision-based alt suggestion                |
 | POST   | `/api/image-seo/product-images/draft`                           | Body                              | `{ ok, data }` | Draft optimization steps                   |
@@ -267,14 +391,15 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Settings                                    | `backend/app/services/settings_service.py`       | Read/write settings, probes, Shopify/Google/AI tests                                                                          | `dashboard_ai`, `dashboard_google`, `dashboard_config`, `dashboard_http`, `shopify_admin`                                                   |
 | Google signals UI                           | `backend/app/services/google_signals_service.py` | GSC/GA4 cache payloads for operations                                                                                         | `dashboard_google`, `gsc_overview_calendar`, `index_status`                                                                                 |
 | Store info                                  | `backend/app/services/store_info_service.py`     | Store URL, name, market, timezone                                                                                             | `dashboard_queries`, `dashboard_google`                                                                                                     |
-| Overview metrics                            | `backend/app/services/overview_metrics.py`       | Simple GSC/GA4 aggregates                                                                                                     | Fact rows / helpers                                                                                                                         |
+| Overview metrics                            | `backend/app/services/overview_metrics.py`       | `summarize_gsc` / `summarize_ga4` over fact rows. **No longer on the dashboard path** — `get_dashboard_summary` uses `dq.fetch_signal_totals` (equivalent SQL rollup) instead of materializing a fact per catalog object | Fact rows / helpers                                                                                                                         |
 | Catalog completion                          | `backend/app/services/catalog_completion.py`     | Meta completion % by segment                                                                                                  | SQLite reads                                                                                                                                |
-| Indexing rollup                             | `backend/app/services/indexing_rollup.py`        | URL Inspection buckets by entity                                                                                              | `shopifyseo.dashboard_status`                                                                                                               |
+| Indexing rollup                             | `backend/app/services/indexing_rollup.py`        | URL Inspection buckets by entity. `build_indexing_rollup(facts)` for fact lists; `build_indexing_rollup_from_counts(counts)` for grouped `(object_type, index_status, index_coverage, n)` SQL rows — the classifier is pure over the two strings, so both produce identical output | `shopifyseo.dashboard_status`                                                                                                               |
 | Index status                                | `backend/app/services/index_status.py`           | Re-export cache/index helpers                                                                                                 | `shopifyseo.dashboard_status`                                                                                                               |
 | Object signals                              | `backend/app/services/object_signals.py`         | Detail/signals helpers                                                                                                        | `shopifyseo.dashboard_detail_common`                                                                                                        |
 | Catalog helpers                             | `backend/app/services/_catalog_helpers.py`       | Shared sort/segment/detail/inspection; `gsc_queries_from_detail` serializes per-URL GSC query rows for catalog detail APIs      | `dashboard_google`, `dashboard_actions`, `dashboard_queries`, `object_signals`, `index_status`                                              |
 | GSC calendar                                | `backend/app/services/gsc_overview_calendar.py`  | Date windows in dashboard TZ                                                                                                  | `DASHBOARD_TZ`, `zoneinfo`                                                                                                                  |
 | Google Ads lab                              | `backend/app/services/google_ads_lab_service.py` | Lab context + Ads REST proxy                                                                                                  | `dashboard_google`, `dashboard_config`, `dashboard_http`                                                                                    |
+| Open PageRank                               | `backend/app/services/open_page_rank.py`         | Domain authority (0–10, Common Crawl web graph) for competitor profiles. **Domain-level only — never a keyword-difficulty source.** Free tier: 30k domains/month, 100 per request. Also scores the storefront itself into `site_authority` / `site_authority_history` (`found = 0` when the domain is absent from the index — never a 0 score) | `dashboard_google`, `dashboard_http`                                                                                                        |
 | Keyword research                            | `backend/app/services/keyword_research/`         | Seeds, competitor discovery/research, DataForSEO, targets, metrics refresh. Modules: `__init__` (public API), `research_runner` (seed + competitor + gap flows), `dataforseo_client`, `keyword_db`, `keyword_utils`, `competitor_blocklist` | `dashboard_google`, `dashboard_http`, `embedding_store`, `api_usage`, etc.                                                                  |
 | Keyword clustering                          | `backend/app/services/keyword_clustering/`       | Cluster storage, AI generation, match overrides. Modules: `_crud`, `_storage`, `_generation`, `_context`, `_gaps`, `_helpers` | `dashboard_queries`, `dashboard_google`, `dashboard_ai_engine_parts`, `embedding_store`                                                     |
 | Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, product gallery + collection featured draft/apply. Collection image replacement clears the old featured image before attaching the SEO-named upload. Modules: `__init__`, `_catalog`, `_optimizer`       | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
@@ -355,15 +480,38 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `clusters`, `cluster_keywords`                                           | Keyword clusters; `clusters.priority_score` drives cluster ordering while `avg_opportunity` remains the keyword average; optional planning columns store entity, intent, role, quality, cannibalization risk, and keyword tiers | `cluster_keywords.cluster_id` → `clusters`       |                                                  |
 | `gsc_query_rows`, `gsc_query_dimension_rows`                             | GSC query storage                          | Per-URL row cap **20** via [`shopifyseo/gsc_query_limits.py`](shopifyseo/gsc_query_limits.py) (aligned with GSC API fetch, AI context SQL, embedding bundle); dimension rows keyed by `dimension_kind`/`dimension_value` | → entities via object keys                       |
 | `seo_recommendations`                                                    | AI/SEO recs                                | Per object                                       |                                                  |
-| `keyword_metrics`, `keyword_research_runs`, `keyword_page_map`           | Research + mapping                         | Maps keyword ↔ `object_type`/`object_handle`     |                                                  |
+| `keyword_metrics`, `keyword_page_map`                                    | Research + mapping                         | Maps keyword ↔ `object_type`/`object_handle`     |                                                  |
 | `competitor_profiles`, `competitor_top_pages`, `competitor_keyword_gaps` | Competitor analysis                        | Domain-scoped; `competitor_top_pages` carries `top_keyword_volume`, `top_keyword_position`, `page_type` | |
-| `article_ideas`                                                          | Gap-analysis article ideas                 | `id` PK; `linked_cluster_id`, `status`, `linked_article_handle` legacy 1:1 fields | ← `idea_articles`                                |
+| `article_ideas`                                                          | Gap-analysis article ideas                 | `id` PK; `linked_cluster_id`, `status`, `serp_refreshed_at` (Unix ts for auto-refresh); `linked_article_handle` legacy 1:1 fields | ← `idea_articles`                                |
 | `idea_articles`                                                          | N:M idea ↔ article mapping                 | `(idea_id, blog_handle, article_handle)` unique; `angle_label` for multi-angle drafts | → `article_ideas`                                 |
 | `article_target_keywords`                                                | Keywords per article                       | `(blog_handle, article_handle, keyword)` unique; `is_primary`, `source` | → `blog_articles` via handles                    |
 | `article_draft_runs`                                                     | Persisted article draft checkpoints        | `id` run key; request, SEO brief, outline, memory, checkpoints, content, images, Shopify id/handle, validation summary, status/error | Article draft stream/resume                       |
 | `embeddings`                                                             | Vector chunks                              | `(object_type, object_handle, chunk_index)` PK; `object_type=gsc_queries` bundles **title + canonical URL + top queries** for that entity handle |                                                  |
 | `api_usage_log`                                                          | API cost / usage lines                     |                                                  |                                                  |
 | `google_api_cache`                                                       | Cached Google API JSON                     | `cache_key`, TTL `expires_at`                    | Optional object refs                             |
+
+
+### Indexes worth knowing
+
+Most lookups ride primary keys. These are the non-obvious ones — all created in
+`ensure_dashboard_schema` (`shopifyseo/dashboard_store.py`), so they appear on
+existing and fresh databases alike.
+
+| Index | Table | Why it exists |
+| ----- | ----- | ------------- |
+| `idx_keyword_metrics_keyword_lower` | `keyword_metrics` | **Expression index on `LOWER(keyword)`.** The keyword joins compare `LOWER(a) = LOWER(b)`, which a plain index on `keyword` cannot serve. |
+| `idx_keyword_page_map_keyword_lower` | `keyword_page_map` | Same; also serves `_cannibalization_risk` in `keyword_clustering/_planning.py`. |
+| `idx_competitor_gaps_keyword_lower` | `competitor_keyword_gaps` | Same. Without all three, `_fetch_competitor_gaps` degrades to a three-way nested-loop scan (measured 4.4 s per object; under 0.1 ms with them). |
+| `idx_keyword_page_map_object` | `keyword_page_map` | `(object_type, object_handle)` — drives the object side of the same joins. |
+| `idx_gsc_page_daily_object` | `gsc_page_daily` | `(object_type, object_handle, date)` — per-object trend lookups. |
+| `idx_gsc_query_dimension_lookup` | `gsc_query_dimension_rows` | `(object_type, object_handle, dimension_kind)`. |
+
+**Do not "simplify" the three `LOWER(...)` indexes into plain column indexes** —
+SQLite only uses an expression index when the indexed expression matches the
+query predicate exactly. If a query is ever rewritten to pre-lowercase in Python
+instead, note that Python's `str.lower()` case-folds non-ASCII that SQLite's
+`LOWER()` leaves alone (`'CAFÉ'` → `café` vs `cafÉ`), which silently changes
+which rows match.
 
 
 ---
@@ -380,6 +528,7 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `runArticleDraftStream`                             | Consume article draft SSE, dynamic step fields, and `resume_run_id` retry payloads | `frontend/src/lib/run-article-draft-stream.ts`    |
 | Slug helpers                                        | Align with backend slug rules      | `frontend/src/lib/seo-slug.ts`                    |
 | GSC period helpers                                  | Period modes for charts/API        | `frontend/src/lib/gsc-period.ts`                  |
+| `sortListRows` / `CANONICAL_LIST_SORT`              | Client-side ordering for the product/content list tables; mirrors `PRODUCT_SORTERS` key-for-key so column clicks reorder cached rows instead of refetching | `frontend/src/lib/list-sort.ts`                    |
 | Settings connection localStorage                    | Persist connection test state      | `frontend/src/lib/settings-connection-storage.ts` |
 | Toast helpers                                       | Sonner wrappers                    | `frontend/src/lib/toast-utils.ts`                 |
 | `cn` / class merge                                  | Tailwind class merging             | `frontend/src/lib/utils.ts`                       |
@@ -400,6 +549,8 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `dashboard_ai_engine_parts/prompts.py` | Full + slim prompt assembly; slim `seo_description` adds `gsc_query_highlights` (top GSC queries, JSON size cap) |
 | `gsc_query_limits.py`                   | `GSC_PER_URL_QUERY_ROW_LIMIT` (20) shared by GSC fetch, context SQL, `gsc_queries` embeddings |
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
+| `dashboard_queries/_basic_fetchers.py` | `*_FACT_COLUMNS` + `fetch_*_for_facts` (narrow reads for list/fact paths), `fetch_signal_totals`, `fetch_index_status_counts`, `fetch_catalog_meta_metrics` (SQL rollups for the dashboard) |
+| `backend/app/db.py`                   | `open_db_connection`; schema migration + `apply_runtime_settings` run **once per DB path**, not per connection |
 
 
 ---
@@ -446,6 +597,33 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 
 - **Not inferred from `TODO` comments** in application source (none found in a quick `TODO|FIXME` scan of `*.py` / `*.ts` / `*.tsx` excluding tests).
 - **Operator-maintained gaps:** any roadmap items should be recorded here when known.
+- **`indexing_candidates` is deliberately absent from `/api/summary`.** It was removed during the overview redesign rather than lost. To restore: bring back `build_indexing_candidates` in `overview_metrics.py`, add the fields to `DashboardSummary` + `summarySchema`, compute it in `get_dashboard_summary`, and render it on a dedicated Indexing view — *not* as a queue on the overview, which was the explicit reason for removal. Background: [docs/archive/overview-dashboard-plan.md](docs/archive/overview-dashboard-plan.md).
+
+---
+
+## Performance Invariants
+
+These hold today and are easy to undo by accident. Each has a measured cost if
+broken, taken against a catalog of 830 products / 980 objects.
+
+| Invariant | Where | Cost if broken |
+| --------- | ----- | -------------- |
+| **Schema migration runs once per DB path, not per connection.** `open_db_connection` gates `ensure_dashboard_schema` + `apply_runtime_settings` on `_bootstrapped_paths`. Settings changes still propagate: `settings_service.save_settings` and the OAuth callbacks call `apply_runtime_settings` themselves. | `backend/app/db.py` | 15 ms → 1.6 ms per connection, on every request |
+| **List and fact paths read narrow columns.** Use `fetch_*_for_facts`, never `SELECT *`, for products/collections/pages/articles list or scoring. `products.raw_json` alone is 11.5 MB of a 16 MB table. | `dashboard_queries/_basic_fetchers.py` | 131 ms → 20 ms per products scan |
+| **The table is scanned once per list request.** `list_products` / `list_content` pass their rows into `fetch_seo_facts(..., rows=...)` rather than letting it re-query. | `product_service.py`, `content_service.py` | one extra full scan per request |
+| **`build_seo_fact` ignores `recommendation`.** No field reads it. Do not add a query to supply it — `fetch_seo_facts` used to load every stored recommendation (4.4 MB of `details_json` for products) and discard it. | `dashboard_queries/_seo_facts.py` | ~12 ms + 4.4 MB per call |
+| **Never build a whole-catalog collection to read one object.** `object_context` builds its fact from the detail row already in hand. Note it must narrow the workflow dict to `{status, notes}` — `_fetch_workflow` also returns `updated_at`, which would change the fact for objects that have a stored workflow row. | `dashboard_ai_engine_parts/context.py` | ~190 ms per object, per AI run |
+| **Detail views pass `keys=` to `gsc_page_trend_map`.** Without it the function aggregates all of `gsc_page_daily` to read one entry. | `dashboard_store.py` and the three `*_service.py` detail paths | 48 ms → 0.35 ms per detail load |
+| **The `LOWER(...)` expression indexes stay.** See "Indexes worth knowing" above. | `dashboard_store.py` | 4.4 s → 0.05 ms for `_fetch_competitor_gaps` |
+| **List sorting happens client-side and must match the server key-for-key.** `sortListRows` mirrors `PRODUCT_SORTERS`; the query keys for the products/content lists deliberately exclude `sort`/`direction`. Ties fall back to input index because Python's `sorted(reverse=True)` is stable and negating a JS comparator is not. Verified: 34/34 orderings identical to the API. | `frontend/src/lib/list-sort.ts` (+ `list-sort.test.ts`) | a full ~1 MB refetch per column click |
+| **`DataTable` rows are memoized on resolved string props.** Row links are passed as strings, not callbacks, so the inline arrows the list pages pass cannot invalidate the memo. | `frontend/src/components/ui/data-table.tsx` | 1,508 ms → 698 ms re-sort at 830 rows |
+| **No row windowing in `DataTable`.** All rows stay in the DOM so browser find-in-page and screen-reader row counts cover the whole list. `data-table.perf.test.tsx` asserts `tbody tr` equals the row count. | `frontend/src/components/ui/data-table.tsx` | find-in-page silently stops covering off-screen rows |
+| **Any field a service returns must be declared on its Pydantic response model.** FastAPI's `response_model` drops undeclared keys with no error. This silently emptied the Trend column on every catalog table for as long as `trend` went undeclared. Assert new fields over HTTP (`TestClient`), not at the service call — a service-level test passes while the field is being dropped. | `backend/app/schemas/*`, `tests/test_trend_response_contract.py` | field vanishes from the API; UI renders a placeholder and any sort on it becomes a no-op |
+
+`QueryClient` sets a default `staleTime` of 30 s (`frontend/src/app/providers.tsx`)
+so remounting a route does not refetch. This does not weaken post-mutation
+freshness — `invalidateQueries` marks queries stale regardless of `staleTime`,
+and detail pages that must always read through set `staleTime: 0` themselves.
 
 ---
 
@@ -455,6 +633,8 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 - **Security:** API routes are **not** behind app-level JWT/API keys; treat as trusted-network or add a reverse proxy with auth for production.
 - **AI HTTP timeouts:** Settings docs note a **fixed long timeout** for AI calls in engine code (verify `dashboard_ai_engine_parts` when tuning).
 - **Moz:** `moz_api_token` may appear in settings mapping; confirm whether Moz APIs are fully wired before relying on them.
+- **`GET /api/settings` costs ~1.7 s, all of it network.** `settings_service.get_settings_data` issues **9 sequential** provider model-listing requests (~196 ms each); profiling attributes 1.787 s of 1.791 s to `requests`. Running them concurrently would bring it to roughly one round trip (~200 ms). Left as-is because it changes external-API concurrency and per-provider error handling — the frontend masks it with `staleTime: 30_000`.
+- **`overview_metrics.summarize_gsc` / `summarize_ga4` are no longer called** anywhere after the dashboard moved to `dq.fetch_signal_totals`. Kept as a documented service API and covered by the fact-based path; delete when confirmed unused externally.
 
 ---
 
@@ -517,3 +697,15 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 ## Keeping This Doc in Sync
 
 When adding a **router**, **service**, **table**, or **screen**, update the matching section in the **same change** as the code. Prefer verifying paths against `backend/app/routers/*.py`, `frontend/src/app/router.tsx`, and `shopifyseo/dashboard_store.py` / `shopify_catalog_sync/db.py`.
+
+Also in the same change:
+
+| You changed | Update |
+| ----------- | ------ |
+| An index in `ensure_dashboard_schema` | "Indexes worth knowing" under **Database Tables** |
+| A field added to a service's returned dict | The matching model in `backend/app/schemas/` — otherwise `response_model` drops it silently — **and** the Zod schema in `frontend/src/types/api.ts` |
+| A hot read path listed under **Performance Invariants** | That row — including the measured cost, or drop the row if the constraint no longer applies |
+| A frontend helper in `frontend/src/lib/` | **Utilities & Constants → Frontend** |
+| A sort key in `PRODUCT_SORTERS` / `CONTENT_SORTERS` | `frontend/src/lib/list-sort.ts` **and** its test — the two must stay key-for-key identical or list ordering silently diverges from the API |
+
+Reference sections by **name**, not `§` number: the headings are unnumbered, so positional numbers go stale as soon as a section is inserted.

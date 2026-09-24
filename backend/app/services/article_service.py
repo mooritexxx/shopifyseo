@@ -11,10 +11,12 @@ from shopifyseo.dashboard_actions import (
 )
 from shopifyseo.dashboard_live_updates import live_update_article
 import shopifyseo.dashboard_queries as dq
-from shopifyseo.dashboard_store import DB_PATH, refresh_object_structured_seo_data
+from shopifyseo.dashboard_store import DB_PATH, gsc_page_trend_map, refresh_object_structured_seo_data
+from shopifyseo.gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from backend.app.db import open_db_connection
 from backend.app.services.object_signals import load_object_signals
 from backend.app.services._catalog_helpers import (
+    EMPTY_TREND,
     _detail_envelope,
     _signal_cards_for,
     gsc_queries_from_detail,
@@ -143,6 +145,7 @@ def list_all_articles() -> dict[str, Any]:
     conn = open_db_connection()
     try:
         facts_by_comp = {f["handle"]: f for f in dq.fetch_seo_facts(conn, "blog_article")}
+        trends = gsc_page_trend_map(conn)
         rows = dq.fetch_all_blog_articles_enriched(conn)
         items: list[dict[str, Any]] = []
         for a in rows:
@@ -175,6 +178,7 @@ def list_all_articles() -> dict[str, Any]:
                 "workflow_status": str(wf.get("status") or "Needs fix"),
                 "workflow_notes": str(wf.get("notes") or ""),
                 "gsc_segment_flags": {"has_dimensional": False},
+                "trend": trends.get(("blog_article", composite), EMPTY_TREND),
             })
             items.append(base)
         dim_keys = [
@@ -190,8 +194,9 @@ def list_all_articles() -> dict[str, Any]:
         conn.close()
 
 
-def get_blog_article_detail(blog_handle: str, article_slug: str, gsc_period: str = "mtd") -> dict[str, Any] | None:
+def get_blog_article_detail(blog_handle: str, article_slug: str, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -> dict[str, Any] | None:
     from backend.app.schemas.dashboard import normalize_gsc_period_mode
+
     period = normalize_gsc_period_mode(gsc_period)
     conn = open_db_connection()
     try:
@@ -220,6 +225,9 @@ def get_blog_article_detail(blog_handle: str, article_slug: str, gsc_period: str
             "recommendation": parts["recommendation"],
             "recommendation_history": parts["recommendation_history"],
             "signal_cards": _signal_cards_for(conn, "blog_article", current, gsc_period=period, signals=signals),
+            "trend": gsc_page_trend_map(conn, keys=[("blog_article", current["handle"])]).get(
+                ("blog_article", current["handle"]), EMPTY_TREND
+            ),
             "related_items": related_items,
             "metafields": [],
             "opportunity": serialize_opportunity(fact),

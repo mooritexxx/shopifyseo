@@ -13,7 +13,13 @@ from shopifyseo.dashboard_ai_engine_parts.config import (
     GEMINI_API_URL,
     OPENROUTER_MODELS_URL,
 )
-from shopifyseo.dashboard_config import RUNTIME_SETTING_KEYS, _ENV_MAPPING, apply_runtime_settings, runtime_setting
+from shopifyseo.dashboard_config import (
+    RUNTIME_SETTING_KEYS,
+    SECRET_SETTING_KEYS,
+    _ENV_MAPPING,
+    apply_runtime_settings,
+    runtime_setting,
+)
 from shopifyseo.dashboard_http import request_json
 
 logger = logging.getLogger(__name__)
@@ -127,7 +133,13 @@ def save_settings(payload: dict[str, str]) -> str:
         migrated_payload = dict(payload)
         for key in RUNTIME_SETTING_KEYS:
             if key in migrated_payload:
-                dg.set_service_setting(conn, key, migrated_payload[key].strip())
+                new_value = migrated_payload[key].strip()
+                # Safe settings save: treat empty/null secret fields as "leave unchanged"
+                # to prevent accidental wipe of API keys via partial POST.
+                if key in SECRET_SETTING_KEYS and not new_value:
+                    # Skip writing empty value for secrets — preserve existing
+                    continue
+                dg.set_service_setting(conn, key, new_value)
         # Clear legacy settings (old openai_* names are deprecated)
         dg.set_service_setting(conn, "openai_timeout_seconds", "")
         dg.set_service_setting(conn, "openai_model", "")

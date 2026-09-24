@@ -22,6 +22,7 @@ from shopifyseo.embedding_store import (
     retrieve_related_by_handle,
     find_semantic_keyword_matches,
     find_cannibalization_candidates,
+    embedding_status,
     _dedup_by_handle,
 )
 
@@ -30,9 +31,9 @@ from shopifyseo.embedding_store import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_conn() -> sqlite3.Connection:
-    """In-memory SQLite with all required tables."""
-    conn = sqlite3.connect(":memory:")
+def _make_conn(path: str = ":memory:") -> sqlite3.Connection:
+    """SQLite (in-memory by default) with all required tables."""
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE embeddings (
@@ -334,6 +335,51 @@ class TestSyncEmbeddings:
         assert result.get("reason") == "no_api_key"
         assert result["embedded"] == 0
 
+    def test_commits_stale_chunk_delete_when_nothing_new_to_embed(self, tmp_path):
+        """A shrunk object (fewer chunks than before) must durably lose its trailing
+        chunks even when the surviving chunks are unchanged and nothing gets embedded."""
+        db_path = str(tmp_path / "embeddings_commit.sqlite3")
+        conn = _make_conn(db_path)
+        conn.execute(
+            "INSERT INTO blog_articles (handle, blog_handle, title, seo_title, seo_description, body) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("a1", "news", "Title", "SEO", "Desc", "<p>Body</p>"),
+        )
+        conn.execute("INSERT INTO service_settings (key, value) VALUES ('gemini_api_key', 'test-key')")
+        conn.commit()
+
+        handle = "news/a1"
+        surviving = ["chunk zero text", "chunk one text"]
+        stale = ["stale chunk two", "stale chunk three"]
+        for ci, text in enumerate(surviving + stale):
+            h = _md5(text)
+            conn.execute(
+                "INSERT INTO embeddings (object_type, object_handle, chunk_index, text_hash, model_version, "
+                "embedding, source_text_preview, token_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                ("blog_article", handle, ci, h, EMBEDDING_MODEL, _embed_to_blob([0.0] * EMBEDDING_DIMS), text[:200], 1),
+            )
+        conn.commit()
+
+        with patch("shopifyseo.embedding_store.build_embed_text", return_value=surviving):
+            result = sync_embeddings(conn, object_type="blog_article")
+
+        assert result["embedded"] == 0
+        assert result["skipped"] == len(surviving)
+        conn.close()
+
+        reconn = sqlite3.connect(db_path)
+        remaining = [
+            r[0]
+            for r in reconn.execute(
+                "SELECT chunk_index FROM embeddings WHERE object_type = 'blog_article' AND object_handle = ? "
+                "ORDER BY chunk_index",
+                (handle,),
+            ).fetchall()
+        ]
+        reconn.close()
+        assert remaining == [0, 1]
+
 
 class TestCannibalization:
     def test_finds_similar_pages(self):
@@ -355,3 +401,71 @@ class TestCannibalization:
         _insert_embedding(conn, "product", "prod-b", np.random.randn(EMBEDDING_DIMS).astype(np.float32))
         results = find_cannibalization_candidates(conn, threshold=0.99)
         assert results == []
+
+
+class TestEmbeddingStatus:
+    """Test embedding_status() coverage calculations."""
+
+    def test_coverage_capped_at_100_percent(self):
+        """When embedded > source (orphans exist), coverage must not exceed 100%."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "p1")
+        _insert_embedding(conn, "product", "p2")
+        _insert_embedding(conn, "product", "orphan1")
+        _insert_embedding(conn, "product", "orphan2")
+        _insert_embedding(conn, "product", "orphan3")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 5
+        assert product_type["source_objects"] == 2
+        assert product_type["coverage_pct"] == 100.0
+
+    def test_coverage_normal_case(self):
+        """Normal case where embedded <= source."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p3', 'P3', 'ACTIVE')")
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('p4', 'P4', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "p1")
+        _insert_embedding(conn, "product", "p2")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 2
+        assert product_type["source_objects"] == 4
+        assert product_type["coverage_pct"] == 50.0
+
+    def test_coverage_zero_source(self):
+        """Coverage is 0 when source is empty."""
+        conn = _make_conn()
+        _insert_embedding(conn, "product", "orphan")
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 1
+        assert product_type["source_objects"] == 0
+        assert product_type["coverage_pct"] == 0.0
+
+    def test_prune_reduces_orphans_before_status(self):
+        """Verify prune removes orphans so coverage stays accurate after sync."""
+        conn = _make_conn()
+        conn.execute("INSERT INTO products (handle, title, status) VALUES ('exists', 'P', 'ACTIVE')")
+        conn.commit()
+        _insert_embedding(conn, "product", "exists")
+        _insert_embedding(conn, "product", "orphan1")
+        _insert_embedding(conn, "product", "orphan2")
+
+        pruned = prune_stale_embeddings(conn, "product")
+        assert pruned == 2
+
+        status = embedding_status(conn)
+        product_type = next(t for t in status["types"] if t["type"] == "product")
+        assert product_type["embedded_objects"] == 1
+        assert product_type["source_objects"] == 1
+        assert product_type["coverage_pct"] == 100.0

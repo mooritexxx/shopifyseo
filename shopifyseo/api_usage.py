@@ -51,7 +51,7 @@ def _lookup_pricing(model: str) -> tuple[float, float]:
     clean = model.strip().removeprefix("models/")
     if clean in GEMINI_PRICING:
         return GEMINI_PRICING[clean]
-    for key in GEMINI_PRICING:
+    for key in sorted(GEMINI_PRICING, key=len, reverse=True):
         if clean.startswith(key):
             return GEMINI_PRICING[key]
     return _DEFAULT_PRICING

@@ -13,22 +13,24 @@ export const seedPayloadSchema = z.object({
 
 export const targetKeywordSchema = z.object({
   keyword: z.string(),
-  volume: z.number().nullable(),
-  difficulty: z.number().nullable(),
-  traffic_potential: z.number().nullable(),
-  cpc: z.number().nullable(),
-  intent: z.string().nullable(),
+  // Required-nullable fields are also optional: manual / tracker inserts often omit keys
+  // entirely (vs setting null), and a single missing key previously blanked the whole tab.
+  volume: z.number().nullable().optional(),
+  difficulty: z.number().nullable().optional(),
+  traffic_potential: z.number().nullable().optional(),
+  cpc: z.number().nullable().optional(),
+  intent: z.string().nullable().optional(),
   intent_raw: z.record(z.boolean()).nullable().optional(),
-  content_type: z.string().nullable(),
+  content_type: z.string().nullable().optional(),
   /** DataForSEO core topic (`keyword_properties.core_keyword`); API/DB key is legacy `parent_topic`. */
   parent_topic: z.string().nullable().optional(),
-  opportunity: z.number().nullable(),
+  opportunity: z.number().nullable().optional(),
   seed_keywords: z.array(z.string()).optional(),
   gsc_position: z.number().nullable().optional(),
   gsc_clicks: z.number().nullable().optional(),
   gsc_impressions: z.number().nullable().optional(),
   ranking_status: z.string().nullable().optional(),
-  status: z.string(),
+  status: z.string().default("new"),
   /** Google Ads Keyword Planner — last ``GenerateKeywordHistoricalMetrics`` refresh. */
   ads_avg_monthly_searches: z.number().nullable().optional(),
   ads_competition: z.string().nullable().optional(),
@@ -81,6 +83,11 @@ export const competitorProfileSchema = z.object({
   labs_seed_etv: z.number().optional().default(0),
   labs_bulk_etv: z.number().optional().default(0),
   labs_rating: z.number().optional().default(0),
+  // Open PageRank domain authority. Nullable: null = never fetched or the domain
+  // is not in the index. 0 is a real score, so it must not stand in for unknown.
+  authority_score: z.number().nullable().optional().default(null),
+  authority_rank: z.number().nullable().optional().default(null),
+  referring_domains: z.number().nullable().optional().default(null),
 });
 
 export const competitorResearchMetaSchema = z

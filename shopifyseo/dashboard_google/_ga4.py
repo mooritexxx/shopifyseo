@@ -586,6 +586,114 @@ def get_ga4_url_detail(
     return out
 
 
+# -- Bulk per-URL GA4 derived from the summary reports ------------------------
+#
+# ``get_ga4_summary`` already pages every row of two unfiltered ``runReport``
+# calls, and those rows contain every metric ``get_ga4_url_detail`` re-fetches
+# per URL. The helpers below reproduce that function's output exactly from the
+# summary payload so bulk sync needs no per-URL API calls.
+#
+# Semantics deliberately mirror ``get_ga4_url_detail`` so stored numbers do not
+# shift:
+#   * views    -> ``pagePath`` EXACT, which aggregates every query-string
+#                 variant of a path. Reproduced by summing ``page_rows``
+#                 grouped on the path with its query string stripped.
+#   * sessions -> ``landingPagePlusQueryString`` EXACT against a bare path, so
+#                 only the no-query-string landing row matches. Reproduced by a
+#                 single exact lookup (no aggregation, hence no ratio-metric
+#                 combine is required for ``averageSessionDuration``).
+
+
+def _ga4_strip_query(raw: str) -> str:
+    """Path portion of a GA4 ``*PlusQueryString`` dimension value."""
+    return (raw or "").split("?", 1)[0].split("#", 1)[0]
+
+
+def build_ga4_summary_index(summary: dict | None) -> dict:
+    """Index summary rows for O(1) per-URL lookups.
+
+    ``views_by_path`` sums ``screenPageViews`` across query-string variants (matching
+    the ``pagePath`` dimension). ``landing_by_path`` keeps the raw
+    ``landingPagePlusQueryString`` value as its key so lookups stay EXACT.
+    """
+    views_by_path: dict[str, int] = {}
+    for row in (summary or {}).get("page_rows") or []:
+        path = _ga4_strip_query(ga4_report_page_path_from_row(row))
+        if not path:
+            continue
+        views_by_path[path] = views_by_path.get(path, 0) + _ga4_metric_values_int(
+            row.get("metricValues") or [], 0
+        )
+
+    landing_by_path: dict[str, tuple[int, float]] = {}
+    for row in (summary or {}).get("landing_rows") or []:
+        key = ga4_report_page_path_from_row(row)
+        if not key:
+            continue
+        metrics = row.get("metricValues") or []
+        landing_by_path[key] = (
+            _ga4_metric_values_int(metrics, 0),
+            _ga4_metric_values_float(metrics, 1),
+        )
+
+    return {"views_by_path": views_by_path, "landing_by_path": landing_by_path}
+
+
+def ga4_url_detail_from_index(index: dict, url: str, *, start_date: date, end_date: date) -> dict:
+    """Build the ``get_ga4_url_detail`` payload for one URL from a summary index."""
+    views_by_path: dict[str, int] = index.get("views_by_path") or {}
+    landing_by_path: dict[str, tuple[int, float]] = index.get("landing_by_path") or {}
+
+    candidates = ga4_path_candidates(url)
+    # Mirrors _ga4_pick_path_for_url: first candidate that has pageview data wins.
+    path_used = next((c for c in candidates if c in views_by_path), candidates[0] if candidates else "/")
+
+    sessions, avg_duration = landing_by_path.get(path_used, (0, 0.0))
+    return {
+        "url": url,
+        "path_used": path_used,
+        "views": views_by_path.get(path_used, 0),
+        "sessions": sessions,
+        "avg_session_duration": avg_duration,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
+
+
+def write_ga4_url_detail_cache(
+    conn: sqlite3.Connection,
+    payload: dict,
+    *,
+    property_id: str,
+    start_date: date,
+    end_date: date,
+    object_type: str = "",
+    object_handle: str = "",
+) -> dict:
+    """Persist a derived per-URL payload under the same cache key ``get_ga4_url_detail`` uses."""
+    url = payload.get("url") or ""
+    cache_key = _ga4_url_detail_cache_key(property_id, url, start_date, end_date)
+    meta = _write_cache_payload(
+        conn,
+        cache_key=cache_key,
+        cache_type="ga4_url",
+        payload=payload,
+        ttl_seconds=CACHE_TTLS["ga4_url"],
+        object_type=object_type,
+        object_handle=object_handle,
+        url=url,
+    )
+    out = {**payload, "_cache": meta}
+    _pkg().GSC_CACHE["ga4_per_url"][cache_key] = out
+    return out
+
+
+def ga4_summary_window() -> tuple[date, date]:
+    """The 28-day window ``get_ga4_summary`` and ``get_ga4_url_detail`` share."""
+    end_date = date.today() - timedelta(days=1)
+    return end_date - timedelta(days=27), end_date
+
+
 def ga4_url_cache_stale(conn: sqlite3.Connection, url: str) -> bool:
     """True when there is no non-expired ga4_url cache for this URL (current 28-day window)."""
     property_id = get_service_setting(conn, "ga4_property_id")

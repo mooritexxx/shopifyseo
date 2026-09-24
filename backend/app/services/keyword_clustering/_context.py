@@ -27,6 +27,21 @@ def _tiered_cluster_keywords(cluster: dict, *, include_extended: bool = False) -
     return out
 
 
+def _difficulty_label(difficulty) -> str:
+    """Render keyword difficulty for the prompt, or "unknown" when absent.
+
+    DataForSEO has no difficulty for most of the keyword set, so an absent value
+    must not reach the model as ``0`` — that reads as "trivially easy".
+    """
+    if difficulty is None:
+        return "unknown"
+    try:
+        kd = int(difficulty)
+    except (TypeError, ValueError):
+        return "unknown"
+    return str(kd) if kd > 0 else "unknown"
+
+
 def _format_cluster_context(
     matched_clusters: list[dict],
     target_data: dict,
@@ -50,7 +65,9 @@ def _format_cluster_context(
         primary_kw = cluster.get("primary_keyword", "")
         primary_metrics = kw_map.get(primary_kw.lower(), {})
         primary_vol = primary_metrics.get("volume", 0) or 0
-        primary_diff = primary_metrics.get("difficulty", 0) or 0
+        # DataForSEO has no difficulty for most keywords; say so rather than
+        # telling the model the difficulty is 0.
+        primary_diff = _difficulty_label(primary_metrics.get("difficulty"))
 
         supporting = []
         for kw in _tiered_cluster_keywords(cluster):
@@ -58,7 +75,7 @@ def _format_cluster_context(
                 continue
             m = kw_map.get(kw.lower(), {})
             vol = m.get("volume", 0) or 0
-            diff = m.get("difficulty", 0) or 0
+            diff = _difficulty_label(m.get("difficulty"))
             supporting.append(f"{kw} (vol: {vol}, diff: {diff})")
 
         lines = [

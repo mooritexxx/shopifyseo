@@ -31,6 +31,7 @@ from ._state import (
     _sync_global_ai_state,
     clear_ai_last_error,
 )
+from ..gsc_query_limits import GSC_CATALOG_PERIOD_MODE
 from ..exceptions import AICancelledError
 from ..shopify_catalog_sync import sync_products
 
@@ -314,13 +315,26 @@ def run_ai_generation(db_path: str, scope: str, job_id: str) -> dict:
                 )
             state["done"] += 1
         _raise_if_ai_cancelled(job_id)
-        _finalize_ai_timeline(state, "complete", "AI generation complete")
+        final_stage = "complete" if state["successes"] else "error"
+        final_label = "AI generation complete" if state["successes"] else "AI generation failed"
+        _finalize_ai_timeline(state, final_stage, final_label)
         state["last_result"] = {
             "job_id": job_id,
             "scope": scope,
             "total": state["total"],
             "successes": state["successes"],
             "failures": state["failures"],
+        }
+        return dict(state["last_result"])
+    except AICancelledError:
+        _finalize_ai_timeline(state, "cancelled", "AI generation cancelled")
+        state["last_result"] = {
+            "job_id": job_id,
+            "scope": scope,
+            "total": state["total"],
+            "successes": state["successes"],
+            "failures": state["failures"],
+            "cancelled": True,
         }
         return dict(state["last_result"])
     finally:
@@ -475,7 +489,7 @@ def generate_ai_for_object(db_connect, db_path: str, object_type: str, handle: s
 
 
 def refresh_object_signal_step(
-    db_connect, kind: str, handle: str, step: str, db_path: str | None = None, *, gsc_period: str = "mtd"
+    db_connect, kind: str, handle: str, step: str, db_path: str | None = None, *, gsc_period: str = GSC_CATALOG_PERIOD_MODE
 ) -> dict:
     conn = db_connect()
     try:
@@ -583,7 +597,7 @@ def refresh_object_signal_step(
 
 
 def refresh_object_signals(
-    db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = "mtd"
+    db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = GSC_CATALOG_PERIOD_MODE
 ) -> dict:
     ordered_steps = ("gsc", "index", "speed", "speed_desktop")
     return {

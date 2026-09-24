@@ -76,16 +76,37 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+def _run_with_cache_schema(conn: sqlite3.Connection, run):
+    """Run a google_api_cache statement, creating the schema only if it is actually missing.
+
+    ``ensure_google_cache_schema`` used to run on every read and write. Besides parsing
+    three DDL statements each time, its ``conn.commit()`` silently ended whatever write
+    transaction the caller had open — which defeated the batched commits in
+    ``refresh_structured_seo_data`` and made it commit once per object. sqlite3.Connection
+    supports neither weakrefs nor attributes, so there is nowhere to memoise "already
+    ensured"; instead assume the table exists and pay the cost only on the rare miss.
+    """
+    try:
+        return run()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            raise
+        ensure_google_cache_schema(conn)
+        return run()
+
+
 def _get_cache_row(conn: sqlite3.Connection, cache_key: str) -> sqlite3.Row | None:
-    ensure_google_cache_schema(conn)
-    return conn.execute(
-        """
-        SELECT cache_key, cache_type, object_type, object_handle, url, strategy, payload_json, fetched_at, expires_at
-        FROM google_api_cache
-        WHERE cache_key = ?
-        """,
-        (cache_key,),
-    ).fetchone()
+    return _run_with_cache_schema(
+        conn,
+        lambda: conn.execute(
+            """
+            SELECT cache_key, cache_type, object_type, object_handle, url, strategy, payload_json, fetched_at, expires_at
+            FROM google_api_cache
+            WHERE cache_key = ?
+            """,
+            (cache_key,),
+        ).fetchone(),
+    )
 
 
 def _cache_meta(row: sqlite3.Row | None) -> dict:
@@ -128,35 +149,38 @@ def _write_cache_payload(
     url: str = "",
     strategy: str = "",
 ) -> dict:
-    ensure_google_cache_schema(conn)
     fetched_at = _now_ts()
     expires_at = fetched_at + ttl_seconds
-    conn.execute(
-        """
-        INSERT INTO google_api_cache(
-          cache_key, cache_type, object_type, object_handle, url, strategy, payload_json, fetched_at, expires_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(cache_key) DO UPDATE SET
-          cache_type = excluded.cache_type,
-          object_type = excluded.object_type,
-          object_handle = excluded.object_handle,
-          url = excluded.url,
-          strategy = excluded.strategy,
-          payload_json = excluded.payload_json,
-          fetched_at = excluded.fetched_at,
-          expires_at = excluded.expires_at,
-          updated_at = CURRENT_TIMESTAMP
-        """,
-        (
-            cache_key,
-            cache_type,
-            object_type or None,
-            object_handle or None,
-            url or None,
-            strategy or None,
-            json.dumps(payload, ensure_ascii=True),
-            fetched_at,
-            expires_at,
+    params = (
+        cache_key,
+        cache_type,
+        object_type or None,
+        object_handle or None,
+        url or None,
+        strategy or None,
+        json.dumps(payload, ensure_ascii=True),
+        fetched_at,
+        expires_at,
+    )
+    _run_with_cache_schema(
+        conn,
+        lambda: conn.execute(
+            """
+            INSERT INTO google_api_cache(
+              cache_key, cache_type, object_type, object_handle, url, strategy, payload_json, fetched_at, expires_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(cache_key) DO UPDATE SET
+              cache_type = excluded.cache_type,
+              object_type = excluded.object_type,
+              object_handle = excluded.object_handle,
+              url = excluded.url,
+              strategy = excluded.strategy,
+              payload_json = excluded.payload_json,
+              fetched_at = excluded.fetched_at,
+              expires_at = excluded.expires_at,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            params,
         ),
     )
     conn.commit()

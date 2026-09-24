@@ -66,7 +66,7 @@ export const RANKING_LABELS: Record<string, string> = {
 
 export type IntentFilter = "all" | "informational" | "commercial" | "transactional" | "branded";
 export type StatusFilter = "all" | "new" | "approved" | "dismissed";
-export type DifficultyFilter = "all" | "easy" | "medium" | "hard";
+export type DifficultyFilter = "all" | "easy" | "medium" | "hard" | "unknown";
 export type RankingFilter = "all" | "ranking" | "quick_win" | "striking_distance" | "low_visibility" | "not_ranking";
 
 export const INTENT_OPTIONS: { value: IntentFilter; label: string }[] = [
@@ -86,9 +86,10 @@ export const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
 
 export const DIFFICULTY_OPTIONS: { value: DifficultyFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "easy", label: "Easy 0–20" },
+  { value: "easy", label: "Easy 1–20" },
   { value: "medium", label: "Medium 21–50" },
-  { value: "hard", label: "Hard 51–70" }
+  { value: "hard", label: "Hard 51–70" },
+  { value: "unknown", label: "Unknown (no KD)" }
 ];
 
 export const RANKING_OPTIONS: { value: RankingFilter; label: string }[] = [
@@ -225,8 +226,10 @@ export function FilterDropdown<T extends string>({
   );
 }
 
-export function DifficultyBadge({ kd }: { kd: number | null }) {
-  if (kd === null) return <span className="text-slate-400">—</span>;
+export function DifficultyBadge({ kd }: { kd: number | null | undefined }) {
+  // DataForSEO sends 0 when it has no difficulty for a keyword. Show it as
+  // unknown, not as a green "0" — that reads as trivially easy.
+  if (kd === null || kd === undefined || kd === 0) return <span className="text-slate-400">—</span>;
   const color =
     kd <= 20
       ? "bg-green-100 text-green-700"
@@ -240,10 +243,10 @@ export function OpportunityBadge({
   opp,
   decimals,
 }: {
-  opp: number | null;
+  opp: number | null | undefined;
   decimals?: number;
 }) {
-  if (opp === null) return <span className="text-slate-400">—</span>;
+  if (opp === null || opp === undefined) return <span className="text-slate-400">—</span>;
   const color =
     opp >= 70
       ? "bg-green-100 text-green-700"
@@ -254,7 +257,7 @@ export function OpportunityBadge({
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${color}`}>{text}</span>;
 }
 
-export function IntentBadge({ intent }: { intent: string | null }) {
+export function IntentBadge({ intent }: { intent: string | null | undefined }) {
   if (!intent) return <span className="text-slate-400">—</span>;
   const color = INTENT_COLORS[intent.toLowerCase()] ?? "bg-slate-100 text-slate-600";
   return (

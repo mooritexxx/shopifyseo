@@ -228,6 +228,18 @@ export const summarySchema = z.object({
   gsc_performance_error: z.string().default("")
 });
 
+export const trendSchema = z.object({
+  clicks_current: z.number(),
+  clicks_previous: z.number(),
+  clicks_delta_pct: z.number().nullable(),
+  impressions_current: z.number(),
+  impressions_previous: z.number(),
+  impressions_delta_pct: z.number().nullable(),
+  series: z.array(z.number())
+});
+
+export type Trend = z.infer<typeof trendSchema>;
+
 export const productListItemSchema = z.object({
   handle: z.string(),
   title: z.string(),
@@ -260,6 +272,8 @@ export const productListItemSchema = z.object({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const productListSchema = z.object({
@@ -374,6 +388,8 @@ export const productDetailSchema = z.object({
   opportunity: z.record(z.any()),
   gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
   gsc_queries: z.array(gscQueryRowSchema).default([])
+,
+  trend: trendSchema.optional()
 });
 
 export const contentListItemSchema = z.object({
@@ -406,6 +422,8 @@ export const contentListItemSchema = z.object({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const contentListSchema = z.object({
@@ -474,6 +492,8 @@ export const allArticleListItemSchema = blogArticleListItemSchema.extend({
     .object({ has_dimensional: z.boolean() })
     .optional()
     .default({ has_dimensional: false })
+,
+  trend: trendSchema.optional()
 });
 
 export const allArticlesSchema = z.object({
@@ -681,7 +701,7 @@ export const articleIdeaSchema = z.object({
     .optional(),
   /** Google ``related_searches`` from the same SerpAPI response (query + SERP position when provided) */
   related_searches: z.preprocess(coerceRelatedSearches, z.array(relatedSearchItemSchema)).default([]),
-  /** Deeper PAA from SerpAPI ``google_related_questions`` (after “Refresh SERP data” on this page) */
+  /** Deeper PAA from SerpAPI ``google_related_questions`` (auto-refreshes when stale during draft; use "Force refresh SERP" to refresh immediately) */
   paa_expansion: z
     .preprocess(
       coercePaaExpansion,
@@ -781,6 +801,38 @@ export const ideaPerformancePayloadSchema = z.object({
 });
 export type IdeaPerformancePayload = z.infer<typeof ideaPerformancePayloadSchema>;
 
+// Cannibalization check schemas
+export const cannibalizationConflictSchema = z.object({
+  key: z.string(),
+  type: z.string(),
+  severity: z.string(),
+  blog_handle: z.string(),
+  article_handle: z.string(),
+  title: z.string().default(""),
+  shopify_id: z.string().default(""),
+  reason: z.string().default(""),
+  matched_keyword: z.string().nullable().optional(),
+  similarity_score: z.number().nullable().optional(),
+});
+export type CannibalizationConflict = z.infer<typeof cannibalizationConflictSchema>;
+
+export const clusterRiskInfoSchema = z.object({
+  cluster_id: z.number(),
+  cluster_name: z.string().default(""),
+  risk_level: z.string(),
+  severity: z.string(),
+  reason: z.string().default(""),
+});
+export type ClusterRiskInfo = z.infer<typeof clusterRiskInfoSchema>;
+
+export const cannibalizationCheckPayloadSchema = z.object({
+  severity: z.string(),
+  conflicts: z.array(cannibalizationConflictSchema).default([]),
+  cluster_risk: clusterRiskInfoSchema.nullable().optional(),
+  message: z.string().default(""),
+});
+export type CannibalizationCheckPayload = z.infer<typeof cannibalizationCheckPayloadSchema>;
+
 export const articleGenerateDraftResultSchema = z.object({
   run_id: z.string().default(""),
   id: z.string(),
@@ -839,6 +891,8 @@ export const contentDetailSchema = z.object({
   opportunity: z.record(z.any()),
   gsc_segment_summary: gscSegmentSummarySchema.default(defaultGscSegmentSummary),
   gsc_queries: z.array(gscQueryRowSchema).default([])
+,
+  trend: trendSchema.optional()
 });
 
 /** Shared row shape for PageSpeed + multi-service sync queue tables (`*_queue_details`). */
@@ -989,6 +1043,7 @@ export const settingsSchema = z.object({
     anthropic_api_key: z.string().default(""),
     dataforseo_api_login: z.string().default(""),
     dataforseo_api_password: z.string().default(""),
+    open_page_rank_api_key: z.string().default(""),
     serpapi_api_key: z.string().default(""),
     openrouter_api_key: z.string().default(""),
     ollama_api_key: z.string().default(""),
@@ -1245,3 +1300,44 @@ export const shopifyShopInfoSchema = z.object({
 });
 
 export type ShopifyShopInfo = z.infer<typeof shopifyShopInfoSchema>;
+
+// ---------------------------------------------------------------------------
+// GSC Opportunity Inbox
+// ---------------------------------------------------------------------------
+
+export const opportunityItemSchema = z.object({
+  id: z.string(),
+  query: z.string(),
+  page_url: z.string(),
+  page_type: z.string(),
+  object_type: z.string(),
+  object_handle: z.string(),
+  impressions: z.number(),
+  clicks: z.number(),
+  ctr: z.number(),
+  position: z.number(),
+  opportunity_score: z.number(),
+  suggested_action: z.string(),
+  content_type: z.string(),
+  fetched_at: z.number().nullable().optional()
+});
+
+export const opportunitiesPayloadSchema = z.object({
+  items: z.array(opportunityItemSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+  has_more: z.boolean()
+});
+
+export const opportunityStatsSchema = z.object({
+  total_queries: z.number(),
+  striking_distance: z.number(),
+  quick_wins: z.number(),
+  high_impressions_low_ctr: z.number(),
+  by_page_type: z.record(z.string(), z.number())
+});
+
+export type OpportunityItem = z.infer<typeof opportunityItemSchema>;
+export type OpportunitiesPayload = z.infer<typeof opportunitiesPayloadSchema>;
+export type OpportunityStats = z.infer<typeof opportunityStatsSchema>;

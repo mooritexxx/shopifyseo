@@ -31,8 +31,10 @@ from .competitor_blocklist import (
 )
 from .keyword_db import (
     OPPORTUNITY_SCORING_VERSION,
-    TARGET_KEY,
     apply_competitor_traffic_from_provider_batch,
+    load_target_keywords,
+    normalize_target_keyword_item,
+    save_target_keywords,
     sync_competitor_keyword_gaps,
     sync_competitor_profiles,
     sync_competitor_top_pages,
@@ -41,7 +43,6 @@ from .keyword_db import (
     sync_keyword_page_map,
     update_competitor_profile_organic_sample_count,
 )
-from .keyword_db import load_target_keywords
 from .keyword_utils import (
     batch_seeds,
     classify_intent,
@@ -300,12 +301,13 @@ def _finalize_keyword_research(
             item.setdefault("competitor_url", item.get("best_position_url"))
             item.setdefault("competitor_position_kind", item.get("best_position_kind"))
 
-    existing_raw = get_service_setting(conn, TARGET_KEY, "{}")
-    try:
-        existing_data = json.loads(existing_raw)
-    except json.JSONDecodeError:
-        existing_data = {}
+    existing_data = load_target_keywords(conn)
     existing_items = existing_data.get("items", [])
+
+    # New research rows already set content_type via classify_intent; normalize
+    # again so every persisted row keeps the key (real vocabulary, never omitted).
+    for item in deduped:
+        normalize_target_keyword_item(item, for_insert=True)
 
     merged = merge_with_existing(existing_items, deduped)
     recompute_opportunity_scores(merged)
@@ -319,7 +321,7 @@ def _finalize_keyword_research(
         "errors": errors if errors else None,
         "opportunity_scoring_version": OPPORTUNITY_SCORING_VERSION,
     }
-    set_service_setting(conn, TARGET_KEY, json.dumps(result))
+    save_target_keywords(conn, result)
     try:
         sync_keyword_metrics_to_db(conn)
     except Exception:
@@ -664,7 +666,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
             continue
         # Overwrite metrics from fresh data
         item["volume"] = fresh.get("volume", item.get("volume", 0))
-        item["difficulty"] = fresh.get("difficulty", item.get("difficulty", 0))
+        item["difficulty"] = fresh.get("difficulty", item.get("difficulty"))
         item["traffic_potential"] = fresh.get("traffic_potential", item.get("traffic_potential", 0))
         item["cpc"] = fresh.get("cpc", item.get("cpc"))
         # Update intent classification
@@ -698,7 +700,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
     if errors:
         data["metrics_refresh_errors"] = errors
 
-    set_service_setting(conn, TARGET_KEY, json.dumps(data))
+    save_target_keywords(conn, data)
     try:
         sync_keyword_metrics_to_db(conn)
     except Exception:

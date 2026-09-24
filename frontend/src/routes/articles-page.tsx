@@ -28,6 +28,8 @@ import { allArticlesSchema, blogShopifyIdSchema } from "../types/api";
 import { z } from "zod";
 
 const ARTICLE_SORT_KEYS = new Set([
+  "gsc_clicks_delta",
+  "gsc_impressions_delta",
   "article_name",
   "title",
   "updated_at",
@@ -53,6 +55,7 @@ const columns: Column[] = [
   { key: "index_status", label: "Status", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[7.6%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[7.6%]" },
   { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[7.6%]" },
   { key: "ga4_sessions", label: "Sessions", align: "center", widthClass: "w-[7.6%]" },
   { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[6.5%]" },
@@ -210,7 +213,7 @@ export function ArticlesPage() {
     let items = query.data?.items ?? [];
     if (focusMissingMeta) {
       items = items.filter(
-        (row) => !(row.seo_title || "").trim() && !(row.seo_description || "").trim()
+        (row) => !(row.seo_title || "").trim() || !(row.seo_description || "").trim()
       );
     }
     if (!queryText.trim()) return items;
@@ -274,7 +277,7 @@ export function ArticlesPage() {
           </p>
           {focusMissingMeta ? (
             <p className="mt-2 text-sm font-medium text-[#5746d9]">
-              Showing articles with SEO title and description both empty ·{" "}
+              Showing articles with SEO title or description missing ·{" "}
               <Button
                 variant="link"
                 className="h-auto p-0 text-inherit font-inherit underline-offset-4 hover:underline"

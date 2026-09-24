@@ -1,6 +1,6 @@
 import json
 
-from .config import BODY_MIN_LENGTH, DESCRIPTION_HARD_MIN, DESCRIPTION_LIMIT, DESCRIPTION_TARGET_MIN, TITLE_HARD_MIN, TITLE_LIMIT, TITLE_TARGET_MIN
+from .config import BODY_MIN_LENGTH, DESCRIPTION_HARD_MIN, DESCRIPTION_LIMIT, DESCRIPTION_TARGET_MAX, DESCRIPTION_TARGET_MIN, TITLE_HARD_MIN, TITLE_LIMIT, TITLE_TARGET_MIN
 from .context import _slim_keyword_context, condensed_context, curated_primary_object, infer_product_intent, json_list, prompt_context, signal_availability_summary, strip_html, word_count
 
 _GSC_QUERY_HIGHLIGHTS_MAX = 3
@@ -46,6 +46,23 @@ def _gsc_query_highlights_for_slim(full_context: dict) -> list[dict]:
     return out
 
 
+_STORE_DESCRIPTION_MAX_LEN = 500
+
+
+def _load_store_description(conn) -> str:
+    """Load store_description from settings, trimmed for prompt injection."""
+    if conn is None:
+        return ""
+    try:
+        from shopifyseo.dashboard_google import get_service_setting
+        raw = (get_service_setting(conn, "store_description") or "").strip()
+        if len(raw) > _STORE_DESCRIPTION_MAX_LEN:
+            return raw[:_STORE_DESCRIPTION_MAX_LEN - 1] + "…"
+        return raw
+    except Exception:
+        return ""
+
+
 def _market_ctx(conn=None) -> dict:
     """Return a dict of market-specific values for prompt interpolation.
 
@@ -60,8 +77,11 @@ def _market_ctx(conn=None) -> dict:
             "adjective": "Canadian",
             "ship": "shipped across Canada",
             "avail": "available in Canada",
+            "prompt_fragment": "",
+            "store_description": "",
         }
     from shopifyseo.market_context import (
+        build_market_prompt_fragment,
         country_display_name,
         get_primary_country_code,
         shipping_cue,
@@ -85,6 +105,8 @@ def _market_ctx(conn=None) -> dict:
         "adjective": adjective,
         "ship": ship_phrase,
         "avail": avail_phrase,
+        "prompt_fragment": build_market_prompt_fragment(conn),
+        "store_description": _load_store_description(conn),
     }
 
 
@@ -140,7 +162,7 @@ def response_schema(object_type: str, conn=None) -> dict:
     """Build a JSON Schema for OpenAI structured output with length constraints on SEO fields."""
     title_min = TITLE_TARGET_MIN.get(object_type, 45)
     title_max = TITLE_LIMIT
-    desc_min = DESCRIPTION_TARGET_MIN.get(object_type, 135)
+    desc_min = DESCRIPTION_TARGET_MIN.get(object_type, 145)
     desc_max = DESCRIPTION_LIMIT
     body_min = BODY_MIN_LENGTH.get(object_type, 300)
 
@@ -153,7 +175,7 @@ def response_schema(object_type: str, conn=None) -> dict:
         },
         "seo_description": {
             "type": "string",
-            "description": f"SEO meta description. Target {desc_min}-150 characters. Hard ceiling is {desc_max} — stay at or below 150. Count every character including spaces.",
+            "description": f"SEO meta description. Target {desc_min}-{desc_max} characters, maximizing toward {desc_max}. Fill the space with relevant detail — short descriptions hurt CTR. Count every character including spaces.",
             "minLength": desc_min,
             "maxLength": desc_max,
         },
@@ -204,7 +226,7 @@ def single_field_response_schema(object_type: str, field: str) -> dict:
     """Build a JSON Schema for a single-field regeneration response."""
     title_min = TITLE_TARGET_MIN.get(object_type, 45)
     title_max = TITLE_LIMIT
-    desc_min = DESCRIPTION_TARGET_MIN.get(object_type, 135)
+    desc_min = DESCRIPTION_TARGET_MIN.get(object_type, 145)
     desc_max = DESCRIPTION_LIMIT
     body_min = BODY_MIN_LENGTH.get(object_type, 300)
 
@@ -218,7 +240,7 @@ def single_field_response_schema(object_type: str, field: str) -> dict:
     elif field == "seo_description":
         field_schema = {
             "type": "string",
-            "description": f"SEO meta description. Target {desc_min}-{desc_max} characters. Must not exceed {desc_max}.",
+            "description": f"SEO meta description. Target {desc_min}-{desc_max} characters, maximizing toward {desc_max}. Fill the space with relevant detail — short descriptions hurt CTR. Must not exceed {desc_max}.",
             "minLength": desc_min,
             "maxLength": desc_max,
         }
@@ -283,35 +305,36 @@ def object_field_instructions(object_type: str, conn=None) -> str:
 
     if object_type == "product":
         return (
-            "seo_title: Fill the 50–65 character range, maximizing toward 65 characters when possible. Lead with Brand + Model + Flavor. "
+            f"seo_title: Fill the 50–65 character range, maximizing toward 65 characters when possible. Lead with Brand + Model + Flavour. "
             "After the key descriptor, add a differentiating spec term or product attribute so the brand+model+descriptor block reaches at least 34 characters. "
             f"When space permits, append '{m['name']}' after the spec terms to reinforce geographic targeting. "
             f"Then append '{_brand_suffix}' ({_brand_suffix_len} characters including the space and pipe). "
             f"If the full string with '{_brand_suffix}' exceeds 65 characters, drop '{_brand_suffix}' first; if still over 65, drop '{m['name']}'. "
             f"When '{_brand_suffix}' is dropped, also drop the ' | ' pipe separator — never leave a trailing ' | ' at the end of the title. "
-            "Always maximize the title length toward 65 characters by including additional relevant keywords when space allows, rather than stopping at the minimum.\n"
-            "seo_description: Target 140–150 characters (hard ceiling is 155 — stay at or below 150 to leave margin for counting error). "
+            f"Always maximize the title length toward 65 characters by including additional relevant keywords when space allows, rather than stopping at the minimum. {m['spelling']}\n"
+            "seo_description: Target 150–160 characters (hard ceiling is 160). "
+            "Maximise toward 160 — short descriptions hurt CTR. "
             "Count every character — spaces included — before finalising. "
-            "Lead with the strongest transactional hook — brand name plus device type or flavor — to capture intent immediately. "
+            "Lead with the strongest transactional hook — brand name plus device type or flavour — to capture intent immediately. "
             "Add the most compelling differentiator: key product attribute, spec options, or variety. "
-            f"End with a natural {m['adjective']} buying signal. "
+            f"End with a natural {m['adjective']} buying signal. {m['spelling']}\n"
             "Do not echo the seo_title verbatim — complement it with secondary intent such as use case, spec detail, or buying trigger.\n"
             "seo_title and seo_description must target complementary keyword angles. Do not repeat the same exact phrase in both. "
-            "The title should lead with the primary commercial keyword (brand + model + flavor), while the description should expand on secondary intent "
+            "The title should lead with the primary commercial keyword (brand + model + flavour), while the description should expand on secondary intent "
             "(use case, differentiator, buying trigger) without echoing the title verbatim.\n"
             "body: Minimum 1,500 characters of HTML (schema-enforced). Aim for at least 300 words of visible text. "
-            "Must include a dedicated flavor profile section. Use five sections in this order: "
+            "Must include a dedicated flavour profile section. Use five sections in this order: "
             "(1) answer-first opening of 40–60 words in store voice, "
-            "(2) flavor profile with a question-based H2 or H3 heading, "
+            "(2) flavour profile with a question-based H2 or H3 heading, "
             "(3) supporting device or spec section, "
-            "(4) who-it's-for or related-flavor guidance, "
+            "(4) who-it's-for or related-flavour guidance, "
             "(5) natural internal-link mentions — use only the exact `url` values from approved_internal_link_targets (full store URL strings), "
             "and always include a descriptive title attribute for SEO and accessibility. "
             "For collection links use 'Shop [Title] — Store Name', for product links use '[Title] — Store Name', "
             "for articles use 'Read [Title] — Store Name' "
             "(e.g. `<a href=\"URL\" title=\"Shop Products — {store_name}\">anchor text</a>`). "
-            "Make flavor the primary merchandising story and treat specs as supporting context. "
-            f"Include a natural {m['adjective']} market reference in the body (e.g. {m['avail']}, {m['adjective']} shoppers, {m['ship']}) — one or two mentions, not forced.\n"
+            "Make flavour the primary merchandising story and treat specs as supporting context. "
+            f"Include a natural {m['adjective']} market reference in the body (e.g. {m['avail']}, {m['adjective']} shoppers, {m['ship']}) — one or two mentions, not forced. {m['spelling']}\n"
             f"tags: Comma-separated taxonomy tags. Include: brand, model family, product type, any relevant product attributes, and '{m['name'].lower()}' as a geographic tag. "
             "Keep them clean, lowercase, and normalized for store filtering and collection logic.\n"
             "Do not rewrite the product title unless explicitly asked. When specs are already repetitive, expand product details, use-case, and shopper-fit language instead of repeating specs.\n"
@@ -340,7 +363,7 @@ def object_field_instructions(object_type: str, conn=None) -> str:
         return (
             "seo_title: Max 65 characters and focused on category intent. Maximize toward 65 characters when possible. "
             f"When space permits within the 65-character limit, include '{m['name']}' naturally (e.g. 'Best Disposable Vapes {m['name']}'); drop it if the title would exceed the limit.\n"
-            f"seo_description: 140-155 characters with a strong commercial summary. End with a natural {m['adjective']} buying signal when space allows.\n"
+            f"seo_description: Target 150-160 characters, maximising toward 160. Short descriptions hurt CTR. End with a natural {m['adjective']} buying signal when space allows.\n"
             f"body: Minimum {bmin} characters of HTML (schema-enforced). Build category depth, hub value, and clear collection intent. "
             f"Include a natural {m['adjective']} market reference (e.g. 'Shop [category] online in {m['name']}' or '{m['adjective']} shoppers') — one or two mentions, not forced. "
             "Use H2 or H3 headings for scannability. "
@@ -406,7 +429,7 @@ def object_field_instructions(object_type: str, conn=None) -> str:
             "This is distinct from seo_title — it is the visible H1, not the meta tag.\n"
             "seo_title: Max 65 characters, aligned to the article topic and search intent. Maximize toward 65 characters when possible. "
             f"When space permits, include '{m['name']}' naturally to reinforce geographic targeting; drop it if the title would exceed the limit.\n"
-            f"seo_description: 140-155 characters with a concrete summary and click incentive. End with a natural {m['adjective']} buying or reading signal when space allows.\n"
+            f"seo_description: Target 150-160 characters, maximising toward 160. Short descriptions hurt CTR. End with a natural {m['adjective']} buying or reading signal when space allows.\n"
             + page_like_body.replace(
                 "Build trust, clarity, and useful detail.",
                 "Build editorial depth for this blog post (news, guide, or story — not generic product-SKU copy).",
@@ -415,7 +438,7 @@ def object_field_instructions(object_type: str, conn=None) -> str:
     return (
         "seo_title: Max 65 characters and aligned to the page's real intent. Maximize toward 65 characters when possible. "
         f"When space permits, include '{m['name']}' naturally to reinforce geographic targeting; drop it if the title would exceed the limit.\n"
-        f"seo_description: 140-155 characters with a concrete summary. End with a natural {m['adjective']} signal when space allows.\n"
+        f"seo_description: Target 150-160 characters, maximising toward 160. Short descriptions hurt CTR. End with a natural {m['adjective']} signal when space allows.\n"
         + page_like_body.replace(
             "Build trust, clarity, and useful detail.",
             "Build trust, clarity, and useful detail for this page's real intent (brand, guide, policy, support — not generic product copy). ",
@@ -954,7 +977,7 @@ def review_user_prompt(
     pc = prompt_context_dict if prompt_context_dict is not None else prompt_context(context)
     context_json = json.dumps(pc, ensure_ascii=True)
     sections = [
-        xml_block("task", f"Review this {object_type} SEO recommendation draft. For each field, decide: approve (strong as-is), improve (targeted fix), or rewrite (too weak). Focus on: title length/brand coverage, meta description commercial hook, body flavor depth vs spec repetition, {m['adjective']} targeting, and opening originality. If the draft's seo_title exceeds 65 characters or seo_description exceeds 155 characters, you must shorten them to within these limits while preserving the best wording; output that exceeds these limits is invalid. Prefer seo_title lengths closer to 65 characters when additional relevant keywords are available."),
+        xml_block("task", f"Review this {object_type} SEO recommendation draft. For each field, decide: approve (strong as-is), improve (targeted fix), or rewrite (too weak). Focus on: title length/brand coverage, meta description commercial hook and length (aim for 150-160 chars), body flavour depth vs spec repetition, {m['adjective']} targeting, and opening originality. If the draft's seo_title exceeds 65 characters, shorten it while preserving the best wording. If seo_description exceeds 160 characters, shorten it; if under 150 characters, expand it with relevant detail — short descriptions hurt CTR. Use Commonwealth English spelling (flavour, vapour, colour). Prefer seo_title lengths closer to 65 characters when additional relevant keywords are available."),
         xml_block("signal_narrative", signal_narrative),
         xml_block("qa_feedback", qa_feedback or "No specific QA issues flagged."),
         xml_block("draft", draft_json),
@@ -963,10 +986,24 @@ def review_user_prompt(
     return "\n\n".join(sections)
 
 
-def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> str:
+def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=None) -> str:
     from .config import get_store_identity
     _store_name, _ = get_store_identity()
     _brand = _store_name or "the store"
+    m = _market_ctx(conn)
+
+    # Build brand voice block for products when store_description is available
+    _brand_voice_block = ""
+    if object_type == "product" and m.get("store_description"):
+        _brand_voice_block = (
+            f" Brand positioning for {_brand} (reflect this voice naturally; do not quote verbatim): "
+            f"{m['store_description']}"
+        )
+
+    # Market context block for products
+    _market_block = ""
+    if object_type == "product" and m.get("prompt_fragment"):
+        _market_block = f" {m['prompt_fragment']}"
 
     if field == "seo_title":
         return "\n".join([
@@ -974,14 +1011,19 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 f"You are the senior SEO strategist for {_brand}. "
                 "Your sole task is to write one SEO title string for a single product, collection, or page. "
                 "Output nothing except that title inside the required JSON object."
+                + _brand_voice_block
             )),
             xml_block("constraints", (
                 "Use only the confirmed facts provided in <context>. "
-                "Do not invent specs, flavors, puff counts, or claims. "
+                f"Do not invent specs, flavours, puff counts, or claims. "
                 "The title must be plain text — no HTML, no markdown, no line breaks. "
                 f"The only permitted non-word punctuation is a single ' | ' separator before the {_brand} suffix. "
                 "Never end the title with ' | ' or ' |' — if the brand suffix is omitted, omit the pipe separator too. "
+                "CRITICAL: If the product name already includes a puff count (e.g. '4K', '10K', '10000'), do NOT repeat it as 'X Puffs' in the title — "
+                "this creates redundancy like 'Draggg 4K ... 4000 Puffs' which hurts readability and wastes character space. "
+                f"{m['spelling']} "
                 "Return valid JSON only."
+                + _market_block
             )),
             xml_block("profile", profile_instructions(prompt_profile, object_type)),
         ])
@@ -991,15 +1033,20 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 f"You are the senior SEO strategist for {_brand}. "
                 "Your sole task is to write one SEO meta description string for a single product, collection, or page. "
                 "Output nothing except that description inside the required JSON object."
+                + _brand_voice_block
             )),
             xml_block("constraints", (
                 "Use only the confirmed facts provided in <context>. "
-                "Do not invent puff counts, shipping promises, nicotine specs, or claims not present in the data. "
+                f"Do not invent puff counts, shipping promises, nicotine specs, or claims not present in the data. "
                 "The description must be plain text — no HTML, no markdown, no line breaks. "
-                "Must be 140–150 characters. The hard ceiling is 155 — target 150 to leave a counting margin. "
-                "Count every character including spaces before finalising. "
+                "CRITICAL LENGTH: Target exactly 150–160 characters. The hard floor is 150, hard ceiling is 160. "
+                "Aim as close to 160 as possible — short descriptions hurt CTR. "
+                "Count every single character (including spaces) before finalising. "
+                "If under 150, expand with useful product or Canada-market detail — never pad with fluff. "
                 "Do not echo the accepted seo_title verbatim. "
+                f"{m['spelling']} "
                 "Return valid JSON only."
+                + _market_block
             )),
             xml_block("profile", profile_instructions(prompt_profile, object_type)),
         ])
@@ -1011,17 +1058,22 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str) -> st
                 "Your task is to write the body HTML content for a single product. "
                 "The body must be commercially specific, structured for scannability, "
                 "and compliant for the store's market."
+                + _brand_voice_block
             )
             constraints = (
                 "Use only the confirmed facts in <context>. "
-                "Do not invent specs, puff counts, flavors, shipping claims, or health assertions. "
+                f"Do not invent specs, puff counts, flavours, shipping claims, or health assertions. "
                 "Output valid Shopify-compatible HTML only — no markdown fences, no plain text responses. "
                 f"Minimum {body_min} characters. Use question-based H2 or H3 headings. "
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
                 + _RAG_INTERNAL_LINK_PREFERENCE
                 + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                "AVOID generic padding links like 'New Arrivals' or 'All Products' at the end of the body — "
+                "prefer contextually relevant links from the same collection, brand, or flavour family that appear in `related_content_examples`. "
                 "Do not make health, cessation, or medical claims. "
+                f"{m['spelling']} "
                 "Return valid JSON only."
+                + _market_block
             )
         elif object_type == "collection":
             role = (
@@ -1193,36 +1245,43 @@ def field_review_user_prompt(
     accepted_json = json.dumps(accepted_fields, ensure_ascii=True)
     if field == "seo_title":
         task_text = (
-            "Review this regenerated seo_title against these five checks:\n"
+            "Review this regenerated seo_title against these eight checks:\n"
             f"1. Length: must be 50–65 characters — count every character carefully; reject anything outside this range. Prefer titles closer to 65 characters when additional relevant keywords (e.g., product type, key attribute, '{m['name']}') are available.\n"
             "2. Structure: must lead with Brand + Model + key product descriptor, followed by a differentiating spec or attribute term.\n"
             f"3. Suffix: '{_brand_suffix}' ({_brand_suffix_len} characters including the space and pipe) should be appended if the total stays ≤ 65 characters. If space allows, maximize toward 65 characters by including additional relevant spec terms or '{m['name']}' before the suffix.\n"
             "4. Plain text only: no HTML tags, no markdown, no line breaks, no extra punctuation beyond the single ' | ' separator.\n"
-            "5. Facts only: every term must be present in the provided <context> — do not invent specs, flavors, or claims.\n"
+            "5. Facts only: every term must be present in the provided <context> — do not invent specs, flavours, or claims.\n"
             f"6. Geographic signal: '{m['name']}' is desirable when space permits — if the title is under 58 characters without it, suggest adding it before the brand suffix.\n"
-            "Approve if all six checks pass. Improve or rewrite if any fail, correcting only the specific issue."
+            "7. No redundant puff count: if the product name already includes a puff count (e.g. '10000' in 'Draggg 10K'), do NOT repeat it elsewhere in the title (e.g. do NOT write 'Draggg 10K ... 10000 Puffs').\n"
+            "8. Spelling: must use Commonwealth English spelling (e.g. 'flavour', 'vapour', 'colour') — reject American spellings like 'flavor', 'vapor', 'color'.\n"
+            "Approve if all eight checks pass. Improve or rewrite if any fail, correcting only the specific issue."
         )
     elif field == "seo_description":
         task_text = (
-            "Review this regenerated seo_description against these five checks:\n"
-            "1. Length: must be 140–155 characters — count every character carefully; reject anything outside this range.\n"
-            "2. Hook: must lead with the strongest transactional signal — brand name plus device type or flavor.\n"
+            "Review this regenerated seo_description against these six checks:\n"
+            "1. Length: must be 150–160 characters — count every character carefully; reject anything outside this range. "
+            "Prefer descriptions closer to 160 characters — short descriptions hurt CTR.\n"
+            "2. Hook: must lead with the strongest transactional signal — brand name plus device type or flavour.\n"
             "3. Differentiator: must include the most compelling product differentiator (key spec, unique attribute, or product variety).\n"
             f"4. {m['adjective']} signal: must include a natural buying signal appropriate for a {m['adjective']} online store.\n"
             "5. Complementarity: must not echo the accepted seo_title verbatim — must target secondary intent (use case, spec detail, or buying trigger).\n"
-            "Approve if all five checks pass. Improve or rewrite if any fail, correcting only the specific issue."
+            "6. Spelling: must use Commonwealth English spelling (e.g. 'flavour', 'vapour', 'colour') — reject American spellings.\n"
+            "Approve if all six checks pass. Improve or rewrite if any fail, correcting only the specific issue."
         )
     elif field == "body":
         body_min = BODY_MIN_LENGTH.get(object_type, 300)
         if object_type == "product":
             task_text = (
-                "Review this regenerated body HTML against these five checks:\n"
+                "Review this regenerated body HTML against these seven checks:\n"
                 "1. Length: must be at least 1,500 characters of HTML — count the full string including tags.\n"
-                "2. Structure: must follow the five-section order — answer-first opening, flavor profile with H2/H3, specs section, who-it's-for guidance, internal-link mentions.\n"
-                "3. Flavor-led: flavor must be the primary merchandising story; specs should be supporting context only.\n"
-                "4. Links: every `<a href>` must exactly match a `url` from `approved_internal_link_targets` in <context> — reject invented URLs.\n"
+                "2. Structure: must follow the five-section order — answer-first opening, flavour profile with H2/H3, specs section, who-it's-for guidance, internal-link mentions.\n"
+                "3. Flavour-led: flavour must be the primary merchandising story; specs should be supporting context only.\n"
+                "4. Links: every `<a href>` must exactly match a `url` from `approved_internal_link_targets` in <context> — reject invented URLs. "
+                "Avoid generic footer links like 'New Arrivals' or 'All Products' when better same-collection or category links exist in `related_content_examples`.\n"
                 "5. Compliance: no health claims, no cessation claims, no invented product specs or shipping promises.\n"
-                "Approve if all five checks pass. Improve or rewrite if any fail, correcting only the specific issue."
+                "6. Spelling: must use Commonwealth English spelling throughout (e.g. 'flavour', 'vapour', 'colour', 'favourite') — reject American spellings.\n"
+                "7. No redundant puff count: if the product name includes a puff count (e.g. '10000'), do not repeat it redundantly in headings or body copy.\n"
+                "Approve if all seven checks pass. Improve or rewrite if any fail, correcting only the specific issue."
             )
         elif object_type == "collection":
             task_text = (

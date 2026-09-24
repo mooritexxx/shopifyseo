@@ -5,6 +5,23 @@ from . import dashboard_google as dg
 
 
 ORIGINAL_ENV = dict(os.environ)
+
+# Secret keys that should NOT be wiped when an empty value is submitted.
+# These are API keys/passwords/secrets that could break the pipeline if blanked accidentally.
+SECRET_SETTING_KEYS = frozenset({
+    "shopify_client_secret",
+    "dataforseo_api_password",
+    "open_page_rank_api_key",
+    "serpapi_api_key",
+    "google_client_secret",
+    "openai_api_key",
+    "gemini_api_key",
+    "anthropic_api_key",
+    "openrouter_api_key",
+    "ollama_api_key",
+    "google_ads_developer_token",
+})
+
 RUNTIME_SETTING_KEYS = (
     "store_name",
     "store_description",
@@ -17,6 +34,7 @@ RUNTIME_SETTING_KEYS = (
     "shopify_client_secret",
     "dataforseo_api_login",
     "dataforseo_api_password",
+    "open_page_rank_api_key",
     "serpapi_api_key",
     "google_client_id",
     "google_client_secret",
@@ -53,6 +71,7 @@ _ENV_MAPPING = {
     "shopify_client_secret": "SHOPIFY_CLIENT_SECRET",
     "dataforseo_api_login": "DATAFORSEO_API_LOGIN",
     "dataforseo_api_password": "DATAFORSEO_API_PASSWORD",
+    "open_page_rank_api_key": "OPEN_PAGE_RANK_API_KEY",
     "serpapi_api_key": "SERPAPI_API_KEY",
     "google_client_id": "GOOGLE_CLIENT_ID",
     "google_client_secret": "GOOGLE_CLIENT_SECRET",
@@ -113,3 +132,26 @@ def runtime_setting(conn: sqlite3.Connection, env_key: str, setting_key: str) ->
     if env_value:
         return env_value, "env"
     return "", "unset"
+
+
+# ---------------------------------------------------------------------------
+# Catalog-weight idea quota configuration (C4.x)
+# ---------------------------------------------------------------------------
+# When generating article ideas from clusters, apply vendor/brand quotas
+# weighted by catalog SKU share. These values are configurable defaults.
+
+# Minimum share of ideas for top catalog vendors (0.0-1.0).
+# Top vendors (by SKU count) should get at least this share of total ideas.
+# For example, 0.4 means top vendors should get at least 40% of ideas.
+IDEA_QUOTA_MIN_TOP_VENDOR_SHARE = float(os.getenv("IDEA_QUOTA_MIN_TOP_VENDOR_SHARE", "0.4"))
+
+# Maximum share of generic (non-brand-specific) ideas (0.0-1.0).
+# Generic ideas are those not tied to any specific vendor/brand.
+# For example, 0.3 means at most 30% of ideas can be generic.
+IDEA_QUOTA_MAX_GENERIC_SHARE = float(os.getenv("IDEA_QUOTA_MAX_GENERIC_SHARE", "0.3"))
+
+# Minimum number of top vendors to consider for quota calculations.
+IDEA_QUOTA_MIN_TOP_VENDORS = int(os.getenv("IDEA_QUOTA_MIN_TOP_VENDORS", "3"))
+
+# Whether to enable catalog-weight quotas for idea generation.
+IDEA_QUOTA_ENABLED = os.getenv("IDEA_QUOTA_ENABLED", "true").lower() in ("true", "1", "yes")

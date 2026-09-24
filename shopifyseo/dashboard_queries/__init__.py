@@ -19,11 +19,14 @@ from __future__ import annotations
 
 # Re-exports from sibling top-level modules (preserve historical import paths).
 from ..dashboard_article_ideas import (  # noqa: F401
+    SERP_FRESHNESS_TTL_SECONDS,
     bulk_delete_article_ideas,
     bulk_update_idea_status,
+    check_idea_cannibalization,
     compute_idea_performance,
     compute_keyword_coverage,
     delete_article_idea,
+    ensure_idea_serp_fresh,
     fetch_article_idea_inputs,
     fetch_article_ideas,
     fetch_idea_articles,
@@ -79,11 +82,22 @@ from ._basic_fetchers import (  # noqa: F401
     fetch_all_pages,
     fetch_all_products,
     fetch_articles_by_blog_handle,
+    fetch_blog_articles_for_facts,
     fetch_blog_by_handle,
+    fetch_catalog_meta_metrics,
+    fetch_collections_for_facts,
     fetch_counts,
+    fetch_index_status_counts,
     fetch_overview_metrics,
+    fetch_signal_totals,
+    fetch_pages_for_facts,
+    fetch_products_for_facts,
     fetch_recent_runs,
     fetch_top_organic_pages,
+    BLOG_ARTICLE_FACT_COLUMNS,
+    COLLECTION_FACT_COLUMNS,
+    PAGE_FACT_COLUMNS,
+    PRODUCT_FACT_COLUMNS,
 )
 from ._seo_facts import (  # noqa: F401
     _seo_base_score,

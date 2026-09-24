@@ -1,7 +1,10 @@
 import { AlertTriangle, ArrowUpDown, Check, Eye } from "lucide-react";
+import { memo } from "react";
 import { Link } from "react-router-dom";
 import { cn, formatNumber, formatPercent } from "../../lib/utils";
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "./table";
+import { TrendCell } from "./trend-cell";
+import type { Trend } from "../../types/api";
 
 export const listTableNameLinkClassName = "text-[calc(10px-1pt)]";
 
@@ -39,6 +42,208 @@ function formatCellValue(value: unknown, key: string): string {
   }
   return String(value);
 }
+
+/**
+ * One table row, memoized on plain data props.
+ *
+ * Row links arrive as resolved strings rather than callbacks so that the inline
+ * arrow functions the list pages pass to `DataTable` cannot invalidate the memo
+ * on every render. Reordering the list (client-side sorting) then reuses these
+ * rows: React moves the existing DOM nodes and skips re-rendering ~12 cells
+ * apiece, instead of rebuilding every cell in the table.
+ */
+const DataTableRow = memo(function DataTableRow({
+  columns,
+  row,
+  rowLink,
+  rowExternalLink,
+  rowExternalLinkTitle,
+  nameLinkClassName
+}: {
+  columns: Column[];
+  row: Record<string, unknown>;
+  rowLink: string;
+  rowExternalLink?: string;
+  rowExternalLinkTitle?: string;
+  nameLinkClassName?: string;
+}) {
+  return (
+    <TableRow className="border-b border-[#e8eef6] align-middle last:border-b-0">
+      {columns.map((column, colIndex) => {
+        const isLastColumn = colIndex === columns.length - 1;
+        const cellPadding = isLastColumn ? "pl-4 pr-8" : "px-4";
+        if (column.key === "title" || column.key === "article_name") {
+          const label =
+            column.key === "article_name"
+              ? String(row.article_name ?? row.title ?? "")
+              : String(row.title || "");
+          return (
+            <TableCell
+              key={column.key}
+              className={cn(
+                "border-b border-[#e8eef6] bg-white py-4 text-left min-w-0",
+                cellPadding,
+                column.widthClass
+              )}
+            >
+              <div className="flex min-w-0 max-w-full items-center gap-2">
+                <Link
+                  className={cn(
+                    "block min-w-0 truncate font-semibold text-ink transition hover:text-ocean",
+                    nameLinkClassName ?? "text-[10px]"
+                  )}
+                  to={rowLink}
+                >
+                  {label}
+                </Link>
+                {rowExternalLink ? (
+                  <a
+                    className="shrink-0 text-slate-400 transition hover:text-ocean"
+                    href={rowExternalLink}
+                    rel="noreferrer"
+                    target="_blank"
+                    title={rowExternalLinkTitle ?? "Open live page"}
+                  >
+                    <Eye size={14} />
+                  </a>
+                ) : null}
+              </div>
+            </TableCell>
+          );
+        }
+        if (column.key === "content_status") {
+          return (
+            <TableCell key={column.key} className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`} title={isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? "Meta title, meta description, and body are filled" : "Meta title, meta description, or body is missing"}>
+              {isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? (
+                <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Content complete" />
+              ) : (
+                <AlertTriangle size={18} className="inline-block text-[#b34747]" aria-label="Content incomplete" />
+              )}
+            </TableCell>
+          );
+        }
+        if (column.key === "published_label") {
+          const live =
+            row.is_published === true ||
+            String(row.published_label ?? "")
+              .trim()
+              .toLowerCase() === "yes";
+          return (
+            <TableCell
+              key={column.key}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              title={live ? "Published" : "Not published"}
+            >
+              {live ? (
+                <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Published" />
+              ) : (
+                <span className="text-slate-400">—</span>
+              )}
+            </TableCell>
+          );
+        }
+        if (column.key === "index_status") {
+          const raw = String(row.index_status ?? "").trim() || "Unknown";
+          const indexed = raw.toLowerCase() === "indexed";
+          return (
+            <TableCell
+              key={column.key}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              title={raw}
+            >
+              {indexed ? (
+                <Check
+                  size={18}
+                  className="inline-block text-[#1c7a4b]"
+                  aria-label={`Indexed (${raw})`}
+                />
+              ) : (
+                <AlertTriangle
+                  size={18}
+                  className="inline-block text-[#b34747]"
+                  aria-label={`Not indexed (${raw})`}
+                />
+              )}
+            </TableCell>
+          );
+        }
+        if (column.key === "gsc_segments") {
+          const flags = row.gsc_segment_flags as { has_dimensional?: boolean } | undefined;
+          const on = Boolean(flags?.has_dimensional);
+          return (
+            <TableCell
+              key={column.key}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center text-[10px] text-slate-600 min-w-0`}
+              title={
+                on
+                  ? "Query×segment GSC rows in cache (country, device, search appearance)"
+                  : "No dimensional GSC rows cached for this URL yet"
+              }
+            >
+              {on ? (
+                <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Segments available" />
+              ) : (
+                <span className="text-slate-400">—</span>
+              )}
+            </TableCell>
+          );
+        }
+        if (column.key === "gsc_clicks_delta") {
+          const trend = row.trend as Trend | undefined;
+          const pct = trend?.clicks_delta_pct ?? null;
+          return (
+            <TableCell
+              key={column.key}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              title={
+                trend
+                  ? `${trend.clicks_current} clicks in the last 30 days vs ${trend.clicks_previous} in the 30 before` +
+                    (pct === null ? " (no prior data to compare)" : "")
+                  : "No Search Console history stored for this page yet"
+              }
+            >
+              <TrendCell trend={trend} label={String(row.title ?? row.handle ?? "")} />
+            </TableCell>
+          );
+        }
+        const cellAlign =
+          column.align === "right"
+            ? "text-right"
+            : column.align === "center"
+              ? "text-center"
+              : "text-left";
+        const numericCell = column.key === "article_count" || column.key.endsWith("_count");
+        const longTextCell = column.key === "seo_title" || column.key === "body_preview";
+        return (
+          <TableCell
+            key={column.key}
+            className={cn(
+              "border-b border-[#e8eef6] bg-white py-4 text-[10px] text-slate-600 min-w-0",
+              cellPadding,
+              cellAlign,
+              column.widthClass
+            )}
+          >
+            <span
+              className={cn(
+                "block min-w-0 max-w-full font-semibold text-[10px] text-ink",
+                numericCell ? "tabular-nums" : "",
+                longTextCell
+                  ? "whitespace-normal break-words [overflow-wrap:anywhere] line-clamp-2"
+                  : !numericCell
+                    ? "truncate"
+                    : ""
+              )}
+              title={longTextCell ? String(row[column.key] ?? "") : undefined}
+            >
+              {formatCellValue(row[column.key], column.key)}
+            </span>
+          </TableCell>
+        );
+      })}
+    </TableRow>
+  );
+});
 
 export function DataTable({
   columns,
@@ -126,169 +331,21 @@ export function DataTable({
         </TableHeader>
         <TableBody>
           {rows.map((row, index) => (
-            <TableRow
+            <DataTableRow
               key={
                 row.blog_handle != null && row.handle != null
                   ? `${String(row.blog_handle)}/${String(row.handle)}`
                   : String(row.handle ?? index)
               }
-              className="border-b border-[#e8eef6] align-middle last:border-b-0"
-            >
-              {columns.map((column, colIndex) => {
-                const isLastColumn = colIndex === columns.length - 1;
-                const cellPadding = isLastColumn ? "pl-4 pr-8" : "px-4";
-                if (column.key === "title" || column.key === "article_name") {
-                  const label =
-                    column.key === "article_name"
-                      ? String(row.article_name ?? row.title ?? "")
-                      : String(row.title || "");
-                  return (
-                    <TableCell
-                      key={column.key}
-                      className={cn(
-                        "border-b border-[#e8eef6] bg-white py-4 text-left min-w-0",
-                        cellPadding,
-                        column.widthClass
-                      )}
-                    >
-                      <div className="flex min-w-0 max-w-full items-center gap-2">
-                        <Link
-                          className={cn(
-                            "block min-w-0 truncate font-semibold text-ink transition hover:text-ocean",
-                            nameLinkClassName ?? "text-[10px]"
-                          )}
-                          to={getRowLink(row)}
-                        >
-                          {label}
-                        </Link>
-                        {getRowExternalLink ? (
-                          <a
-                            className="shrink-0 text-slate-400 transition hover:text-ocean"
-                            href={getRowExternalLink(row)}
-                            rel="noreferrer"
-                            target="_blank"
-                            title={getRowExternalLinkTitle ? getRowExternalLinkTitle(row) : "Open live page"}
-                          >
-                            <Eye size={14} />
-                          </a>
-                        ) : null}
-                      </div>
-                    </TableCell>
-                  );
-                }
-                if (column.key === "content_status") {
-                  return (
-                    <TableCell key={column.key} className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`} title={isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? "Meta title, meta description, and body are filled" : "Meta title, meta description, or body is missing"}>
-                      {isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? (
-                        <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Content complete" />
-                      ) : (
-                        <AlertTriangle size={18} className="inline-block text-[#b34747]" aria-label="Content incomplete" />
-                      )}
-                    </TableCell>
-                  );
-                }
-                if (column.key === "published_label") {
-                  const live =
-                    row.is_published === true ||
-                    String(row.published_label ?? "")
-                      .trim()
-                      .toLowerCase() === "yes";
-                  return (
-                    <TableCell
-                      key={column.key}
-                      className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
-                      title={live ? "Published" : "Not published"}
-                    >
-                      {live ? (
-                        <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Published" />
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </TableCell>
-                  );
-                }
-                if (column.key === "index_status") {
-                  const raw = String(row.index_status ?? "").trim() || "Unknown";
-                  const indexed = raw.toLowerCase() === "indexed";
-                  return (
-                    <TableCell
-                      key={column.key}
-                      className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
-                      title={raw}
-                    >
-                      {indexed ? (
-                        <Check
-                          size={18}
-                          className="inline-block text-[#1c7a4b]"
-                          aria-label={`Indexed (${raw})`}
-                        />
-                      ) : (
-                        <AlertTriangle
-                          size={18}
-                          className="inline-block text-[#b34747]"
-                          aria-label={`Not indexed (${raw})`}
-                        />
-                      )}
-                    </TableCell>
-                  );
-                }
-                if (column.key === "gsc_segments") {
-                  const flags = row.gsc_segment_flags as { has_dimensional?: boolean } | undefined;
-                  const on = Boolean(flags?.has_dimensional);
-                  return (
-                    <TableCell
-                      key={column.key}
-                      className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center text-[10px] text-slate-600 min-w-0`}
-                      title={
-                        on
-                          ? "Query×segment GSC rows in cache (country, device, search appearance)"
-                          : "No dimensional GSC rows cached for this URL yet"
-                      }
-                    >
-                      {on ? (
-                        <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Segments available" />
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </TableCell>
-                  );
-                }
-                const cellAlign =
-                  column.align === "right"
-                    ? "text-right"
-                    : column.align === "center"
-                      ? "text-center"
-                      : "text-left";
-                const numericCell = column.key === "article_count" || column.key.endsWith("_count");
-                const longTextCell = column.key === "seo_title" || column.key === "body_preview";
-                return (
-                  <TableCell
-                    key={column.key}
-                    className={cn(
-                      "border-b border-[#e8eef6] bg-white py-4 text-[10px] text-slate-600 min-w-0",
-                      cellPadding,
-                      cellAlign,
-                      column.widthClass
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "block min-w-0 max-w-full font-semibold text-[10px] text-ink",
-                        numericCell ? "tabular-nums" : "",
-                        longTextCell
-                          ? "whitespace-normal break-words [overflow-wrap:anywhere] line-clamp-2"
-                          : !numericCell
-                            ? "truncate"
-                            : ""
-                      )}
-                      title={longTextCell ? String(row[column.key] ?? "") : undefined}
-                    >
-                      {formatCellValue(row[column.key], column.key)}
-                    </span>
-                  </TableCell>
-                );
-              })}
-            </TableRow>
+              columns={columns}
+              row={row}
+              rowLink={getRowLink(row)}
+              rowExternalLink={getRowExternalLink ? getRowExternalLink(row) : undefined}
+              rowExternalLinkTitle={
+                getRowExternalLinkTitle ? getRowExternalLinkTitle(row) : undefined
+              }
+              nameLinkClassName={nameLinkClassName}
+            />
           ))}
         </TableBody>
       </table>

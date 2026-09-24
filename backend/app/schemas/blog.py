@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.trend import TrendPayload
+
 
 class BlogListItem(BaseModel):
     handle: str
@@ -53,6 +55,7 @@ class AllArticleListItem(BlogArticleListItem):
     workflow_status: str = "Needs fix"
     workflow_notes: str = ""
     gsc_segment_flags: dict = Field(default_factory=lambda: {"has_dimensional": False})
+    trend: TrendPayload = Field(default_factory=TrendPayload)
 
 
 class AllArticlesPayload(BaseModel):
@@ -99,6 +102,8 @@ class ArticleGenerateDraftRequest(BaseModel):
     """If set, update this existing Shopify article (same handle/URL) instead of articleCreate."""
     resume_run_id: str | None = None
     """If set, resume a persisted article draft run from its last saved checkpoint."""
+    force_cannibalization: bool = False
+    """If True, proceed with draft even when cannibalization is detected (warn-level conflicts). Blocks are never overridable."""
 
 
 class ArticleGenerateDraftResult(BaseModel):

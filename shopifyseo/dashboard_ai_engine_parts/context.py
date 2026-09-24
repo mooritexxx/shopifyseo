@@ -12,6 +12,21 @@ from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 _log = logging.getLogger(__name__)
 
 
+def _row_get(row, key: str, default=None):
+    """Safely extract a key from sqlite3.Row, dict, or Mapping.
+
+    sqlite3.Row supports bracket access (row["key"]) but not .get().
+    This helper converts Row to dict first, enabling safe key extraction.
+    """
+    if row is None:
+        return default
+    if hasattr(row, "keys"):
+        row = dict(row)
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return default
+
+
 def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     value = dg.get_service_setting(conn, key)
     return value.strip() if isinstance(value, str) else default
@@ -233,7 +248,30 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
     }[object_type](conn, handle)
     if not detail:
         raise RuntimeError(f"{object_type} not found: {handle}")
-    fact = next(item for item in dq.fetch_seo_facts(conn, object_type) if item["handle"] == handle)
+    # Build the fact from the detail row already in hand. This used to call
+    # fetch_seo_facts() for the entire catalog and keep one entry, which cost
+    # seconds per object on a full-catalog AI run.
+    #
+    # fetch_seo_facts reads workflow as {status, notes} only, while
+    # _fetch_workflow also returns updated_at -- narrow it so the fact stays
+    # byte-identical to what the old full-catalog lookup produced.
+    _wf_row = detail.get("workflow")
+    _wf = {"status": _wf_row["status"], "notes": _wf_row["notes"]} if _wf_row else None
+    if object_type == "collection":
+        fact = dq.build_seo_fact(
+            "collection",
+            detail["collection"],
+            _wf,
+            detail.get("recommendation"),
+            product_count=len(detail["products"]),
+        )
+    else:
+        fact = dq.build_seo_fact(
+            object_type,
+            detail[object_type],
+            _wf,
+            detail.get("recommendation"),
+        )
     query_rows = [
         dict(row)
         for row in conn.execute(
@@ -310,6 +348,32 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
             ]
             catalog_title_rows.extend(fallback_rows[:needed])
         detail["catalog_title_examples"] = catalog_title_rows[:3]
+
+        # Fetch sibling products from the same collection(s) for internal link targets
+        # Cap at 8 to keep the allowlist manageable
+        _SIBLING_PRODUCT_CAP = 8
+        sibling_products: list[dict] = []
+        product_collections = detail.get("collections") or []
+        if product_collections:
+            collection_handles = [_row_get(c, "handle") for c in product_collections if _row_get(c, "handle")][:3]
+            if collection_handles:
+                placeholders = ",".join("?" * len(collection_handles))
+                sibling_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT p.handle, p.title
+                    FROM products p
+                    JOIN collection_products cp ON p.shopify_id = cp.product_shopify_id
+                    JOIN collections c ON cp.collection_shopify_id = c.shopify_id
+                    WHERE c.handle IN ({placeholders})
+                      AND p.handle != ?
+                      AND p.status = 'ACTIVE'
+                    ORDER BY p.updated_at DESC
+                    LIMIT ?
+                    """,
+                    (*collection_handles, handle, _SIBLING_PRODUCT_CAP),
+                ).fetchall()
+                sibling_products = [dict(row) for row in sibling_rows]
+        detail["sibling_products"] = sibling_products
     recommendation_history = detail.get("recommendation_history", [])[:5]
     dim_rows = dq.fetch_gsc_query_dimension_rows(conn, object_type, handle)
     gsc_segment_summary = dq.build_gsc_segment_summary_from_rows(dim_rows)
@@ -683,6 +747,9 @@ def prompt_context(context: dict) -> dict:
     collections = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("collections") or detail_payload.get("related_collections") or [])[:12]]
     related_products = [{"handle": row.get("handle") or row.get("product_handle"), "title": row.get("title") or row.get("product_title")} for row in (detail_payload.get("related_products") or detail_payload.get("products") or [])[:12]]
     related_pages = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("related_pages") or [])[:12]]
+    # Sibling products from the same collection(s) — capped at 8 in object_context
+    sibling_products = [{"handle": row.get("handle"), "title": row.get("title")} for row in (detail_payload.get("sibling_products") or [])[:8]]
+
     def _link_target(kind: str, row: dict) -> dict | None:
         h = row.get("handle")
         if not h:
@@ -708,6 +775,13 @@ def prompt_context(context: dict) -> dict:
         t = _link_target("product", row)
         if t:
             approved_internal_link_targets.append(t)
+    # Add sibling products from same collection(s) — deduplicated against related_products
+    existing_product_handles = {r.get("handle") for r in related_products if r.get("handle")}
+    for row in sibling_products:
+        if row.get("handle") not in existing_product_handles:
+            t = _link_target("product", row)
+            if t:
+                approved_internal_link_targets.append(t)
     for row in related_pages:
         t = _link_target("page", row)
         if t:

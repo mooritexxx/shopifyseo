@@ -477,8 +477,6 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                 try:
                     result = future.result()
                 except Exception as exc:
-                    summary["errors"] += 1
-                    SYNC_STATE["pagespeed_errors"] = summary["errors"]
                     _record_pagespeed_error(
                         kind,
                         handle,
@@ -489,6 +487,9 @@ def bulk_refresh_pagespeed(db_path: str, throttle_seconds: float = 0.4, force_re
                     )
                     if not failure_final_batch_active:
                         _defer_job_for_final_batch(kind, handle, url, strategy, r429_pass)
+                    else:
+                        summary["errors"] += 1
+                        SYNC_STATE["pagespeed_errors"] = summary["errors"]
                     _raise_if_sync_cancelled()
                     return
 

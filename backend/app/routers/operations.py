@@ -16,6 +16,7 @@ from backend.app.schemas.operations import (
     OllamaModelsRequestPayload,
     SettingsAiTestPayload,
     GoogleAdsTestPayload,
+    OpenPageRankTestPayload,
     SerpapiTestPayload,
     ShopifyShopInfoPayload,
     ShopifyTestPayload,
@@ -130,6 +131,61 @@ def settings_serpapi_test(payload: SerpapiTestPayload):
             detail=str(result.get("detail") or "SerpAPI test failed"),
         )
     return success_response({"message": str(result.get("detail") or "SerpAPI OK"), "result": result})
+
+
+@router.post("/settings/open-page-rank-test", response_model=SuccessResponse[ActionMessagePayload])
+def settings_open_page_rank_test(payload: OpenPageRankTestPayload):
+    from backend.app.services.open_page_rank import (
+        get_open_page_rank_key,
+        validate_open_page_rank_access,
+    )
+
+    key = (payload.open_page_rank_api_key or "").strip()
+    if not key:
+        conn = open_db_connection()
+        try:
+            key = get_open_page_rank_key(conn)
+        finally:
+            conn.close()
+    error = validate_open_page_rank_access(key)
+    if error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
+    return success_response({"message": "Open PageRank API access confirmed.", "result": None})
+
+
+@router.get("/site-authority", response_model=dict)
+def get_site_authority():
+    """Stored Open PageRank authority for the storefront, plus competitor context."""
+    from backend.app.services.open_page_rank import (
+        competitor_authority_benchmark,
+        load_site_authority,
+    )
+
+    conn = open_db_connection()
+    try:
+        data = load_site_authority(conn)
+        data["benchmark"] = competitor_authority_benchmark(conn)
+        return {"ok": True, "data": data}
+    finally:
+        conn.close()
+
+
+@router.post("/site-authority/refresh", response_model=dict)
+def post_site_authority_refresh():
+    from backend.app.services.open_page_rank import (
+        competitor_authority_benchmark,
+        refresh_site_authority,
+    )
+
+    conn = open_db_connection()
+    try:
+        data = refresh_site_authority(conn)
+        data["benchmark"] = competitor_authority_benchmark(conn)
+        return {"ok": True, "data": data}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    finally:
+        conn.close()
 
 
 @router.get("/settings/shopify-shop-info", response_model=SuccessResponse[ShopifyShopInfoPayload])

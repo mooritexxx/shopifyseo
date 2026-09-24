@@ -201,7 +201,6 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             WHERE (
                 LOWER(ba.title) LIKE '%' || LOWER(c.primary_keyword) || '%'
                 OR LOWER(ba.seo_title) LIKE '%' || LOWER(c.primary_keyword) || '%'
-                OR LOWER(ba.body) LIKE '%' || LOWER(c.primary_keyword) || '%'
             )
         )
         ORDER BY {cluster_order_sql}
@@ -223,7 +222,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         kw_base_sql = """
                 SELECT ck.keyword,
                        COALESCE(km.volume, 0)               AS volume,
-                       COALESCE(km.difficulty, 0)            AS difficulty,
+                       km.difficulty                         AS difficulty,
                        COALESCE(km.cpc, 0.0)                 AS cpc,
                        COALESCE(km.intent, 'informational')  AS intent,
                        COALESCE(km.ranking_status, 'not_ranking') AS ranking_status,
@@ -259,7 +258,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             {
                 "keyword": kw[0],
                 "volume": int(kw[1] or 0),
-                "difficulty": int(kw[2] or 0),
+                "difficulty": int(kw[2]) if kw[2] is not None else None,
                 "cpc": round(float(kw[3] or 0), 2),
                 "intent": kw[4],
                 "ranking_status": kw[5],
@@ -926,6 +925,13 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
         )
         ids.append(cur.lastrowid)
     conn.commit()
+    try:
+        from .embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Article idea embedding sync failed after save (non-fatal)", exc_info=True
+        )
     return ids
 
 
@@ -1207,10 +1213,11 @@ def refresh_article_idea_serp_snapshot(conn: sqlite3.Connection, idea_id: int) -
         ensure_ascii=False,
     )
     paa_ex_json = json.dumps(normalize_paa_expansion_json(snap.get("paa_expansion")), ensure_ascii=False)
+    now_ts = int(time.time())
     cur = conn.execute(
         "UPDATE article_ideas SET audience_questions_json = ?, top_ranking_pages_json = ?, "
-        "ai_overview_json = ?, related_searches_json = ?, paa_expansion_json = ? WHERE id = ?",
-        (aq_json, trp_json, aio_json, rs_json, paa_ex_json, idea_id),
+        "ai_overview_json = ?, related_searches_json = ?, paa_expansion_json = ?, serp_refreshed_at = ? WHERE id = ?",
+        (aq_json, trp_json, aio_json, rs_json, paa_ex_json, now_ts, idea_id),
     )
     conn.commit()
     if cur.rowcount < 1:
@@ -1226,7 +1233,16 @@ def delete_article_idea(conn: sqlite3.Connection, idea_id: int) -> bool:
     """Delete an article idea by ID. Returns True if a row was deleted."""
     cur = conn.execute("DELETE FROM article_ideas WHERE id = ?", (idea_id,))
     conn.commit()
-    return cur.rowcount > 0
+    deleted = cur.rowcount > 0
+    if deleted:
+        try:
+            from .embedding_sync import enqueue_embedding_sync_from_conn
+            enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Article idea embedding sync failed after delete (non-fatal)", exc_info=True
+            )
+    return deleted
 
 
 def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: str) -> bool:
@@ -1236,7 +1252,16 @@ def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: s
         (status, idea_id),
     )
     conn.commit()
-    return cur.rowcount > 0
+    updated = cur.rowcount > 0
+    if updated:
+        try:
+            from .embedding_sync import enqueue_embedding_sync_from_conn
+            enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Article idea embedding sync failed after status update (non-fatal)", exc_info=True
+            )
+    return updated
 
 
 def update_article_idea_targets(
@@ -1609,3 +1634,504 @@ def compute_idea_performance(conn: sqlite3.Connection, idea_id: int) -> dict[str
             "coverage_pct": coverage_pct,
         },
     }
+
+
+# Default SERP freshness window: 24 hours (86400 seconds).
+# Article draft generation auto-refreshes SERP snapshots older than this threshold.
+SERP_FRESHNESS_TTL_SECONDS = 24 * 60 * 60
+
+
+def _idea_has_serp_data(row: sqlite3.Row) -> bool:
+    """Return True if the idea row has any non-empty SERP snapshot columns."""
+    aq = row["audience_questions_json"] if "audience_questions_json" in row.keys() else "[]"
+    trp = row["top_ranking_pages_json"] if "top_ranking_pages_json" in row.keys() else "[]"
+    rs = row["related_searches_json"] if "related_searches_json" in row.keys() else "[]"
+    paa = row["paa_expansion_json"] if "paa_expansion_json" in row.keys() else "[]"
+    aio = row["ai_overview_json"] if "ai_overview_json" in row.keys() else "{}"
+    has_aq = aq and aq not in ("[]", "null", "")
+    has_trp = trp and trp not in ("[]", "null", "")
+    has_rs = rs and rs not in ("[]", "null", "")
+    has_paa = paa and paa not in ("[]", "null", "")
+    has_aio = aio and aio not in ("{}", "null", "")
+    return has_aq or has_trp or has_rs or has_paa or has_aio
+
+
+def ensure_idea_serp_fresh(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    max_age_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Ensure the article idea's SERP snapshot is fresh; auto-refresh if missing or stale.
+
+    This function is called at the start of article draft generation to guarantee
+    that the drafter has up-to-date SERP context without requiring a manual
+    "Refresh SERP" click.
+
+    Args:
+        conn: Database connection.
+        idea_id: The article idea row ID.
+        max_age_seconds: Maximum SERP age in seconds. Defaults to SERP_FRESHNESS_TTL_SECONDS (24h).
+
+    Returns:
+        dict with keys:
+            status: "refreshed", "reused", or "failed"
+            refreshed: bool - whether a refresh was performed
+            reason: str - human-readable explanation
+            error: str | None - error message if status is "failed"
+
+    Raises:
+        LookupError: If the idea does not exist.
+        ValueError: If SerpAPI key is missing or primary keyword is empty (only when refresh is needed).
+    """
+    if max_age_seconds is None:
+        max_age_seconds = SERP_FRESHNESS_TTL_SECONDS
+
+    row = conn.execute(
+        """
+        SELECT id, primary_keyword, serp_refreshed_at,
+               COALESCE(audience_questions_json, '[]') AS audience_questions_json,
+               COALESCE(top_ranking_pages_json, '[]') AS top_ranking_pages_json,
+               COALESCE(related_searches_json, '[]') AS related_searches_json,
+               COALESCE(paa_expansion_json, '[]') AS paa_expansion_json,
+               COALESCE(ai_overview_json, '{}') AS ai_overview_json
+        FROM article_ideas
+        WHERE id = ?
+        """,
+        (idea_id,),
+    ).fetchone()
+
+    if not row:
+        raise LookupError("Article idea not found.")
+
+    pk = (str(row["primary_keyword"] or "")).strip()
+    serp_ts = row["serp_refreshed_at"]
+    has_data = _idea_has_serp_data(row)
+    now = int(time.time())
+
+    needs_refresh = False
+    reason = ""
+
+    if not has_data:
+        needs_refresh = True
+        reason = "SERP snapshot is missing"
+    elif serp_ts is None:
+        needs_refresh = True
+        reason = "SERP snapshot has no timestamp (legacy data)"
+    else:
+        age_seconds = now - int(serp_ts)
+        if age_seconds > max_age_seconds:
+            needs_refresh = True
+            reason = f"SERP snapshot is {age_seconds // 3600}h old (threshold: {max_age_seconds // 3600}h)"
+        else:
+            reason = f"SERP snapshot is fresh ({age_seconds // 60}m old)"
+
+    if not needs_refresh:
+        return {
+            "status": "reused",
+            "refreshed": False,
+            "reason": reason,
+            "error": None,
+        }
+
+    try:
+        refresh_article_idea_serp_snapshot(conn, idea_id)
+        return {
+            "status": "refreshed",
+            "refreshed": True,
+            "reason": reason,
+            "error": None,
+        }
+    except (LookupError, ValueError) as exc:
+        return {
+            "status": "failed",
+            "refreshed": False,
+            "reason": reason,
+            "error": str(exc),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Cannibalization check — pre-draft gate
+# ---------------------------------------------------------------------------
+
+# Thresholds for cannibalization detection
+CANNIBALIZATION_BLOCK_SIMILARITY_THRESHOLD = 0.92  # Very high content similarity → block
+CANNIBALIZATION_WARN_SIMILARITY_THRESHOLD = 0.85   # High content similarity → warn
+CANNIBALIZATION_QUERY_SIMILARITY_THRESHOLD = 0.80  # High query overlap threshold
+
+
+def _normalize_keyword(kw: str) -> str:
+    """Normalize keyword for comparison: lowercase, collapse whitespace."""
+    import re
+    if not kw:
+        return ""
+    return re.sub(r"\s+", " ", kw.strip().lower())
+
+
+def _keyword_variants(primary_kw: str) -> set[str]:
+    """Generate close variants of a keyword for fuzzy matching.
+    
+    Returns a set of normalized forms including:
+    - Original normalized form
+    - Singular/plural variants (simple heuristic)
+    - With/without common suffixes
+    """
+    import re
+    variants: set[str] = set()
+    norm = _normalize_keyword(primary_kw)
+    if not norm:
+        return variants
+    variants.add(norm)
+    
+    # Simple plural/singular heuristics
+    if norm.endswith("s") and len(norm) > 3:
+        variants.add(norm[:-1])  # Remove trailing s
+    if norm.endswith("es") and len(norm) > 4:
+        variants.add(norm[:-2])  # Remove trailing es
+    if norm.endswith("ies") and len(norm) > 4:
+        variants.add(norm[:-3] + "y")  # Replace ies with y
+    if not norm.endswith("s"):
+        variants.add(norm + "s")  # Add s
+    
+    # Remove common suffixes for broader matching
+    for suffix in (" guide", " review", " comparison", " vs", " canada", " uk", " us"):
+        if norm.endswith(suffix):
+            variants.add(norm[: -len(suffix)].strip())
+    
+    return variants
+
+
+def _check_keyword_collision(
+    conn: sqlite3.Connection,
+    primary_kw: str,
+    blog_handle: str | None = None,
+) -> list[dict[str, Any]]:
+    """Find published articles where the primary keyword matches exactly or near-exactly.
+    
+    Checks:
+    - article_target_keywords.keyword (is_primary=1) 
+    - blog_articles.title contains keyword
+    - blog_articles.seo_title contains keyword
+    
+    Returns list of conflict dicts with article info.
+    """
+    conflicts: list[dict[str, Any]] = []
+    variants = _keyword_variants(primary_kw)
+    if not variants:
+        return conflicts
+    
+    # Build blog filter clause
+    blog_clause = ""
+    blog_params: list[str] = []
+    if blog_handle:
+        blog_clause = " AND ba.blog_handle = ?"
+        blog_params = [blog_handle]
+    
+    # Check article_target_keywords for exact primary keyword match
+    for variant in variants:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT ba.handle, ba.blog_handle, ba.title, ba.shopify_id,
+                   atk.keyword AS matched_keyword
+            FROM article_target_keywords atk
+            JOIN blog_articles ba ON ba.handle = atk.article_handle AND ba.blog_handle = atk.blog_handle
+            WHERE atk.is_primary = 1
+              AND LOWER(atk.keyword) = ?
+              AND ba.is_published = 1
+              {blog_clause}
+            LIMIT 10
+            """,
+            (variant, *blog_params),
+        ).fetchall()
+        
+        for r in rows:
+            conflict_key = f"{r['blog_handle']}/{r['handle']}"
+            if not any(c.get("key") == conflict_key for c in conflicts):
+                conflicts.append({
+                    "key": conflict_key,
+                    "type": "exact_primary_keyword",
+                    "severity": "block",
+                    "blog_handle": r["blog_handle"],
+                    "article_handle": r["handle"],
+                    "title": r["title"] or "",
+                    "shopify_id": r["shopify_id"] or "",
+                    "matched_keyword": r["matched_keyword"] or "",
+                    "reason": f"Published article already targets primary keyword '{r['matched_keyword']}'",
+                })
+    
+    # Check title/seo_title for keyword presence (broader match)
+    norm_primary = _normalize_keyword(primary_kw)
+    if norm_primary and len(norm_primary) >= 4:  # Only check if keyword is substantial
+        title_rows = conn.execute(
+            f"""
+            SELECT ba.handle, ba.blog_handle, ba.title, ba.seo_title, ba.shopify_id
+            FROM blog_articles ba
+            WHERE ba.is_published = 1
+              AND (LOWER(ba.title) LIKE ? OR LOWER(ba.seo_title) LIKE ?)
+              {blog_clause}
+            LIMIT 15
+            """,
+            (f"%{norm_primary}%", f"%{norm_primary}%", *blog_params),
+        ).fetchall()
+        
+        for r in title_rows:
+            conflict_key = f"{r['blog_handle']}/{r['handle']}"
+            if not any(c.get("key") == conflict_key for c in conflicts):
+                # Title match is a warn, not block (may be intentional series)
+                conflicts.append({
+                    "key": conflict_key,
+                    "type": "keyword_in_title",
+                    "severity": "warn",
+                    "blog_handle": r["blog_handle"],
+                    "article_handle": r["handle"],
+                    "title": r["title"] or "",
+                    "seo_title": r["seo_title"] or "",
+                    "shopify_id": r["shopify_id"] or "",
+                    "reason": f"Published article title contains '{norm_primary}'",
+                })
+    
+    return conflicts
+
+
+def _check_embedding_similarity(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    blog_handle: str | None = None,
+    block_threshold: float = CANNIBALIZATION_BLOCK_SIMILARITY_THRESHOLD,
+    warn_threshold: float = CANNIBALIZATION_WARN_SIMILARITY_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Find published articles with high embedding similarity to the idea.
+    
+    Uses the embedding store to compare article_idea embedding against blog_article embeddings.
+    Only considers published articles.
+    
+    Returns list of conflict dicts with similarity scores.
+    """
+    conflicts: list[dict[str, Any]] = []
+    
+    try:
+        from shopifyseo.embedding_store import _load_embedding_matrix, _blob_to_array, _cosine_similarity
+        import numpy as np
+    except ImportError:
+        return conflicts
+    
+    # Get the idea's embedding
+    idea_row = conn.execute(
+        "SELECT embedding FROM embeddings WHERE object_type = 'article_idea' AND object_handle = ? AND chunk_index = 0",
+        (str(idea_id),),
+    ).fetchone()
+    
+    if not idea_row:
+        return conflicts
+    
+    idea_vec = _blob_to_array(idea_row["embedding"])
+    
+    # Load blog_article embeddings
+    matrix, meta = _load_embedding_matrix(conn, ["blog_article"])
+    if matrix.shape[0] == 0:
+        return conflicts
+    
+    # Compute similarities
+    scores = _cosine_similarity(idea_vec, matrix)
+    
+    # Find published articles above threshold
+    for i, m in enumerate(meta):
+        sim = float(scores[i])
+        if sim < warn_threshold:
+            continue
+        
+        # Parse handle: blog_handle/article_handle
+        handle = m["object_handle"]
+        if "/" not in handle:
+            continue
+        bh, ah = handle.split("/", 1)
+        
+        # Skip if not matching the target blog (when specified)
+        if blog_handle and bh != blog_handle:
+            continue
+        
+        # Check if article is published
+        art_row = conn.execute(
+            "SELECT title, shopify_id, is_published FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+            (bh, ah),
+        ).fetchone()
+        
+        if not art_row or not art_row["is_published"]:
+            continue
+        
+        conflict_key = handle
+        severity = "block" if sim >= block_threshold else "warn"
+        
+        conflicts.append({
+            "key": conflict_key,
+            "type": "high_content_similarity",
+            "severity": severity,
+            "blog_handle": bh,
+            "article_handle": ah,
+            "title": art_row["title"] or "",
+            "shopify_id": art_row["shopify_id"] or "",
+            "similarity_score": round(sim, 4),
+            "reason": f"Content similarity {sim:.1%} with published article",
+        })
+    
+    # Sort by similarity score descending
+    conflicts.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+    return conflicts[:10]  # Limit to top 10
+
+
+def _check_cluster_cannibalization_risk(
+    conn: sqlite3.Connection,
+    linked_cluster_id: int | None,
+) -> dict[str, Any] | None:
+    """Check the linked cluster's cannibalization_risk field.
+    
+    Returns a signal dict when risk is 'high' or 'medium', None otherwise.
+    """
+    if linked_cluster_id is None:
+        return None
+    
+    row = conn.execute(
+        "SELECT name, cannibalization_risk FROM clusters WHERE id = ?",
+        (linked_cluster_id,),
+    ).fetchone()
+    
+    if not row:
+        return None
+    
+    risk = (row["cannibalization_risk"] or "none").lower()
+    if risk == "high":
+        return {
+            "cluster_id": linked_cluster_id,
+            "cluster_name": row["name"] or f"Cluster #{linked_cluster_id}",
+            "risk_level": "high",
+            "severity": "warn",  # Cluster risk is a signal, not automatic block
+            "reason": f"Linked cluster has HIGH cannibalization risk",
+        }
+    elif risk == "medium":
+        return {
+            "cluster_id": linked_cluster_id,
+            "cluster_name": row["name"] or f"Cluster #{linked_cluster_id}",
+            "risk_level": "medium",
+            "severity": "info",
+            "reason": f"Linked cluster has MEDIUM cannibalization risk",
+        }
+    
+    return None
+
+
+def check_idea_cannibalization(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    blog_handle: str | None = None,
+) -> dict[str, Any]:
+    """Pre-draft cannibalization check for an article idea.
+    
+    Compares the idea's primary keyword (+ close variants) against published
+    blog articles. Also uses embedding similarity and checks the linked
+    cluster's cannibalization_risk field.
+    
+    Args:
+        conn: Database connection
+        idea_id: The article idea ID to check
+        blog_handle: Optional target blog handle to scope the check
+    
+    Returns:
+        dict with:
+        - severity: "block" | "warn" | "ok"
+        - conflicts: list of conflict details
+        - cluster_risk: cluster cannibalization signal (if any)
+        - message: human-readable summary
+    
+    Severity rules:
+    - BLOCK: Exact/near-match on primary keyword with a published article,
+             OR very high content similarity (>=0.92)
+    - WARN: Keyword in title/seo_title of published article,
+            OR high content similarity (>=0.85),
+            OR linked cluster has HIGH cannibalization risk
+    - OK: No significant overlap detected
+    """
+    result: dict[str, Any] = {
+        "severity": "ok",
+        "conflicts": [],
+        "cluster_risk": None,
+        "message": "No cannibalization detected",
+    }
+    
+    # Load idea details
+    idea_row = conn.execute(
+        """
+        SELECT primary_keyword, linked_cluster_id, suggested_title
+        FROM article_ideas WHERE id = ?
+        """,
+        (idea_id,),
+    ).fetchone()
+    
+    if not idea_row:
+        result["severity"] = "ok"
+        result["message"] = "Idea not found"
+        return result
+    
+    primary_kw = (idea_row["primary_keyword"] or "").strip()
+    linked_cluster_id = idea_row["linked_cluster_id"]
+    
+    if not primary_kw:
+        # No primary keyword to check — skip cannibalization check
+        result["message"] = "No primary keyword on idea — cannibalization check skipped"
+        return result
+    
+    all_conflicts: list[dict[str, Any]] = []
+    
+    # 1. Check keyword collisions (exact/near match)
+    keyword_conflicts = _check_keyword_collision(conn, primary_kw, blog_handle)
+    all_conflicts.extend(keyword_conflicts)
+    
+    # 2. Check embedding similarity
+    embedding_conflicts = _check_embedding_similarity(conn, idea_id, blog_handle)
+    # Dedupe against keyword conflicts
+    existing_keys = {c["key"] for c in all_conflicts}
+    for ec in embedding_conflicts:
+        if ec["key"] not in existing_keys:
+            all_conflicts.append(ec)
+            existing_keys.add(ec["key"])
+        else:
+            # Merge: upgrade severity if embedding conflict is higher
+            for c in all_conflicts:
+                if c["key"] == ec["key"]:
+                    if ec["severity"] == "block" and c["severity"] != "block":
+                        c["severity"] = "block"
+                        c["similarity_score"] = ec.get("similarity_score")
+                        c["reason"] = f"{c['reason']} + {ec['reason']}"
+                    break
+    
+    # 3. Check cluster cannibalization risk
+    cluster_risk = _check_cluster_cannibalization_risk(conn, linked_cluster_id)
+    result["cluster_risk"] = cluster_risk
+    
+    # Determine overall severity
+    has_block = any(c.get("severity") == "block" for c in all_conflicts)
+    has_warn = any(c.get("severity") == "warn" for c in all_conflicts)
+    has_cluster_warn = cluster_risk and cluster_risk.get("severity") == "warn"
+    
+    result["conflicts"] = all_conflicts
+    
+    if has_block:
+        result["severity"] = "block"
+        block_conflicts = [c for c in all_conflicts if c.get("severity") == "block"]
+        titles = [c.get("title") or c.get("article_handle") for c in block_conflicts[:3]]
+        result["message"] = (
+            f"Cannibalization BLOCKED: {len(block_conflicts)} published article(s) "
+            f"conflict with this idea. Conflicts: {', '.join(titles)}"
+        )
+    elif has_warn or has_cluster_warn:
+        result["severity"] = "warn"
+        warn_count = len([c for c in all_conflicts if c.get("severity") == "warn"])
+        parts = []
+        if warn_count:
+            parts.append(f"{warn_count} potential overlap(s) with published articles")
+        if has_cluster_warn:
+            parts.append(f"cluster has {cluster_risk['risk_level']} cannibalization risk")
+        result["message"] = f"Cannibalization WARNING: {'; '.join(parts)}. Use force_cannibalization=true to proceed."
+    else:
+        result["message"] = "No cannibalization detected — safe to draft"
+    
+    return result

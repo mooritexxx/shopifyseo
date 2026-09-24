@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from backend.app.services.keyword_research import (
     classify_intent,
     classify_ranking_status,
@@ -12,9 +14,12 @@ from backend.app.services.keyword_research import (
 )
 from backend.app.services.keyword_research.keyword_db import (
     TARGET_KEY,
+    default_content_type_for_intent,
     load_approved_keywords,
     load_target_keywords,
+    normalize_target_keyword_item,
     sync_competitor_top_pages_from_keyword_metrics,
+    upsert_target_keyword,
 )
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_store import ensure_dashboard_schema
@@ -38,9 +43,53 @@ def test_compute_opportunity_none_traffic():
 
 def test_compute_opportunity_missing_difficulty_is_neutral():
     unknown_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
-    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=0)
+    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=5)
     hard_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=80)
     assert hard_kd < unknown_kd < easy_kd
+
+
+def test_compute_opportunity_zero_difficulty_is_unknown_not_easy():
+    """DataForSEO sends 0 for "no difficulty data" - it must not beat a real low KD."""
+    zero_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=0)
+    unknown_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
+    easy_kd = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=5)
+    assert zero_kd == unknown_kd
+    assert zero_kd < easy_kd
+
+
+def test_unknown_difficulty_renormalizes_instead_of_substituting():
+    """Unknown KD drops the ease term; it must not invent a mid-range value.
+
+    The score for an unknown-KD keyword should equal the weighted average of the
+    four known components alone, so a missing input neither helps nor hurts.
+    """
+    from backend.app.services.keyword_research.keyword_utils import (
+        _bounded_log_score,
+        _intent_opportunity_score,
+        _ranking_opportunity_score,
+    )
+
+    expected = (
+        (0.35 * _bounded_log_score(1000, 10000.0))
+        + (0.20 * _bounded_log_score(2000, 10000.0))
+        + (0.15 * _ranking_opportunity_score(None, None))
+        + (0.10 * _intent_opportunity_score(None))
+    ) / 0.80
+    actual = compute_opportunity(volume=1000, traffic_potential=2000, difficulty=None)
+    assert actual == pytest.approx(expected, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(0, None), (None, None), (45, 45), ("0", None), ("32", 32), ("junk", None), (-5, None)],
+)
+def test_normalize_keyword_difficulty(raw, expected):
+    """Ingest turns DataForSEO's 0 sentinel into NULL so unknown stays distinct."""
+    from backend.app.services.keyword_research.dataforseo_client import (
+        _normalize_keyword_difficulty,
+    )
+
+    assert _normalize_keyword_difficulty(raw) == expected
 
 
 def test_recompute_opportunity_scores_uses_intent_and_ranking():
@@ -333,6 +382,56 @@ def test_load_target_keywords_null_blob_returns_empty():
     assert data == {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
 
 
+def test_load_target_keywords_fills_missing_content_type_key():
+    """Manual JSON rows that omit content_type must not break GET /target."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT)")
+    blob = {
+        "items": [
+            {"keyword": "vape shop canada", "status": "approved", "intent": "navigational"},
+            {"keyword": "online vape shop canada", "status": "approved"},
+        ],
+        "total": 2,
+    }
+    import json as _json
+    conn.execute(
+        "INSERT INTO service_settings (key, value) VALUES (?, ?)",
+        (TARGET_KEY, _json.dumps(blob)),
+    )
+    conn.commit()
+    data = load_target_keywords(conn)
+    assert len(data["items"]) == 2
+    assert "content_type" in data["items"][0]
+    assert data["items"][0]["content_type"] == "Brand page"  # from navigational intent
+    assert "content_type" in data["items"][1]
+    # No intent → defaults to "Blog / Guide" (informational fallback)
+    assert data["items"][1]["content_type"] == "Blog / Guide"
+
+
+def test_normalize_target_keyword_item_for_insert_uses_vocabulary():
+    item = normalize_target_keyword_item({"keyword": "x"}, for_insert=True)
+    assert item["content_type"] == "Blog / Guide"
+    assert item["content_type"] == default_content_type_for_intent(None)
+    commercial = normalize_target_keyword_item(
+        {"keyword": "y", "intent": "commercial"}, for_insert=True
+    )
+    assert commercial["content_type"] == "Comparison / Buying guide"
+
+
+def test_upsert_target_keyword_always_sets_content_type():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+    row = upsert_target_keyword(conn, "canadian vape store", intent="navigational")
+    assert row["content_type"] == "Brand page"
+    data = load_target_keywords(conn)
+    assert data["items"][0]["content_type"] == "Brand page"
+    # Second upsert without content_type keeps vocabulary
+    row2 = upsert_target_keyword(conn, "canadian vape store", status="approved")
+    assert row2["content_type"] == "Brand page"
+
+
 def _make_keyword_metrics_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -472,3 +571,41 @@ def test_sync_competitor_top_pages_from_keyword_metrics_limits_per_domain():
     assert len(rows) == 50
     assert rows[0]["url"] == "https://example.com/page-0"
     assert rows[-1]["url"] == "https://example.com/page-49"
+
+
+def _flat_labs_response(items):
+    """keyword_suggestions / keyword_ideas items are keyword_data blocks directly."""
+    return {
+        "status_code": 20000,
+        "cost": 0.02,
+        "tasks": [{"status_code": 20000, "result": [{"items": items}]}],
+    }
+
+
+_FLAT_LABS_ITEMS = [
+    {
+        "keyword": "elf bar canada",
+        "keyword_info": {"search_volume": 4400, "cpc": 1.25},
+        "keyword_properties": {"keyword_difficulty": 42, "core_keyword": "elf bar"},
+    },
+    {
+        "keyword": "elf bar bc5000",
+        "keyword_info": {"search_volume": 880},
+        "keyword_properties": {"keyword_difficulty": 17},
+    },
+]
+
+
+@pytest.mark.parametrize("func_name", ["call_keyword_suggestions", "call_keyword_ideas"])
+def test_flat_labs_items_parsed_without_keyword_data_wrapper(monkeypatch, func_name):
+    from backend.app.services.keyword_research import dataforseo_client as dfs
+
+    monkeypatch.setattr(dfs, "_dfs_post", lambda *_a, **_kw: _flat_labs_response(_FLAT_LABS_ITEMS))
+    rows, cost = getattr(dfs, func_name)("login", "password", ["elf bar"])
+
+    assert [r["keyword"] for r in rows] == ["elf bar canada", "elf bar bc5000"]
+    assert [r["volume"] for r in rows] == [4400, 880]
+    assert [r["difficulty"] for r in rows] == [42, 17]
+    assert rows[0]["parent_topic"] == "elf bar"
+    assert rows[0]["cpc"] == 1.25
+    assert cost == 0.02

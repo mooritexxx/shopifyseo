@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +129,28 @@ class _WorkerOutcome:
 CatalogImageFetchOutcome = _WorkerOutcome
 
 
+_thread_local = threading.local()
+
+
+def _cdn_session() -> requests.Session:
+    """One reusable session per worker thread.
+
+    A fresh ``requests.Session()`` per image meant a new TLS handshake for every file.
+    Measured against a live Shopify CDN that cost ~459 ms per image versus ~14 ms when
+    the connection is reused — about 32x, and the catalog walks ~1900 images on every
+    Shopify sync. Sessions are not guaranteed thread-safe, so this is per-thread rather
+    than one global shared instance.
+    """
+    session = getattr(_thread_local, "cdn_session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=8)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _thread_local.cdn_session = session
+    return session
+
+
 def _worker_fetch(
     image_id: str,
     url: str,
@@ -137,7 +160,7 @@ def _worker_fetch(
     *,
     force_refresh: bool = False,
 ) -> _WorkerOutcome:
-    session = requests.Session()
+    session = _cdn_session()
     try:
         # Force refresh: always re-download bytes (no HEAD etag short-circuit, no conditional GET).
         if crow and not force_refresh:
@@ -253,19 +276,17 @@ def warm_product_image_cache(
     try:
         registry = build_catalog_image_registry_from_db(conn)
         expected = registry.expected_cache_ids()
-        if expected:
-            placeholders = ",".join("?" * len(expected))
-            stale = conn.execute(
-                f"""
-                SELECT image_shopify_id, local_relpath FROM product_image_file_cache
-                WHERE image_shopify_id NOT IN ({placeholders})
-                """,
-                tuple(expected),
-            ).fetchall()
-        else:
-            stale = conn.execute(
+        # Filter in Python rather than binding one SQL parameter per expected image. The
+        # old NOT IN (...) form bound thousands of parameters, which exceeds
+        # SQLITE_MAX_VARIABLE_NUMBER on builds that still use the historical 999 limit.
+        expected_ids = set(expected)
+        stale = [
+            (sid, rel)
+            for sid, rel in conn.execute(
                 "SELECT image_shopify_id, local_relpath FROM product_image_file_cache"
             ).fetchall()
+            if sid not in expected_ids
+        ]
         for sid, rel in stale:
             _safe_unlink(root / rel)
             conn.execute("DELETE FROM product_image_file_cache WHERE image_shopify_id = ?", (sid,))

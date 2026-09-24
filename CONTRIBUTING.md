@@ -15,7 +15,7 @@ Thanks for your interest in contributing. This guide covers development setup, c
 git clone https://github.com/mooritexxx/shopifyseo.git
 cd shopifyseo
 
-python3 -m venv .venv && source .venv/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pip install -r backend/requirements.txt
 
@@ -97,4 +97,4 @@ CI runs a **minimal** API smoke test and frontend typecheck (see `.github/workfl
 - **`frontend/`** — React + TypeScript SPA (Vite, Tailwind, Radix UI).
 - **SQLite** — local database for catalog, settings, and caches.
 
-See also `TECHNICAL_DOC.md` when present for deeper detail.
+See [TECHNICAL_DOC.md](TECHNICAL_DOC.md) for deeper detail — the canonical inventory of routes, services, tables, and screens.

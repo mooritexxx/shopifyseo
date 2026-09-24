@@ -16,6 +16,7 @@ import { SearchPreview } from "../components/ui/search-preview";
 import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
 import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
+import { GscTrendSection } from "../components/gsc-trend-section";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { Textarea } from "../components/ui/textarea";
@@ -29,7 +30,6 @@ import { TooltipProvider } from "../components/ui/tooltip";
 import { useSidekickBinding } from "../components/sidekick/sidekick-context";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson, postJson } from "../lib/api";
-import { useDashboardGscPeriodSync } from "../lib/gsc-period";
 import { isSearchConsoleInspectionLink } from "../lib/search-console";
 import { cleanSeoTitle } from "../lib/utils";
 import { actionSchema, productDetailSchema, statusSchema } from "../types/api";
@@ -101,13 +101,12 @@ export function ProductDetailPage() {
   const [gallerySelected, setGallerySelected] = useState(0);
   const [galleryPreviewOpen, setGalleryPreviewOpen] = useState(false);
   const aiStream = useAiStream(aiJobId);
-  const gscPeriod = useDashboardGscPeriodSync();
   const aiStatusQuery = useAiJobStatus(aiJobId);
   const fieldStatusQuery = useAiJobStatus(fieldJobId);
   const detailQuery = useQuery({
-    queryKey: ["product-detail", handle, gscPeriod],
+    queryKey: ["product-detail", handle],
     queryFn: () =>
-      getJson(`/api/products/${encodeURIComponent(handle)}?gsc_period=${gscPeriod}`, productDetailSchema),
+      getJson(`/api/products/${encodeURIComponent(handle)}`, productDetailSchema),
     staleTime: 0,
     structuralSharing: false,
   });
@@ -260,15 +259,15 @@ export function ProductDetailPage() {
   // Invalidate detail query when generation completes so saved recommendation is fresh
   useEffect(() => {
     if (aiStream.done && !aiStream.error) {
-      void queryClient.invalidateQueries({ queryKey: ["product-detail", handle, gscPeriod] });
+      void queryClient.invalidateQueries({ queryKey: ["product-detail", handle] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
-  }, [aiStream.done, aiStream.error, handle, gscPeriod, queryClient]);
+  }, [aiStream.done, aiStream.error, handle, queryClient]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: typeof emptyDraft) =>
       postJson(
-        `/api/products/${encodeURIComponent(handle)}/update?gsc_period=${gscPeriod}`,
+        `/api/products/${encodeURIComponent(handle)}/update`,
         actionSchema,
         payload
       ),
@@ -277,9 +276,9 @@ export function ProductDetailPage() {
       setSavedDraftBaseline(variables);
       setDraft(variables);
       if (data.result && typeof data.result === "object") {
-        queryClient.setQueryData(["product-detail", handle, gscPeriod], { ...data.result, draft: variables });
+        queryClient.setQueryData(["product-detail", handle], { ...data.result, draft: variables });
       } else {
-        void queryClient.invalidateQueries({ queryKey: ["product-detail", handle, gscPeriod] });
+        void queryClient.invalidateQueries({ queryKey: ["product-detail", handle] });
       }
     },
     onError: (error) => setToast((error as Error).message)
@@ -287,7 +286,7 @@ export function ProductDetailPage() {
 
   const refreshMutation = useMutation({
     mutationFn: (step?: string) =>
-      postJson(`/api/products/${encodeURIComponent(handle)}/refresh?gsc_period=${gscPeriod}`, actionSchema, { step }),
+      postJson(`/api/products/${encodeURIComponent(handle)}/refresh`, actionSchema, { step }),
     onMutate: () => {
       setToast(null);
     },
@@ -295,7 +294,7 @@ export function ProductDetailPage() {
       if (step && step !== "index") {
         setToast(data.message);
       }
-      void queryClient.invalidateQueries({ queryKey: ["product-detail", handle, gscPeriod] });
+      void queryClient.invalidateQueries({ queryKey: ["product-detail", handle] });
     },
     onError: (error) => setToast((error as Error).message)
   });
@@ -1035,7 +1034,8 @@ export function ProductDetailPage() {
           </Card>
         </section>
 
-        <GscTopQueriesSection queries={detail.gsc_queries} gscPeriod={gscPeriod} />
+        <GscTrendSection trend={detail.trend} />
+        <GscTopQueriesSection queries={detail.gsc_queries} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />
 

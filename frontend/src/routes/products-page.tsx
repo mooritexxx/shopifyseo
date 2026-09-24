@@ -9,6 +9,11 @@ import { SearchInput } from "../components/ui/search-input";
 import { SummaryCard } from "../components/ui/summary-card";
 import { useStoreUrl } from "../hooks/use-store-info";
 import { getJson } from "../lib/api";
+import {
+  CANONICAL_LIST_DIRECTION,
+  CANONICAL_LIST_SORT,
+  sortListRows
+} from "../lib/list-sort";
 import { formatNumber } from "../lib/utils";
 import { productListSchema } from "../types/api";
 
@@ -23,6 +28,8 @@ const PRODUCT_SORT_KEYS = new Set([
   "gsc_clicks",
   "gsc_ctr",
   "gsc_position",
+  "gsc_clicks_delta",
+  "gsc_impressions_delta",
   "ga4_sessions",
   "ga4_views",
   "body_length",
@@ -37,6 +44,7 @@ const columns: Column[] = [
   { key: "index_status", label: "Status", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[9%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[9%]" },
   { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[9%]" },
   { key: "ga4_views", label: "Views", align: "center", widthClass: "w-[9%]" },
   { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[7%]" },
@@ -59,21 +67,27 @@ export function ProductsPage() {
   const focus =
     focusRaw === "missing_meta" || focusRaw === "thin_body" ? focusRaw : null;
 
+  // The endpoint returns the whole filtered catalog, not a page, so ordering is
+  // applied client-side and the request stays sort-independent. Clicking a
+  // column header reorders the cached rows instead of refetching ~1 MB.
   const listUrl = useMemo(() => {
     const p = new URLSearchParams();
     if (query.trim()) p.set("query", query.trim());
-    p.set("sort", sort);
-    p.set("direction", direction);
+    p.set("sort", CANONICAL_LIST_SORT);
+    p.set("direction", CANONICAL_LIST_DIRECTION);
     if (focus) p.set("focus", focus);
     return `/api/products?${p.toString()}`;
-  }, [query, sort, direction, focus]);
+  }, [query, focus]);
 
   const productsQuery = useQuery({
-    queryKey: ["products", query, sort, direction, focus],
+    queryKey: ["products", query, focus],
     queryFn: () => getJson(listUrl, productListSchema)
   });
 
-  const rows = productsQuery.data?.items ?? [];
+  const rows = useMemo(
+    () => sortListRows(productsQuery.data?.items ?? [], sort, direction),
+    [productsQuery.data, sort, direction]
+  );
   const summary = productsQuery.data?.summary ?? {
     visible_rows: 0,
     high_priority: 0,

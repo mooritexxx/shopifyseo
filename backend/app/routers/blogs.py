@@ -25,7 +25,6 @@ from backend.app.schemas.blog import (
 from backend.app.routers import field_regen_errors
 from backend.app.schemas.article_ideas import KeywordCoveragePayload
 from backend.app.schemas.common import SuccessResponse, success_response
-from backend.app.schemas.dashboard import GscPeriodMode
 from backend.app.schemas.content import ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
@@ -308,8 +307,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="prepare_brief",
             step_label="Prepare SEO brief",
-            step_index=1,
-            step_total=11,
+            step_index=3,
+            step_total=12,
         )
 
         if is_regen:
@@ -329,6 +328,143 @@ def _run_generate_article_draft(
         effective_idea_id = payload.idea_id
         if is_regen and effective_idea_id is None:
             effective_idea_id = _lookup_idea_id_for_article(conn, payload.blog_handle, reg_handle)
+
+        # Auto-ensure SERP snapshot is fresh before drafting (if idea_id is resolved).
+        # Default TTL: 24 hours. If SERP is missing or stale, refresh via SerpAPI.
+        # If refresh fails when required, fail the draft stream with a clear error.
+        if effective_idea_id is not None:
+            p(
+                "Checking SERP snapshot freshness…",
+                "serp",
+                "start",
+                run_id=run_id,
+                step_key="ensure_serp_fresh",
+                step_label="Ensure SERP snapshot",
+                step_index=1,
+                step_total=12,
+            )
+            serp_result = dq.ensure_idea_serp_fresh(conn, effective_idea_id)
+            if serp_result["status"] == "refreshed":
+                p(
+                    f"SERP refreshed: {serp_result['reason']}",
+                    "serp",
+                    "done",
+                    run_id=run_id,
+                    step_key="ensure_serp_fresh",
+                    step_label="Ensure SERP snapshot",
+                    step_index=1,
+                    step_total=12,
+                    result_summary="Refreshed via SerpAPI",
+                )
+            elif serp_result["status"] == "reused":
+                p(
+                    f"SERP snapshot is fresh: {serp_result['reason']}",
+                    "serp",
+                    "done",
+                    run_id=run_id,
+                    step_key="ensure_serp_fresh",
+                    step_label="Ensure SERP snapshot",
+                    step_index=1,
+                    step_total=12,
+                    result_summary="Reused existing",
+                )
+            else:
+                update_run(status="failed", current_step="ensure_serp_fresh", error_message=serp_result["error"] or "SERP refresh failed")
+                raise RuntimeError(
+                    f"SERP refresh required but failed: {serp_result['error']} — "
+                    "add a SerpAPI key in Settings or ensure the idea has a primary keyword."
+                )
+
+        # ── Cannibalization gate (after SERP ensure-fresh in the pipeline) ──
+        # Check if drafting this idea would cannibalize existing published content.
+        if effective_idea_id is not None and not is_regen:
+            p(
+                "Checking for cannibalization conflicts…",
+                "cannibalization",
+                "start",
+                run_id=run_id,
+                step_key="cannibalization_check",
+                step_label="Check cannibalization",
+                step_index=2,
+                step_total=12,
+            )
+            cann_result = dq.check_idea_cannibalization(
+                conn, effective_idea_id, blog_handle=payload.blog_handle
+            )
+            cann_severity = cann_result.get("severity", "ok")
+            cann_conflicts = cann_result.get("conflicts", [])
+            cann_message = cann_result.get("message", "")
+
+            if cann_severity == "block":
+                # Hard block — cannot proceed even with force flag
+                conflict_details = []
+                for c in cann_conflicts[:3]:
+                    title = c.get("title") or c.get("article_handle", "")
+                    url_path = f"/blogs/{c.get('blog_handle')}/{c.get('article_handle')}"
+                    conflict_details.append(f"'{title}' ({url_path})")
+                detail_str = "; ".join(conflict_details) if conflict_details else "existing published article(s)"
+                update_run(
+                    status="failed",
+                    current_step="cannibalization_check",
+                    error_message=f"Cannibalization blocked: {cann_message}",
+                )
+                raise RuntimeError(
+                    f"CANNIBALIZATION BLOCKED: This idea's primary keyword conflicts with {detail_str}. "
+                    f"Publish a differentiated article or dismiss this idea."
+                )
+
+            if cann_severity == "warn" and not payload.force_cannibalization:
+                # Warn-level conflict requires explicit override
+                conflict_titles = [
+                    c.get("title") or c.get("article_handle", "") for c in cann_conflicts[:3]
+                ]
+                update_run(
+                    status="failed",
+                    current_step="cannibalization_check",
+                    error_message=f"Cannibalization warning: {cann_message}",
+                )
+                raise RuntimeError(
+                    f"CANNIBALIZATION WARNING: Potential overlap with: {', '.join(conflict_titles)}. "
+                    f"Set force_cannibalization=true to proceed anyway, or adjust your idea."
+                )
+
+            # Log the check result
+            if cann_severity == "warn" and payload.force_cannibalization:
+                p(
+                    f"Cannibalization warning acknowledged (force=true): {cann_message}",
+                    "cannibalization",
+                    "done",
+                    run_id=run_id,
+                    step_key="cannibalization_check",
+                    step_label="Check cannibalization",
+                    step_index=2,
+                    step_total=12,
+                    result_summary="Warning overridden",
+                )
+            else:
+                p(
+                    cann_message,
+                    "cannibalization",
+                    "done",
+                    run_id=run_id,
+                    step_key="cannibalization_check",
+                    step_label="Check cannibalization",
+                    step_index=2,
+                    step_total=12,
+                    result_summary="No conflicts",
+                )
+        elif is_regen:
+            # Skip cannibalization check for regeneration (updating existing article)
+            p(
+                "Skipping cannibalization check for article regeneration.",
+                "cannibalization",
+                "skipped",
+                run_id=run_id,
+                step_key="cannibalization_check",
+                step_label="Check cannibalization",
+                step_index=2,
+                step_total=12,
+            )
 
         keywords: list = list(payload.keywords or [])
         if is_regen and not keywords:
@@ -547,8 +683,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="content_checkpoint",
                 step_label="Save content checkpoint",
-                step_index=6,
-                step_total=11,
+                step_index=7,
+                step_total=12,
                 result_summary=f"Body {len(stored_body):,} chars",
             )
         else:
@@ -582,8 +718,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="images",
             step_label="Generate/upload images",
-            step_index=7,
-            step_total=11,
+            step_index=8,
+            step_total=12,
         )
         conn_img = open_db_connection()
         try:
@@ -597,7 +733,7 @@ def _run_generate_article_draft(
         finally:
             conn_img.close()
         for note in image_notes:
-            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=7, step_total=11)
+            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=8, step_total=12)
         image_failures = [
             note for note in image_notes
             if any(token in note.lower() for token in ("failed", "skipp"))
@@ -635,8 +771,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="images",
             step_label="Generate/upload images",
-            step_index=7,
-            step_total=11,
+            step_index=8,
+            step_total=12,
             result_summary=f"Featured + {len(body_images)} inline image{'s' if len(body_images) != 1 else ''}",
         )
 
@@ -649,8 +785,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
             )
             body_html = inject_article_body_images(body_html, body_images)
             update_run(body=body_html, current_step="insert_body_images", last_completed_step="insert_body_images")
@@ -661,8 +797,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
                 result_summary=f"{len(body_images)} inline image{'s' if len(body_images) != 1 else ''} inserted",
             )
         else:
@@ -673,8 +809,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="insert_body_images",
                 step_label="Insert body images",
-                step_index=8,
-                step_total=11,
+                step_index=9,
+                step_total=12,
             )
 
         conn_titles = open_db_connection()
@@ -726,8 +862,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
         )
         try:
             live_update_article(
@@ -760,8 +896,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
@@ -794,8 +930,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
             result_summary=f"Updated {reg_handle}",
         )
         # live_update_article syncs once; re-sync after optional featured/body fixes.
@@ -828,8 +964,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="shopify",
                 step_label="Create/update Shopify draft",
-                step_index=9,
-                step_total=11,
+                step_index=10,
+                step_total=12,
             )
             try:
                 live_update_article(
@@ -862,8 +998,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="shopify",
                 step_label="Create/update Shopify draft",
-                step_index=9,
-                step_total=11,
+                step_index=10,
+                step_total=12,
             )
             try:
                 result = create_article(
@@ -907,8 +1043,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
             article = _attach_featured_image(
                 article, (featured_url or "").strip(), featured_alt or generated["title"], p
@@ -921,8 +1057,8 @@ def _run_generate_article_draft(
                 run_id=run_id,
                 step_key="attach_featured_image",
                 step_label="Attach featured image",
-                step_index=10,
-                step_total=11,
+                step_index=11,
+                step_total=12,
             )
 
         article = _sync_article_body_if_needed(article, body_html, p)
@@ -940,8 +1076,8 @@ def _run_generate_article_draft(
             run_id=run_id,
             step_key="shopify",
             step_label="Create/update Shopify draft",
-            step_index=9,
-            step_total=11,
+            step_index=10,
+            step_total=12,
             result_summary=f"Handle {article['handle']}",
         )
 
@@ -952,8 +1088,8 @@ def _run_generate_article_draft(
         run_id=run_id,
         step_key="local_save",
         step_label="Save locally",
-        step_index=11,
-        step_total=11,
+        step_index=12,
+        step_total=12,
     )
     try:
         _persist_article_locally(
@@ -987,8 +1123,8 @@ def _run_generate_article_draft(
         run_id=run_id,
         step_key="local_save",
         step_label="Save locally",
-        step_index=11,
-        step_total=11,
+        step_index=12,
+        step_total=12,
         result_summary=f"Ready: {article['handle']}",
     )
 
@@ -1023,8 +1159,8 @@ def get_article_draft_run_detail(run_id: str):
 
 
 @router.get("/articles/{blog_handle}/{article_handle}", response_model=SuccessResponse[ContentDetailPayload])
-def article_detail(blog_handle: str, article_handle: str, gsc_period: GscPeriodMode = "mtd"):
-    detail = get_blog_article_detail(blog_handle, article_handle, gsc_period=gsc_period)
+def article_detail(blog_handle: str, article_handle: str):
+    detail = get_blog_article_detail(blog_handle, article_handle)
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
     return success_response(detail)
@@ -1046,19 +1182,49 @@ def article_keyword_coverage(blog_handle: str, article_handle: str):
 
 @router.post("/articles/{blog_handle}/{article_handle}/update", response_model=SuccessResponse[ProductActionResult])
 def article_update(
-    blog_handle: str, article_handle: str, payload: ContentUpdatePayload, gsc_period: GscPeriodMode = "mtd"
+    blog_handle: str, article_handle: str, payload: ContentUpdatePayload
 ):
     ok, message = update_blog_article(blog_handle, article_handle, payload.model_dump())
     if not ok:
         if message == "Article not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
-    detail = get_blog_article_detail(blog_handle, article_handle, gsc_period=gsc_period)
+    detail = get_blog_article_detail(blog_handle, article_handle)
     return success_response({"message": message, "result": detail})
 
 
 class _PublishRequest(BaseModel):
     is_published: bool
+
+
+def _post_publish_embedding_refresh(blog_handle: str, article_handle: str) -> None:
+    """Background task to refresh embeddings for a newly published article.
+
+    Called after successful publish so RAG/cannibalization sees the new content
+    without requiring a manual full refresh. Failures are logged but do not
+    affect the publish result (which already succeeded).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    conn = open_db_connection()
+    try:
+        from shopifyseo.embedding_store import sync_embedding_for_handle
+        composite = dq.blog_article_composite_handle(blog_handle, article_handle)
+        result = sync_embedding_for_handle(conn, "blog_article", composite)
+        if result.get("error"):
+            logger.warning(
+                "Post-publish embedding refresh failed for %s/%s: %s",
+                blog_handle, article_handle, result["error"],
+            )
+        else:
+            logger.info(
+                "Post-publish embedding refresh for %s/%s: embedded=%d, skipped=%d",
+                blog_handle, article_handle, result.get("embedded", 0), result.get("skipped", 0),
+            )
+    except Exception:
+        logger.warning("Post-publish embedding refresh error", exc_info=True)
+    finally:
+        conn.close()
 
 
 @router.patch(
@@ -1082,6 +1248,17 @@ def article_publish(blog_handle: str, article_handle: str, payload: _PublishRequ
         publish_article(get_db_path(), shopify_id, is_published=payload.is_published)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    # Post-publish embeddings refresh: enqueue embedding upsert for the article
+    # so RAG/cannibalization sees it without a manual full refresh.
+    # Run in background thread so the publish response is not delayed.
+    if payload.is_published:
+        threading.Thread(
+            target=_post_publish_embedding_refresh,
+            args=(blog_handle, article_handle),
+            daemon=True,
+        ).start()
+
     action = "published" if payload.is_published else "unpublished"
     detail = get_blog_article_detail(blog_handle, article_handle)
     return success_response({"message": f"Article {action}", "result": detail})
@@ -1100,11 +1277,11 @@ def article_inspection_link(blog_handle: str, article_handle: str):
 
 @router.post("/articles/{blog_handle}/{article_handle}/refresh", response_model=SuccessResponse[ProductActionResult])
 def article_refresh(
-    blog_handle: str, article_handle: str, payload: dict | None = None, gsc_period: GscPeriodMode = "mtd"
+    blog_handle: str, article_handle: str, payload: dict | None = None
 ):
     composite = dq.blog_article_composite_handle(blog_handle, article_handle)
     step = payload.get("step") if payload else None
-    ok, result = refresh_object("blog_article", composite, step, gsc_period=gsc_period)
+    ok, result = refresh_object("blog_article", composite, step)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result.get("message", "Refresh failed"))
     return success_response(result)

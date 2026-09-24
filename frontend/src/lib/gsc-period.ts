@@ -1,49 +1,14 @@
-import { useEffect, useState } from "react";
-
-export type DashboardGscPeriod = "mtd" | "full_months";
-
-const STORAGE_KEY = "shopifyseo_dashboard_gsc_period";
-export const DASHBOARD_GSC_PERIOD_EVENT = "shopifyseo-dashboard-gsc-period";
-
-export function readStoredGscPeriod(): DashboardGscPeriod {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === "full_months" || v === "mtd") return v;
-  } catch {
-    /* ignore */
-  }
-  return "mtd";
-}
-
-export function persistDashboardGscPeriod(period: DashboardGscPeriod): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, period);
-  } catch {
-    /* ignore */
-  }
-  window.dispatchEvent(new CustomEvent<DashboardGscPeriod>(DASHBOARD_GSC_PERIOD_EVENT, { detail: period }));
-}
-
-/** Subscribes to Overview and same-tab period changes so detail queries refetch with the matching window. */
-export function useDashboardGscPeriodSync(): DashboardGscPeriod {
-  const [period, setPeriod] = useState<DashboardGscPeriod>(readStoredGscPeriod);
-  useEffect(() => {
-    const onCustom = (e: Event) => {
-      const ce = e as CustomEvent<DashboardGscPeriod>;
-      if (ce.detail === "mtd" || ce.detail === "full_months") setPeriod(ce.detail);
-    };
-    window.addEventListener(DASHBOARD_GSC_PERIOD_EVENT, onCustom);
-    return () => window.removeEventListener(DASHBOARD_GSC_PERIOD_EVENT, onCustom);
-  }, []);
-  return period;
-}
-
-/** Short copy for catalog detail pages (aligned with `gsc_period` on detail API requests). */
-export function catalogGscWindowDescription(period: DashboardGscPeriod): string {
-  if (period === "full_months") {
-    return "Full calendar months — same Search Console window as the GSC signal cards above.";
-  }
-  return "Month to date — same Search Console window as the GSC signal cards above.";
+/**
+ * Per-URL Search Console numbers are not period-selectable.
+ *
+ * Catalog rows and detail pages both read what the sync stored, and the sync writes
+ * exactly one window (`GSC_CATALOG_PERIOD_MODE` on the backend — a rolling 30 days).
+ * Letting the UI request a different window produced pages with no data at all, because
+ * no cache row exists for it. The Overview helpers below are separate: those aggregates
+ * are fetched live, so they genuinely can be re-windowed.
+ */
+export function catalogGscWindowDescription(): string {
+  return "Last 30 days — same Search Console window as the GSC signal cards above.";
 }
 
 /** Overview-only: rolling 30d (default) vs full property history since 2026-02-15. */

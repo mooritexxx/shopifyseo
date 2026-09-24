@@ -21,8 +21,14 @@ export type SyncQueueView = {
   throughputMetricTitle: string | undefined;
 };
 
-/** Scopes that show the live queue stream panel (single title for all). */
-const QUEUE_STREAM_SCOPES = new Set(["pagespeed", "gsc", "ga4", "index", "shopify"]);
+/**
+ * Scopes that show the live queue stream panel (single title for all).
+ *
+ * GSC and GA4 are absent: they now pull the whole property in a few paginated
+ * requests instead of one request per URL, so there is no per-URL queue to stream
+ * and no per-minute rate slots to report.
+ */
+const QUEUE_STREAM_SCOPES = new Set(["pagespeed", "index", "shopify"]);
 
 export function selectSyncQueueView(status: SyncQueueStatusInput | null | undefined): SyncQueueView {
   if (!status) {
@@ -32,9 +38,7 @@ export function selectSyncQueueView(status: SyncQueueStatusInput | null | undefi
   const queueTitle = QUEUE_STREAM_SCOPES.has(sc) ? "Queue Stream" : "Sync queue";
 
   let queueItems: SyncQueueDetailItem[] = [];
-  if (sc === "gsc") queueItems = status.gsc_queue_details || [];
-  else if (sc === "ga4") queueItems = status.ga4_queue_details || [];
-  else if (sc === "index") queueItems = status.index_queue_details || [];
+  if (sc === "index") queueItems = status.index_queue_details || [];
   else if (sc === "shopify") queueItems = status.shopify_queue_details || [];
   else if (sc === "pagespeed") queueItems = status.pagespeed_queue_details || [];
 
@@ -43,12 +47,6 @@ export function selectSyncQueueView(status: SyncQueueStatusInput | null | undefi
   if (sc === "pagespeed") {
     throughputMetricTitle = "PSI HTTP calls (60s)";
     throughputLast60s = status.pagespeed_http_calls_last_60s ?? 0;
-  } else if (sc === "gsc") {
-    throughputMetricTitle = "GSC rate slots (60s)";
-    throughputLast60s = status.gsc_sync_slots_last_60s ?? 0;
-  } else if (sc === "ga4") {
-    throughputMetricTitle = "GA4 rate slots (60s)";
-    throughputLast60s = status.ga4_sync_slots_last_60s ?? 0;
   } else if (sc === "index") {
     throughputMetricTitle = "Speed";
     throughputLast60s = status.index_sync_slots_last_60s ?? 0;

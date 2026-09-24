@@ -240,9 +240,12 @@ def google_api_get(url: str, access_token: str, *, timeout: int = 30) -> dict:
 
 
 def google_api_post(url: str, access_token: str, payload: dict) -> dict:
+    # Google's query APIs (searchAnalytics, runReport, urlInspection) are reads posted
+    # as POST, so replaying them after a transient 429/5xx is safe.
     return request_json(
         url,
         method="POST",
         headers={"Authorization": f"Bearer {access_token}"},
         payload=payload,
+        idempotent=True,
     )

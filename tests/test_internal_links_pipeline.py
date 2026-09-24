@@ -239,3 +239,91 @@ def test_rebuild_preserves_applied_and_dismissed_suggestions():
     ).fetchone()
     assert applied["status"] == "applied", "Applied suggestions should be preserved"
     assert dismissed["status"] == "dismissed", "Dismissed suggestions should be preserved"
+
+
+def test_progress_tracks_error_on_failure():
+    """Pipeline should track error state on failure so the UI can display it.
+    
+    Regression test for the bug where the pipeline's finally block always set
+    progress to idle, even on failure, causing the UI to toast "Link rebuild
+    complete" when the rebuild actually failed.
+    """
+    import pytest
+    from unittest.mock import patch
+    from shopifyseo.internal_links.pipeline import internal_link_sync_progress, _set_progress
+    
+    conn = _conn()
+    _seed(conn)
+    
+    # Reset progress state
+    _set_progress(running=False, stage="idle", done=0, total=0, error=None, finished_at=None)
+    
+    # Patch rebuild_internal_link_graph to raise an error (this error propagates)
+    with patch("shopifyseo.internal_links.pipeline.rebuild_internal_link_graph") as mock_rebuild:
+        mock_rebuild.side_effect = RuntimeError("Intentional graph rebuild failure")
+        
+        # Pipeline should propagate the error
+        with pytest.raises(RuntimeError, match="Intentional graph rebuild failure"):
+            generate_link_suggestions(conn, rebuild_graph=True)
+    
+    # Progress should show error state
+    progress = internal_link_sync_progress()
+    assert progress["running"] is False
+    assert progress["error"] is not None
+    assert "Intentional graph rebuild failure" in progress["error"]
+    assert progress["finished_at"] is not None
+
+
+def test_progress_clears_error_on_success():
+    """Pipeline should clear error state on successful completion."""
+    from shopifyseo.internal_links.pipeline import internal_link_sync_progress, _set_progress
+    
+    conn = _conn()
+    _seed(conn)
+    
+    # Set a fake prior error
+    _set_progress(error="Previous failure")
+    
+    # Run pipeline successfully
+    generate_link_suggestions(conn, related_fn=_fake_related)
+    
+    # Error should be cleared
+    progress = internal_link_sync_progress()
+    assert progress["error"] is None
+    assert progress["running"] is False
+
+
+def test_db_lock_retry_logic():
+    """_run_with_db_lock_retry should retry on database locked errors."""
+    import sqlite3
+    from shopifyseo.internal_links.pipeline import _run_with_db_lock_retry
+    
+    call_count = [0]
+    
+    def flaky_fn():
+        call_count[0] += 1
+        if call_count[0] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "success"
+    
+    result = _run_with_db_lock_retry(flaky_fn, max_retries=5)
+    assert result == "success"
+    assert call_count[0] == 3
+
+
+def test_db_lock_retry_exhaustion_raises():
+    """_run_with_db_lock_retry should raise after exhausting retries."""
+    import pytest
+    import sqlite3
+    from shopifyseo.internal_links.pipeline import _run_with_db_lock_retry
+    
+    call_count = [0]
+    
+    def always_locked():
+        call_count[0] += 1
+        raise sqlite3.OperationalError("database is locked")
+    
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        _run_with_db_lock_retry(always_locked, max_retries=3)
+    
+    assert call_count[0] == 3

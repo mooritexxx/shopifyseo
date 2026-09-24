@@ -139,13 +139,13 @@ def apply_suggestion(
         targets, _, _ = build_store_internal_link_allowlist(conn, base_url, caps=no_caps)
         path_to_canonical: dict[str, str] = {}
         for t in targets:
-            url = (t.get("url") or "").strip()
-            if not url:
+            allowlist_url = (t.get("url") or "").strip()
+            if not allowlist_url:
                 continue
-            parsed_path = urlparse(url).path or ""
+            parsed_path = urlparse(allowlist_url).path or ""
             pk = parsed_path.rstrip("/") or "/"
             if pk and pk not in path_to_canonical:
-                path_to_canonical[pk] = url
+                path_to_canonical[pk] = allowlist_url
         new_body = sanitize_article_internal_links(
             new_body, path_to_canonical=path_to_canonical, base_url=base_url
         )
@@ -173,5 +173,21 @@ def apply_suggestion(
         "UPDATE link_suggestions SET status = 'applied', applied_at = ? WHERE id = ?",
         (int(time.time()), suggestion_id),
     )
+
+    # Update sibling suggestions for the same source: refresh source_body_hash
+    # so subsequent applies on the same page don't fail the stale body check.
+    new_body_hash = _hash_body(new_body)
+    conn.execute(
+        "UPDATE link_suggestions SET source_body_hash = ? "
+        "WHERE source_type = ? AND source_handle = ? AND status = 'suggested'",
+        (new_body_hash, source_type, source_handle),
+    )
+    # Clear ai_anchor_html for ai_woven siblings - their draft was for the old body
+    conn.execute(
+        "UPDATE link_suggestions SET ai_anchor_html = NULL "
+        "WHERE source_type = ? AND source_handle = ? AND status = 'suggested' AND kind = 'ai_woven'",
+        (source_type, source_handle),
+    )
+
     conn.commit()
     return {"status": "applied", "url": url}

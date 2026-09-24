@@ -22,7 +22,7 @@ export interface LinkSummary {
   suggested: number;
   applied: number;
   dismissed: number;
-  progress: { running: boolean; stage: string; done: number; total: number };
+  progress: { running: boolean; stage: string; done: number; total: number; error: string | null };
 }
 
 async function getJson<T>(url: string): Promise<T> {

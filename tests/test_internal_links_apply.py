@@ -135,6 +135,123 @@ def test_apply_failure_leaves_status_suggested():
     assert "<a " not in body  # local untouched
 
 
+def test_apply_ai_woven_preserves_correct_internal_links():
+    """Apply must NOT remap correct internal links to different handles.
+
+    Regression test for the bug where zipping two frozensets (allowed_paths,
+    allowed_full) in arbitrary order caused path_to_canonical to pair paths
+    with random URLs. For example, /collections/abt-85k would be mapped to
+    https://vapely.ca/collections/draggg-4k instead of the correct URL.
+
+    This test verifies that an ai_woven body with correct target URLs is
+    preserved exactly, even when the allowlist contains other collections,
+    products, and pages.
+    """
+    ai_body = (
+        '<p>Check out our <a href="https://vapely.ca/collections/abt-85k-disposable-vapes">'
+        'ABT 85K Disposable Vapes</a> collection featuring '
+        '<a href="https://vapely.ca/products/abt-85k-mint-disposable">ABT 85K Mint</a> and '
+        '<a href="https://vapely.ca/products/abt-85k-grape-disposable">ABT 85K Grape</a>.</p>'
+    )
+    body_hash = _hash_body(ai_body)
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
+            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
+        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
+        CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
+            seo_title TEXT, seo_description TEXT);
+        CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT);
+        CREATE TABLE internal_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            anchor_text TEXT,
+            href TEXT,
+            UNIQUE (source_type, source_handle, target_type, target_handle, href)
+        );
+        CREATE TABLE link_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
+            anchor_phrase TEXT,
+            ai_anchor_html TEXT,
+            source_body_hash TEXT,
+            score REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'suggested'
+                CHECK (status IN ('suggested', 'applied', 'dismissed')),
+            created_at INTEGER NOT NULL,
+            applied_at INTEGER,
+            UNIQUE (source_type, source_handle, target_type, target_handle)
+        );
+        """
+    )
+    # Insert the target collection plus several OTHER collections that could be
+    # incorrectly swapped in if path_to_canonical is built wrong
+    conn.execute("INSERT INTO collections (handle, title) VALUES ('abt-85k-disposable-vapes', 'ABT 85K Disposables')")
+    conn.execute("INSERT INTO collections (handle, title) VALUES ('draggg-4k-disposable-vapes', 'Draggg 4K Disposables')")
+    conn.execute("INSERT INTO collections (handle, title) VALUES ('elf-bar-5000', 'Elf Bar 5000')")
+    conn.execute("INSERT INTO collections (handle, title) VALUES ('lost-mary', 'Lost Mary')")
+    # Insert target products plus unrelated ones
+    conn.execute("INSERT INTO products (handle, title, status) VALUES ('abt-85k-mint-disposable', 'ABT 85K Mint', 'ACTIVE')")
+    conn.execute("INSERT INTO products (handle, title, status) VALUES ('abt-85k-grape-disposable', 'ABT 85K Grape', 'ACTIVE')")
+    conn.execute("INSERT INTO products (handle, title, status) VALUES ('draggg-peach', 'Draggg Peach', 'ACTIVE')")
+    conn.execute("INSERT INTO products (handle, title, status) VALUES ('elf-bar-strawberry', 'Elf Bar Strawberry', 'ACTIVE')")
+    # Insert some pages too
+    conn.execute("INSERT INTO pages (handle, title) VALUES ('about-us', 'About Us')")
+    conn.execute("INSERT INTO pages (handle, title) VALUES ('contact', 'Contact')")
+    # Source article with the AI-generated body
+    conn.execute(
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
+        "VALUES ('gid://shopify/Article/99', 'news', 'test-article', 'Test', ?, 'st', 'sd')",
+        (ai_body,),
+    )
+    # ai_woven suggestion - the ai_anchor_html is the full replacement body
+    conn.execute(
+        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
+        "anchor_phrase, ai_anchor_html, source_body_hash, score, created_at) VALUES "
+        "('blog_article', 'news/test-article', 'collection', 'abt-85k-disposable-vapes', 'ai_woven', "
+        "'ABT 85K Disposable Vapes', ?, ?, 1.0, 1)",
+        (ai_body, body_hash),
+    )
+    conn.commit()
+
+    pushed_body = {}
+
+    def fake_push(source_type, row, new_body):
+        pushed_body["html"] = new_body
+        return {"ok": True}
+
+    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
+    # NOTE: We pass sanitize_fn=None to trigger the real sanitize logic in apply
+    # We need to verify the REAL sanitize path works correctly
+    result = apply_suggestion(conn, sid, base_url="https://vapely.ca", push_fn=fake_push, sanitize_fn=None)
+    assert result["status"] == "applied"
+
+    # The critical assertion: the pushed body must preserve the correct URLs
+    html = pushed_body["html"]
+    assert 'href="https://vapely.ca/collections/abt-85k-disposable-vapes"' in html, \
+        "Target collection URL must be preserved, not remapped"
+    assert 'href="https://vapely.ca/products/abt-85k-mint-disposable"' in html, \
+        "Target product URL must be preserved"
+    assert 'href="https://vapely.ca/products/abt-85k-grape-disposable"' in html, \
+        "Target product URL must be preserved"
+
+    # Must NOT contain wrong URLs
+    assert "draggg-4k" not in html, "Must not remap to wrong collection"
+    assert "elf-bar" not in html, "Must not remap to unrelated collection"
+    assert "draggg-peach" not in html, "Must not remap to wrong product"
+
+
 def test_apply_rejects_stale_body():
     """Apply should reject if source body changed since suggestion was created."""
     body_old = "<p>Love ceramic tanks.</p>"

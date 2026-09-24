@@ -131,10 +131,21 @@ def apply_suggestion(
         new_body = sug["ai_anchor_html"]  # full replacement body produced at review time
 
     if sanitize_fn is None:
+        from urllib.parse import urlparse
+
         from ..dashboard_ai_engine_parts._article_draft import sanitize_article_internal_links
 
-        _, allowed_full, allowed_paths = build_store_internal_link_allowlist(conn, base_url)
-        path_to_canonical = {p: f for p, f in zip(allowed_paths, allowed_full) if p and f}
+        no_caps = {"collection": 10_000, "product": 10_000, "page": 10_000, "blog_article": 10_000}
+        targets, _, _ = build_store_internal_link_allowlist(conn, base_url, caps=no_caps)
+        path_to_canonical: dict[str, str] = {}
+        for t in targets:
+            url = (t.get("url") or "").strip()
+            if not url:
+                continue
+            parsed_path = urlparse(url).path or ""
+            pk = parsed_path.rstrip("/") or "/"
+            if pk and pk not in path_to_canonical:
+                path_to_canonical[pk] = url
         new_body = sanitize_article_internal_links(
             new_body, path_to_canonical=path_to_canonical, base_url=base_url
         )

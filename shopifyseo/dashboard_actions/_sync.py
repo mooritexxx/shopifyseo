@@ -208,6 +208,16 @@ def _start_gsc_query_embedding_sync(db_path: str) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _start_catalog_embedding_sync(db_path: str) -> None:
+    """Refresh catalog embeddings (products, collections, pages, articles) after Shopify sync."""
+    from ..embedding_sync import enqueue_embedding_sync
+
+    enqueue_embedding_sync(
+        db_path,
+        object_types=["product", "collection", "page", "blog_article"],
+    )
+
+
 def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -> None:
     started_at = int(time.time())
     clear_pagespeed_http_call_tracker()
@@ -1065,6 +1075,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             _sync_current("Shopify: finalizing catalog rows")
             _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             _set_shopify_finalize_progress(1)
+            _start_catalog_embedding_sync(db_path)
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -1171,6 +1182,8 @@ def run_sync(
                 _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
                 _set_shopify_finalize_progress(1)
+                from ..embedding_sync import enqueue_embedding_sync_for_type
+                enqueue_embedding_sync_for_type(db_path, "product")
             elif normalized_scope == "collections":
                 _set_sync_stage(
                     stage="syncing_collections",
@@ -1198,6 +1211,8 @@ def run_sync(
                 _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
                 _set_shopify_finalize_progress(1)
+                from ..embedding_sync import enqueue_embedding_sync_for_type
+                enqueue_embedding_sync_for_type(db_path, "collection")
             elif normalized_scope == "pages":
                 _set_sync_stage(
                     stage="syncing_pages",
@@ -1225,6 +1240,8 @@ def run_sync(
                 _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
                 _set_shopify_finalize_progress(1)
+                from ..embedding_sync import enqueue_embedding_sync_for_type
+                enqueue_embedding_sync_for_type(db_path, "page")
             elif normalized_scope == "blogs":
                 _set_sync_stage(
                     stage="syncing_blogs",
@@ -1263,6 +1280,8 @@ def run_sync(
                 _sync_current("Shopify: finalizing catalog rows")
                 _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
                 _set_shopify_finalize_progress(1)
+                from ..embedding_sync import enqueue_embedding_sync_for_type
+                enqueue_embedding_sync_for_type(db_path, "blog_article")
             else:
                 result = _run_selected_sync_steps(db_path, normalized_selected_scopes, force_refresh=force_refresh)
             _raise_if_sync_cancelled()

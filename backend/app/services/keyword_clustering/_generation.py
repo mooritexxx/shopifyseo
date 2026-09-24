@@ -595,4 +595,10 @@ def generate_clusters(
 
     progress(f"Done — {len(clusters)} clusters generated, {matched_count} matched to existing pages")
 
+    try:
+        from shopifyseo.embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["cluster"])
+    except Exception:
+        logger.warning("Cluster embedding sync failed after generation (non-fatal)", exc_info=True)
+
     return {"clusters": clusters, "generated_at": generated_at}

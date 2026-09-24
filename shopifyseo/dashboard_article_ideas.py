@@ -925,6 +925,13 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
         )
         ids.append(cur.lastrowid)
     conn.commit()
+    try:
+        from .embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Article idea embedding sync failed after save (non-fatal)", exc_info=True
+        )
     return ids
 
 
@@ -1226,7 +1233,16 @@ def delete_article_idea(conn: sqlite3.Connection, idea_id: int) -> bool:
     """Delete an article idea by ID. Returns True if a row was deleted."""
     cur = conn.execute("DELETE FROM article_ideas WHERE id = ?", (idea_id,))
     conn.commit()
-    return cur.rowcount > 0
+    deleted = cur.rowcount > 0
+    if deleted:
+        try:
+            from .embedding_sync import enqueue_embedding_sync_from_conn
+            enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Article idea embedding sync failed after delete (non-fatal)", exc_info=True
+            )
+    return deleted
 
 
 def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: str) -> bool:
@@ -1236,7 +1252,16 @@ def update_article_idea_status(conn: sqlite3.Connection, idea_id: int, status: s
         (status, idea_id),
     )
     conn.commit()
-    return cur.rowcount > 0
+    updated = cur.rowcount > 0
+    if updated:
+        try:
+            from .embedding_sync import enqueue_embedding_sync_from_conn
+            enqueue_embedding_sync_from_conn(conn, object_types=["article_idea"])
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Article idea embedding sync failed after status update (non-fatal)", exc_info=True
+            )
+    return updated
 
 
 def update_article_idea_targets(

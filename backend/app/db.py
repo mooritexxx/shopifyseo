@@ -16,6 +16,9 @@ _bootstrapped_paths: set[str] = set()
 _bootstrap_lock = threading.Lock()
 
 
+BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+
+
 def get_db_path() -> str:
     """Resolve the DB path, guaranteeing the schema exists.
 
@@ -26,6 +29,7 @@ def get_db_path() -> str:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         try:
             configure_sqlite_text_decode(conn)
+            conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             _bootstrap_once(conn, DB_PATH)
         finally:
             conn.close()
@@ -54,6 +58,7 @@ def open_db_connection():
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA synchronous = NORMAL")
     _bootstrap_once(conn, path)
     return conn

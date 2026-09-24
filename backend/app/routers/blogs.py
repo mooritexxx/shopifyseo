@@ -35,6 +35,7 @@ from shopifyseo.dashboard_store import (
     refresh_object_structured_seo_data,
     update_article_draft_run,
 )
+from shopifyseo.sqlite_retry import run_with_db_lock_retry
 from shopifyseo.shopify_catalog_sync.blogs import sync_article
 from backend.app.services.article_service import (
     get_blog_article_detail,
@@ -282,11 +283,15 @@ def _run_generate_article_draft(
     def update_run(**fields: object) -> None:
         if not run_id:
             return
-        conn_u = open_db_connection()
-        try:
-            update_article_draft_run(conn_u, run_id, **fields)
-        finally:
-            conn_u.close()
+
+        def _do_update() -> None:
+            conn_u = open_db_connection()
+            try:
+                update_article_draft_run(conn_u, run_id, **fields)
+            finally:
+                conn_u.close()
+
+        run_with_db_lock_retry(_do_update)
 
     conn: sqlite3.Connection | None = open_db_connection()
     existing_row: sqlite3.Row | None = None

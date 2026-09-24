@@ -1493,17 +1493,24 @@ def generate_article_draft(
     def _run_update(**fields: object) -> None:
         if not draft_run_id:
             return
-        update_conn = None
-        try:
-            from shopifyseo.dashboard_store import db_connect
 
-            update_conn = db_connect()
-            update_article_draft_run(update_conn, draft_run_id, **fields)
+        def _do_update() -> None:
+            update_conn = None
+            try:
+                from shopifyseo.dashboard_store import db_connect
+
+                update_conn = db_connect()
+                update_article_draft_run(update_conn, draft_run_id, **fields)
+            finally:
+                if update_conn is not None:
+                    update_conn.close()
+
+        try:
+            from ..sqlite_retry import run_with_db_lock_retry
+
+            run_with_db_lock_retry(_do_update)
         except Exception:
             logger.debug("Failed to persist article draft run update", exc_info=True)
-        finally:
-            if update_conn is not None:
-                update_conn.close()
 
     def _emit(
         message: str,

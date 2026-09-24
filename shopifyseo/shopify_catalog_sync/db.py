@@ -446,12 +446,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+
+
 def open_db(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     ensure_schema(conn)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")

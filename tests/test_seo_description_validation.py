@@ -284,6 +284,98 @@ class TestTitlePuffRedundancy:
         assert passed  # Different puff counts, not redundant
 
 
+class TestRetryComparisonLogic:
+    """Test the retry acceptance comparison logic used in generation.py.
+    
+    These tests verify the decision criteria for accepting/rejecting a retry
+    based on the comparison logic documented in generation.py.
+    """
+
+    def _should_accept_retry(
+        self,
+        original_len: int,
+        retry_len: int,
+        original_spelling_issues: int = 0,
+        retry_spelling_issues: int = 0,
+        object_type: str = "product",
+    ) -> bool:
+        """Replicate the retry acceptance logic from generation.py."""
+        target_min = DESCRIPTION_TARGET_MIN.get(object_type, 150)
+        target_max = DESCRIPTION_LIMIT  # 160
+
+        original_in_target = target_min <= original_len <= target_max
+        retry_in_target = target_min <= retry_len <= target_max
+
+        original_dist = abs(target_max - original_len) if original_len <= target_max else 1000
+        retry_dist = abs(target_max - retry_len) if retry_len <= target_max else 1000
+
+        # NEVER accept retry if it exceeds the hard limit (160)
+        if retry_len > target_max:
+            return False
+        if retry_spelling_issues < original_spelling_issues:
+            return True
+        elif retry_spelling_issues <= original_spelling_issues:
+            if retry_in_target and not original_in_target:
+                return True
+            elif retry_in_target and original_in_target:
+                return retry_dist < original_dist
+            elif not retry_in_target and not original_in_target:
+                return retry_len > original_len and retry_len <= target_max
+        return False
+
+    def test_accept_retry_when_original_143_retry_156(self):
+        """The observed bug case: original at 143, retry at 156 should be accepted."""
+        assert self._should_accept_retry(143, 156) is True
+
+    def test_accept_retry_when_original_143_retry_155(self):
+        """Retry at 155 (in target) vs original at 143 (below target) — accept."""
+        assert self._should_accept_retry(143, 155) is True
+
+    def test_accept_retry_when_original_143_retry_150(self):
+        """Retry at 150 (at target min) vs original at 143 — accept."""
+        assert self._should_accept_retry(143, 150) is True
+
+    def test_reject_retry_when_original_143_retry_142(self):
+        """Retry at 142 vs original at 143 — both below target, reject shorter."""
+        assert self._should_accept_retry(143, 142) is False
+
+    def test_reject_retry_when_original_143_retry_143(self):
+        """Same length, no spelling improvement — reject."""
+        assert self._should_accept_retry(143, 143) is False
+
+    def test_accept_retry_when_both_in_target_retry_closer_to_160(self):
+        """Both in target range, but retry is closer to 160 — accept."""
+        assert self._should_accept_retry(151, 158) is True
+
+    def test_reject_retry_when_both_in_target_original_closer_to_160(self):
+        """Both in target range, but original is closer to 160 — reject."""
+        assert self._should_accept_retry(158, 152) is False
+
+    def test_accept_retry_when_both_in_target_retry_at_160(self):
+        """Retry hits 160 (ideal) vs original at 155 — accept."""
+        assert self._should_accept_retry(155, 160) is True
+
+    def test_reject_retry_when_retry_exceeds_limit(self):
+        """Retry at 165 exceeds limit — reject even if original is short."""
+        assert self._should_accept_retry(143, 165) is False
+
+    def test_accept_retry_with_fewer_spelling_issues(self):
+        """Retry has fewer spelling issues and valid length — accept."""
+        assert self._should_accept_retry(155, 155, original_spelling_issues=2, retry_spelling_issues=0) is True
+
+    def test_reject_retry_with_more_spelling_issues(self):
+        """Retry has more spelling issues — reject even if longer."""
+        assert self._should_accept_retry(143, 156, original_spelling_issues=0, retry_spelling_issues=2) is False
+
+    def test_accept_retry_when_both_below_target_retry_longer(self):
+        """Both below target, retry is longer — accept (closer to target)."""
+        assert self._should_accept_retry(130, 145) is True
+
+    def test_reject_retry_when_both_below_target_retry_shorter(self):
+        """Both below target, retry is shorter — reject."""
+        assert self._should_accept_retry(145, 130) is False
+
+
 class TestRealWorldScenarios:
     """Test real-world SEO description scenarios."""
 

@@ -1,10 +1,15 @@
 """Tests for AI-woven anchor generation."""
 
+import hashlib
 import sqlite3
 
 import pytest
 
 from shopifyseo.internal_links.ai_weave import generate_ai_anchor
+
+
+def _hash_body(body: str) -> str:
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
 
 def _conn() -> sqlite3.Connection:
@@ -31,6 +36,7 @@ def _conn() -> sqlite3.Connection:
             kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
             anchor_phrase TEXT,
             ai_anchor_html TEXT,
+            source_body_hash TEXT,
             score REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
                 CHECK (status IN ('suggested', 'applied', 'dismissed')),
@@ -85,3 +91,21 @@ def test_generate_ai_anchor_only_for_ai_woven():
     sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
     with pytest.raises(ValueError, match="ai_woven"):
         generate_ai_anchor(conn, sid, base_url="https://s.com", call_ai_fn=lambda m, j: {})
+
+
+def test_generate_ai_anchor_updates_source_body_hash():
+    """generate_ai_anchor must update source_body_hash to current body hash."""
+    conn = _conn()
+    current_body = "<p>Original text.</p>"
+    expected_hash = _hash_body(current_body)
+    conn.execute("UPDATE link_suggestions SET source_body_hash = 'stale_hash_from_rebuild'")
+    conn.commit()
+    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
+    revised = '<p>Original text. Check out the <a href="https://s.com/products/widget">Widget Pro</a>.</p>'
+
+    def fake_call_ai(messages, json_schema):
+        return {"revised_body": revised}
+
+    generate_ai_anchor(conn, sid, base_url="https://s.com", call_ai_fn=fake_call_ai)
+    row = conn.execute("SELECT source_body_hash FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
+    assert row["source_body_hash"] == expected_hash, "Hash should be updated to current body hash"

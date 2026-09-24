@@ -5,7 +5,7 @@ import sqlite3
 from typing import Callable
 
 from ..dashboard_queries._urls import object_url_with_base
-from .apply import _load_source_row, _SOURCE_META
+from .apply import _hash_body, _load_source_row, _SOURCE_META
 
 WEAVE_SCHEMA = {
     "type": "object",
@@ -67,15 +67,18 @@ def generate_ai_anchor(
 
     row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
     body_col = _SOURCE_META[sug["source_type"]][2]
+    current_body = row[body_col] or ""
+    current_hash = _hash_body(current_body)
     url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
     title = _target_title(conn, sug["target_type"], sug["target_handle"])
-    prompt = _PROMPT.format(title=title, url=url, body=row[body_col] or "")
+    prompt = _PROMPT.format(title=title, url=url, body=current_body)
     raw = call_ai_fn([{"role": "user", "content": prompt}], WEAVE_SCHEMA)
     revised = str(raw.get("revised_body") or "").strip()
     if f'href="{url}"' not in revised:
         raise ValueError("AI response does not contain the target link")
     conn.execute(
-        "UPDATE link_suggestions SET ai_anchor_html = ? WHERE id = ?", (revised, suggestion_id)
+        "UPDATE link_suggestions SET ai_anchor_html = ?, source_body_hash = ? WHERE id = ?",
+        (revised, current_hash, suggestion_id),
     )
     conn.commit()
-    return {"ai_anchor_html": revised, "current_body": row[body_col] or "", "url": url}
+    return {"ai_anchor_html": revised, "current_body": current_body, "url": url}

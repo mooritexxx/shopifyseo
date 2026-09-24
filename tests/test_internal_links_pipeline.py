@@ -161,3 +161,81 @@ def test_traffic_weighted_scoring_orders_high_traffic_sources_first():
     ).fetchall()
     assert rows[0]["source_handle"] == "news/post"  # 100 clicks beats 0 clicks
     assert rows[0]["score"] > rows[1]["score"]
+
+
+def test_rebuild_replaces_stale_suggested_rows_with_fresh_hashes():
+    """Rebuild should delete pending suggestions with stale hashes and re-insert fresh ones.
+
+    Regression test for bug: INSERT OR IGNORE left stale source_body_hash values
+    when body content changed, causing Apply to fail even after Rebuild + Generate.
+    """
+    import hashlib
+
+    def _hash_body(body: str) -> str:
+        return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
+
+    conn = _conn()
+    old_body = "<p>Old body content about ceramic tanks.</p>"
+    new_body = "<p>New body content about ceramic tanks.</p>"
+    old_hash = _hash_body(old_body)
+    new_hash = _hash_body(new_body)
+
+    conn.execute(
+        "INSERT INTO blog_articles (blog_handle, handle, title, body, gsc_clicks) VALUES "
+        "('news', 'post', 'Post', ?, 100)",
+        (old_body,),
+    )
+    conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+    conn.execute(
+        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
+        "anchor_phrase, source_body_hash, score, created_at) VALUES "
+        "('blog_article', 'news/post', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', ?, 1.0, 1)",
+        (old_hash,),
+    )
+    conn.commit()
+
+    conn.execute("UPDATE blog_articles SET body = ? WHERE handle = 'post'", (new_body,))
+    conn.commit()
+
+    def related(conn_, object_type, handle, top_k=10, type_quotas=None):
+        if (object_type, handle) == ("blog_article", "news/post"):
+            return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+        return []
+
+    generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+
+    row = conn.execute(
+        "SELECT source_body_hash FROM link_suggestions WHERE source_handle = 'news/post'"
+    ).fetchone()
+    assert row["source_body_hash"] == new_hash, "Rebuild should update hash to current body"
+    assert row["source_body_hash"] != old_hash, "Old stale hash should be replaced"
+
+
+def test_rebuild_preserves_applied_and_dismissed_suggestions():
+    """Rebuild should only delete 'suggested' rows, preserving 'applied' and 'dismissed'."""
+    conn = _conn()
+    _seed(conn)
+
+    def related(conn_, object_type, handle, top_k=10, type_quotas=None):
+        if (object_type, handle) == ("blog_article", "news/post"):
+            return [
+                {"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9},
+                {"object_type": "product", "object_handle": "widget", "score": 0.8},
+            ]
+        return []
+
+    generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+    conn.execute("UPDATE link_suggestions SET status = 'applied' WHERE target_handle = 'ceramic-tanks'")
+    conn.execute("UPDATE link_suggestions SET status = 'dismissed' WHERE target_handle = 'widget'")
+    conn.commit()
+
+    generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+
+    applied = conn.execute(
+        "SELECT status FROM link_suggestions WHERE target_handle = 'ceramic-tanks'"
+    ).fetchone()
+    dismissed = conn.execute(
+        "SELECT status FROM link_suggestions WHERE target_handle = 'widget'"
+    ).fetchone()
+    assert applied["status"] == "applied", "Applied suggestions should be preserved"
+    assert dismissed["status"] == "dismissed", "Dismissed suggestions should be preserved"

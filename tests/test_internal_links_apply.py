@@ -297,3 +297,74 @@ def test_apply_rejects_stale_body():
     sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
     with pytest.raises(ValueError, match="Source body changed"):
         apply_suggestion(conn, sid, base_url="https://s.com", push_fn=lambda *a: {}, sanitize_fn=lambda b: b)
+
+
+def test_apply_succeeds_after_generate_updates_hash():
+    """Apply should succeed when generate_ai_anchor has updated hash to current body.
+
+    Regression test for bug: Apply failed with "Source body changed" even after
+    Generate ran on the current body, because Generate didn't update source_body_hash.
+    """
+    from shopifyseo.internal_links.ai_weave import generate_ai_anchor
+
+    current_body = "<p>Short body text.</p>"
+    stale_hash = "stale_hash_from_old_rebuild"
+    current_hash = _hash_body(current_body)
+    ai_body = '<p>Short body text. See <a href="https://s.com/products/widget">Widget</a>.</p>'
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
+            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
+        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
+        CREATE TABLE internal_links (
+            id INTEGER PRIMARY KEY,
+            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
+            anchor_text TEXT, href TEXT,
+            UNIQUE (source_type, source_handle, target_type, target_handle, href)
+        );
+        CREATE TABLE link_suggestions (
+            id INTEGER PRIMARY KEY,
+            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
+            kind TEXT, anchor_phrase TEXT, ai_anchor_html TEXT, source_body_hash TEXT,
+            score REAL DEFAULT 0, status TEXT DEFAULT 'suggested', created_at INTEGER, applied_at INTEGER,
+            UNIQUE (source_type, source_handle, target_type, target_handle)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
+        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
+        (current_body,),
+    )
+    conn.execute("INSERT INTO products (handle, title, status) VALUES ('widget', 'Widget', 'ACTIVE')")
+    conn.execute(
+        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
+        "source_body_hash, score, created_at) VALUES "
+        "('blog_article', 'news/post', 'product', 'widget', 'ai_woven', ?, 1.0, 1)",
+        (stale_hash,),
+    )
+    conn.commit()
+
+    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
+
+    def fake_call_ai(messages, json_schema):
+        return {"revised_body": ai_body}
+
+    generate_ai_anchor(conn, sid, base_url="https://s.com", call_ai_fn=fake_call_ai)
+
+    row = conn.execute("SELECT source_body_hash FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
+    assert row["source_body_hash"] == current_hash, "Generate should update hash"
+
+    pushed = {}
+
+    def fake_push(source_type, row, new_body):
+        pushed["body"] = new_body
+        return {"ok": True}
+
+    result = apply_suggestion(conn, sid, base_url="https://s.com", push_fn=fake_push, sanitize_fn=lambda b: b)
+    assert result["status"] == "applied", "Apply should succeed after Generate updates hash"
+    assert 'href="https://s.com/products/widget"' in pushed["body"]

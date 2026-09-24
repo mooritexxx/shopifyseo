@@ -645,7 +645,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             source_body_hash TEXT,
             score REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
-                CHECK (status IN ('suggested', 'applied', 'dismissed')),
+                CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
             created_at INTEGER NOT NULL,
             applied_at INTEGER,
             UNIQUE (source_type, source_handle, target_type, target_handle)

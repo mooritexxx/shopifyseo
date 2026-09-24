@@ -6,6 +6,7 @@ import re
 import sqlite3
 import time
 from typing import Callable
+from urllib.parse import urlparse
 
 from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
 
@@ -191,3 +192,140 @@ def apply_suggestion(
 
     conn.commit()
     return {"status": "applied", "url": url}
+
+
+def remove_link_from_html(html: str, href: str) -> str | None:
+    """Remove a single <a href="...">...</a> link from HTML by its href.
+    
+    Returns the modified HTML, or None if no matching link was found.
+    Only removes the first matching link to be safe.
+    """
+    if not html or not href:
+        return None
+    
+    parsed_href = urlparse(href)
+    href_path = parsed_href.path.rstrip("/") or "/"
+    
+    # Pattern to find <a href="..." ...>...</a> - handles various attribute orderings
+    link_pattern = re.compile(
+        r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL
+    )
+    
+    def matches_href(found_href: str) -> bool:
+        """Check if found_href matches the target href (path comparison)."""
+        found_parsed = urlparse(found_href)
+        found_path = found_parsed.path.rstrip("/") or "/"
+        return found_path == href_path
+    
+    # Find all links and replace the first match
+    for match in link_pattern.finditer(html):
+        found_href = match.group(1)
+        if matches_href(found_href):
+            anchor_text = match.group(2)
+            # Replace the entire <a>...</a> with just the anchor text
+            return html[:match.start()] + anchor_text + html[match.end():]
+    
+    return None
+
+
+def undo_suggestion(
+    conn: sqlite3.Connection,
+    suggestion_id: int,
+    base_url: str,
+    push_fn: Callable | None = None,
+) -> dict:
+    """Undo an applied suggestion: remove the link from live Shopify body.
+    
+    - Only works on suggestions with status='applied'
+    - Removes the specific <a href="...">...</a> from the body, keeping anchor text
+    - Pushes updated body to Shopify
+    - Removes the internal_links edge
+    - Sets suggestion status to 'undone'
+    
+    Raises on push failure; local state is only mutated after push succeeds.
+    """
+    push_fn = push_fn or _shopify_push
+    sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+    if not sug:
+        raise ValueError(f"suggestion {suggestion_id} not found")
+    if sug["status"] != "applied":
+        raise ValueError(f"suggestion {suggestion_id} is {sug['status']}, not applied")
+
+    source_type, source_handle = sug["source_type"], sug["source_handle"]
+    table, where, body_col, _cols = _SOURCE_META[source_type]
+    row = _load_source_row(conn, source_type, source_handle)
+    
+    current_body = row[body_col] or ""
+    
+    # Build the target URL that was used when applying
+    url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
+    
+    # Remove the link from the body
+    new_body = remove_link_from_html(current_body, url)
+    if new_body is None:
+        # Link not found in current body - it may have been manually removed
+        # Still update status but note this in the response
+        conn.execute(
+            "UPDATE link_suggestions SET status = 'undone' WHERE id = ?",
+            (suggestion_id,),
+        )
+        conn.execute(
+            "DELETE FROM internal_links WHERE source_type = ? AND source_handle = ? "
+            "AND target_type = ? AND target_handle = ?",
+            (source_type, source_handle, sug["target_type"], sug["target_handle"]),
+        )
+        conn.commit()
+        return {"status": "undone", "link_not_found": True, "message": "Link not found in current body"}
+    
+    # Push to Shopify (raises on failure -> nothing below runs)
+    push_fn(source_type, row, new_body)
+    
+    # Update local body
+    if source_type == "blog_article":
+        blog_h, _, article_h = source_handle.partition("/")
+        conn.execute(
+            f"UPDATE {table} SET {body_col} = ? WHERE blog_handle = ? AND handle = ?",
+            (new_body, blog_h, article_h),
+        )
+    else:
+        conn.execute(f"UPDATE {table} SET {body_col} = ? WHERE handle = ?", (new_body, source_handle))
+    
+    # Remove the internal_links edge
+    conn.execute(
+        "DELETE FROM internal_links WHERE source_type = ? AND source_handle = ? "
+        "AND target_type = ? AND target_handle = ?",
+        (source_type, source_handle, sug["target_type"], sug["target_handle"]),
+    )
+    
+    # Update suggestion status to 'undone'
+    conn.execute(
+        "UPDATE link_suggestions SET status = 'undone' WHERE id = ?",
+        (suggestion_id,),
+    )
+    
+    conn.commit()
+    return {"status": "undone", "url": url}
+
+
+def check_link_present_in_body(body: str | None, href: str) -> bool:
+    """Check if a link with the given href exists in the HTML body."""
+    if not body or not href:
+        return False
+    
+    parsed_href = urlparse(href)
+    href_path = parsed_href.path.rstrip("/") or "/"
+    
+    link_pattern = re.compile(
+        r'<a\s+[^>]*href=["\']([^"\']+)["\']',
+        re.IGNORECASE
+    )
+    
+    for match in link_pattern.finditer(body):
+        found_href = match.group(1)
+        found_parsed = urlparse(found_href)
+        found_path = found_parsed.path.rstrip("/") or "/"
+        if found_path == href_path:
+            return True
+    
+    return False

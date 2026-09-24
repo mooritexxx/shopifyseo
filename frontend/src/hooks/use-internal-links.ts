@@ -13,7 +13,45 @@ export interface LinkSuggestion {
   anchor_phrase: string | null;
   ai_anchor_html: string | null;
   score: number;
-  status: "suggested" | "applied" | "dismissed";
+  status: "suggested" | "applied" | "dismissed" | "undone";
+  weak_anchor_warning?: string | null;
+  applied_at?: number | null;
+}
+
+export interface AppliedLink extends LinkSuggestion {
+  live_present: boolean | null;
+  href: string | null;
+}
+
+export interface LinkPreview {
+  suggestion_id: number;
+  kind: "phrase_wrap" | "ai_woven";
+  current_body_snippet: string | null;
+  preview_body_snippet: string | null;
+  anchor_phrase: string | null;
+  target_url: string;
+}
+
+export interface GraphNode {
+  id: string;
+  object_type: string;
+  handle: string;
+  inbound: number;
+  outbound: number;
+  is_focus: boolean;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  anchor_text: string;
+}
+
+export interface GraphMapData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  node_count: number;
+  edge_count: number;
 }
 
 export interface LinkSummary {
@@ -148,4 +186,46 @@ export function useGenerateAnchor() {
 export function useRebuildLinks() {
   const invalidate = useInvalidate();
   return useMutation({ mutationFn: () => postJson("/api/internal-links/rebuild"), onSuccess: invalidate });
+}
+
+export function useAppliedLinks(params: { sourceType?: string; sourceHandle?: string; problemsOnly?: boolean } = {}) {
+  const search = new URLSearchParams();
+  if (params.sourceType) search.set("source_type", params.sourceType);
+  if (params.sourceHandle) search.set("source_handle", params.sourceHandle);
+  if (params.problemsOnly) search.set("problems_only", "true");
+  const query = search.toString();
+  return useQuery({
+    queryKey: ["internal-links", "applied", params],
+    queryFn: () => getJson<AppliedLink[]>(`/api/internal-links/applied${query ? `?${query}` : ""}`),
+  });
+}
+
+export function useUndoSuggestion() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (id: number) => postJson<{ status: string; url?: string; link_not_found?: boolean; message?: string }>(
+      `/api/internal-links/suggestions/${id}/undo`,
+    ),
+    onSuccess: invalidate,
+  });
+}
+
+export function useLinkPreview(suggestionId: number | null) {
+  return useQuery({
+    queryKey: ["internal-links", "preview", suggestionId],
+    queryFn: () => getJson<LinkPreview>(`/api/internal-links/suggestions/${suggestionId}/preview`),
+    enabled: suggestionId !== null,
+  });
+}
+
+export function useGraphMapData(params: { focusType?: string; focusHandle?: string; maxNodes?: number } = {}) {
+  const search = new URLSearchParams();
+  if (params.focusType) search.set("focus_type", params.focusType);
+  if (params.focusHandle) search.set("focus_handle", params.focusHandle);
+  if (params.maxNodes) search.set("max_nodes", String(params.maxNodes));
+  const query = search.toString();
+  return useQuery({
+    queryKey: ["internal-links", "graph-map", params],
+    queryFn: () => getJson<GraphMapData>(`/api/internal-links/graph-map${query ? `?${query}` : ""}`),
+  });
 }

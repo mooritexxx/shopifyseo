@@ -476,3 +476,234 @@ class TestBuildDescriptionLengthRetryFeedback:
         assert "150" in feedback
         assert "160" in feedback
         assert prev_draft in feedback
+
+
+class TestSEODescriptionExampleLengths:
+    """Verify few-shot example lengths don't drift — these are promised in the prompt."""
+
+    def test_example_1_length_is_157(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import (
+            SEO_DESCRIPTION_EXAMPLE_1,
+            SEO_DESCRIPTION_EXAMPLE_1_LEN,
+        )
+        actual_len = len(SEO_DESCRIPTION_EXAMPLE_1)
+        assert actual_len == SEO_DESCRIPTION_EXAMPLE_1_LEN, (
+            f"Example 1 length drifted: expected {SEO_DESCRIPTION_EXAMPLE_1_LEN}, got {actual_len}"
+        )
+        assert actual_len == 157, f"Example 1 should be 157 chars, got {actual_len}"
+
+    def test_example_2_length_is_156(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import (
+            SEO_DESCRIPTION_EXAMPLE_2,
+            SEO_DESCRIPTION_EXAMPLE_2_LEN,
+        )
+        actual_len = len(SEO_DESCRIPTION_EXAMPLE_2)
+        assert actual_len == SEO_DESCRIPTION_EXAMPLE_2_LEN, (
+            f"Example 2 length drifted: expected {SEO_DESCRIPTION_EXAMPLE_2_LEN}, got {actual_len}"
+        )
+        assert actual_len == 156, f"Example 2 should be 156 chars, got {actual_len}"
+
+    def test_examples_are_in_target_range(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import (
+            SEO_DESCRIPTION_EXAMPLE_1,
+            SEO_DESCRIPTION_EXAMPLE_2,
+        )
+        assert 150 <= len(SEO_DESCRIPTION_EXAMPLE_1) <= 160
+        assert 150 <= len(SEO_DESCRIPTION_EXAMPLE_2) <= 160
+
+    def test_examples_use_commonwealth_spelling(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import (
+            SEO_DESCRIPTION_EXAMPLE_1,
+            SEO_DESCRIPTION_EXAMPLE_2,
+        )
+        # Should have 'flavour' not 'flavor'
+        assert "flavour" in SEO_DESCRIPTION_EXAMPLE_1.lower()
+        assert "flavour" in SEO_DESCRIPTION_EXAMPLE_2.lower()
+        assert "flavor" not in SEO_DESCRIPTION_EXAMPLE_1.lower()
+        assert "flavor" not in SEO_DESCRIPTION_EXAMPLE_2.lower()
+
+
+class TestEnsureSEODescriptionLength:
+    """Test the deterministic length repair fallback."""
+
+    def test_returns_unchanged_if_in_range(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "x" * 155
+        result, modified = ensure_seo_description_length(text, expansion_bits=["test bit"])
+        assert result == text
+        assert not modified
+
+    def test_returns_unchanged_if_too_long(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "x" * 165
+        result, modified = ensure_seo_description_length(text, expansion_bits=["test bit"])
+        assert result == text
+        assert not modified
+
+    def test_expands_short_text_with_bits(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "Shop premium vapes in Canada. Fast shipping."  # ~45 chars
+        bits = ["ships across Canada", "10000 puffs", "premium quality"]
+        result, modified = ensure_seo_description_length(
+            text, target_min=150, target_max=160, expansion_bits=bits
+        )
+        assert modified
+        assert len(result) > len(text)
+
+    def test_does_not_exceed_max(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "x" * 145
+        bits = ["very long expansion bit that would exceed the limit"] * 5
+        result, modified = ensure_seo_description_length(
+            text, target_min=150, target_max=160, expansion_bits=bits
+        )
+        assert len(result) <= 160
+
+    def test_skips_bits_already_in_text(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "Shop premium vapes with fast shipping in Canada."
+        bits = ["fast shipping", "premium", "new bit"]  # first two already in text
+        result, modified = ensure_seo_description_length(
+            text, target_min=150, target_max=160, expansion_bits=bits
+        )
+        # Should only add "new bit", not duplicate existing content
+        if modified:
+            assert result.lower().count("fast shipping") == 1
+
+    def test_149_char_draggg_case(self):
+        """Test the exact 149-char production case that triggered this fix."""
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        # Simulated 149-char description (one char below target_min of 150)
+        text = "Shop Draggg 4K Strawberry Lychee Watermelon disposable vape in Canada. Tropical fruity flavour with 4000 puffs. Fast Canadian shipping available now."
+        assert len(text) == 149, f"Test text should be 149 chars, got {len(text)}"
+        
+        # Use shorter bits that can fit within the 160-char limit (149 + bit + punctuation <= 160)
+        # Max bit length: 160 - 149 - 2 (for " .") = 9 chars
+        bits = ["online", "today", "by Draggg", "4K"]
+        result, modified = ensure_seo_description_length(
+            text, target_min=150, target_max=160, expansion_bits=bits
+        )
+        
+        # Should expand to at least 150
+        assert modified, "149-char text should be modified"
+        assert len(result) >= 150, f"Result should be >= 150, got {len(result)}"
+        assert len(result) <= 160, f"Result should be <= 160, got {len(result)}"
+
+    def test_prefers_landing_close_to_max(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import ensure_seo_description_length
+        text = "x" * 140  # 10 below min
+        bits = ["12345", "1234567890", "12345678901234567890"]  # 5, 10, 20 chars
+        result, modified = ensure_seo_description_length(
+            text, target_min=150, target_max=160, expansion_bits=bits
+        )
+        if modified and 150 <= len(result) <= 160:
+            # Should prefer closer to 160
+            assert len(result) >= 150
+
+
+class TestExtractExpansionBitsFromContext:
+    """Test extraction of expansion bits from generation context."""
+
+    def test_extracts_vendor_from_product(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import extract_expansion_bits_from_context
+        context = {
+            "detail": {
+                "product": {
+                    "vendor": "Vapely",
+                    "title": "Test Product",
+                }
+            }
+        }
+        bits = extract_expansion_bits_from_context(context, "product")
+        assert any("Vapely" in b for b in bits)
+
+    def test_extracts_puff_count_from_title(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import extract_expansion_bits_from_context
+        context = {
+            "detail": {
+                "product": {
+                    "title": "Draggg 10K Frost",
+                    "vendor": "",
+                }
+            }
+        }
+        bits = extract_expansion_bits_from_context(context, "product")
+        assert any("10,000 puffs" in b or "10000 puffs" in b for b in bits)
+
+    def test_extracts_product_type(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import extract_expansion_bits_from_context
+        context = {
+            "detail": {
+                "product": {
+                    "title": "Test",
+                    "product_type": "Disposable Vape",
+                }
+            }
+        }
+        bits = extract_expansion_bits_from_context(context, "product")
+        assert any("disposable vape" in b.lower() for b in bits)
+
+    def test_includes_canada_shipping_bits(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import extract_expansion_bits_from_context
+        context = {"detail": {"product": {"title": "Test"}}}
+        bits = extract_expansion_bits_from_context(context, "product")
+        assert any("canada" in b.lower() for b in bits)
+
+    def test_extracts_collection_title(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import extract_expansion_bits_from_context
+        context = {
+            "detail": {
+                "collection": {
+                    "title": "Disposable Vapes",
+                }
+            }
+        }
+        bits = extract_expansion_bits_from_context(context, "collection")
+        assert any("disposable vapes" in b.lower() for b in bits)
+
+
+class TestBuildDescriptionLengthRepairPrompt:
+    """Test the dedicated LLM repair prompt builder."""
+
+    def test_returns_system_and_user_prompts(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        sys_prompt, usr_prompt = build_description_length_repair_prompt(
+            "Short draft", 150, 160, ["bit1", "bit2"]
+        )
+        assert isinstance(sys_prompt, str)
+        assert isinstance(usr_prompt, str)
+        assert len(sys_prompt) > 0
+        assert len(usr_prompt) > 0
+
+    def test_includes_draft_in_user_prompt(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        draft = "This is the draft to expand"
+        _, usr_prompt = build_description_length_repair_prompt(draft, 150, 160, [])
+        assert draft in usr_prompt
+
+    def test_includes_shortfall_calculation(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        draft = "x" * 143  # 7 below 150
+        _, usr_prompt = build_description_length_repair_prompt(draft, 150, 160, [])
+        assert "143" in usr_prompt
+        assert "7" in usr_prompt or "need" in usr_prompt.lower()
+
+    def test_includes_expansion_bits(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        bits = ["ships across Canada", "10000 puffs"]
+        _, usr_prompt = build_description_length_repair_prompt("draft", 150, 160, bits)
+        assert "ships across Canada" in usr_prompt
+        assert "10000 puffs" in usr_prompt
+
+    def test_filters_bits_already_in_draft(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        draft = "Ships across Canada with fast delivery."
+        bits = ["ships across Canada", "new bit"]
+        _, usr_prompt = build_description_length_repair_prompt(draft, 150, 160, bits)
+        # "ships across Canada" should be filtered out, "new bit" should remain
+        assert "new bit" in usr_prompt
+
+    def test_system_prompt_emphasizes_no_shortening(self):
+        from shopifyseo.dashboard_ai_engine_parts.prompts import build_description_length_repair_prompt
+        sys_prompt, _ = build_description_length_repair_prompt("draft", 150, 160, [])
+        assert "shorten" in sys_prompt.lower() or "keep" in sys_prompt.lower()

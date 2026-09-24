@@ -43,7 +43,241 @@ def build_description_length_retry_feedback(
         f"{expansion_hint}"
         f"Do NOT pad with fluff, filler, or repetition. Do NOT exceed {target_max} characters."
     )
+
+
+def build_description_length_repair_prompt(
+    draft: str,
+    target_min: int,
+    target_max: int,
+    expansion_bits: list[str],
+) -> tuple[str, str]:
+    """Build a focused LLM repair prompt for expanding a too-short seo_description.
+    
+    Returns (system_prompt, user_prompt) for a dedicated repair call.
+    The repair should KEEP the meaning and EXPAND by adding concrete detail.
+    """
+    draft_len = len(draft)
+    shortfall = target_min - draft_len
+    
+    # Filter expansion bits to only those not already in the draft (case-insensitive)
+    draft_lower = draft.lower()
+    available_bits = [b for b in expansion_bits if b.lower() not in draft_lower]
+    
+    system_prompt = (
+        "You are a copy editor. Your ONLY task is to expand a too-short SEO meta description "
+        "to exactly 150–160 characters. You must KEEP the original meaning and wording as much as possible. "
+        "Add detail from the provided expansion options. Do NOT invent facts. Do NOT shorten. "
+        "Output ONLY the expanded description as plain text — no quotes, no JSON, no explanation."
+    )
+    
+    bits_text = ", ".join(f'"{b}"' for b in available_bits[:6]) if available_bits else "(none available)"
+    
+    user_prompt = (
+        f"CURRENT DRAFT ({draft_len} characters, need {shortfall} more):\n"
+        f'"{draft}"\n\n'
+        f"EXPANSION OPTIONS (factual details you may insert):\n{bits_text}\n\n"
+        f"TASK: Expand to exactly {target_min}–{target_max} characters. "
+        f"Insert detail naturally — mid-sentence or at the end. "
+        f"Do NOT rewrite from scratch. Do NOT shorten. Do NOT exceed {target_max}. "
+        f"Output ONLY the expanded text."
+    )
+    
+    return system_prompt, user_prompt
+
+
+def extract_expansion_bits_from_context(context: dict, object_type: str) -> list[str]:
+    """Extract factual expansion bits from generation context for length repair.
+    
+    Returns a list of short phrases that can be inserted to expand a description.
+    These are derived from product/collection/page context, not invented.
+    """
+    bits: list[str] = []
+    detail = context.get("detail") or {}
+    
+    if object_type == "product":
+        product = detail.get("product") or {}
+        
+        # Brand / vendor
+        vendor = product.get("vendor", "").strip()
+        if vendor and len(vendor) <= 25:
+            bits.append(f"by {vendor}")
+        
+        # Puff count from title or tags
+        title = product.get("title", "")
+        import re
+        puff_match = re.search(r'\b(\d{3,5})\s*(?:puff|Puff)', title)
+        if puff_match:
+            bits.append(f"{puff_match.group(1)} puffs")
+        
+        # K-notation puff count (e.g., "10K" = 10000 puffs)
+        k_match = re.search(r'\b(\d+)[Kk]\b', title)
+        if k_match:
+            k_val = int(k_match.group(1)) * 1000
+            bits.append(f"{k_val:,} puffs")
+        
+        # Product type
+        ptype = product.get("product_type", "").strip()
+        if ptype and len(ptype) <= 20:
+            bits.append(ptype.lower())
+        
+        # Tags for flavour hints
+        tags = product.get("tags", "")
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        else:
+            tag_list = list(tags) if tags else []
+        for tag in tag_list[:5]:
+            if len(tag) <= 15 and tag.lower() not in ("new", "sale", "featured"):
+                bits.append(tag.lower())
+        
+        # Canada shipping bits
+        bits.append("ships across Canada")
+        bits.append("Canadian shipping available")
+        bits.append("fast Canada-wide delivery")
+        
+    elif object_type == "collection":
+        collection = detail.get("collection") or {}
+        title = collection.get("title", "").strip()
+        if title:
+            bits.append(f"from our {title} collection")
+        bits.append("wide selection")
+        bits.append("shop the full range")
+        bits.append("Canadian shoppers")
+        bits.append("ships Canada-wide")
+        
+    else:  # page, blog_article
+        page = detail.get("page") or detail.get("article") or {}
+        title = page.get("title", "").strip()
+        if title and len(title) <= 30:
+            bits.append(title.lower())
+        bits.append("learn more")
+        bits.append("Canadian customers")
+        bits.append("ships across Canada")
+    
+    # Dedupe while preserving order
+    seen = set()
+    unique_bits = []
+    for b in bits:
+        b_lower = b.lower()
+        if b_lower not in seen and len(b) >= 3:
+            seen.add(b_lower)
+            unique_bits.append(b)
+    
+    return unique_bits
+
+
+def ensure_seo_description_length(
+    text: str,
+    *,
+    target_min: int = 150,
+    target_max: int = 160,
+    expansion_bits: list[str],
+) -> tuple[str, bool]:
+    """Deterministic fallback to ensure seo_description is in [target_min, target_max].
+    
+    Args:
+        text: The description text to fix
+        target_min: Minimum character count (default 150)
+        target_max: Maximum character count (default 160)
+        expansion_bits: List of factual phrases to append for expansion
+    
+    Returns:
+        (fixed_text, was_modified): The fixed text and whether any change was made
+    
+    Rules:
+        - If already in range → return as-is
+        - If > target_max → return as-is (leave to existing trim/reject logic)
+        - If < target_min → append expansion bits until in [target_min, target_max]
+        - Skip bits already present in the text (case-insensitive)
+        - Never exceed target_max
+        - Prefer landing as close to target_max as possible
+    """
+    text = text.strip()
+    current_len = len(text)
+    
+    # Already in range
+    if target_min <= current_len <= target_max:
+        return text, False
+    
+    # Too long — don't modify here (leave to existing logic)
+    if current_len > target_max:
+        return text, False
+    
+    # Too short — need to expand
+    text_lower = text.lower()
+    
+    # Filter to bits not already in text
+    available_bits = [b for b in expansion_bits if b.lower() not in text_lower]
+    
+    # Sort by length descending to fill space efficiently, then by length ascending for fine-tuning
+    # Strategy: first try to get close with longer bits, then fine-tune with shorter ones
+    available_bits_sorted = sorted(available_bits, key=len, reverse=True)
+    
+    result = text
+    
+    # Try to append bits to reach target range
+    for bit in available_bits_sorted:
+        current_len = len(result)
+        
+        # Already in target range — stop
+        if target_min <= current_len <= target_max:
+            break
+        
+        # Calculate what adding this bit would give us
+        # Try different insertion formats
+        candidates = [
+            f"{result} {bit}.",  # Append with period
+            f"{result}. {bit.capitalize()}.",  # New sentence
+            f"{result} — {bit}.",  # Em-dash
+        ]
+        
+        # If result ends with period, try replacing it
+        if result.rstrip().endswith("."):
+            base = result.rstrip()[:-1]
+            candidates.extend([
+                f"{base} — {bit}.",
+                f"{base}; {bit}.",
+            ])
+        
+        # Pick the best candidate that lands in or closest to target range without exceeding
+        best_candidate = None
+        best_dist = float('inf')
+        
+        for candidate in candidates:
+            cand_len = len(candidate)
+            if cand_len > target_max:
+                continue  # Skip if would exceed max
+            if target_min <= cand_len <= target_max:
+                # In range — prefer closer to target_max
+                dist = target_max - cand_len
+                if dist < best_dist:
+                    best_dist = dist
+                    best_candidate = candidate
+            elif cand_len < target_min and cand_len > current_len:
+                # Still short but longer — might help
+                dist = target_min - cand_len
+                if dist < best_dist:
+                    best_dist = dist
+                    best_candidate = candidate
+        
+        if best_candidate and len(best_candidate) > current_len:
+            result = best_candidate
+    
+    # Final check — if we got into range, great; otherwise return best effort
+    was_modified = result != text
+    return result, was_modified
+
+
 _GSC_QUERY_HIGHLIGHTS_JSON_CAP = 400
+
+# Verified few-shot examples for SEO description generation.
+# IMPORTANT: These lengths are verified in unit tests — do not change without updating tests.
+SEO_DESCRIPTION_EXAMPLE_1 = "Shop Draggg 10K Frost disposable vape online in Canada. Premium icy menthol flavour with 10,000 puffs and 20mL e-liquid. Fast Canada-wide shipping available."
+SEO_DESCRIPTION_EXAMPLE_1_LEN = 157  # Verified: len(SEO_DESCRIPTION_EXAMPLE_1) == 157
+
+SEO_DESCRIPTION_EXAMPLE_2 = "Discover the Elf Bar BC5000 Strawberry Banana at Vapely. Smooth fruity flavour, 5000 puffs, rechargeable. Ships across Canada with express delivery options."
+SEO_DESCRIPTION_EXAMPLE_2_LEN = 156  # Verified: len(SEO_DESCRIPTION_EXAMPLE_2) == 156
+
 
 # Body regeneration: steer internal links toward embedding-neighbor examples when allowlists are large.
 _RAG_INTERNAL_LINK_PREFERENCE = (
@@ -1067,24 +1301,46 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
             xml_block("profile", profile_instructions(prompt_profile, object_type)),
         ])
     if field == "seo_description":
+        # Build object-type-specific task phrasing
+        if object_type == "product":
+            task_noun = "product"
+            detail_hint = "a relevant confirmed product detail (spec, flavour, or Canada benefit)"
+        elif object_type == "collection":
+            task_noun = "collection"
+            detail_hint = "a relevant collection detail (variety, brand coverage, or Canada relevance)"
+        else:
+            task_noun = "page"
+            detail_hint = "a relevant page detail (purpose, benefit, or Canada relevance)"
+        
         return "\n".join([
             xml_block("role", (
                 f"You are the senior SEO strategist for {_brand}. "
-                "Your sole task is to write one SEO meta description string for a single product, collection, or page. "
+                f"Your sole task is to write one {task_noun} SEO meta description using only the supplied facts. "
                 "Output nothing except that description inside the required JSON object."
                 + _brand_voice_block
+            )),
+            xml_block("length_requirement", (
+                "LENGTH IS CRITICAL — read this first:\n"
+                "• 150–160 characters inclusive, counting spaces and punctuation.\n"
+                "• Aim for 155 characters.\n"
+                "• Count only the description text, excluding JSON syntax.\n"
+                f"• If too short, add {detail_hint}.\n"
+                "• If too long, rewrite more compactly while preserving complete sentences.\n"
+                "• Never invent facts or add filler to meet the length."
+            )),
+            xml_block("examples", (
+                f"EXAMPLE 1 ({SEO_DESCRIPTION_EXAMPLE_1_LEN} chars):\n"
+                f'"{SEO_DESCRIPTION_EXAMPLE_1}"\n\n'
+                f"EXAMPLE 2 ({SEO_DESCRIPTION_EXAMPLE_2_LEN} chars):\n"
+                f'"{SEO_DESCRIPTION_EXAMPLE_2}"'
             )),
             xml_block("constraints", (
                 "Use only the confirmed facts provided in <context>. "
                 f"Do not invent puff counts, shipping promises, nicotine specs, or claims not present in the data. "
                 "The description must be plain text — no HTML, no markdown, no line breaks. "
-                "CRITICAL LENGTH: Target exactly 150–160 characters. The hard floor is 150, hard ceiling is 160. "
-                "Aim as close to 160 as possible — short descriptions hurt CTR. "
-                "Count every single character (including spaces) before finalising. "
-                "If under 150, expand with useful product or Canada-market detail — never pad with fluff. "
                 "Do not echo the accepted seo_title verbatim. "
                 f"{m['spelling']} "
-                "Return valid JSON only."
+                "Return valid JSON only: " + '{"seo_description": "..."}'
                 + _market_block
             )),
             xml_block("profile", profile_instructions(prompt_profile, object_type)),

@@ -21,7 +21,7 @@ from .images import (
     test_image_model,
     try_prepare_article_images_bundle,
 )
-from .prompts import build_description_length_retry_feedback, field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
+from .prompts import build_description_length_repair_prompt, build_description_length_retry_feedback, ensure_seo_description_length, extract_expansion_bits_from_context, field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
 from .providers import (
     AIProviderRequestError,
     _call_ai,
@@ -834,6 +834,110 @@ def generate_recommendation(
         else:
             logger.info(f"SEO description retry not accepted: keeping original_len={original_desc_len}, retries={description_retry_count} for {object_type}/{handle}")
 
+    # === LENGTH REPAIR: If description is still below target after retries, apply repair ===
+    description_length_repaired: str | None = None
+    current_desc = recommendation["seo_description"]
+    current_desc_len = len(current_desc)
+    
+    if current_desc_len < target_min:
+        logger.info(f"SEO description still short ({current_desc_len} < {target_min}) after retries, attempting length repair for {object_type}/{handle}")
+        
+        # Extract expansion bits from context for repair
+        expansion_bits = extract_expansion_bits_from_context(context, object_type)
+        
+        # Try dedicated LLM repair first
+        llm_repair_succeeded = False
+        try:
+            _emit_progress(
+                progress_callback,
+                stage="repairing_seo_description_length",
+                step_index=step_total - 1,
+                step_total=step_total,
+                model=_provider_display(generation_provider, generation_model),
+                message=f"Repairing SEO description length ({current_desc_len} → {target_min}-{target_max})",
+            )
+            
+            repair_sys, repair_usr = build_description_length_repair_prompt(
+                current_desc, target_min, target_max, expansion_bits
+            )
+            
+            # Call LLM for repair — use a simple text response, not structured JSON
+            repair_response = _call_ai(
+                settings,
+                generation_provider,
+                generation_model,
+                [
+                    {"role": "system", "content": repair_sys},
+                    {"role": "user", "content": repair_usr},
+                ],
+                settings["timeout"],
+                stage="seo_description_length_repair",
+            )
+            
+            # Extract the repaired text
+            if isinstance(repair_response, dict):
+                repaired_text = repair_response.get("seo_description", "") or str(repair_response.get("text", ""))
+            else:
+                repaired_text = str(repair_response).strip()
+            
+            # Clean up any quotes or JSON artifacts
+            repaired_text = repaired_text.strip().strip('"\'')
+            repaired_len = len(repaired_text)
+            
+            logger.info(f"LLM repair result: {repaired_len} chars (was {current_desc_len}) for {object_type}/{handle}")
+            
+            # Accept only if in target range
+            if target_min <= repaired_len <= target_max:
+                # Verify spelling didn't get worse
+                _, repaired_spelling = validate_commonwealth_spelling(repaired_text)
+                _, current_spelling = validate_commonwealth_spelling(current_desc)
+                if len(repaired_spelling) <= len(current_spelling):
+                    recommendation["seo_description"] = repaired_text
+                    generated_fields["seo_description"]["value"] = repaired_text
+                    description_length_repaired = "llm"
+                    llm_repair_succeeded = True
+                    logger.info(f"LLM length repair accepted: {repaired_len} chars for {object_type}/{handle}")
+                else:
+                    logger.info(f"LLM length repair rejected (worse spelling) for {object_type}/{handle}")
+            else:
+                logger.info(f"LLM length repair rejected ({repaired_len} not in [{target_min}, {target_max}]) for {object_type}/{handle}")
+                
+        except Exception as e:
+            logger.warning(f"LLM length repair failed for {object_type}/{handle}: {e}")
+        
+        # If LLM repair didn't work, try deterministic fallback
+        if not llm_repair_succeeded:
+            current_desc = recommendation["seo_description"]
+            current_desc_len = len(current_desc)
+            
+            if current_desc_len < target_min:
+                logger.info(f"Attempting deterministic length repair for {object_type}/{handle}")
+                
+                repaired_text, was_modified = ensure_seo_description_length(
+                    current_desc,
+                    target_min=target_min,
+                    target_max=target_max,
+                    expansion_bits=expansion_bits,
+                )
+                
+                if was_modified:
+                    repaired_len = len(repaired_text)
+                    if target_min <= repaired_len <= target_max:
+                        # Verify spelling didn't get worse
+                        _, repaired_spelling = validate_commonwealth_spelling(repaired_text)
+                        _, current_spelling = validate_commonwealth_spelling(current_desc)
+                        if len(repaired_spelling) <= len(current_spelling):
+                            recommendation["seo_description"] = repaired_text
+                            generated_fields["seo_description"]["value"] = repaired_text
+                            description_length_repaired = "deterministic"
+                            logger.info(f"Deterministic length repair accepted: {repaired_len} chars (was {current_desc_len}) for {object_type}/{handle}")
+                        else:
+                            logger.info(f"Deterministic repair rejected (worse spelling) for {object_type}/{handle}")
+                    else:
+                        logger.info(f"Deterministic repair result {repaired_len} not in target range for {object_type}/{handle}")
+                else:
+                    logger.info(f"Deterministic repair made no changes for {object_type}/{handle}")
+
     # Check if body specifically fails the floor — retry once if so
     body_retried = False
     body_score, body_issues = _score_body(object_type, recommendation["body"])
@@ -950,6 +1054,7 @@ def generate_recommendation(
         "title_retried": title_retried,
         "description_retried": description_retried,
         "description_retry_count": description_retry_count,
+        "description_length_repaired": description_length_repaired,
         "body_retried": body_retried,
     }
     priority = context["fact"]["priority"]

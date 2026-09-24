@@ -94,7 +94,7 @@ def create_idea_from_opportunity(payload: CreateIdeaFromOpportunityRequest):
         if ideas:
             return success_response({
                 "message": "Article idea created from opportunity",
-                "idea_id": ideas[0].get("id"),
+                "idea_id": ideas[0],
             })
         
         raise HTTPException(

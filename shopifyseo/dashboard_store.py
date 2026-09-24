@@ -614,6 +614,46 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_api_usage_log_created ON api_usage_log(created_at)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS internal_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            anchor_text TEXT,
+            href TEXT,
+            UNIQUE (source_type, source_handle, target_type, target_handle, href)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links (target_type, target_handle)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT NOT NULL,
+            source_handle TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_handle TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
+            anchor_phrase TEXT,
+            ai_anchor_html TEXT,
+            score REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'suggested'
+                CHECK (status IN ('suggested', 'applied', 'dismissed')),
+            created_at INTEGER NOT NULL,
+            applied_at INTEGER,
+            UNIQUE (source_type, source_handle, target_type, target_handle)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
+    )
     conn.commit()
 
 

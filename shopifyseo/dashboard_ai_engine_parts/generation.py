@@ -33,7 +33,10 @@ from .qa import (
     RecommendationValidationError,
     build_retry_feedback,
     build_retry_feedback_from_error,
+    check_title_puff_redundancy,
     clamp_generated_seo_field,
+    description_needs_retry,
+    validate_commonwealth_spelling,
     validate_output,
     validate_single_field,
 )
@@ -628,11 +631,70 @@ def generate_recommendation(
             recommendation["title"] = title_val
 
     # Run QA validation
-    from .qa import _score_body, validate_body_spec_claims
+    from .qa import _score_body, _score_description, validate_body_spec_claims
     from .config import QA_SCORE_FLOOR, BODY_MIN_LENGTH
     from .context import product_specs as _extract_product_specs
     qa_score, qa_issues = validate_output(object_type, recommendation)
     qa_floor = QA_SCORE_FLOOR.get(object_type, 4) / 10.0
+
+    # Check if seo_description is too short — retry once if so
+    description_retried = False
+    needs_desc_retry, desc_retry_reason = description_needs_retry(object_type, recommendation["seo_description"])
+    # Also check for US spellings in the description
+    _, spelling_issues = validate_commonwealth_spelling(recommendation["seo_description"])
+    if needs_desc_retry or spelling_issues:
+        retry_reason = desc_retry_reason if needs_desc_retry else f"spelling issues: {spelling_issues[:2]}"
+        logger.info(f"SEO description needs retry ({retry_reason}) for {object_type}/{handle}")
+        _emit_progress(
+            progress_callback,
+            stage="retrying_seo_description",
+            step_index=step_total - 1,
+            step_total=step_total,
+            model=_provider_display(generation_provider, generation_model),
+            message=f"SEO description failed validation ({retry_reason}), retrying once",
+        )
+        try:
+            # Build accepted fields with current seo_title for complementarity
+            retry_accepted = dict(accepted_fields)
+            retry_accepted["seo_title"] = recommendation["seo_title"]
+            # Build fresh prompt context
+            retry_context = _context_with_accepted_fields(context, retry_accepted)
+            retry_prompt_ctx = prompt_context(retry_context)
+            # Retry description generation
+            retry_result = _generate_single_field_core(
+                settings=settings,
+                context=context,
+                object_type=object_type,
+                field="seo_description",
+                accepted_fields=retry_accepted,
+                prompt_context_precomputed=retry_prompt_ctx,
+                signal_narrative_precomputed=None,
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+                step_index=step_total - 1,
+                step_total=step_total,
+                conn=conn,
+            )
+            retry_desc = clamp_generated_seo_field("seo_description", retry_result["value"])
+            retry_desc_score, _ = _score_description(object_type, retry_desc)
+            _, retry_spelling_issues = validate_commonwealth_spelling(retry_desc)
+            original_desc_score, _ = _score_description(object_type, recommendation["seo_description"])
+
+            # Accept retry if it's better (longer or better score, and fewer spelling issues)
+            retry_is_better = (
+                (retry_desc_score > original_desc_score and len(retry_spelling_issues) <= len(spelling_issues)) or
+                (len(retry_spelling_issues) < len(spelling_issues))
+            )
+            if retry_is_better:
+                recommendation["seo_description"] = retry_desc
+                generated_fields["seo_description"]["value"] = retry_desc
+                review_actions["seo_description"] = retry_result.get("review_action", "")
+                description_retried = True
+                logger.info(f"SEO description retry improved (length={len(retry_desc)}) for {object_type}/{handle}")
+            else:
+                logger.info(f"SEO description retry did not improve (retry_length={len(retry_desc)}) for {object_type}/{handle}")
+        except Exception as e:
+            logger.warning(f"SEO description retry failed for {object_type}/{handle}: {e}")
 
     # Check if body specifically fails the floor — retry once if so
     body_retried = False
@@ -712,8 +774,8 @@ def generate_recommendation(
         except Exception as e:
             logger.warning(f"Body retry failed for {object_type}/{handle}: {e}")
 
-    # Re-run QA validation after potential body retry
-    if body_retried:
+    # Re-run QA validation after potential description or body retry
+    if description_retried or body_retried:
         qa_score, qa_issues = validate_output(object_type, recommendation)
 
     _emit_progress(
@@ -747,6 +809,7 @@ def generate_recommendation(
         "passed": qa_score >= qa_floor and not spec_claim_issues,
         "issues": all_issues,
         "spec_claim_issues": spec_claim_issues,
+        "description_retried": description_retried,
         "body_retried": body_retried,
     }
     priority = context["fact"]["priority"]

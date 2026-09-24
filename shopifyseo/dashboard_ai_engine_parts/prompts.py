@@ -4,6 +4,45 @@ from .config import BODY_MIN_LENGTH, DESCRIPTION_HARD_MIN, DESCRIPTION_LIMIT, DE
 from .context import _slim_keyword_context, condensed_context, curated_primary_object, infer_product_intent, json_list, prompt_context, signal_availability_summary, strip_html, word_count
 
 _GSC_QUERY_HIGHLIGHTS_MAX = 3
+
+
+def build_description_length_retry_feedback(
+    previous_draft: str,
+    target_min: int = 150,
+    target_max: int = 160,
+    object_type: str = "product",
+) -> str:
+    """Build explicit retry instructions when seo_description is too short.
+    
+    Returns a string to be injected into the user prompt as <retry_instruction>.
+    Shows the previous draft and its length, with explicit rewrite guidance.
+    """
+    prev_len = len(previous_draft)
+    
+    # Build context-specific expansion hints based on object type
+    if object_type == "product":
+        expansion_hint = (
+            "Add concrete product details: brand positioning, key spec (puff count, nicotine, flavour profile), "
+            "or Canada-market benefit (fast shipping, local stock). "
+        )
+    elif object_type == "collection":
+        expansion_hint = (
+            "Add collection value: product variety, brand coverage, or Canada-market relevance. "
+        )
+    else:
+        expansion_hint = (
+            "Add useful detail: page purpose, key benefit, or Canada-market relevance. "
+        )
+    
+    return (
+        f"RETRY REQUIRED — PREVIOUS DRAFT TOO SHORT\n"
+        f"Previous draft ({prev_len} characters):\n"
+        f'"{previous_draft}"\n\n'
+        f"This is {target_min - prev_len} characters below the minimum target.\n"
+        f"REWRITE to exactly {target_min}–{target_max} characters (count every character including spaces).\n"
+        f"{expansion_hint}"
+        f"Do NOT pad with fluff, filler, or repetition. Do NOT exceed {target_max} characters."
+    )
 _GSC_QUERY_HIGHLIGHTS_JSON_CAP = 400
 
 # Body regeneration: steer internal links toward embedding-neighbor examples when allowlists are large.
@@ -1157,6 +1196,7 @@ def field_user_prompt(
     *,
     prompt_context_dict: dict | None = None,
     signal_narrative_str: str | None = None,
+    retry_feedback: str | None = None,
     conn=None,
 ) -> str:
     # Extract primary_object from prompt_context_dict if available to avoid redundant computation
@@ -1193,14 +1233,18 @@ def field_user_prompt(
             "accepted_fields",
             f"These sibling fields are already accepted. Do not contradict them:\n{accepted_json}",
         )
-    sections = [
+    sections = []
+    # If retry_feedback is provided, put it FIRST so the model sees the retry instruction immediately
+    if retry_feedback:
+        sections.append(xml_block("retry_instruction", retry_feedback))
+    sections.extend([
         xml_block("task", instruction),
         xml_block("signal_narrative", signal_narrative),
         xml_block("field_instructions", single_field_specific_instructions(object_type, field, conn=conn)),
         accepted_block,
         xml_block("formatting", single_field_formatting_instructions(field)),
         xml_block("context", context_json),
-    ]
+    ])
     return "\n\n".join(sections)
 
 

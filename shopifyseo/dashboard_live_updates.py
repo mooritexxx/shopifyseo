@@ -1,8 +1,21 @@
 import json
+import logging
 from typing import Any
 
 from .shopify_admin import graphql_request
 from .shopify_catalog_sync import sync_article, sync_collection, sync_page, sync_product
+
+logger = logging.getLogger(__name__)
+
+
+def _schedule_internal_link_refresh_safe(db_path: str) -> None:
+    """Schedule debounced internal link refresh after body changes (non-fatal)."""
+    try:
+        from .internal_links.scheduler import schedule_internal_link_refresh
+
+        schedule_internal_link_refresh(db_path)
+    except Exception:
+        logger.debug("Failed to schedule internal link refresh", exc_info=True)
 
 
 class ShopifyPartialCollectionUpdateError(RuntimeError):
@@ -98,6 +111,7 @@ def live_update_collection(db_path: str, collection_id: str, title: str, seo_tit
     # Re-sync regardless so the local cache reflects whatever did land in Shopify
     # (the SEO metafields always, plus title/body when collectionUpdate succeeded).
     sync_collection(db_path, collection_id)
+    _schedule_internal_link_refresh_safe(db_path)
     if body_errors:
         raise ShopifyPartialCollectionUpdateError(json.dumps(body_errors, ensure_ascii=True))
     return result
@@ -141,6 +155,7 @@ def live_update_product(db_path: str, product_id: str, title: str, seo_title: st
     if result["userErrors"]:
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
     sync_product(db_path, product_id)
+    _schedule_internal_link_refresh_safe(db_path)
     return result
 
 
@@ -174,6 +189,7 @@ def live_update_page(db_path: str, page_id: str, title: str, seo_title: str, seo
     if result["userErrors"]:
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
     sync_page(db_path, page_id)
+    _schedule_internal_link_refresh_safe(db_path)
     return result
 
 
@@ -195,6 +211,7 @@ def publish_article(db_path: str, article_id: str, *, is_published: bool) -> dic
     if result["userErrors"]:
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
     sync_article(db_path, article_id)
+    _schedule_internal_link_refresh_safe(db_path)
     return result
 
 
@@ -233,4 +250,5 @@ def live_update_article(
     if result["userErrors"]:
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
     sync_article(db_path, article_id)
+    _schedule_internal_link_refresh_safe(db_path)
     return result

@@ -50,10 +50,40 @@ export function useLinkSuggestions(params: { sourceType?: string; sourceHandle?:
   });
 }
 
+export interface Orphan {
+  object_type: string;
+  handle: string;
+  gsc_clicks: number;
+  gsc_impressions: number;
+}
+
 export function useOrphans() {
   return useQuery({
     queryKey: ["internal-links", "orphans"],
-    queryFn: () => getJson<{ object_type: string; handle: string }[]>("/api/internal-links/orphans"),
+    queryFn: () => getJson<Orphan[]>("/api/internal-links/orphans"),
+  });
+}
+
+export interface GraphEntity {
+  object_type: string;
+  handle: string;
+  inbound: number;
+  outbound: number;
+}
+
+export function useGraphStatsAll() {
+  return useQuery({
+    queryKey: ["internal-links", "graph-stats", "all"],
+    queryFn: () => getJson<{ entities: GraphEntity[] }>("/api/internal-links/graph-stats"),
+  });
+}
+
+export function useGraphStatsForEntity(objectType: string, handle: string) {
+  const url = `/api/internal-links/graph-stats?object_type=${encodeURIComponent(objectType)}&handle=${encodeURIComponent(handle)}`;
+  return useQuery({
+    queryKey: ["internal-links", "graph-stats", objectType, handle],
+    queryFn: () => getJson<GraphEntity>(url),
+    enabled: Boolean(objectType) && Boolean(handle),
   });
 }
 

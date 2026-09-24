@@ -50,10 +50,57 @@ def orphans():
     try:
         from shopifyseo.internal_links.pipeline import _orphan_targets
 
-        items = sorted(_orphan_targets(conn))
+        items = _orphan_targets(conn)
         return success_response([
-            {"object_type": t, "handle": h} for t, h in items
+            {"object_type": t, "handle": h, "gsc_clicks": c, "gsc_impressions": i}
+            for t, h, c, i in items
         ])
+    finally:
+        conn.close()
+
+
+@router.get("/graph-stats", response_model=SuccessResponse[dict])
+def graph_stats(
+    object_type: str | None = Query(default=None),
+    handle: str | None = Query(default=None),
+):
+    """Per-entity inbound/outbound link counts."""
+    conn = open_db_connection()
+    try:
+        if object_type and handle:
+            inbound = conn.execute(
+                "SELECT COUNT(*) FROM internal_links WHERE target_type = ? AND target_handle = ?",
+                (object_type, handle),
+            ).fetchone()[0]
+            outbound = conn.execute(
+                "SELECT COUNT(*) FROM internal_links WHERE source_type = ? AND source_handle = ?",
+                (object_type, handle),
+            ).fetchone()[0]
+            return success_response({
+                "object_type": object_type,
+                "handle": handle,
+                "inbound": inbound,
+                "outbound": outbound,
+            })
+        outbound_map: dict[tuple[str, str], int] = {}
+        inbound_map: dict[tuple[str, str], int] = {}
+        for row in conn.execute(
+            "SELECT source_type, source_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+        ).fetchall():
+            outbound_map[(row["source_type"], row["source_handle"])] = row["c"]
+        for row in conn.execute(
+            "SELECT target_type, target_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+        ).fetchall():
+            inbound_map[(row["target_type"], row["target_handle"])] = row["c"]
+        all_keys = set(outbound_map.keys()) | set(inbound_map.keys())
+        stats: list[dict] = []
+        for ot, h in all_keys:
+            ob = outbound_map.get((ot, h), 0)
+            ib = inbound_map.get((ot, h), 0)
+            stats.append({"object_type": ot, "handle": h, "outbound": ob, "inbound": ib})
+        stats.sort(key=lambda x: x["outbound"] + x["inbound"], reverse=True)
+        stats = stats[:500]
+        return success_response({"entities": stats})
     finally:
         conn.close()
 

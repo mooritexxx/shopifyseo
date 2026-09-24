@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronUp, Link2, Loader2, Sparkles, X } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Check, ChevronDown, ChevronUp, Link2, Loader2, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { z } from "zod";
 
@@ -7,6 +7,7 @@ import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { getJson, postJson } from "../lib/api";
 import { cn } from "../lib/utils";
+import { useGraphStatsForEntity } from "../hooks/use-internal-links";
 
 const linkSuggestionSchema = z.object({
   id: z.number(),
@@ -68,6 +69,10 @@ export function LinkOpportunitiesCard({ sourceType, sourceHandle, blogHandle }: 
     ? `${blogHandle}/${sourceHandle}`
     : sourceHandle;
 
+  const graphStats = useGraphStatsForEntity(sourceType, effectiveHandle);
+  const inbound = graphStats.data?.inbound ?? 0;
+  const outbound = graphStats.data?.outbound ?? 0;
+
   const suggestionsQuery = useQuery({
     queryKey: ["link-suggestions", sourceType, effectiveHandle],
     queryFn: () =>
@@ -125,6 +130,16 @@ export function LinkOpportunitiesCard({ sourceType, sourceHandle, blogHandle }: 
                 {suggestions.length}
               </span>
             )}
+            <span className="ml-auto flex items-center gap-3 text-xs font-normal text-gray-500">
+              <span className="flex items-center gap-1" title="Inbound links">
+                <ArrowDownLeft className="h-3 w-3 text-emerald-500" />
+                {inbound}
+              </span>
+              <span className="flex items-center gap-1" title="Outbound links">
+                <ArrowUpRight className="h-3 w-3 text-blue-500" />
+                {outbound}
+              </span>
+            </span>
           </CardTitle>
           {expanded ? (
             <ChevronUp className="h-4 w-4 text-gray-400" />

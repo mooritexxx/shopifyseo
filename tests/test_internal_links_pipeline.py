@@ -40,6 +40,7 @@ def _conn() -> sqlite3.Connection:
             kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
             anchor_phrase TEXT,
             ai_anchor_html TEXT,
+            source_body_hash TEXT,
             score REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
                 CHECK (status IN ('suggested', 'applied', 'dismissed')),
@@ -59,6 +60,14 @@ def _conn() -> sqlite3.Connection:
             updated_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (keyword, object_type, object_handle)
         );
+        CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+        CREATE TABLE clusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, content_type TEXT,
+            primary_keyword TEXT, content_brief TEXT, total_volume INTEGER DEFAULT 0,
+            avg_difficulty REAL DEFAULT 0, avg_opportunity REAL DEFAULT 0, priority_score REAL DEFAULT 0,
+            match_type TEXT, match_handle TEXT, match_title TEXT, generated_at TEXT
+        );
+        CREATE TABLE cluster_keywords (cluster_id INTEGER, keyword TEXT, PRIMARY KEY (cluster_id, keyword));
         """
     )
     return conn

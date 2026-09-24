@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ExternalLink } from "lucide-react";
+import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
 import {
   useApplySuggestion,
   useDismissSuggestion,
   useGenerateAnchor,
+  useGraphStatsAll,
   useLinkSuggestions,
   useLinkSummary,
   useOrphans,
   useRebuildLinks,
   type LinkSuggestion,
+  type GraphEntity,
 } from "../hooks/use-internal-links";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -136,12 +138,13 @@ function SuggestionRow({
 
 export function InternalLinksPage() {
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
-  const [tab, setTab] = useState<"suggestions" | "orphans">("suggestions");
+  const [tab, setTab] = useState<"suggestions" | "orphans" | "graph">("suggestions");
   const [processingId, setProcessingId] = useState<number | null>(null);
 
   const summary = useLinkSummary();
   const suggestions = useLinkSuggestions();
   const orphans = useOrphans();
+  const graphStats = useGraphStatsAll();
   const apply = useApplySuggestion();
   const dismiss = useDismissSuggestion();
   const generate = useGenerateAnchor();
@@ -252,6 +255,16 @@ export function InternalLinksPage() {
         >
           Orphans ({summary.data?.orphan_count ?? 0})
         </button>
+        <button
+          onClick={() => setTab("graph")}
+          className={`px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "graph"
+              ? "border-b-2 border-blue-600 text-blue-600"
+              : "text-muted-foreground hover:text-ink"
+          }`}
+        >
+          Graph Stats
+        </button>
       </div>
 
       {/* Suggestions tab */}
@@ -335,6 +348,8 @@ export function InternalLinksPage() {
                   <TableRow>
                     <TableHead>Type</TableHead>
                     <TableHead>Handle</TableHead>
+                    <TableHead className="text-right">Clicks</TableHead>
+                    <TableHead className="text-right">Impressions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -344,6 +359,66 @@ export function InternalLinksPage() {
                         <Badge variant="outline">{o.object_type}</Badge>
                       </TableCell>
                       <TableCell className="font-mono text-sm">{o.handle}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{o.gsc_clicks}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{o.gsc_impressions}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Graph Stats tab */}
+      {tab === "graph" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Link Graph Statistics</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {graphStats.isLoading ? (
+              <div className="space-y-2">
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} className="h-12 rounded-lg" />
+                ))}
+              </div>
+            ) : graphStats.error ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                <span>Failed to load graph stats: {graphStats.error.message}</span>
+              </div>
+            ) : !graphStats.data?.entities || graphStats.data.entities.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                No link graph data yet. Run a sync to build the link graph.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Handle</TableHead>
+                    <TableHead className="text-right">
+                      <span className="flex items-center justify-end gap-1">
+                        <ArrowDownLeft size={14} /> Inbound
+                      </span>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <span className="flex items-center justify-end gap-1">
+                        <ArrowUpRight size={14} /> Outbound
+                      </span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {graphStats.data?.entities.map((e, i) => (
+                    <TableRow key={i}>
+                      <TableCell>
+                        <Badge variant="outline">{e.object_type}</Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">{e.handle}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{e.inbound}</TableCell>
+                      <TableCell className="text-right font-mono text-sm">{e.outbound}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

@@ -1,12 +1,18 @@
 """Apply link suggestions: wrap the anchor, push to Shopify, update local state."""
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import time
 from typing import Callable
 
-from ..dashboard_queries._urls import object_url_with_base
+from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
+
+
+def _hash_body(body: str) -> str:
+    """SHA-256 hex digest of body text for stale detection."""
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
 # Split out regions we must not touch: existing links, headings, script/style.
 _PROTECTED_RE = re.compile(
@@ -88,6 +94,7 @@ def apply_suggestion(
     suggestion_id: int,
     base_url: str,
     push_fn: Callable | None = None,
+    sanitize_fn: Callable | None = None,
 ) -> dict:
     """Apply one suggestion: wrap anchor, push to Shopify, then update local DB.
 
@@ -105,16 +112,34 @@ def apply_suggestion(
     source_type, source_handle = sug["source_type"], sug["source_handle"]
     table, where, body_col, _cols = _SOURCE_META[source_type]
     row = _load_source_row(conn, source_type, source_handle)
+
+    current_body = row[body_col] or ""
+    current_hash = _hash_body(current_body)
+    stored_hash = sug["source_body_hash"] or ""
+    if stored_hash and current_hash != stored_hash:
+        raise ValueError("Source body changed since suggestion was generated. Regenerate suggestion.")
+
     url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
 
     if sug["kind"] == "phrase_wrap":
-        new_body = wrap_phrase_in_html(row[body_col], sug["anchor_phrase"], url)
+        new_body = wrap_phrase_in_html(current_body, sug["anchor_phrase"], url)
         if new_body is None:
             raise ValueError("anchor phrase no longer present in body")
     else:
         if not sug["ai_anchor_html"]:
             raise ValueError("ai_woven suggestion has no generated anchor yet")
         new_body = sug["ai_anchor_html"]  # full replacement body produced at review time
+
+    if sanitize_fn is None:
+        from ..dashboard_ai_engine_parts._article_draft import sanitize_article_internal_links
+
+        _, allowed_full, allowed_paths = build_store_internal_link_allowlist(conn, base_url)
+        path_to_canonical = {p: f for p, f in zip(allowed_paths, allowed_full) if p and f}
+        new_body = sanitize_article_internal_links(
+            new_body, path_to_canonical=path_to_canonical, base_url=base_url
+        )
+    else:
+        new_body = sanitize_fn(new_body)
 
     push_fn(source_type, row, new_body)  # raises on failure -> nothing below runs
 

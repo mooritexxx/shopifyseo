@@ -642,6 +642,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
             anchor_phrase TEXT,
             ai_anchor_html TEXT,
+            source_body_hash TEXT,
             score REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
                 CHECK (status IN ('suggested', 'applied', 'dismissed')),
@@ -651,6 +652,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _ensure_columns(conn, "link_suggestions", {"source_body_hash": "TEXT"})
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
     )

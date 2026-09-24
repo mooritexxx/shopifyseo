@@ -1,6 +1,7 @@
 """Generate internal link suggestions from embeddings, traffic, and the link graph."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import sqlite3
@@ -13,11 +14,29 @@ from .graph import rebuild_internal_link_graph
 
 logger = logging.getLogger(__name__)
 
-SIM_THRESHOLD = 0.55
+DEFAULT_SIM_THRESHOLD = 0.55
 MAX_OUTGOING = 5
 MAX_INCOMING = 15
 TARGET_VALUE = {"product": 1.5, "collection": 1.5, "page": 1.0, "blog_article": 0.8}
 ORPHAN_BOOST = 1.25
+
+
+def _get_sim_threshold(conn: sqlite3.Connection) -> float:
+    """Load internal_link_sim_threshold from service_settings with 0.55 fallback."""
+    try:
+        from ..dashboard_google import get_service_setting
+
+        val = get_service_setting(conn, "internal_link_sim_threshold", "")
+        if val:
+            return float(val)
+    except Exception:
+        pass
+    return DEFAULT_SIM_THRESHOLD
+
+
+def _hash_body(body: str) -> str:
+    """SHA-256 hex digest of body text for stale detection."""
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
 # (source_type, table, handle_expr, body_col)
 _SUGGESTION_SOURCES = (
@@ -88,25 +107,64 @@ def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: 
             candidates.append(kw["keyword"])
     except Exception:
         pass
+    try:
+        for kw in conn.execute(
+            """
+            SELECT ck.keyword FROM cluster_keywords ck
+            JOIN clusters c ON c.id = ck.cluster_id
+            WHERE c.match_type = ? AND c.match_handle = ?
+            LIMIT 20
+            """,
+            (t_type, t_handle),
+        ).fetchall():
+            if kw["keyword"] and kw["keyword"] not in candidates:
+                candidates.append(kw["keyword"])
+    except Exception:
+        pass
     return candidates
 
 
-def _orphan_targets(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]:
+    """Return published entities with no inbound links, sorted by traffic (clicks+impressions desc).
+
+    Returns list of (object_type, handle, gsc_clicks, gsc_impressions).
+    """
     linked = {
         (r["target_type"], r["target_handle"])
         for r in conn.execute("SELECT DISTINCT target_type, target_handle FROM internal_links").fetchall()
     }
-    orphans: set[tuple[str, str]] = set()
-    for t_type, table, handle_expr in (
-        ("product", "products", "handle"),
-        ("collection", "collections", "handle"),
-        ("page", "pages", "handle"),
-        ("blog_article", "blog_articles", "blog_handle || '/' || handle"),
-    ):
-        for r in conn.execute(f"SELECT {handle_expr} AS h FROM {table}").fetchall():
-            if (t_type, r["h"]) not in linked:
-                orphans.add((t_type, r["h"]))
+    orphans: list[tuple[str, str, int, int]] = []
+    for r in conn.execute(
+        "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
+        "FROM products WHERE (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"
+    ).fetchall():
+        if ("product", r["h"]) not in linked:
+            orphans.append(("product", r["h"], r["clicks"], r["impr"]))
+    for r in conn.execute(
+        "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
+        "FROM collections"
+    ).fetchall():
+        if ("collection", r["h"]) not in linked:
+            orphans.append(("collection", r["h"], r["clicks"], r["impr"]))
+    for r in conn.execute(
+        "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
+        "FROM pages"
+    ).fetchall():
+        if ("page", r["h"]) not in linked:
+            orphans.append(("page", r["h"], r["clicks"], r["impr"]))
+    for r in conn.execute(
+        "SELECT blog_handle || '/' || handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
+        "FROM blog_articles WHERE is_published = 1"
+    ).fetchall():
+        if ("blog_article", r["h"]) not in linked:
+            orphans.append(("blog_article", r["h"], r["clicks"], r["impr"]))
+    orphans.sort(key=lambda x: (x[2] + x[3], x[2]), reverse=True)
     return orphans
+
+
+def _orphan_target_set(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """Return just (type, handle) pairs of orphans for internal scoring."""
+    return {(t, h) for t, h, _c, _i in _orphan_targets(conn)}
 
 
 def generate_link_suggestions(
@@ -117,6 +175,7 @@ def generate_link_suggestions(
 ) -> int:
     """Run the full pipeline. Returns the number of suggestions inserted."""
     related_fn = related_fn or _default_related
+    sim_threshold = _get_sim_threshold(conn)
     _set_progress(running=True, stage="graph", done=0, total=0)
     try:
         if rebuild_graph:
@@ -127,7 +186,7 @@ def generate_link_suggestions(
                 "SELECT source_type, source_handle, target_type, target_handle FROM internal_links"
             ).fetchall()
         }
-        orphans = _orphan_targets(conn)
+        orphans = _orphan_target_set(conn)
         incoming_pending: dict[tuple[str, str], int] = {}
         for r in conn.execute(
             "SELECT target_type, target_handle, COUNT(*) AS c FROM link_suggestions "
@@ -161,11 +220,12 @@ def generate_link_suggestions(
                 logger.warning("related lookup failed for %s/%s", s_type, s_handle, exc_info=True)
                 continue
             traffic_weight = 1.0 + math.log10(1 + max(0, clicks))
+            body_hash = _hash_body(body)
             for cand in related:
                 t_type = cand.get("object_type")
                 t_handle = cand.get("object_handle")
                 sim = float(cand.get("score") or 0)
-                if t_type not in TARGET_VALUE or sim < SIM_THRESHOLD:
+                if t_type not in TARGET_VALUE or sim < sim_threshold:
                     continue
                 if (s_type, s_handle) == (t_type, t_handle):
                     continue
@@ -184,8 +244,8 @@ def generate_link_suggestions(
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO link_suggestions "
                     "(source_type, source_handle, target_type, target_handle, kind, anchor_phrase, "
-                    " score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (s_type, s_handle, t_type, t_handle, kind, phrase, score, now),
+                    " source_body_hash, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (s_type, s_handle, t_type, t_handle, kind, phrase, body_hash, score, now),
                 )
                 if cur.rowcount:
                     inserted += 1

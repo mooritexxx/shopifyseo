@@ -97,20 +97,24 @@ def upsert_collection(conn: sqlite3.Connection, collection: dict, synced_at: str
 def _mark_api_unreachable_collections(conn: sqlite3.Connection, synced_ids: set[str]) -> int:
     """Mark local collections as api_unreachable if not returned by Admin API.
 
-    Some collections (e.g., smart collections with metafield-only rules) exist in
-    Shopify Admin and on the storefront but are not visible via Admin GraphQL/REST APIs.
-    We mark them as api_unreachable rather than deleting them, as they are real
-    collections with valuable local SEO data.
+    Collections missing from Admin API may be:
+    - Actually deleted from Shopify (staff, app, etc.)
+    - API-invisible due to broken smart-collection rules
+    - API-invisible due to metafield-only rule configurations
+
+    We mark them as api_unreachable rather than deleting them, preserving local SEO data.
+    Pending link suggestions involving unreachable collections are also dismissed.
 
     Also clears api_unreachable for collections that ARE now visible via API.
 
     Returns the count of collections newly marked as unreachable.
     """
-    # Get all local collection IDs that have a shopify_id
-    local_ids = {
-        r["shopify_id"]
-        for r in conn.execute("SELECT shopify_id FROM collections WHERE shopify_id IS NOT NULL").fetchall()
-    }
+    # Get all local collections with shopify_id
+    local_rows = conn.execute(
+        "SELECT shopify_id, handle FROM collections WHERE shopify_id IS NOT NULL"
+    ).fetchall()
+    local_ids = {r["shopify_id"] for r in local_rows}
+    handle_by_id = {r["shopify_id"]: r["handle"] for r in local_rows}
 
     # Collections in local DB but not in API response -> mark as unreachable
     unreachable_ids = local_ids - synced_ids
@@ -128,6 +132,24 @@ def _mark_api_unreachable_collections(conn: sqlite3.Connection, synced_ids: set[
             "UPDATE collections SET api_unreachable = 1 WHERE shopify_id = ?",
             [(cid,) for cid in unreachable_ids],
         )
+
+        # Dismiss pending link suggestions that reference unreachable collections
+        # (as source or target - both are now invalid for Apply)
+        unreachable_handles = [handle_by_id[cid] for cid in unreachable_ids if cid in handle_by_id]
+        if unreachable_handles:
+            try:
+                conn.executemany(
+                    "UPDATE link_suggestions SET status = 'dismissed' "
+                    "WHERE status = 'suggested' AND source_type = 'collection' AND source_handle = ?",
+                    [(h,) for h in unreachable_handles],
+                )
+                conn.executemany(
+                    "UPDATE link_suggestions SET status = 'dismissed' "
+                    "WHERE status = 'suggested' AND target_type = 'collection' AND target_handle = ?",
+                    [(h,) for h in unreachable_handles],
+                )
+            except Exception:
+                pass  # link_suggestions table may not exist in all contexts
 
     # Collections that ARE in API response -> clear unreachable flag if set
     reachable_ids = local_ids & synced_ids

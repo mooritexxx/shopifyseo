@@ -13,6 +13,35 @@ from .db import (
 from .page_template_enrichment import enrich_pages_template_images
 
 
+def prune_deleted_pages(conn: sqlite3.Connection, live_pages: list[dict]) -> int:
+    """Delete local pages that are no longer in Shopify.
+
+    Returns the count of pages pruned.
+    """
+    live_ids = {page["id"] for page in live_pages}
+    stale_rows = conn.execute("SELECT shopify_id, handle FROM pages").fetchall()
+    stale = [row for row in stale_rows if row[0] not in live_ids]
+    for shopify_id, handle in stale:
+        conn.execute(
+            "DELETE FROM seo_recommendations WHERE object_type = 'page' AND object_handle = ?",
+            (handle,),
+        )
+        conn.execute(
+            "DELETE FROM gsc_query_rows WHERE object_type = 'page' AND object_handle = ?",
+            (handle,),
+        )
+        conn.execute(
+            "DELETE FROM gsc_query_dimension_rows WHERE object_type = 'page' AND object_handle = ?",
+            (handle,),
+        )
+        conn.execute(
+            "DELETE FROM google_api_cache WHERE object_type = 'page' AND object_handle = ?",
+            (handle,),
+        )
+        conn.execute("DELETE FROM pages WHERE shopify_id = ?", (shopify_id,))
+    return len(stale)
+
+
 def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
     conn.execute(
         """
@@ -111,11 +140,13 @@ def sync_pages(
             if progress_callback is not None:
                 progress_callback("pages", page_count, len(pages))
         enrich_pages_template_images(conn)
+        pruned_count = prune_deleted_pages(conn, pages)
         conn.commit()
         finish_run(conn, run_id, status="success", pages_synced=page_count)
         return {
             "db_path": str(db_path),
             "pages_synced": page_count,
+            "pages_pruned": pruned_count,
             "synced_at": synced_at,
             "run_id": run_id,
         }

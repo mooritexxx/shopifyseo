@@ -478,6 +478,15 @@ def generate_recommendation(
             # result can be reused by signal narrative builders via prompt_context_dict["primary_object"]
             effective_context = _context_with_accepted_fields(context, dict(accepted_fields))
             prompt_context_precomputed = prompt_context(effective_context)
+            
+            # Phase C: Enhance with prioritized internal links for body generation
+            if field == "body" and object_type in ("product", "collection"):
+                try:
+                    from shopifyseo.internal_links.write_time import enhance_prompt_context_with_prioritized_links
+                    enhance_prompt_context_with_prioritized_links(conn, prompt_context_precomputed, object_type)
+                except Exception:
+                    logger.debug("Could not enhance prompt context with prioritized links", exc_info=True)
+            
             result = _generate_single_field_core(
                 settings=settings,
                 context=context,

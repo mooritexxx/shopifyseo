@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sqlite3
 import time
@@ -9,6 +10,68 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
+
+logger = logging.getLogger(__name__)
+
+
+def _log_suggestion_event(
+    conn: sqlite3.Connection,
+    suggestion: sqlite3.Row | dict,
+    event_type: str,
+) -> None:
+    """Log an event to link_suggestion_events for measurement (Phase D).
+    
+    Args:
+        conn: Database connection
+        suggestion: The suggestion row/dict
+        event_type: One of 'apply', 'undo', 'dismiss', 'auto_apply'
+    """
+    try:
+        # Get current GSC clicks for the source page
+        gsc_clicks = None
+        src_type = suggestion["source_type"]
+        src_handle = suggestion["source_handle"]
+        
+        if src_type == "blog_article":
+            blog_h, _, article_h = src_handle.partition("/")
+            row = conn.execute(
+                "SELECT gsc_clicks FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+                (blog_h, article_h),
+            ).fetchone()
+        elif src_type in ("product", "collection", "page"):
+            table = {"product": "products", "collection": "collections", "page": "pages"}[src_type]
+            row = conn.execute(
+                f"SELECT gsc_clicks FROM {table} WHERE handle = ?",
+                (src_handle,),
+            ).fetchone()
+        else:
+            row = None
+        
+        if row:
+            gsc_clicks = row["gsc_clicks"]
+        
+        conn.execute(
+            """
+            INSERT INTO link_suggestion_events 
+            (suggestion_id, event_type, source_type, source_handle, target_type, target_handle, 
+             kind, score, gsc_clicks_at_event, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                suggestion["id"],
+                event_type,
+                src_type,
+                src_handle,
+                suggestion["target_type"],
+                suggestion["target_handle"],
+                suggestion["kind"],
+                suggestion["score"] if "score" in suggestion.keys() else None,
+                gsc_clicks,
+                int(time.time()),
+            ),
+        )
+    except Exception:
+        logger.warning("Failed to log suggestion event", exc_info=True)
 
 
 def _hash_body(body: str) -> str:
@@ -174,6 +237,9 @@ def apply_suggestion(
         "UPDATE link_suggestions SET status = 'applied', applied_at = ? WHERE id = ?",
         (int(time.time()), suggestion_id),
     )
+    
+    # Phase D: Log the apply event for measurement
+    _log_suggestion_event(conn, sug, "apply")
 
     # Update sibling suggestions for the same source: refresh source_body_hash
     # so subsequent applies on the same page don't fail the stale body check.
@@ -275,6 +341,8 @@ def undo_suggestion(
             "AND target_type = ? AND target_handle = ?",
             (source_type, source_handle, sug["target_type"], sug["target_handle"]),
         )
+        # Phase D: Log the undo event even when link not found
+        _log_suggestion_event(conn, sug, "undo")
         conn.commit()
         return {"status": "undone", "link_not_found": True, "message": "Link not found in current body"}
     
@@ -303,6 +371,9 @@ def undo_suggestion(
         "UPDATE link_suggestions SET status = 'undone' WHERE id = ?",
         (suggestion_id,),
     )
+    
+    # Phase D: Log the undo event for measurement
+    _log_suggestion_event(conn, sug, "undo")
     
     conn.commit()
     return {"status": "undone", "url": url}

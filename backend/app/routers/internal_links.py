@@ -177,13 +177,21 @@ def apply(suggestion_id: int):
 def dismiss(suggestion_id: int):
     conn = open_db_connection()
     try:
-        cur = conn.execute(
-            "UPDATE link_suggestions SET status = 'dismissed' WHERE id = ? AND status = 'suggested'",
+        # Get suggestion data before updating for event logging
+        sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        if not sug or sug["status"] != "suggested":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="suggestion not found or not pending")
+        
+        conn.execute(
+            "UPDATE link_suggestions SET status = 'dismissed' WHERE id = ?",
             (suggestion_id,),
         )
+        
+        # Phase D: Log the dismiss event
+        from shopifyseo.internal_links.apply import _log_suggestion_event
+        _log_suggestion_event(conn, sug, "dismiss")
+        
         conn.commit()
-        if not cur.rowcount:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="suggestion not found or not pending")
         return success_response({"status": "dismissed"})
     finally:
         conn.close()
@@ -511,5 +519,241 @@ def graph_map(
             "node_count": len(nodes),
             "edge_count": len(edges),
         })
+    finally:
+        conn.close()
+
+
+@router.get("/outcomes", response_model=SuccessResponse[dict])
+def outcomes(days: int = Query(default=28, ge=1, le=365)):
+    """Phase D: Get link suggestion outcomes/measurement data.
+    
+    Returns summary of applied/undo/dismiss counts and top targets.
+    """
+    import time
+    
+    conn = open_db_connection()
+    try:
+        cutoff = int(time.time()) - (days * 86400)
+        
+        # Get event counts by type
+        event_counts = {}
+        for r in conn.execute(
+            "SELECT event_type, COUNT(*) AS c FROM link_suggestion_events "
+            "WHERE created_at >= ? GROUP BY event_type",
+            (cutoff,),
+        ).fetchall():
+            event_counts[r["event_type"]] = r["c"]
+        
+        applied = event_counts.get("apply", 0) + event_counts.get("auto_apply", 0)
+        undone = event_counts.get("undo", 0)
+        dismissed = event_counts.get("dismiss", 0)
+        auto_applied = event_counts.get("auto_apply", 0)
+        
+        # Calculate undo rate
+        undo_rate = (undone / applied * 100) if applied > 0 else 0
+        
+        # Get top targets (most linked to)
+        top_targets = []
+        for r in conn.execute(
+            """
+            SELECT target_type, target_handle, COUNT(*) AS c
+            FROM link_suggestion_events
+            WHERE event_type IN ('apply', 'auto_apply') AND created_at >= ?
+            GROUP BY target_type, target_handle
+            ORDER BY c DESC
+            LIMIT 10
+            """,
+            (cutoff,),
+        ).fetchall():
+            top_targets.append({
+                "target_type": r["target_type"],
+                "target_handle": r["target_handle"],
+                "count": r["c"],
+            })
+        
+        # Get GSC clicks comparison (before/after for applied links)
+        # This is best-effort - we compare the snapshot at apply time with current
+        clicks_delta = None
+        try:
+            comparison = conn.execute(
+                """
+                SELECT 
+                    SUM(e.gsc_clicks_at_event) AS clicks_at_apply,
+                    COUNT(*) AS link_count
+                FROM link_suggestion_events e
+                WHERE e.event_type IN ('apply', 'auto_apply') 
+                  AND e.created_at >= ?
+                  AND e.gsc_clicks_at_event IS NOT NULL
+                """,
+                (cutoff,),
+            ).fetchone()
+            if comparison and comparison["link_count"] > 0:
+                # Get current clicks for the same sources
+                current_total = 0
+                for r in conn.execute(
+                    """
+                    SELECT DISTINCT source_type, source_handle
+                    FROM link_suggestion_events
+                    WHERE event_type IN ('apply', 'auto_apply') AND created_at >= ?
+                    """,
+                    (cutoff,),
+                ).fetchall():
+                    src_type = r["source_type"]
+                    src_handle = r["source_handle"]
+                    if src_type == "blog_article":
+                        blog_h, _, article_h = src_handle.partition("/")
+                        row = conn.execute(
+                            "SELECT COALESCE(gsc_clicks, 0) AS c FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+                            (blog_h, article_h),
+                        ).fetchone()
+                    elif src_type in ("product", "collection", "page"):
+                        table = {"product": "products", "collection": "collections", "page": "pages"}[src_type]
+                        row = conn.execute(f"SELECT COALESCE(gsc_clicks, 0) AS c FROM {table} WHERE handle = ?", (src_handle,)).fetchone()
+                    else:
+                        row = None
+                    if row:
+                        current_total += row["c"]
+                
+                clicks_at_apply = comparison["clicks_at_apply"] or 0
+                clicks_delta = {
+                    "at_apply": clicks_at_apply,
+                    "current": current_total,
+                    "change": current_total - clicks_at_apply,
+                    "link_count": comparison["link_count"],
+                }
+        except Exception:
+            logger.warning("Failed to compute clicks delta", exc_info=True)
+        
+        return success_response({
+            "days": days,
+            "applied": applied,
+            "auto_applied": auto_applied,
+            "undone": undone,
+            "dismissed": dismissed,
+            "undo_rate_pct": round(undo_rate, 1),
+            "top_targets": top_targets,
+            "clicks_comparison": clicks_delta,
+        })
+    finally:
+        conn.close()
+
+
+@router.get("/settings", response_model=SuccessResponse[dict])
+def get_internal_link_settings():
+    """Get all internal link settings (thresholds, auto-apply config)."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.dashboard_google import get_service_setting
+        from shopifyseo.internal_links.auto_apply import (
+            get_auto_apply_settings as _get_settings,
+            get_auto_applied_today_count,
+            DEFAULT_AUTO_APPLY_MIN_SCORE,
+            DEFAULT_AUTO_APPLY_MAX_PER_DAY,
+        )
+        from shopifyseo.internal_links.pipeline import DEFAULT_SIM_THRESHOLD
+        
+        # Get similarity threshold
+        sim_raw = get_service_setting(conn, "internal_link_sim_threshold", "")
+        try:
+            sim_threshold = float(sim_raw) if sim_raw else DEFAULT_SIM_THRESHOLD
+        except ValueError:
+            sim_threshold = DEFAULT_SIM_THRESHOLD
+        
+        # Get AI body links setting
+        ai_body_raw = get_service_setting(conn, "internal_link_ai_body_links_enabled", "")
+        ai_body_enabled = ai_body_raw.lower() in ("1", "true", "yes") if ai_body_raw else False
+        
+        # Get auto-apply settings
+        auto_apply = _get_settings(conn)
+        auto_apply["applied_today"] = get_auto_applied_today_count(conn)
+        
+        return success_response({
+            "sim_threshold": sim_threshold,
+            "sim_threshold_default": DEFAULT_SIM_THRESHOLD,
+            "ai_body_links_enabled": ai_body_enabled,
+            "auto_apply_enabled": auto_apply["enabled"],
+            "auto_apply_min_score": auto_apply["min_score"],
+            "auto_apply_min_score_default": DEFAULT_AUTO_APPLY_MIN_SCORE,
+            "auto_apply_max_per_day": auto_apply["max_per_day"],
+            "auto_apply_max_per_day_default": DEFAULT_AUTO_APPLY_MAX_PER_DAY,
+            "auto_apply_kinds": auto_apply["kinds"],
+            "auto_applied_today": auto_apply["applied_today"],
+        })
+    finally:
+        conn.close()
+
+
+@router.put("/settings", response_model=SuccessResponse[dict])
+def save_internal_link_settings(
+    sim_threshold: float | None = Query(default=None, ge=0.1, le=1.0),
+    ai_body_links_enabled: bool | None = Query(default=None),
+    auto_apply_enabled: bool | None = Query(default=None),
+    auto_apply_min_score: float | None = Query(default=None, ge=0.1, le=2.0),
+    auto_apply_max_per_day: int | None = Query(default=None, ge=1, le=1000),
+):
+    """Save internal link settings. Only non-null parameters are updated."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.dashboard_google import set_service_setting
+        
+        saved: dict[str, str | float | int | bool] = {}
+        
+        if sim_threshold is not None:
+            set_service_setting(conn, "internal_link_sim_threshold", str(sim_threshold))
+            saved["sim_threshold"] = sim_threshold
+        
+        if ai_body_links_enabled is not None:
+            set_service_setting(conn, "internal_link_ai_body_links_enabled", "1" if ai_body_links_enabled else "")
+            saved["ai_body_links_enabled"] = ai_body_links_enabled
+        
+        if auto_apply_enabled is not None:
+            set_service_setting(conn, "internal_link_auto_apply_enabled", "1" if auto_apply_enabled else "")
+            saved["auto_apply_enabled"] = auto_apply_enabled
+        
+        if auto_apply_min_score is not None:
+            set_service_setting(conn, "internal_link_auto_apply_min_score", str(auto_apply_min_score))
+            saved["auto_apply_min_score"] = auto_apply_min_score
+        
+        if auto_apply_max_per_day is not None:
+            set_service_setting(conn, "internal_link_auto_apply_max_per_day", str(auto_apply_max_per_day))
+            saved["auto_apply_max_per_day"] = auto_apply_max_per_day
+        
+        conn.commit()
+        return success_response({"saved": saved})
+    finally:
+        conn.close()
+
+
+@router.get("/auto-apply/settings", response_model=SuccessResponse[dict])
+def get_auto_apply_settings():
+    """Phase E: Get auto-apply settings (legacy endpoint, use /settings instead)."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.internal_links.auto_apply import (
+            get_auto_apply_settings as _get_settings,
+            get_auto_applied_today_count,
+        )
+        
+        settings = _get_settings(conn)
+        settings["applied_today"] = get_auto_applied_today_count(conn)
+        return success_response(settings)
+    finally:
+        conn.close()
+
+
+@router.post("/auto-apply/run", response_model=SuccessResponse[dict])
+def run_auto_apply(dry_run: bool = Query(default=False)):
+    """Phase E: Manually trigger auto-apply (respects settings and quota)."""
+    conn = open_db_connection()
+    try:
+        from shopifyseo.internal_links.auto_apply import run_auto_apply as _run
+        
+        result = _run(conn, base_url=_base_url(conn), dry_run=dry_run)
+        return success_response(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.warning("Auto-apply failed", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     finally:
         conn.close()

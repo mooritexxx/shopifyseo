@@ -961,6 +961,14 @@ def generate_article_draft(
         _author_ld = f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}}"
 
     link_targets, _, _ = _dq.build_store_internal_link_allowlist(conn, _base_url, rag_results=rag_results)
+
+    # Phase C: Reorder targets using internal-link pipeline scoring philosophy (orphan priority).
+    try:
+        from shopifyseo.internal_links.write_time import prioritize_targets_for_write_time
+        link_targets = prioritize_targets_for_write_time(conn, link_targets)
+    except Exception:
+        logger.debug("Write-time link prioritization unavailable; using default order", exc_info=True)
+
     try:
         conn.close()
     except Exception:

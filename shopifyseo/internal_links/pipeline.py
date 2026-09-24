@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Callable
 
-from .anchors import find_anchor_phrase
+from .anchors import find_anchor_phrase, is_weak_anchor
 from .graph import rebuild_internal_link_graph
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ MAX_OUTGOING = 5
 MAX_INCOMING = 15
 TARGET_VALUE = {"product": 1.5, "collection": 1.5, "page": 1.0, "blog_article": 0.8}
 ORPHAN_BOOST = 1.25
+WEAK_ANCHOR_PENALTY = 0.4  # Phase B: multiply score by this when anchor is weak
 
 
 def _get_sim_threshold(conn: sqlite3.Connection) -> float:
@@ -85,13 +86,22 @@ def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
 
 
 def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle: str) -> bool:
+    """Check if target exists, is published, and is reachable via Admin API.
+    
+    Phase A: Excludes api_unreachable collections to prevent Apply failures.
+    """
     if t_type == "product":
         row = conn.execute(
             "SELECT status FROM products WHERE handle = ?", (t_handle,)
         ).fetchone()
         return bool(row) and (row["status"] or "ACTIVE").upper() == "ACTIVE"
     if t_type == "collection":
-        return conn.execute("SELECT 1 FROM collections WHERE handle = ?", (t_handle,)).fetchone() is not None
+        # Phase A: exclude api_unreachable collections (ghost/API-invisible)
+        row = conn.execute(
+            "SELECT COALESCE(api_unreachable, 0) AS api_unreachable FROM collections WHERE handle = ?",
+            (t_handle,),
+        ).fetchone()
+        return bool(row) and not row["api_unreachable"]
     if t_type == "page":
         return conn.execute("SELECT 1 FROM pages WHERE handle = ?", (t_handle,)).fetchone() is not None
     if t_type == "blog_article":
@@ -147,35 +157,53 @@ def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]
     """Return published entities with no inbound links, sorted by traffic (clicks+impressions desc).
 
     Returns list of (object_type, handle, gsc_clicks, gsc_impressions).
+    
+    Phase A: Excludes api_unreachable collections.
+    Phase B: Products/collections with inbound from collection pages are considered
+             "linked via navigation" and not true orphans. Use _is_true_orphan() to check.
     """
     linked = {
         (r["target_type"], r["target_handle"])
         for r in conn.execute("SELECT DISTINCT target_type, target_handle FROM internal_links").fetchall()
     }
+    
+    # Phase B: Build set of (type, handle) that have inbound from collection pages
+    # These are considered "linked via navigation" and not true orphans
+    collection_linked = set()
+    for r in conn.execute(
+        "SELECT DISTINCT target_type, target_handle FROM internal_links WHERE source_type = 'collection'"
+    ).fetchall():
+        collection_linked.add((r["target_type"], r["target_handle"]))
+    
     orphans: list[tuple[str, str, int, int]] = []
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
         "FROM products WHERE (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"
     ).fetchall():
-        if ("product", r["h"]) not in linked:
+        key = ("product", r["h"])
+        # Phase B: Not an orphan if linked from any source, or if linked from collection pages
+        if key not in linked and key not in collection_linked:
             orphans.append(("product", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
-        "FROM collections"
+        "FROM collections WHERE COALESCE(api_unreachable, 0) = 0"
     ).fetchall():
-        if ("collection", r["h"]) not in linked:
+        key = ("collection", r["h"])
+        if key not in linked and key not in collection_linked:
             orphans.append(("collection", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
         "FROM pages"
     ).fetchall():
-        if ("page", r["h"]) not in linked:
+        key = ("page", r["h"])
+        if key not in linked and key not in collection_linked:
             orphans.append(("page", r["h"], r["clicks"], r["impr"]))
     for r in conn.execute(
         "SELECT blog_handle || '/' || handle AS h, COALESCE(gsc_clicks, 0) AS clicks, COALESCE(gsc_impressions, 0) AS impr "
         "FROM blog_articles WHERE is_published = 1"
     ).fetchall():
-        if ("blog_article", r["h"]) not in linked:
+        key = ("blog_article", r["h"])
+        if key not in linked and key not in collection_linked:
             orphans.append(("blog_article", r["h"], r["clicks"], r["impr"]))
     orphans.sort(key=lambda x: (x[2] + x[3], x[2]), reverse=True)
     return orphans
@@ -258,14 +286,30 @@ def generate_link_suggestions(
                 candidates = _target_title_and_keywords(conn, t_type, t_handle)
                 phrase = find_anchor_phrase(body, candidates)
                 kind = "phrase_wrap" if phrase else "ai_woven"
+                
+                # Phase B: Check for weak anchors and apply penalty
+                weak_anchor = 0
+                if phrase and is_weak_anchor(phrase):
+                    weak_anchor = 1
+                    # Try to find a longer/stronger candidate first
+                    stronger_candidates = [c for c in candidates if len(c.split()) > 1]
+                    stronger_phrase = find_anchor_phrase(body, stronger_candidates)
+                    if stronger_phrase and not is_weak_anchor(stronger_phrase):
+                        phrase = stronger_phrase
+                        weak_anchor = 0
+                
                 score = sim * traffic_weight * TARGET_VALUE[t_type]
                 if (t_type, t_handle) in orphans:
                     score *= ORPHAN_BOOST
+                # Phase B: Apply weak anchor penalty to demote in sorting
+                if weak_anchor:
+                    score *= WEAK_ANCHOR_PENALTY
+                
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO link_suggestions "
                     "(source_type, source_handle, target_type, target_handle, kind, anchor_phrase, "
-                    " source_body_hash, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (s_type, s_handle, t_type, t_handle, kind, phrase, body_hash, score, now),
+                    " source_body_hash, score, weak_anchor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (s_type, s_handle, t_type, t_handle, kind, phrase, body_hash, score, weak_anchor, now),
                 )
                 if cur.rowcount:
                     inserted += 1

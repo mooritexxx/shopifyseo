@@ -21,7 +21,7 @@ from .images import (
     test_image_model,
     try_prepare_article_images_bundle,
 )
-from .prompts import field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
+from .prompts import build_description_length_retry_feedback, field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
 from .providers import (
     AIProviderRequestError,
     _call_ai,
@@ -187,6 +187,7 @@ def _generate_single_field_core(
     accepted_fields: dict,
     prompt_context_precomputed: dict | None = None,
     signal_narrative_precomputed: str,
+    retry_feedback: str | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_callback: CancelCallback | None = None,
     step_index: int = 0,
@@ -223,6 +224,7 @@ def _generate_single_field_core(
         prompt_version,
         prompt_context_dict=effective_prompt_context,
         signal_narrative_str=signal_narrative_precomputed,
+        retry_feedback=retry_feedback,
     )
 
     _raise_if_cancelled(cancel_callback)
@@ -698,16 +700,29 @@ def generate_recommendation(
             except Exception as e:
                 logger.warning(f"SEO title retry failed for {object_type}/{handle}: {e}")
 
-    # Check if seo_description is too short — retry once if so
+    # Check if seo_description is too short — retry with explicit length instruction
     description_retried = False
+    description_retry_count = 0
     original_desc = recommendation["seo_description"]
     original_desc_len = len(original_desc)
     needs_desc_retry, desc_retry_reason = description_needs_retry(object_type, original_desc)
     # Also check for US spellings in the description
     _, spelling_issues = validate_commonwealth_spelling(original_desc)
+
+    # Import config values for retry logic
+    from .config import DESCRIPTION_TARGET_MIN, DESCRIPTION_LIMIT
+    target_min = DESCRIPTION_TARGET_MIN.get(object_type, 150)
+    target_max = DESCRIPTION_LIMIT  # 160
+
+    # Track all candidates: (description, length, spelling_issues_count)
+    candidates = [(original_desc, original_desc_len, len(spelling_issues))]
+    best_desc = original_desc
+    best_desc_len = original_desc_len
+    best_spelling_count = len(spelling_issues)
+
     if needs_desc_retry or spelling_issues:
         retry_reason = desc_retry_reason if needs_desc_retry else f"spelling issues: {spelling_issues[:2]}"
-        logger.info(f"SEO description needs retry ({retry_reason}) for {object_type}/{handle}")
+        logger.info(f"SEO description needs retry ({retry_reason}) for {object_type}/{handle}, original_len={original_desc_len}")
         _emit_progress(
             progress_callback,
             stage="retrying_seo_description",
@@ -718,79 +733,106 @@ def generate_recommendation(
         )
         # Mark that a retry was attempted (regardless of outcome)
         description_retried = True
-        try:
-            # Build accepted fields with current seo_title for complementarity
-            retry_accepted = dict(accepted_fields)
-            retry_accepted["seo_title"] = recommendation["seo_title"]
-            # Build fresh prompt context
-            retry_context = _context_with_accepted_fields(context, retry_accepted)
-            retry_prompt_ctx = prompt_context(retry_context)
-            # Retry description generation
-            retry_result = _generate_single_field_core(
-                settings=settings,
-                context=context,
-                object_type=object_type,
-                field="seo_description",
-                accepted_fields=retry_accepted,
-                prompt_context_precomputed=retry_prompt_ctx,
-                signal_narrative_precomputed=None,
-                progress_callback=progress_callback,
-                cancel_callback=cancel_callback,
-                step_index=step_total - 1,
-                step_total=step_total,
-                conn=conn,
-            )
-            retry_desc = clamp_generated_seo_field("seo_description", retry_result["value"])
-            retry_desc_len = len(retry_desc)
-            _, retry_spelling_issues = validate_commonwealth_spelling(retry_desc)
 
-            # Goal: prefer the candidate closer to 160 without exceeding it, with no worse spelling.
-            # Target range is [target_min, DESCRIPTION_LIMIT] i.e. [150, 160] for products.
-            from .config import DESCRIPTION_TARGET_MIN, DESCRIPTION_LIMIT
-            target_min = DESCRIPTION_TARGET_MIN.get(object_type, 150)
-            target_max = DESCRIPTION_LIMIT  # 160
+        # Helper to run one retry attempt with explicit feedback
+        def _run_description_retry(prev_draft: str, attempt: int) -> tuple[str, int, list[str]] | None:
+            """Run one description retry attempt. Returns (desc, length, spelling_issues) or None on failure."""
+            nonlocal description_retry_count
+            description_retry_count += 1
+            try:
+                # Build retry feedback showing the previous draft
+                length_retry_feedback = build_description_length_retry_feedback(
+                    prev_draft, target_min, target_max, object_type
+                )
+                # Build accepted fields with current seo_title for complementarity
+                retry_accepted = dict(accepted_fields)
+                retry_accepted["seo_title"] = recommendation["seo_title"]
+                # Build fresh prompt context
+                retry_context = _context_with_accepted_fields(context, retry_accepted)
+                retry_prompt_ctx = prompt_context(retry_context)
+                # Retry description generation with explicit retry feedback
+                retry_result = _generate_single_field_core(
+                    settings=settings,
+                    context=context,
+                    object_type=object_type,
+                    field="seo_description",
+                    accepted_fields=retry_accepted,
+                    prompt_context_precomputed=retry_prompt_ctx,
+                    signal_narrative_precomputed=None,
+                    retry_feedback=length_retry_feedback,
+                    progress_callback=progress_callback,
+                    cancel_callback=cancel_callback,
+                    step_index=step_total - 1,
+                    step_total=step_total,
+                    conn=conn,
+                )
+                retry_desc = clamp_generated_seo_field("seo_description", retry_result["value"])
+                retry_len = len(retry_desc)
+                _, retry_spelling = validate_commonwealth_spelling(retry_desc)
+                logger.info(f"SEO description retry #{attempt} result: retry_len={retry_len}, prev_len={len(prev_draft)} for {object_type}/{handle}")
+                return (retry_desc, retry_len, retry_spelling)
+            except Exception as e:
+                logger.warning(f"SEO description retry #{attempt} failed for {object_type}/{handle}: {e}")
+                return None
 
-            original_in_target = target_min <= original_desc_len <= target_max
-            retry_in_target = target_min <= retry_desc_len <= target_max
+        # First retry attempt
+        result1 = _run_description_retry(original_desc, 1)
+        if result1:
+            retry1_desc, retry1_len, retry1_spelling = result1
+            candidates.append((retry1_desc, retry1_len, len(retry1_spelling)))
 
-            # Compute distance from ideal (160) — lower is better
-            original_dist = abs(target_max - original_desc_len) if original_desc_len <= target_max else 1000
-            retry_dist = abs(target_max - retry_desc_len) if retry_desc_len <= target_max else 1000
+            # If first retry is still below target_min, try one more time
+            if retry1_len < target_min:
+                logger.info(f"SEO description retry #1 still short ({retry1_len} < {target_min}), attempting second retry for {object_type}/{handle}")
+                _emit_progress(
+                    progress_callback,
+                    stage="retrying_seo_description_2",
+                    step_index=step_total - 1,
+                    step_total=step_total,
+                    model=_provider_display(generation_provider, generation_model),
+                    message=f"SEO description still short ({retry1_len} chars), retrying once more",
+                )
+                result2 = _run_description_retry(retry1_desc, 2)
+                if result2:
+                    retry2_desc, retry2_len, retry2_spelling = result2
+                    candidates.append((retry2_desc, retry2_len, len(retry2_spelling)))
 
-            # Accept retry if:
-            # 1. Retry is in target range and original is not, with no worse spelling
-            # 2. Both in target range but retry is closer to 160, with no worse spelling
-            # 3. Both below target but retry is longer (closer to target), with no worse spelling
-            # 4. Fewer spelling issues regardless of length (as long as retry doesn't exceed limit)
-            # NEVER accept retry if it exceeds the hard limit (160)
-            retry_is_better = False
-            if retry_desc_len > target_max:
-                # Retry exceeds limit — never accept
-                retry_is_better = False
-            elif len(retry_spelling_issues) < len(spelling_issues):
-                # Fewer spelling issues and valid length — accept
-                retry_is_better = True
-            elif len(retry_spelling_issues) <= len(spelling_issues):
-                # Spelling not worse; compare by length/target
-                if retry_in_target and not original_in_target:
-                    # Retry reached target range, original didn't
-                    retry_is_better = True
-                elif retry_in_target and original_in_target:
-                    # Both in target — prefer closer to 160
-                    retry_is_better = retry_dist < original_dist
-                elif not retry_in_target and not original_in_target:
-                    # Both below target — prefer longer (closer to target_min), but not over limit
-                    retry_is_better = retry_desc_len > original_desc_len and retry_desc_len <= target_max
+        # Select best candidate: prefer in-target, then closest to 160, then longest (but never > 160)
+        for desc, desc_len, spell_count in candidates:
+            if desc_len > target_max:
+                # Exceeds limit — skip
+                continue
+            in_target = target_min <= desc_len <= target_max
+            best_in_target = target_min <= best_desc_len <= target_max
 
-            if retry_is_better:
-                recommendation["seo_description"] = retry_desc
-                generated_fields["seo_description"]["value"] = retry_desc
-                review_actions["seo_description"] = retry_result.get("review_action", "")
-                logger.info(f"SEO description retry accepted (length={retry_desc_len}, was {original_desc_len}) for {object_type}/{handle}")
-            else:
-                logger.info(f"SEO description retry not accepted (retry_length={retry_desc_len}, original={original_desc_len}) for {object_type}/{handle}")
-        except Exception as e:
-            logger.warning(f"SEO description retry failed for {object_type}/{handle}: {e}")
+            # Prefer candidate if:
+            # 1. It's in target and current best isn't
+            # 2. Both in target, but this one is closer to 160
+            # 3. Neither in target, but this one is longer (and has no worse spelling)
+            should_replace = False
+            if in_target and not best_in_target:
+                should_replace = True
+            elif in_target and best_in_target:
+                # Both in target — prefer closer to 160
+                if abs(target_max - desc_len) < abs(target_max - best_desc_len):
+                    should_replace = True
+            elif not in_target and not best_in_target:
+                # Neither in target — prefer longer if spelling not worse
+                if desc_len > best_desc_len and spell_count <= best_spelling_count:
+                    should_replace = True
+
+            if should_replace:
+                best_desc = desc
+                best_desc_len = desc_len
+                best_spelling_count = spell_count
+
+        # Update recommendation if best is different from original
+        if best_desc != original_desc:
+            recommendation["seo_description"] = best_desc
+            generated_fields["seo_description"]["value"] = best_desc
+            logger.info(f"SEO description retry accepted: best_len={best_desc_len}, original_len={original_desc_len}, retries={description_retry_count} for {object_type}/{handle}")
+        else:
+            logger.info(f"SEO description retry not accepted: keeping original_len={original_desc_len}, retries={description_retry_count} for {object_type}/{handle}")
 
     # Check if body specifically fails the floor — retry once if so
     body_retried = False
@@ -907,6 +949,7 @@ def generate_recommendation(
         "spec_claim_issues": spec_claim_issues,
         "title_retried": title_retried,
         "description_retried": description_retried,
+        "description_retry_count": description_retry_count,
         "body_retried": body_retried,
     }
     priority = context["fact"]["priority"]

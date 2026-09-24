@@ -63,12 +63,12 @@ DESCRIPTION_HARD_MIN = {
     "blog_article": 110,
 }
 # Retry floor: descriptions below this trigger a one-shot rewrite attempt
-# (should be between HARD_MIN and TARGET_MIN to catch meaningfully short output)
+# Set equal to TARGET_MIN so any below-target output gets one rewrite attempt toward 160
 DESCRIPTION_RETRY_FLOOR = {
-    "product": 140,
-    "collection": 135,
-    "page": 135,
-    "blog_article": 135,
+    "product": 150,
+    "collection": 145,
+    "page": 145,
+    "blog_article": 145,
 }
 QA_SCORE_FLOOR = {
     "product": 5,

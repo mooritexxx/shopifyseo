@@ -637,6 +637,66 @@ def generate_recommendation(
     qa_score, qa_issues = validate_output(object_type, recommendation)
     qa_floor = QA_SCORE_FLOOR.get(object_type, 4) / 10.0
 
+    # Check if seo_title has puff redundancy or spelling issues — retry once if so
+    title_retried = False
+    if object_type == "product":
+        detail_payload = context.get("detail") or {}
+        product_title = (detail_payload.get("product") or {}).get("title", "")
+        puff_ok, puff_issues = check_title_puff_redundancy(product_title, recommendation["seo_title"])
+        _, title_spelling_issues = validate_commonwealth_spelling(recommendation["seo_title"])
+
+        if not puff_ok or title_spelling_issues:
+            retry_reason = puff_issues[0] if puff_issues else f"spelling: {title_spelling_issues[0]}"
+            logger.info(f"SEO title needs retry ({retry_reason}) for {object_type}/{handle}")
+            _emit_progress(
+                progress_callback,
+                stage="retrying_seo_title",
+                step_index=step_total - 1,
+                step_total=step_total,
+                model=_provider_display(generation_provider, generation_model),
+                message=f"SEO title failed validation ({retry_reason}), retrying once",
+            )
+            try:
+                # Build accepted fields without seo_title (we're regenerating it)
+                retry_accepted = {k: v for k, v in accepted_fields.items() if k != "seo_title"}
+                retry_context = _context_with_accepted_fields(context, retry_accepted)
+                retry_prompt_ctx = prompt_context(retry_context)
+                # Retry title generation
+                retry_result = _generate_single_field_core(
+                    settings=settings,
+                    context=context,
+                    object_type=object_type,
+                    field="seo_title",
+                    accepted_fields=retry_accepted,
+                    prompt_context_precomputed=retry_prompt_ctx,
+                    signal_narrative_precomputed=None,
+                    progress_callback=progress_callback,
+                    cancel_callback=cancel_callback,
+                    step_index=step_total - 1,
+                    step_total=step_total,
+                    conn=conn,
+                )
+                retry_title = clamp_generated_seo_field("seo_title", retry_result["value"])
+                retry_puff_ok, retry_puff_issues = check_title_puff_redundancy(product_title, retry_title)
+                _, retry_title_spelling = validate_commonwealth_spelling(retry_title)
+
+                # Accept retry if it fixes the issues
+                retry_is_better = (
+                    (not puff_ok and retry_puff_ok) or
+                    (len(retry_title_spelling) < len(title_spelling_issues)) or
+                    (retry_puff_ok and len(retry_puff_issues) < len(puff_issues))
+                )
+                if retry_is_better:
+                    recommendation["seo_title"] = retry_title
+                    generated_fields["seo_title"]["value"] = retry_title
+                    review_actions["seo_title"] = retry_result.get("review_action", "")
+                    title_retried = True
+                    logger.info(f"SEO title retry improved for {object_type}/{handle}")
+                else:
+                    logger.info(f"SEO title retry did not improve for {object_type}/{handle}")
+            except Exception as e:
+                logger.warning(f"SEO title retry failed for {object_type}/{handle}: {e}")
+
     # Check if seo_description is too short — retry once if so
     description_retried = False
     needs_desc_retry, desc_retry_reason = description_needs_retry(object_type, recommendation["seo_description"])
@@ -774,8 +834,8 @@ def generate_recommendation(
         except Exception as e:
             logger.warning(f"Body retry failed for {object_type}/{handle}: {e}")
 
-    # Re-run QA validation after potential description or body retry
-    if description_retried or body_retried:
+    # Re-run QA validation after potential title, description, or body retry
+    if title_retried or description_retried or body_retried:
         qa_score, qa_issues = validate_output(object_type, recommendation)
 
     _emit_progress(
@@ -809,6 +869,7 @@ def generate_recommendation(
         "passed": qa_score >= qa_floor and not spec_claim_issues,
         "issues": all_issues,
         "spec_claim_issues": spec_claim_issues,
+        "title_retried": title_retried,
         "description_retried": description_retried,
         "body_retried": body_retried,
     }

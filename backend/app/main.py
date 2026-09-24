@@ -29,6 +29,7 @@ from backend.app.routers.keywords import router as keywords_router
 from backend.app.routers.clusters import router as clusters_router
 from backend.app.routers.embeddings import router as embeddings_router
 from backend.app.routers.image_seo import router as image_seo_router
+from backend.app.routers.internal_links import router as internal_links_router
 from backend.app.routers.google_ads_lab import router as google_ads_lab_router
 from backend.app.routers.opportunities import router as opportunities_router
 from backend.app.routers.status import router as status_router
@@ -75,6 +76,7 @@ app.include_router(ai_stream_router)
 app.include_router(auth_router)
 app.include_router(embeddings_router)
 app.include_router(image_seo_router)
+app.include_router(internal_links_router)
 app.include_router(google_ads_lab_router)
 app.include_router(opportunities_router)
 

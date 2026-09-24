@@ -1,4 +1,7 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+const SUMMARY_POLL_MS = 1500;
 
 export interface LinkSuggestion {
   id: number;
@@ -37,7 +40,30 @@ async function postJson<T>(url: string): Promise<T> {
 }
 
 export function useLinkSummary() {
-  return useQuery({ queryKey: ["internal-links", "summary"], queryFn: () => getJson<LinkSummary>("/api/internal-links/summary") });
+  const qc = useQueryClient();
+  const wasRunning = useRef(false);
+
+  const query = useQuery({
+    queryKey: ["internal-links", "summary"],
+    queryFn: () => getJson<LinkSummary>("/api/internal-links/summary"),
+    // Keep polling while a rebuild is in progress so the UI leaves "Rebuilding…"
+    // and picks up final counts without a manual refresh.
+    refetchInterval: (q) => (q.state.data?.progress?.running ? SUMMARY_POLL_MS : false),
+  });
+
+  useEffect(() => {
+    const running = Boolean(query.data?.progress?.running);
+    if (wasRunning.current && !running) {
+      // Rebuild just finished — refresh suggestions/orphans/graph without polling them.
+      void qc.invalidateQueries({
+        queryKey: ["internal-links"],
+        predicate: (q) => q.queryKey[1] !== "summary",
+      });
+    }
+    wasRunning.current = running;
+  }, [query.data?.progress?.running, qc]);
+
+  return query;
 }
 
 export function useLinkSuggestions(params: { sourceType?: string; sourceHandle?: string } = {}) {

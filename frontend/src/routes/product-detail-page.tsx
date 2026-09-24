@@ -17,6 +17,7 @@ import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
 import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
 import { GscTrendSection } from "../components/gsc-trend-section";
+import { LinkOpportunitiesCard } from "../components/link-opportunities-card";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { Textarea } from "../components/ui/textarea";
@@ -1035,6 +1036,9 @@ export function ProductDetailPage() {
         </section>
 
         <GscTrendSection trend={detail.trend} />
+
+        <LinkOpportunitiesCard sourceType="products" sourceHandle={handle} />
+
         <GscTopQueriesSection queries={detail.gsc_queries} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />

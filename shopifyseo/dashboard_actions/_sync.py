@@ -208,6 +208,27 @@ def _start_gsc_query_embedding_sync(db_path: str) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _start_internal_link_refresh(db_path: str) -> threading.Thread:
+    """Rebuild the internal link graph and suggestions after visible sync completion."""
+
+    def _worker() -> None:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = _db_connect_for_actions(db_path)
+            from ..internal_links.pipeline import generate_link_suggestions
+
+            generate_link_suggestions(conn)
+        except Exception:
+            logger.warning("Background internal link refresh failed", exc_info=True)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
+
+
 def _start_catalog_embedding_sync(db_path: str) -> None:
     """Refresh catalog embeddings (products, collections, pages, articles) after Shopify sync."""
     from ..embedding_sync import enqueue_embedding_sync
@@ -746,6 +767,7 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         _flush_gsc_signal_targets(final=True)
         if touched_targets:
             _start_gsc_query_embedding_sync(db_path)
+            _start_internal_link_refresh(db_path)
     finally:
         try:
             dg.delete_search_console_overview_timeseries_only(conn)

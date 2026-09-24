@@ -15,6 +15,7 @@ import { Separator } from "../components/ui/separator";
 import { GscSearchSegmentsSection } from "../components/gsc-search-segments-section";
 import { GscTopQueriesSection } from "../components/gsc-top-queries-section";
 import { GscTrendSection } from "../components/gsc-trend-section";
+import { LinkOpportunitiesCard } from "../components/link-opportunities-card";
 import { SignalCard } from "../components/ui/signal-card";
 import { DetailPageSkeleton } from "../components/ui/detail-skeleton";
 import { RichBodyEditor } from "../components/ui/rich-body-editor";
@@ -988,6 +989,9 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
         ) : null}
 
         <GscTrendSection trend={detail.trend} />
+
+        <LinkOpportunitiesCard sourceType={kind} sourceHandle={handle} />
+
         <GscTopQueriesSection queries={detail.gsc_queries} />
 
         <GscSearchSegmentsSection summary={detail.gsc_segment_summary} />

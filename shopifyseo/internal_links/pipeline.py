@@ -180,6 +180,7 @@ def generate_link_suggestions(
     try:
         if rebuild_graph:
             rebuild_internal_link_graph(conn, base_url=base_url)
+        conn.execute("DELETE FROM link_suggestions WHERE status = 'suggested'")
         existing_edges = {
             (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
             for r in conn.execute(

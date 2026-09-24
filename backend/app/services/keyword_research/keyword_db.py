@@ -175,6 +175,11 @@ def upsert_target_keyword(
         sync_keyword_metrics_to_db(conn)
     except Exception:
         logger.exception("Failed to sync keyword metrics after upsert_target_keyword (non-fatal)")
+    try:
+        from shopifyseo.embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["keyword"])
+    except Exception:
+        logger.warning("Keyword embedding sync failed after upsert (non-fatal)", exc_info=True)
     return found
 
 
@@ -310,6 +315,11 @@ def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: st
         (new_status, int(time.time()), keyword),
     )
     conn.commit()
+    try:
+        from shopifyseo.embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["keyword"])
+    except Exception:
+        logger.warning("Keyword embedding sync failed after status update (non-fatal)", exc_info=True)
     return {"keyword": keyword, "status": new_status}
 
 
@@ -333,6 +343,11 @@ def bulk_update_status(conn: sqlite3.Connection, keywords: list[str], new_status
             (new_status, now, kw),
         )
     conn.commit()
+    try:
+        from shopifyseo.embedding_sync import enqueue_embedding_sync_from_conn
+        enqueue_embedding_sync_from_conn(conn, object_types=["keyword"])
+    except Exception:
+        logger.warning("Keyword embedding sync failed after bulk status update (non-fatal)", exc_info=True)
     return updated
 
 

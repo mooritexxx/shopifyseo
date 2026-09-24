@@ -30,8 +30,10 @@ class TestDescriptionLimits:
     def test_product_description_target_min_is_150(self):
         assert DESCRIPTION_TARGET_MIN["product"] == 150
 
-    def test_product_description_retry_floor_is_140(self):
-        assert DESCRIPTION_RETRY_FLOOR["product"] == 140
+    def test_product_description_retry_floor_matches_target_min(self):
+        # Retry floor should match target min so any below-target output gets a retry
+        assert DESCRIPTION_RETRY_FLOOR["product"] == DESCRIPTION_TARGET_MIN["product"]
+        assert DESCRIPTION_RETRY_FLOOR["product"] == 150
 
 
 class TestScoreDescription:
@@ -95,14 +97,23 @@ class TestDescriptionNeedsRetry:
         assert not needs_retry
         assert reason == ""
 
-    def test_retry_not_needed_at_140_chars(self):
-        # 140 is at the retry floor, so no retry
-        desc = "x" * 140
+    def test_retry_needed_at_149_chars(self):
+        # 149 is below retry floor (150), so retry is needed
+        desc = "x" * 149
         needs_retry, reason = description_needs_retry("product", desc)
-        assert not needs_retry
+        assert needs_retry
+        assert "too short" in reason
 
-    def test_retry_needed_at_137_chars(self):
-        desc = "x" * 137
+    def test_retry_needed_at_144_chars(self):
+        # This was the observed gap case - 144 chars should trigger retry
+        desc = "x" * 144
+        needs_retry, reason = description_needs_retry("product", desc)
+        assert needs_retry
+        assert "too short" in reason
+
+    def test_retry_needed_at_140_chars(self):
+        # 140 is below retry floor (150), so retry IS needed now
+        desc = "x" * 140
         needs_retry, reason = description_needs_retry("product", desc)
         assert needs_retry
         assert "too short" in reason

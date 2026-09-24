@@ -1019,6 +1019,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 "The title must be plain text — no HTML, no markdown, no line breaks. "
                 f"The only permitted non-word punctuation is a single ' | ' separator before the {_brand} suffix. "
                 "Never end the title with ' | ' or ' |' — if the brand suffix is omitted, omit the pipe separator too. "
+                "CRITICAL: If the product name already includes a puff count (e.g. '4K', '10K', '10000'), do NOT repeat it as 'X Puffs' in the title — "
+                "this creates redundancy like 'Draggg 4K ... 4000 Puffs' which hurts readability and wastes character space. "
                 f"{m['spelling']} "
                 "Return valid JSON only."
                 + _market_block
@@ -1064,6 +1066,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 "Internal links: every `<a href>` must use the exact `url` string from `approved_internal_link_targets` in <context> only — never invent paths. "
                 + _RAG_INTERNAL_LINK_PREFERENCE
                 + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
+                "AVOID generic padding links like 'New Arrivals' or 'All Products' at the end of the body — "
+                "prefer contextually relevant links from the same collection, brand, or flavour family that appear in `related_content_examples`. "
                 "Do not make health, cessation, or medical claims. "
                 f"{m['spelling']} "
                 "Return valid JSON only."

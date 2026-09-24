@@ -8,7 +8,36 @@
 
 **Tech Stack:** Python 3.10 / FastAPI / SQLite (existing patterns), existing `embedding_store.retrieve_related_by_handle`, `dashboard_live_updates` push functions, React 19 + TanStack Query 5.
 
-**Spec:** `docs/superpowers/specs/2026-06-11-internal-linking-design.md`
+**Spec:** `docs/archive/specs/2026-06-11-internal-linking-design.md`
+
+---
+
+## Plan Revisions (post-blueprint review)
+
+| Rev | Date | Summary |
+|-----|------|---------|
+| R1 | 2026-06-11 | Initial plan |
+| R2 | 2026-09-24 | Blueprint alignment: anchor candidates include cluster keywords via `clusters.match_type/match_handle` + `cluster_keywords`; orphans filtered to published entities + include GSC traffic data; `source_body_hash` for stale detection at apply time; `sanitize_article_internal_links` in apply path; `SIM_THRESHOLD` loads from `service_settings` with 0.55 fallback; event-driven refresh hooks; Graph Stats UI tab; detail-page card shows incoming/outgoing link counts |
+
+---
+
+## Reuse, Don't Reinvent
+
+Build on existing infrastructure — do not duplicate:
+
+| Existing | Location | Used For |
+|----------|----------|----------|
+| `build_store_internal_link_allowlist()` | `dashboard_queries/_urls.py` | Valid target URLs |
+| `object_url_with_base()` | `dashboard_queries/_urls.py` | URL generation |
+| `sanitize_article_internal_links()` | `dashboard_ai_engine_parts/_article_draft.py` | Post-weave link cleanup |
+| `retrieve_related_by_handle()` | `embedding_store.py` | Semantic neighbor search |
+| `keyword_page_map` table | `dashboard_store.py` | Target keyword lookup |
+| `clusters` + `cluster_keywords` tables | `dashboard_store.py` | Cluster keyword lookup (via `match_type`/`match_handle`) |
+| `sync_embedding_for_handle()` | `embedding_store.py` | Event-driven embedding hook pattern |
+
+**Do not break:**
+- Sidekick's `_approved_internal_link_targets_for_sidekick()` in `sidekick.py`
+- Article draft RAG (`article_draft_retrieval`) — related but separate (draft-time interlinks vs catalog body suggestions)
 
 **Verified integration points (do not re-derive):**
 - Bodies live in: `products.description_html`, `collections.description_html`, `pages.body`, `blog_articles.body`. Blog article composite handle = `blog_handle || '/' || handle`. Primary keys are `shopify_id`. Products have `status` ('ACTIVE' etc.); articles have `is_published`.
@@ -114,6 +143,7 @@ In `shopifyseo/dashboard_store.py`, after the `embeddings` table block, add:
             kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
             anchor_phrase TEXT,
             ai_anchor_html TEXT,
+            source_body_hash TEXT,  -- SHA-256 of source body at suggestion generation time
             score REAL NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'suggested'
                 CHECK (status IN ('suggested', 'applied', 'dismissed')),
@@ -618,7 +648,8 @@ from .graph import rebuild_internal_link_graph
 
 logger = logging.getLogger(__name__)
 
-SIM_THRESHOLD = 0.55
+SIM_THRESHOLD_DEFAULT = 0.55
+SIM_THRESHOLD_SETTING_KEY = "internal_link_sim_threshold"
 MAX_OUTGOING = 5
 MAX_INCOMING = 15
 TARGET_VALUE = {"product": 1.5, "collection": 1.5, "page": 1.0, "blog_article": 0.8}
@@ -643,6 +674,16 @@ def internal_link_sync_progress() -> dict:
 def _set_progress(**updates) -> None:
     with _PROGRESS_LOCK:
         _PROGRESS.update(updates)
+
+
+def _get_sim_threshold(conn: sqlite3.Connection) -> float:
+    """Load SIM_THRESHOLD from service_settings with fallback to default constant."""
+    from ..dashboard_google import get_service_setting
+    raw = get_service_setting(conn, SIM_THRESHOLD_SETTING_KEY, str(SIM_THRESHOLD_DEFAULT))
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return SIM_THRESHOLD_DEFAULT
 
 
 def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
@@ -672,6 +713,7 @@ def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle
 
 
 def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: str) -> list[str]:
+    """Return anchor phrase candidates: target title, keyword_page_map keywords, AND cluster keywords."""
     candidates: list[str] = []
     if t_type == "blog_article":
         blog_h, _, article_h = t_handle.partition("/")
@@ -684,30 +726,85 @@ def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: 
         row = conn.execute(f"SELECT title FROM {table} WHERE handle = ?", (t_handle,)).fetchone()
     if row and row["title"]:
         candidates.append(row["title"])
+    # Keywords mapped directly to this target via keyword_page_map
     for kw in conn.execute(
         "SELECT keyword FROM keyword_page_map WHERE object_type = ? AND object_handle = ? "
         "ORDER BY is_primary DESC, gsc_clicks DESC LIMIT 10",
         (t_type, t_handle),
     ).fetchall():
         candidates.append(kw["keyword"])
+    # Cluster keywords for clusters matched to this target (via clusters.match_type/match_handle)
+    for kw in conn.execute(
+        """
+        SELECT ck.keyword
+        FROM cluster_keywords ck
+        JOIN clusters c ON ck.cluster_id = c.id
+        WHERE c.match_type = ? AND c.match_handle = ?
+        LIMIT 20
+        """,
+        (t_type, t_handle),
+    ).fetchall():
+        if kw["keyword"] not in candidates:
+            candidates.append(kw["keyword"])
     return candidates
 
 
-def _orphan_targets(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+def _orphan_targets(conn: sqlite3.Connection) -> list[dict]:
+    """Return orphan entities (published, zero incoming links) with traffic data.
+    
+    Orphan = published entity with no incoming internal links.
+    - Products: status = 'ACTIVE' only
+    - Blog articles: is_published = 1 only  
+    - Collections/pages: always included (no draft state in Shopify)
+    """
     linked = {
         (r["target_type"], r["target_handle"])
         for r in conn.execute("SELECT DISTINCT target_type, target_handle FROM internal_links").fetchall()
     }
-    orphans: set[tuple[str, str]] = set()
-    for t_type, table, handle_expr in (
-        ("product", "products", "handle"),
-        ("collection", "collections", "handle"),
-        ("page", "pages", "handle"),
-        ("blog_article", "blog_articles", "blog_handle || '/' || handle"),
-    ):
-        for r in conn.execute(f"SELECT {handle_expr} AS h FROM {table}").fetchall():
-            if (t_type, r["h"]) not in linked:
-                orphans.add((t_type, r["h"]))
+    orphans: list[dict] = []
+    # Products: only ACTIVE
+    for r in conn.execute(
+        "SELECT handle, title, COALESCE(gsc_clicks, 0) AS gsc_clicks, "
+        "COALESCE(gsc_impressions, 0) AS gsc_impressions FROM products "
+        "WHERE (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"
+    ).fetchall():
+        if ("product", r["handle"]) not in linked:
+            orphans.append({
+                "object_type": "product", "handle": r["handle"], "title": r["title"],
+                "gsc_clicks": r["gsc_clicks"], "gsc_impressions": r["gsc_impressions"]
+            })
+    # Collections: always included
+    for r in conn.execute(
+        "SELECT handle, title, COALESCE(gsc_clicks, 0) AS gsc_clicks, "
+        "COALESCE(gsc_impressions, 0) AS gsc_impressions FROM collections"
+    ).fetchall():
+        if ("collection", r["handle"]) not in linked:
+            orphans.append({
+                "object_type": "collection", "handle": r["handle"], "title": r["title"],
+                "gsc_clicks": r["gsc_clicks"], "gsc_impressions": r["gsc_impressions"]
+            })
+    # Pages: always included
+    for r in conn.execute(
+        "SELECT handle, title, COALESCE(gsc_clicks, 0) AS gsc_clicks, "
+        "COALESCE(gsc_impressions, 0) AS gsc_impressions FROM pages"
+    ).fetchall():
+        if ("page", r["handle"]) not in linked:
+            orphans.append({
+                "object_type": "page", "handle": r["handle"], "title": r["title"],
+                "gsc_clicks": r["gsc_clicks"], "gsc_impressions": r["gsc_impressions"]
+            })
+    # Blog articles: only published
+    for r in conn.execute(
+        "SELECT blog_handle || '/' || handle AS h, title, COALESCE(gsc_clicks, 0) AS gsc_clicks, "
+        "COALESCE(gsc_impressions, 0) AS gsc_impressions FROM blog_articles WHERE is_published = 1"
+    ).fetchall():
+        if ("blog_article", r["h"]) not in linked:
+            orphans.append({
+                "object_type": "blog_article", "handle": r["h"], "title": r["title"],
+                "gsc_clicks": r["gsc_clicks"], "gsc_impressions": r["gsc_impressions"]
+            })
+    # Sort by traffic (high-traffic orphans first)
+    orphans.sort(key=lambda x: (-x["gsc_impressions"], -x["gsc_clicks"]))
     return orphans
 
 
@@ -729,7 +826,9 @@ def generate_link_suggestions(
                 "SELECT source_type, source_handle, target_type, target_handle FROM internal_links"
             ).fetchall()
         }
-        orphans = _orphan_targets(conn)
+        orphan_list = _orphan_targets(conn)
+        orphan_set = {(o["object_type"], o["handle"]) for o in orphan_list}
+        sim_threshold = _get_sim_threshold(conn)
         incoming_pending: dict[tuple[str, str], int] = {}
         for r in conn.execute(
             "SELECT target_type, target_handle, COUNT(*) AS c FROM link_suggestions "
@@ -767,7 +866,7 @@ def generate_link_suggestions(
                 t_type = cand.get("object_type")
                 t_handle = cand.get("object_handle")
                 sim = float(cand.get("score") or 0)
-                if t_type not in TARGET_VALUE or sim < SIM_THRESHOLD:
+                if t_type not in TARGET_VALUE or sim < sim_threshold:
                     continue
                 if (s_type, s_handle) == (t_type, t_handle):
                     continue
@@ -781,13 +880,16 @@ def generate_link_suggestions(
                 phrase = find_anchor_phrase(body, candidates)
                 kind = "phrase_wrap" if phrase else "ai_woven"
                 score = sim * traffic_weight * TARGET_VALUE[t_type]
-                if (t_type, t_handle) in orphans:
+                if (t_type, t_handle) in orphan_set:
                     score *= ORPHAN_BOOST
+                # Compute body hash for stale detection at apply time
+                import hashlib
+                body_hash = hashlib.sha256((body or "").encode("utf-8")).hexdigest()
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO link_suggestions "
                     "(source_type, source_handle, target_type, target_handle, kind, anchor_phrase, "
-                    " score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (s_type, s_handle, t_type, t_handle, kind, phrase, score, now),
+                    " source_body_hash, score, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (s_type, s_handle, t_type, t_handle, kind, phrase, body_hash, score, now),
                 )
                 if cur.rowcount:
                     inserted += 1
@@ -1023,7 +1125,12 @@ def apply_suggestion(
     """Apply one suggestion: wrap anchor, push to Shopify, then update local DB.
 
     Raises on push failure; local state is only mutated after the push succeeds.
+    Stale detection: rejects if source body changed since suggestion was generated.
     """
+    import hashlib
+    from ..dashboard_ai_engine_parts._article_draft import sanitize_article_internal_links
+    from ..dashboard_queries import build_store_internal_link_allowlist
+
     push_fn = push_fn or _shopify_push
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
     if not sug:
@@ -1036,16 +1143,32 @@ def apply_suggestion(
     source_type, source_handle = sug["source_type"], sug["source_handle"]
     table, where, body_col, _cols = _SOURCE_META[source_type]
     row = _load_source_row(conn, source_type, source_handle)
+    current_body = row[body_col] or ""
     url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
 
+    # Stale detection: reject if source body changed since suggestion was generated
+    if sug["source_body_hash"]:
+        current_hash = hashlib.sha256(current_body.encode("utf-8")).hexdigest()
+        if current_hash != sug["source_body_hash"]:
+            raise ValueError(
+                "Source body changed since suggestion was generated. Regenerate suggestion."
+            )
+
     if sug["kind"] == "phrase_wrap":
-        new_body = wrap_phrase_in_html(row[body_col], sug["anchor_phrase"], url)
+        new_body = wrap_phrase_in_html(current_body, sug["anchor_phrase"], url)
         if new_body is None:
             raise ValueError("anchor phrase no longer present in body")
     else:
         if not sug["ai_anchor_html"]:
             raise ValueError("ai_woven suggestion has no generated anchor yet")
         new_body = sug["ai_anchor_html"]  # full replacement body produced at review time
+
+    # Sanitize: run through internal link sanitizer to ensure only valid storefront URLs
+    _, allowed_full, allowed_paths = build_store_internal_link_allowlist(conn, base_url)
+    path_to_canonical = {p: f for p, f in zip(allowed_paths, allowed_full) if p and f}
+    new_body = sanitize_article_internal_links(
+        new_body, path_to_canonical=path_to_canonical, base_url=base_url
+    )
 
     push_fn(source_type, row, new_body)  # raises on failure -> nothing below runs
 
@@ -1370,14 +1493,13 @@ def summary():
 
 @router.get("/orphans", response_model=SuccessResponse[list])
 def orphans():
+    """Return orphan entities (published, zero incoming links) with GSC traffic data."""
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.pipeline import _orphan_targets
 
-        items = sorted(_orphan_targets(conn))
-        return success_response([
-            {"object_type": t, "handle": h} for t, h in items
-        ])
+        # Returns list of dicts with object_type, handle, title, gsc_clicks, gsc_impressions
+        return success_response(_orphan_targets(conn))
     finally:
         conn.close()
 
@@ -1455,6 +1577,57 @@ def dismiss(suggestion_id: int):
         conn.close()
 
 
+@router.get("/graph-stats", response_model=SuccessResponse[dict])
+def graph_stats(
+    object_type: str | None = Query(default=None),
+    handle: str | None = Query(default=None),
+):
+    """Per-entity incoming/outgoing link counts, top sources, top targets."""
+    conn = open_db_connection()
+    try:
+        # Outgoing counts per entity
+        outgoing = {}
+        for r in conn.execute(
+            "SELECT source_type, source_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+        ).fetchall():
+            outgoing[(r["source_type"], r["source_handle"])] = r["c"]
+        # Incoming counts per entity
+        incoming = {}
+        for r in conn.execute(
+            "SELECT target_type, target_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+        ).fetchall():
+            incoming[(r["target_type"], r["target_handle"])] = r["c"]
+        
+        # If filtering to a specific entity, return just that entity's stats
+        if object_type and handle:
+            return success_response({
+                "incoming": incoming.get((object_type, handle), 0),
+                "outgoing": outgoing.get((object_type, handle), 0),
+            })
+        
+        # Otherwise return top lists and all entity stats
+        top_sources = sorted(
+            [{"object_type": k[0], "handle": k[1], "outgoing": v} for k, v in outgoing.items()],
+            key=lambda x: -x["outgoing"]
+        )[:20]
+        top_targets = sorted(
+            [{"object_type": k[0], "handle": k[1], "incoming": v} for k, v in incoming.items()],
+            key=lambda x: -x["incoming"]
+        )[:20]
+        all_keys = set(outgoing.keys()) | set(incoming.keys())
+        entity_stats = [
+            {"object_type": k[0], "handle": k[1], "incoming": incoming.get(k, 0), "outgoing": outgoing.get(k, 0)}
+            for k in sorted(all_keys)
+        ]
+        return success_response({
+            "top_sources": top_sources,
+            "top_targets": top_targets,
+            "entity_stats": entity_stats,
+        })
+    finally:
+        conn.close()
+
+
 @router.post("/rebuild", response_model=SuccessResponse[dict])
 def rebuild():
     def _bg():
@@ -1494,39 +1667,63 @@ git commit -m "feat: internal links API router"
 
 ---
 
-### Task 8: Post-sync hook
+### Task 8: Triggers — Post-Sync and Event-Driven Refresh
 
 **Files:**
 - Modify: `shopifyseo/dashboard_actions/_sync.py` (next to `_start_gsc_query_embedding_sync`, ~line 188)
+- Create: `shopifyseo/internal_links/refresh_scheduler.py`
 - Test: `tests/test_internal_links_sync_hook.py`
 
-- [ ] **Step 1: Write the failing test**
+This task covers **both** post-sync full rebuild **and** event-driven incremental refresh.
+
+- [ ] **Step 1: Write the failing tests**
 
 ```python
-"""The post-sync hook starts an internal link refresh thread."""
+"""Post-sync and event-driven internal link refresh tests."""
 
-from unittest.mock import patch
+import threading
+import time
+from unittest.mock import patch, MagicMock
 
 from shopifyseo.dashboard_actions import _sync
 
 
 def test_start_internal_link_refresh_runs_pipeline():
+    """Post-sync hook starts a background thread that runs the pipeline."""
     with patch("shopifyseo.internal_links.pipeline.generate_link_suggestions") as gen, \
          patch.object(_sync, "_db_connect_for_actions") as connect:
         thread = _sync._start_internal_link_refresh("/tmp/x.sqlite3")
         thread.join(timeout=5)
         assert gen.called
         assert connect.called
+
+
+def test_schedule_internal_link_refresh_debounces():
+    """Multiple rapid schedule calls coalesce into a single worker run."""
+    from shopifyseo.internal_links.refresh_scheduler import (
+        schedule_internal_link_refresh,
+        _PENDING_HANDLES,
+        _DEBOUNCE_SECONDS,
+    )
+    with patch("shopifyseo.internal_links.refresh_scheduler._run_refresh_worker") as worker:
+        # Rapid calls should coalesce
+        schedule_internal_link_refresh("product", "widget", reason="body_change")
+        schedule_internal_link_refresh("product", "widget", reason="body_change")
+        schedule_internal_link_refresh("collection", "vapes", reason="embedding_update")
+        # Wait for debounce window
+        time.sleep(_DEBOUNCE_SECONDS + 0.5)
+        # Worker should have been called once with the unique handles
+        assert worker.called
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_internal_links_sync_hook.py -v`
 Expected: FAIL with `AttributeError: ... has no attribute '_start_internal_link_refresh'`
 
-- [ ] **Step 3: Implement the hook**
+- [ ] **Step 3: Implement the post-sync hook**
 
-Add to `shopifyseo/dashboard_actions/_sync.py`, mirroring `_start_gsc_query_embedding_sync` (which returns nothing — make the new one return the thread for testability):
+Add to `shopifyseo/dashboard_actions/_sync.py`, mirroring `_start_gsc_query_embedding_sync`:
 
 ```python
 def _start_internal_link_refresh(db_path: str) -> threading.Thread:
@@ -1550,18 +1747,126 @@ def _start_internal_link_refresh(db_path: str) -> threading.Thread:
     return thread
 ```
 
-Call it immediately after the existing `_start_gsc_query_embedding_sync(db_path)` call site (find it with `grep -n "_start_gsc_query_embedding_sync(" shopifyseo/dashboard_actions/_sync.py` and add `_start_internal_link_refresh(db_path)` on the next line).
+Call it immediately after the existing `_start_gsc_query_embedding_sync(db_path)` call site.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Implement the event-driven refresh scheduler**
+
+Create `shopifyseo/internal_links/refresh_scheduler.py`:
+
+```python
+"""Event-driven internal link refresh with debouncing.
+
+Coalesces rapid body-change and embedding-update events into a single
+background worker run (30-60s debounce window).
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+import threading
+import time
+from typing import Set, Tuple
+
+logger = logging.getLogger(__name__)
+
+_DEBOUNCE_SECONDS = 45  # Coalesce window
+_PENDING_HANDLES: Set[Tuple[str, str]] = set()
+_PENDING_LOCK = threading.Lock()
+_WORKER_THREAD: threading.Thread | None = None
+
+
+def schedule_internal_link_refresh(
+    object_type: str,
+    handle: str,
+    reason: str = "unknown",
+) -> None:
+    """Schedule an incremental internal link refresh for one entity.
+    
+    Multiple calls within the debounce window are coalesced into a single
+    background worker run. Reasons: 'body_change', 'embedding_update', 'publish'.
+    """
+    global _WORKER_THREAD
+    with _PENDING_LOCK:
+        _PENDING_HANDLES.add((object_type, handle))
+        logger.debug("Scheduled internal link refresh for %s/%s (reason: %s)", object_type, handle, reason)
+        if _WORKER_THREAD is None or not _WORKER_THREAD.is_alive():
+            _WORKER_THREAD = threading.Thread(target=_debounced_worker, daemon=True)
+            _WORKER_THREAD.start()
+
+
+def _debounced_worker() -> None:
+    """Wait for debounce window, then process all pending handles."""
+    time.sleep(_DEBOUNCE_SECONDS)
+    with _PENDING_LOCK:
+        handles = list(_PENDING_HANDLES)
+        _PENDING_HANDLES.clear()
+    if not handles:
+        return
+    _run_refresh_worker(handles)
+
+
+def _run_refresh_worker(handles: list[tuple[str, str]]) -> None:
+    """Run incremental refresh for the given handles."""
+    from ..dashboard_store import db_connect
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = db_connect()
+        from .graph import rebuild_internal_link_graph
+        from .pipeline import generate_link_suggestions
+        
+        # For now, do a full rebuild — incremental optimization can come later
+        logger.info("Running internal link refresh for %d handles", len(handles))
+        rebuild_internal_link_graph(conn)
+        generate_link_suggestions(conn, rebuild_graph=False)
+    except Exception:
+        logger.warning("Event-driven internal link refresh failed", exc_info=True)
+    finally:
+        if conn is not None:
+            conn.close()
+```
+
+- [ ] **Step 5: Hook into body-change paths**
+
+Add calls to `schedule_internal_link_refresh` in:
+- `shopifyseo/dashboard_live_updates.py` after successful body field updates
+- Article publish path in `backend/app/routers/blogs.py` (alongside existing `_post_publish_embedding_refresh`)
+- AI field regeneration paths when body is regenerated
+
+Example hook in `dashboard_live_updates.py`:
+
+```python
+# After successful body update:
+try:
+    from .internal_links.refresh_scheduler import schedule_internal_link_refresh
+    schedule_internal_link_refresh(object_type, handle, reason="body_change")
+except Exception:
+    pass  # Non-critical
+```
+
+- [ ] **Step 6: Hook into embedding refresh completion**
+
+In `embedding_store.py`'s `sync_embedding_for_handle` (or its callers), after successful embedding update:
+
+```python
+try:
+    from .internal_links.refresh_scheduler import schedule_internal_link_refresh
+    schedule_internal_link_refresh(object_type, handle, reason="embedding_update")
+except Exception:
+    pass  # Non-critical
+```
+
+- [ ] **Step 7: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_internal_links_sync_hook.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add shopifyseo/dashboard_actions/_sync.py tests/test_internal_links_sync_hook.py
-git commit -m "feat: refresh internal link suggestions after catalog sync"
+git add shopifyseo/dashboard_actions/_sync.py shopifyseo/internal_links/refresh_scheduler.py \
+    shopifyseo/dashboard_live_updates.py shopifyseo/embedding_store.py \
+    tests/test_internal_links_sync_hook.py
+git commit -m "feat: post-sync and event-driven internal link refresh with debouncing"
 ```
 
 ---
@@ -1631,10 +1936,34 @@ export function useLinkSuggestions(params: { sourceType?: string; sourceHandle?:
   });
 }
 
+export interface OrphanEntity {
+  object_type: string;
+  handle: string;
+  title: string;
+  gsc_clicks: number;
+  gsc_impressions: number;
+}
+
 export function useOrphans() {
   return useQuery({
     queryKey: ["internal-links", "orphans"],
-    queryFn: () => getJson<{ object_type: string; handle: string }[]>("/api/internal-links/orphans"),
+    queryFn: () => getJson<OrphanEntity[]>("/api/internal-links/orphans"),
+  });
+}
+
+export interface GraphStats {
+  entity_stats: { object_type: string; handle: string; incoming: number; outgoing: number }[];
+  top_sources: { object_type: string; handle: string; outgoing: number }[];
+  top_targets: { object_type: string; handle: string; incoming: number }[];
+}
+
+export function useGraphStats(params: { sourceType?: string; sourceHandle?: string } = {}) {
+  const search = new URLSearchParams();
+  if (params.sourceType) search.set("object_type", params.sourceType);
+  if (params.sourceHandle) search.set("handle", params.sourceHandle);
+  return useQuery({
+    queryKey: ["internal-links", "graph-stats", params],
+    queryFn: () => getJson<GraphStats>(`/api/internal-links/graph-stats?${search}`),
   });
 }
 
@@ -1686,6 +2015,7 @@ import {
   useApplySuggestion,
   useDismissSuggestion,
   useGenerateAnchor,
+  useGraphStats,
   useLinkSuggestions,
   useLinkSummary,
   useOrphans,
@@ -1697,22 +2027,33 @@ export function InternalLinksPage() {
   const summary = useLinkSummary();
   const suggestions = useLinkSuggestions();
   const orphans = useOrphans();
+  const graphStats = useGraphStats();
   const apply = useApplySuggestion();
   const dismiss = useDismissSuggestion();
   const generate = useGenerateAnchor();
   const rebuild = useRebuildLinks();
-  const [tab, setTab] = useState<"suggestions" | "orphans">("suggestions");
+  const [tab, setTab] = useState<"suggestions" | "orphans" | "graph">("suggestions");
   const [diffFor, setDiffFor] = useState<LinkSuggestion | null>(null);
 
   // Summary cards row: total_links / orphan_count / suggested (+ "Rebuild" button calling rebuild.mutate()).
-  // Tab bar: Suggestions | Orphans.
+  // Tab bar: Suggestions | Orphans | Graph Stats.
+  // 
   // Suggestions tab: table rows = source -> target, kind badge ("wraps existing text" vs
   //   "modifies copy" in a warning color), score, actions:
   //   - phrase_wrap: [Apply] [Dismiss]
   //   - ai_woven without ai_anchor_html: [Generate] [Dismiss]; Generate calls generate.mutate(s.id)
   //   - ai_woven with ai_anchor_html: [Review] opens diff modal (setDiffFor), [Dismiss]
   // Diff modal: current body vs ai_anchor_html side by side (render as <pre> text), [Apply] [Cancel].
-  // Orphans tab: simple table of object_type / handle.
+  //
+  // Orphans tab: table of object_type / handle / title / gsc_clicks / gsc_impressions.
+  //   Columns sortable (default: impressions DESC to prioritize high-traffic orphans).
+  //   Each row links to the entity detail page.
+  //
+  // Graph Stats tab (per design):
+  //   - Top sources: entities with most outgoing links (graphStats.data?.top_sources)
+  //   - Top targets: entities with most incoming links (graphStats.data?.top_targets)
+  //   - Searchable per-entity link counts table (incoming + outgoing counts)
+  //
   // Use the same card/table/button class names as embeddings-page.tsx so styling matches.
   ...
 }
@@ -1762,20 +2103,37 @@ git commit -m "feat: internal links page with suggestion queue and orphan report
 import {
   useApplySuggestion,
   useDismissSuggestion,
+  useGraphStats,
   useLinkSuggestions,
 } from "../hooks/use-internal-links";
 
 export function LinkOpportunitiesCard(props: { sourceType: string; sourceHandle: string }) {
-  const { data, isLoading } = useLinkSuggestions({
+  const { data: suggestions, isLoading: suggestionsLoading } = useLinkSuggestions({
+    sourceType: props.sourceType,
+    sourceHandle: props.sourceHandle,
+  });
+  const { data: graphStats, isLoading: statsLoading } = useGraphStats({
     sourceType: props.sourceType,
     sourceHandle: props.sourceHandle,
   });
   const apply = useApplySuggestion();
   const dismiss = useDismissSuggestion();
-  const top = (data ?? []).slice(0, 3);
-  if (isLoading || top.length === 0) return null;
-  // Card titled "Link opportunities": one row per suggestion -> target handle, kind badge,
-  // Apply (phrase_wrap only — ai_woven rows link to /internal-links instead) and Dismiss buttons.
+  
+  const top = (suggestions ?? []).slice(0, 3);
+  const incoming = graphStats?.incoming ?? 0;
+  const outgoing = graphStats?.outgoing ?? 0;
+  
+  // Card titled "Internal Links":
+  // 
+  // 1. Link counts section (always shown):
+  //    - Incoming links: {incoming} (pages linking TO this entity)
+  //    - Outgoing links: {outgoing} (links FROM this entity to other pages)
+  //
+  // 2. Suggestions section (if any pending):
+  //    - Header: "Link opportunities" with count badge
+  //    - Top 3 suggestions: target handle, kind badge,
+  //      Apply (phrase_wrap only — ai_woven rows link to /internal-links instead) and Dismiss buttons.
+  //
   // Match the card idiom already used on the detail pages.
   ...
 }
@@ -1807,6 +2165,37 @@ git commit -m "feat: link opportunities card on detail pages"
 
 ## Plan Self-Review Notes
 
-- **Spec coverage:** schema (T1), graph + orphans (T2, T4, T7), anchor detection (T3), scoring/suppression/caps (T4), apply with push-before-mutate ordering (T5), lazy AI weave with diff data (T6), API (T7), post-sync trigger (T8), dedicated page (T9), detail cards (T10). Settings-page tunable for `SIM_THRESHOLD` deferred — constant in v1 (YAGNI; spec lists it as "tunable in Settings", revisit if defaults feel wrong — recorded as a conscious cut).
+### What changed in R2 (blueprint alignment)
+
+1. **Anchor candidates (Task 4):** `_target_title_and_keywords()` now queries cluster keywords via `clusters.match_type/match_handle` + `cluster_keywords` tables, not just `keyword_page_map`. Added the SQL query.
+
+2. **Orphans (Task 4, Task 7):** `_orphan_targets()` now filters to published entities only (ACTIVE products, `is_published=1` articles). Returns `gsc_clicks` and `gsc_impressions` for traffic prioritization. `/orphans` endpoint returns the full dict including traffic data.
+
+3. **Stale detection (Task 1, Task 4, Task 5):** Added `source_body_hash` column to `link_suggestions`. Pipeline computes SHA-256 hash of body at generation time. Apply path computes current body hash and rejects if changed with clear error message.
+
+4. **Sanitization (Task 5):** Apply path now runs `sanitize_article_internal_links()` on the new body before pushing to Shopify.
+
+5. **Full body storage (Task 5, Task 6):** Clarified that `ai_anchor_html` stores the complete revised body, not a sentence diff. UI may highlight changes but Apply replaces the full body. (Design amendment: simpler apply path, avoids sentence-boundary edge cases.)
+
+6. **Graph Stats UI (Task 7, Task 9):** Added `/graph-stats` endpoint returning top sources/targets and per-entity link counts. Added Graph Stats tab to the Internal Links page.
+
+7. **Detail page card (Task 10):** Now shows incoming/outgoing link counts for that entity, not just suggestions.
+
+8. **SIM_THRESHOLD (Task 4):** Loads from `service_settings` key `internal_link_sim_threshold` with `0.55` fallback constant. Settings UI page deferred but key exists for operator tuning.
+
+9. **Event-driven triggers (Task 8):** Added `schedule_internal_link_refresh()` with debounced background worker (30–60s coalesce). Hooks into body-change paths and embedding refresh completion.
+
+10. **Reuse infrastructure:** Added "Reuse, Don't Reinvent" section documenting which existing modules to use and what not to break.
+
+### Remaining conscious cuts
+
+- **Settings UI page for `SIM_THRESHOLD`** — deferred; operators can tune via direct DB update to `service_settings`
+- **Bulk apply** — apply one suggestion at a time for safety; bulk apply deferred
+- **Historical link tracking** — only current snapshot; no link change history
+- **Incremental graph refresh** — current implementation does full rebuild; per-entity incremental optimization deferred
+
+### Original review notes (R1)
+
+- **Spec coverage:** schema (T1), graph + orphans (T2, T4, T7), anchor detection (T3), scoring/suppression/caps (T4), apply with push-before-mutate ordering (T5), lazy AI weave with diff data (T6), API (T7), post-sync trigger (T8), dedicated page (T9), detail cards (T10).
 - **Injection points for tests:** `related_fn`, `push_fn`, `call_ai_fn` keep all network/AI out of unit tests.
 - **Consistency check:** `ai_anchor_html` stores the FULL revised body (T5 apply and T6 weave agree); `_SOURCE_META` is shared by apply and weave; suggestion sources exclude `page` (spec) while graph parses all four types (spec).

@@ -140,3 +140,31 @@ conventions:
   Shopify failure leaves status `suggested`.
 - API contract tests for each route; AI weave tested with a faked engine
   response.
+
+---
+
+## Amendments (2026-09-24)
+
+Implementation refinements discovered during plan review:
+
+### 1. `ai_anchor_html` stores full revised body
+
+The design describes "woven sentence" and sentence-level diff. Implementation stores the **full revised body** in `ai_anchor_html` (not sentence-only). Rationale: simplifies Apply path (single field write), avoids sentence-boundary parsing edge cases. UI may highlight the changed region via diff, but Apply always replaces the full body.
+
+### 2. `source_body_hash` for stale detection
+
+Added `source_body_hash TEXT` column to `link_suggestions`. The pipeline stores SHA-256 hash of source body at suggestion generation time. Apply path re-reads current body, computes hash, and rejects if changed with error: "Source body changed since suggestion was generated. Regenerate suggestion."
+
+### 3. Event-driven refresh triggers
+
+In addition to post-sync full rebuild, the implementation adds a debounced event-driven refresh:
+- `schedule_internal_link_refresh(object_type, handle, reason)` coalesces requests (30–60s window)
+- Hooks into: body-change paths (live updates, AI saves), article publish, embedding refresh completion
+
+### 4. `SIM_THRESHOLD` from settings
+
+Similarity threshold loads from `service_settings` key `internal_link_sim_threshold` with `0.55` fallback constant. Settings UI page deferred; key exists for operator tuning via direct DB update.
+
+### 5. `/graph-stats` endpoint
+
+Added `GET /api/internal-links/graph-stats` returning per-entity incoming/outgoing link counts, top sources (most outgoing), top targets (most incoming). Supports filtering by `object_type` and `handle` for detail-page card.

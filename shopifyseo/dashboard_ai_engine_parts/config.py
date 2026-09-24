@@ -30,7 +30,8 @@ PROMPT_VERSION_ALIASES = {
     "latest": "v3",
 }
 TITLE_LIMIT = 65
-DESCRIPTION_LIMIT = 155
+DESCRIPTION_LIMIT = 160
+DESCRIPTION_TARGET_MAX = 160  # Aim to fill toward this ceiling
 BODY_MIN_LENGTH = {
     "product": 1500,
     "collection": 220,
@@ -44,10 +45,10 @@ TITLE_TARGET_MIN = {
     "blog_article": 45,
 }
 DESCRIPTION_TARGET_MIN = {
-    "product": 140,
-    "collection": 135,
-    "page": 135,
-    "blog_article": 135,
+    "product": 150,
+    "collection": 145,
+    "page": 145,
+    "blog_article": 145,
 }
 TITLE_HARD_MIN = {
     "product": 42,
@@ -60,6 +61,14 @@ DESCRIPTION_HARD_MIN = {
     "collection": 110,
     "page": 110,
     "blog_article": 110,
+}
+# Retry floor: descriptions below this trigger a one-shot rewrite attempt
+# (should be between HARD_MIN and TARGET_MIN to catch meaningfully short output)
+DESCRIPTION_RETRY_FLOOR = {
+    "product": 140,
+    "collection": 135,
+    "page": 135,
+    "blog_article": 135,
 }
 QA_SCORE_FLOOR = {
     "product": 5,

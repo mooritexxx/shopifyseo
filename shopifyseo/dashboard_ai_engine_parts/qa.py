@@ -1,10 +1,14 @@
 """QA validation for AI-generated SEO content."""
 from __future__ import annotations
 
+import re
+
 from .config import (
     BODY_MIN_LENGTH,
     DESCRIPTION_HARD_MIN,
     DESCRIPTION_LIMIT,
+    DESCRIPTION_RETRY_FLOOR,
+    DESCRIPTION_TARGET_MAX,
     DESCRIPTION_TARGET_MIN,
     QA_SCORE_FLOOR,
     TITLE_HARD_MIN,
@@ -78,12 +82,13 @@ def _score_description(object_type: str, description: str) -> tuple[float, list[
     issues: list[str] = []
     length = len(description.strip())
     hard_min = DESCRIPTION_HARD_MIN.get(object_type, 110)
-    target_min = DESCRIPTION_TARGET_MIN.get(object_type, 135)
+    target_min = DESCRIPTION_TARGET_MIN.get(object_type, 145)
+    target_max = DESCRIPTION_TARGET_MAX
 
     if length < hard_min:
         issues.append(f"Meta description too short ({length} chars, minimum {hard_min})")
     elif length < target_min:
-        issues.append(f"Meta description below target ({length} chars, target {target_min}+)")
+        issues.append(f"Meta description below target ({length} chars, target {target_min}-{target_max})")
     if length > DESCRIPTION_LIMIT:
         issues.append(f"Meta description too long ({length} chars, max {DESCRIPTION_LIMIT})")
 
@@ -91,7 +96,8 @@ def _score_description(object_type: str, description: str) -> tuple[float, list[
     if length < hard_min:
         score = 0.2
     elif length < target_min:
-        score = 0.7
+        # Proportional scoring for descriptions between hard_min and target_min
+        score = 0.5 + 0.3 * (length - hard_min) / (target_min - hard_min)
     elif length > DESCRIPTION_LIMIT:
         score = 0.8
     return score, issues
@@ -231,6 +237,187 @@ def build_retry_feedback_from_error(
         f"Previous output was: {value[:200]!r}{'...' if len(value) > 200 else ''}\n"
         f"Please regenerate with corrections."
     )
+
+
+def description_needs_retry(object_type: str, description: str) -> tuple[bool, str]:
+    """Check if a meta description is short enough to warrant a retry.
+
+    Returns (needs_retry, reason). A description below the retry floor
+    should trigger a one-shot rewrite attempt to fill toward 160 chars.
+    """
+    length = len((description or "").strip())
+    retry_floor = DESCRIPTION_RETRY_FLOOR.get(object_type, 135)
+    target_max = DESCRIPTION_TARGET_MAX
+
+    if length < retry_floor:
+        return True, f"Description too short ({length} chars, retry floor is {retry_floor}, target is {target_max})"
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# Canadian / Commonwealth spelling validation
+# ---------------------------------------------------------------------------
+
+# US → Commonwealth spelling pairs for validation
+_US_TO_COMMONWEALTH: dict[str, str] = {
+    "flavor": "flavour",
+    "flavors": "flavours",
+    "vapor": "vapour",
+    "vapors": "vapours",
+    "color": "colour",
+    "colors": "colours",
+    "favorite": "favourite",
+    "favorites": "favourites",
+    "honor": "honour",
+    "honors": "honours",
+    "neighbor": "neighbour",
+    "neighbors": "neighbours",
+    "center": "centre",
+    "centers": "centres",
+    "liter": "litre",
+    "liters": "litres",
+    "meter": "metre",
+    "meters": "metres",
+    "theater": "theatre",
+    "theaters": "theatres",
+    "gray": "grey",
+    "organize": "organise",
+    "organizes": "organises",
+    "organized": "organised",
+    "organizing": "organising",
+    "recognize": "recognise",
+    "recognizes": "recognises",
+    "recognized": "recognised",
+    "recognizing": "recognising",
+    "specialize": "specialise",
+    "specializes": "specialises",
+    "specialized": "specialised",
+    "specializing": "specialising",
+    "customize": "customise",
+    "customizes": "customises",
+    "customized": "customised",
+    "customizing": "customising",
+    "optimize": "optimise",
+    "optimizes": "optimises",
+    "optimized": "optimised",
+    "optimizing": "optimising",
+}
+
+# Build regex pattern for word-boundary matching
+_US_SPELLING_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _US_TO_COMMONWEALTH.keys()) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def validate_commonwealth_spelling(text: str) -> tuple[bool, list[str]]:
+    """Check for US English spellings that should be Commonwealth English.
+
+    Returns (passed, issues). Each issue includes the US word found and its
+    Commonwealth replacement.
+    """
+    if not text:
+        return True, []
+
+    issues: list[str] = []
+    for match in _US_SPELLING_PATTERN.finditer(text):
+        us_word = match.group(1).lower()
+        commonwealth = _US_TO_COMMONWEALTH.get(us_word, "")
+        if commonwealth:
+            issues.append(f"US spelling '{match.group(1)}' should be '{commonwealth}'")
+
+    passed = len(issues) == 0
+    return passed, issues
+
+
+# ---------------------------------------------------------------------------
+# SEO title puff count redundancy check
+# ---------------------------------------------------------------------------
+
+_PUFF_COUNT_PATTERN = re.compile(r"\b(\d{3,5})\s*(?:k\b|puff)", re.IGNORECASE)
+_K_SUFFIX_PATTERN = re.compile(r"\b(\d+)k\b", re.IGNORECASE)
+
+
+def _extract_puff_numbers(text: str) -> set[int]:
+    """Extract puff count numbers from text, normalizing K suffixes."""
+    numbers: set[int] = set()
+    if not text:
+        return numbers
+
+    # Match explicit "X puffs" or "Xk"
+    for match in _PUFF_COUNT_PATTERN.finditer(text):
+        num_str = match.group(1)
+        try:
+            numbers.add(int(num_str))
+        except ValueError:
+            pass
+
+    # Also match "Xk" patterns and convert to full number
+    for match in _K_SUFFIX_PATTERN.finditer(text):
+        num_str = match.group(1)
+        try:
+            numbers.add(int(num_str) * 1000)
+        except ValueError:
+            pass
+
+    return numbers
+
+
+def check_title_puff_redundancy(product_title: str, seo_title: str) -> tuple[bool, list[str]]:
+    """Check if seo_title redundantly repeats a puff count from product_title.
+
+    For example:
+    - Product: "Draggg 10K Frost"
+    - Bad SEO: "Draggg 10K Frost 10000 Puffs | Vapely" (redundant)
+    - Good SEO: "Draggg 10K Frost Disposable Vape | Vapely" (not redundant)
+
+    Returns (passed, issues).
+    """
+    if not product_title or not seo_title:
+        return True, []
+
+    product_puffs = _extract_puff_numbers(product_title)
+    seo_puffs = _extract_puff_numbers(seo_title)
+
+    if not product_puffs or not seo_puffs:
+        return True, []
+
+    # Check if the SEO title repeats puff counts from product title
+    # Allow if the SEO title only has one occurrence that's the same as product
+    redundant = set()
+    for puff in product_puffs:
+        # Check if this puff count appears multiple times conceptually
+        # (e.g., "10K" in product name AND "10000 puffs" in SEO title)
+        seo_lower = seo_title.lower()
+        product_lower = product_title.lower()
+
+        # Count occurrences of this number in SEO title (as Xk or as full number)
+        k_form = f"{puff // 1000}k" if puff >= 1000 and puff % 1000 == 0 else None
+        full_form = str(puff)
+
+        seo_has_k = k_form and k_form in seo_lower
+        seo_has_full = full_form in seo_lower and (f"{full_form} puff" in seo_lower or f"{full_form}puff" in seo_lower)
+
+        # If product has this puff and SEO has BOTH forms or explicitly redundant
+        if puff in product_puffs and seo_has_k and seo_has_full:
+            redundant.add(puff)
+        # Or if SEO repeats the same puff phrase that's already in product title portion of SEO
+        elif puff in product_puffs:
+            # Check if the puff count appears more than once in meaningful contexts
+            if k_form:
+                k_count = seo_lower.count(k_form)
+                full_count = 1 if seo_has_full else 0
+                if k_count + full_count > 1:
+                    redundant.add(puff)
+
+    if redundant:
+        issues = [
+            f"SEO title redundantly repeats puff count {p:,} that's already in product name"
+            for p in redundant
+        ]
+        return False, issues
+
+    return True, []
 
 
 def _normalize_spec_value(value: str | None) -> set[str]:

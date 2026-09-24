@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
 import {
@@ -149,6 +149,17 @@ export function InternalLinksPage() {
   const dismiss = useDismissSuggestion();
   const generate = useGenerateAnchor();
   const rebuild = useRebuildLinks();
+  const wasRebuildRunning = useRef(false);
+
+  // When a rebuild finishes (progress.running true → false), toast success.
+  // Sibling queries are invalidated inside useLinkSummary.
+  useEffect(() => {
+    const running = Boolean(summary.data?.progress?.running);
+    if (wasRebuildRunning.current && !running) {
+      setToast({ message: "Link rebuild complete", variant: "success" });
+    }
+    wasRebuildRunning.current = running;
+  }, [summary.data?.progress?.running]);
 
   const handleApply = async (id: number) => {
     setProcessingId(id);

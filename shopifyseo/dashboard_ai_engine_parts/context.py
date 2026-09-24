@@ -12,6 +12,21 @@ from ..gsc_query_limits import GSC_PER_URL_QUERY_ROW_LIMIT
 _log = logging.getLogger(__name__)
 
 
+def _row_get(row, key: str, default=None):
+    """Safely extract a key from sqlite3.Row, dict, or Mapping.
+
+    sqlite3.Row supports bracket access (row["key"]) but not .get().
+    This helper converts Row to dict first, enabling safe key extraction.
+    """
+    if row is None:
+        return default
+    if hasattr(row, "keys"):
+        row = dict(row)
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return default
+
+
 def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     value = dg.get_service_setting(conn, key)
     return value.strip() if isinstance(value, str) else default
@@ -340,7 +355,7 @@ def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> d
         sibling_products: list[dict] = []
         product_collections = detail.get("collections") or []
         if product_collections:
-            collection_handles = [c.get("handle") for c in product_collections if c.get("handle")][:3]
+            collection_handles = [_row_get(c, "handle") for c in product_collections if _row_get(c, "handle")][:3]
             if collection_handles:
                 placeholders = ",".join("?" * len(collection_handles))
                 sibling_rows = conn.execute(

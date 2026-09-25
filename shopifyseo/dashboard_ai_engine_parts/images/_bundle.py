@@ -6,6 +6,7 @@ import sqlite3
 from typing import Callable
 
 from ..settings import ai_settings
+from ..faq_content_filter import validate_and_fix_alt_text
 from ._alt_text import _build_featured_alt, _build_section_alt
 from ._encoding import (
     _mime_to_file_extension,
@@ -159,6 +160,18 @@ def try_prepare_article_images_bundle(
     else:
         feat_alt = _build_featured_alt(headline, seed)
         progress.append("Featured image alt text from article title (vision unavailable).")
+
+    # Validate and fix alt text (guards against prompt leakage, cut-offs, US spelling)
+    fallback_alt = _build_featured_alt(headline, seed)
+    feat_alt, alt_was_fixed = validate_and_fix_alt_text(
+        feat_alt,
+        fallback_text=fallback_alt,
+        min_length=20,
+        max_length=125,
+        log_issues=True,
+    )
+    if alt_was_fixed:
+        progress.append("Featured image alt text validated/fixed.")
     emit("Encoding images as WebP for Shopify (Pillow)…", "encode", "start")
     feat_upload, feat_upload_mime, feat_ext = prepare_shopify_upload(feat_bytes, feat_mime, _ARTICLE_COVER_SIZE)
     feat_fname = _seo_blog_asset_filename(alt_text=feat_alt, headline=headline, topic=seed, ext=feat_ext)
@@ -221,6 +234,17 @@ def try_prepare_article_images_bundle(
             settings, img_bytes, img_mime,
             article_title=headline, section_heading=sec["heading"], role="section",
         ) or _build_section_alt(sec["heading"], headline)
+
+        # Validate and fix alt text (guards against prompt leakage, cut-offs, US spelling)
+        fallback_alt = _build_section_alt(sec["heading"], headline)
+        alt, _ = validate_and_fix_alt_text(
+            alt,
+            fallback_text=fallback_alt,
+            min_length=20,
+            max_length=125,
+            log_issues=True,
+        )
+
         upload_bytes, upload_mime, upload_ext = prepare_shopify_upload(img_bytes, img_mime, _ARTICLE_INLINE_SIZE)
         fname = _seo_blog_asset_filename(alt_text=alt, headline=headline, topic=seed, ext=upload_ext)
         try:

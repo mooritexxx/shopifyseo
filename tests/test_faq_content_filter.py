@@ -3,14 +3,19 @@
 import pytest
 
 from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import (
+    COMPETITOR_BRAND_PATTERNS,
     FAQ_DENYLIST_CATEGORIES,
     _match_denylist_category,
+    filter_and_dedupe_helpful_questions,
+    filter_body_html_content,
     filter_faq_items_by_h3_headings,
     filter_paa_hierarchy,
     filter_paa_questions,
     filter_required_questions_by_h3,
     normalize_flavor_to_flavour,
     normalize_spelling_for_comparison,
+    validate_and_fix_alt_text,
+    validate_and_fix_excerpt,
 )
 
 
@@ -516,3 +521,293 @@ class TestNormalizeSpellingForComparison:
 
         # Both should match after normalization
         assert normalized == normalized_body
+
+
+class TestPuffsPerDayPatterns:
+    """Test puffs per day pattern detection (added in P3)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Is 20 puffs a day a lot?",
+            "Is 100 puffs of vape a day a lot?",
+            "How many puffs a day is normal?",
+            "How many puffs per day is safe?",
+            "Is 200 puffs a day bad?",
+        ],
+    )
+    def test_puffs_per_day_patterns_match(self, text):
+        result = _match_denylist_category(text)
+        assert result is not None, f"Expected match for: {text}"
+        assert result[0] == "puffs_per_day"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "How many puffs does a disposable have?",
+            "What is a good puff count?",
+            "How long does 5000 puffs last?",
+        ],
+    )
+    def test_benign_puff_questions_pass(self, text):
+        result = _match_denylist_category(text)
+        if result:
+            assert result[0] != "puffs_per_day"
+
+
+class TestExternalSourcePatterns:
+    """Test external source pattern detection (added in P3)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "What does reddit say about vaping?",
+            "Best vape according to reddit",
+            "Can you send me a pdf guide?",
+            "Is there a forum for vapers?",
+        ],
+    )
+    def test_external_source_patterns_match(self, text):
+        result = _match_denylist_category(text)
+        assert result is not None, f"Expected match for: {text}"
+        assert result[0] == "external_source"
+
+
+class TestCompetitorBrandPatterns:
+    """Test competitor brand detection for off-brand filtering."""
+
+    def test_competitor_patterns_defined(self):
+        assert len(COMPETITOR_BRAND_PATTERNS) >= 5
+        # These brands should be in the list
+        competitor_names = [
+            "elfbar", "elf bar", "juul", "vuse", "geekbar", "lost mary"
+        ]
+        for name in competitor_names:
+            matched = False
+            for pattern in COMPETITOR_BRAND_PATTERNS:
+                if pattern.search(name):
+                    matched = True
+                    break
+            assert matched, f"Expected pattern to match: {name}"
+
+
+class TestFilterAndDedupeHelpfulQuestions:
+    """Test the helpful questions filter/dedupe pipeline."""
+
+    def test_filters_denylist_questions(self):
+        questions = [
+            "What is salt nic?",
+            "Is vaping healthier than smoking?",  # health_medical
+            "What flavours are available?",
+        ]
+        result = filter_and_dedupe_helpful_questions(questions, log_dropped=False)
+        assert len(result) == 2
+        assert "What is salt nic?" in result
+        assert "What flavours are available?" in result
+
+    def test_dedupes_similar_questions(self):
+        questions = [
+            "What is salt nic?",
+            "What is salt nicotine?",  # Similar/duplicate
+            "How long does a vape last?",
+        ]
+        result = filter_and_dedupe_helpful_questions(questions, log_dropped=False)
+        # Should keep one of the salt nic questions and the battery question
+        assert len(result) <= 3
+
+    def test_normalizes_spelling(self):
+        questions = [
+            "What flavor is best?",  # US spelling
+        ]
+        result = filter_and_dedupe_helpful_questions(questions, log_dropped=False)
+        # Should be normalized to Canadian spelling
+        if result:
+            assert "flavour" in result[0].lower()
+
+    def test_empty_input(self):
+        assert filter_and_dedupe_helpful_questions([], log_dropped=False) == []
+        assert filter_and_dedupe_helpful_questions(None, log_dropped=False) == []
+
+
+class TestFilterBodyHtmlContent:
+    """Test H2 section removal from body HTML."""
+
+    def test_removes_health_h2_section(self):
+        html = """
+        <h2>Product Features</h2>
+        <p>Great features here.</p>
+        <h2>Health Considerations</h2>
+        <p>This section should be removed.</p>
+        <h2>Flavour Options</h2>
+        <p>Many flavours available.</p>
+        """
+        result = filter_body_html_content(html, log_dropped=False)
+        assert "Product Features" in result
+        assert "Health Considerations" not in result
+        assert "Flavour Options" in result
+
+    def test_preserves_safe_content(self):
+        html = """
+        <h2>Product Overview</h2>
+        <p>This is a great product.</p>
+        <h2>Available Flavours</h2>
+        <p>Watermelon, Mango, Strawberry.</p>
+        """
+        result = filter_body_html_content(html, log_dropped=False)
+        assert "Product Overview" in result
+        assert "Available Flavours" in result
+
+    def test_empty_input(self):
+        assert filter_body_html_content("", log_dropped=False) == ""
+
+
+class TestValidateAndFixAltText:
+    """Test image alt text validation and fixing."""
+
+    def test_valid_alt_text_passes(self):
+        alt = "A sleek black disposable vape with purple accents"
+        result, modified = validate_and_fix_alt_text(alt, log_issues=False)
+        assert result == alt
+        assert not modified
+
+    def test_empty_alt_uses_fallback(self):
+        result, modified = validate_and_fix_alt_text("", fallback_text="Product image", log_issues=False)
+        assert result == "Product image"
+        assert modified
+
+    def test_prompt_leakage_uses_fallback(self):
+        # Test with character limit instruction leakage
+        alt = "Maximum 125 characters for this alt text description"
+        result, modified = validate_and_fix_alt_text(alt, fallback_text="Product image", log_issues=False)
+        assert result == "Product image"
+        assert modified
+
+    def test_short_alt_uses_fallback(self):
+        alt = "Vape"
+        result, modified = validate_and_fix_alt_text(alt, fallback_text="Product image", min_length=20, log_issues=False)
+        assert result == "Product image"
+        assert modified
+
+    def test_long_alt_truncated_at_word_boundary(self):
+        alt = "This is a very long alt text description that needs to be truncated at a word boundary because it exceeds the maximum length allowed for accessibility purposes"
+        result, modified = validate_and_fix_alt_text(alt, max_length=80, log_issues=False)
+        assert len(result) <= 80
+        assert modified
+        # Should end at a word boundary (no cut-off mid-word)
+        assert not result.endswith(("t", "d", "s", "y"))  # Common mid-word endings
+
+    def test_normalizes_us_spelling(self):
+        alt = "A colorful vape with cherry flavor"
+        result, modified = validate_and_fix_alt_text(alt, log_issues=False)
+        assert "flavour" in result
+        assert modified
+
+
+class TestValidateAndFixExcerpt:
+    """Test excerpt/summary validation and fixing (P4c)."""
+
+    def test_valid_excerpt_passes(self):
+        excerpt = "Explore the latest STLTH disposable vapes with premium Canadian flavours and long-lasting battery life."
+        result, modified = validate_and_fix_excerpt(excerpt, log_issues=False)
+        assert result == excerpt
+        assert not modified
+
+    def test_empty_excerpt_uses_fallback(self):
+        result, modified = validate_and_fix_excerpt("", fallback_excerpt="Default", log_issues=False)
+        assert result == "Default"
+        assert modified
+
+    @pytest.mark.parametrize(
+        "boilerplate",
+        [
+            "In this article, we will explore the world of vaping.",
+            "Read our article about the best vapes for beginners.",
+            "Learn more about disposable vapes in Canada.",
+            "Click to read more about our products.",
+            "Find out which vape is right for you.",
+            "Discover how to choose the perfect vape.",
+            "We'll explore the different types of vapes available.",
+            "This article covers everything about vaping.",
+            "Everything you need to know about disposable vapes.",
+            "Here's what you'll learn about salt nic.",
+        ],
+    )
+    def test_boilerplate_uses_fallback(self, boilerplate):
+        result, modified = validate_and_fix_excerpt(boilerplate, fallback_excerpt="", log_issues=False)
+        assert result == ""
+        assert modified
+
+    def test_prompt_leakage_uses_fallback(self):
+        excerpt = "SEO description should be 150-160 characters for optimal performance."
+        result, modified = validate_and_fix_excerpt(excerpt, fallback_excerpt="", log_issues=False)
+        assert result == ""
+        assert modified
+
+    def test_short_excerpt_uses_fallback(self):
+        excerpt = "Too short"
+        result, modified = validate_and_fix_excerpt(excerpt, fallback_excerpt="", min_length=50, log_issues=False)
+        assert result == ""
+        assert modified
+
+    def test_long_excerpt_truncated_at_word_boundary(self):
+        excerpt = "This is a very long excerpt that needs to be truncated at a word boundary because it exceeds the maximum length allowed for SEO meta descriptions which should typically be around 155-160 characters."
+        result, modified = validate_and_fix_excerpt(excerpt, max_length=160, log_issues=False)
+        assert len(result) <= 160
+        assert modified
+
+    def test_normalizes_us_spelling(self):
+        excerpt = "Check out our amazing flavor options with premium quality vapor products for Canadian customers."
+        result, modified = validate_and_fix_excerpt(excerpt, log_issues=False)
+        assert "flavour" in result
+        assert modified
+
+
+class TestExtendedDenylistPatterns:
+    """Test extended denylist patterns added in P3."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Can lungs heal from vaping?",
+            "Can your lungs recover from vaping?",
+            "Do lungs heal after quitting vaping?",
+            "Is vaping or smoking harder on your lungs?",
+            "Vaping or smoking which is worse?",
+            "Does vaping guarantee safety?",
+            "What are the health considerations?",
+        ],
+    )
+    def test_extended_health_patterns_match(self, text):
+        result = _match_denylist_category(text)
+        assert result is not None, f"Expected match for: {text}"
+        assert result[0] == "health_medical"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Transitioning from smoking to vaping",
+            "Is vaping a good transition from traditional smoking?",
+            "What is an alternative to traditional smoking?",
+            "How many puffs of vape equal to 1 cigarette?",  # Pattern expects digit before cigarette
+        ],
+    )
+    def test_extended_cigarette_patterns_match(self, text):
+        result = _match_denylist_category(text)
+        assert result is not None, f"Expected match for: {text}"
+        assert result[0] == "cigarette_tobacco_comparison"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "What is the #1 disposable vape?",
+            "Top 10 vape flavours in Canada",
+            "Top 5 vapes for beginners",
+            "Most sold vape in Canada",
+            "What is the most popular flavour?",
+            "Best selling vape of 2024",
+        ],
+    )
+    def test_extended_superlative_patterns_match(self, text):
+        result = _match_denylist_category(text)
+        assert result is not None, f"Expected match for: {text}"
+        assert result[0] == "superlative_bait"

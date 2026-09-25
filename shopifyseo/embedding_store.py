@@ -1366,6 +1366,10 @@ def sync_embedding_for_handle(
         conn.commit()
         return {"embedded": 0, "skipped": skipped, "error": None}
 
+    # Commit after pruning to release write lock before the slow embedding API call.
+    # This prevents blocking concurrent draft run updates during the network call.
+    conn.commit()
+
     # Embed the new/changed chunks
     batch_texts = [item[0] for item in texts_to_embed]
     try:

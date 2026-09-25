@@ -11,9 +11,14 @@ from typing import TypeVar
 
 _LOG = logging.getLogger(__name__)
 
-# Default retry parameters
-DB_LOCK_MAX_RETRIES = 5
-DB_LOCK_INITIAL_BACKOFF_MS = 100
+# Default retry parameters.
+# Total retry window should exceed busy_timeout (5000ms) to handle cases where
+# concurrent writes are waiting on slow operations (e.g. embedding API calls).
+# With max_retries=8 and initial_backoff=200ms, total wait time is:
+# 200 + 400 + 800 + 1600 + 3200 + 6400 + 12800 = 25400ms (~25s)
+# This ensures we outlast typical busy_timeout windows with margin.
+DB_LOCK_MAX_RETRIES = 8
+DB_LOCK_INITIAL_BACKOFF_MS = 200
 
 T = TypeVar("T")
 

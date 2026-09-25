@@ -1267,15 +1267,18 @@ def article_update(
 
     This allows metadata-only updates (e.g., workflow_status) without
     accidentally clearing the article body or SEO fields.
+
+    Warnings may be returned when operations have side effects (e.g., image
+    alt text updates cause Shopify to re-upload the image due to an API bug).
     """
     update_data = payload.model_dump(exclude_none=True)
-    ok, message = update_blog_article(blog_handle, article_handle, update_data)
+    ok, message, warnings = update_blog_article(blog_handle, article_handle, update_data)
     if not ok:
         if message == "Article not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
     detail = get_blog_article_detail(blog_handle, article_handle)
-    return success_response({"message": message, "result": detail})
+    return success_response({"message": message, "result": detail, "warnings": warnings})
 
 
 class _PublishRequest(BaseModel):

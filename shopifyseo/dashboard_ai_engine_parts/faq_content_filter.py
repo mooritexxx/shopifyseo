@@ -50,12 +50,25 @@ _HEALTH_MEDICAL_PATTERNS = [
     re.compile(r"\bdoctor(?:s)?(?:\s+(?:say|recommend))?\b", re.IGNORECASE),
     re.compile(r"\btherapeutic\b", re.IGNORECASE),
     re.compile(r"\btreat(?:ment|s)?\s+(?:for|of)\b", re.IGNORECASE),
+    # Lung healing / recovery claims
+    re.compile(r"\blungs?\s+(?:heal|recover|can\s+heal)\b", re.IGNORECASE),
+    re.compile(r"\brecover(?:y|ing)?\s+from\s+vaping\b", re.IGNORECASE),
+    re.compile(r"\b(?:100%|fully)\s+recover\b", re.IGNORECASE),
+    # Vaping vs smoking health comparisons
+    re.compile(r"\b(?:vaping|smoking)\s+or\s+(?:vaping|smoking)\b", re.IGNORECASE),
+    re.compile(r"\bharder\s+on\s+(?:your\s+)?lungs?\b", re.IGNORECASE),
+    # Safety guarantees
+    re.compile(r"\bguarantees?\s+(?:safety|safe)\b", re.IGNORECASE),
+    re.compile(r"\b(?:guarantees?|ensures?)\s+(?:product\s+)?safety\b", re.IGNORECASE),
+    # Health considerations (H2/body filter)
+    re.compile(r"\bhealth\s+considerations?\b", re.IGNORECASE),
 ]
 
 _CIGARETTE_TOBACCO_PATTERNS = [
     re.compile(r"\bhow\s+many\s+cigarettes?\s+(?:is|are|in|equal)\b", re.IGNORECASE),
     re.compile(r"\bcigarettes?\s+(?:is|are|in|equal|equivalent)\b", re.IGNORECASE),
     re.compile(r"\bequivalent\s+to\s+\d+\s+cigarettes?\b", re.IGNORECASE),
+    re.compile(r"\bequal\s+to\s+\d+\s+cigarettes?\b", re.IGNORECASE),
     re.compile(r"\bvs\.?\s+(?:smoking|tobacco)\b", re.IGNORECASE),
     re.compile(r"\bversus\s+(?:smoking|tobacco)\b", re.IGNORECASE),
     re.compile(r"\bcompared?\s+to\s+(?:smoking|cigarettes?|tobacco)\b", re.IGNORECASE),
@@ -64,6 +77,13 @@ _CIGARETTE_TOBACCO_PATTERNS = [
     re.compile(r"\bcigarette\s+puff\b", re.IGNORECASE),
     re.compile(r"\bpuffs?\s+(?:per|in\s+a)\s+cigarette\b", re.IGNORECASE),
     re.compile(r"\btobacco\s+(?:vs|versus|compared)\b", re.IGNORECASE),
+    # Transition / switching phrasing
+    re.compile(r"\btransition(?:ing)?\s+(?:from|to)\s+(?:smoking|traditional)\b", re.IGNORECASE),
+    re.compile(r"\btransitioner(?:s)?\b", re.IGNORECASE),
+    re.compile(r"\balternative\s+to\s+(?:traditional\s+)?smoking\b", re.IGNORECASE),
+    re.compile(r"\btraditional\s+smoking\b", re.IGNORECASE),
+    # Puffs equal to cigarettes
+    re.compile(r"\bpuffs?\s+(?:of\s+(?:a\s+)?vape\s+)?(?:equal|equivalent)\s+to\s+\d*\s*cigarette", re.IGNORECASE),
 ]
 
 _SUPERLATIVE_BAIT_PATTERNS = [
@@ -75,6 +95,44 @@ _SUPERLATIVE_BAIT_PATTERNS = [
     re.compile(r"\bmost\s+(?:rare|exclusive)\s+flavo(?:u)?r\b", re.IGNORECASE),
     re.compile(r"\bbest\s+(?:vape|e-?liquid|juice)\s+(?:brand|company)\b", re.IGNORECASE),
     re.compile(r"\bworld(?:'?s)?\s+(?:best|#\s*1|number\s+one)\b", re.IGNORECASE),
+    # #1 disposable vape (expanded from just "#1 brand")
+    re.compile(r"#\s*1\s+(?:disposable|vape|e-?cig)\b", re.IGNORECASE),
+    # "top N" listicle patterns
+    re.compile(r"\btop\s+\d+\b.*\bflavo(?:u)?rs?\b", re.IGNORECASE),
+    re.compile(r"\btop\s+\d+\b.*\bvapes?\b", re.IGNORECASE),
+    # "most sold / most popular" unverifiable claims
+    re.compile(r"\bmost\s+(?:sold|popular)\s+(?:vape|flavo(?:u)?r)\b", re.IGNORECASE),
+    re.compile(r"\bbest\s+(?:selling|sold)\b", re.IGNORECASE),
+    # "best flavour of X" generic bait (but not "best flavour of [specific brand]")
+    re.compile(r"\bbest\s+flavo(?:u)?r\s+of\s+(?:vape|vaping|e-?cig)\b", re.IGNORECASE),
+]
+
+# Consumption / puffs-per-day patterns
+_PUFFS_PER_DAY_PATTERNS = [
+    re.compile(r"\b\d+\s+puffs?\s+(?:of\s+(?:a\s+)?vape\s+)?(?:a|per)\s+day\b", re.IGNORECASE),
+    re.compile(r"\bpuffs?\s+(?:of\s+(?:a\s+)?vape\s+)?(?:a|per)\s+day\s+(?:a\s+)?lot\b", re.IGNORECASE),
+    re.compile(r"\bis\s+\d+\s+puffs?\b.*\b(?:bad|lot|much|okay)\b", re.IGNORECASE),
+    re.compile(r"\bhow\s+many\s+puffs?\s+(?:a|per)\s+day\b", re.IGNORECASE),
+]
+
+# Off-brand competitor mentions (for FAQ context filtering)
+# These brands should not be the main topic of FAQs unless the article is about them
+_COMPETITOR_BRAND_PATTERNS = [
+    re.compile(r"\belfbar\b", re.IGNORECASE),
+    re.compile(r"\belf\s+bar\b", re.IGNORECASE),
+    re.compile(r"\bjuul\b", re.IGNORECASE),
+    re.compile(r"\bvuse\b", re.IGNORECASE),
+    re.compile(r"\bblu\s+(?:vape|e-?cig)\b", re.IGNORECASE),
+    re.compile(r"\bsmok\s+(?:vape|nord|rpm)\b", re.IGNORECASE),
+    re.compile(r"\bgeek\s*bar\b", re.IGNORECASE),
+    re.compile(r"\blost\s*mary\b", re.IGNORECASE),
+]
+
+# Community / external source bait
+_EXTERNAL_SOURCE_PATTERNS = [
+    re.compile(r"\breddit\b", re.IGNORECASE),
+    re.compile(r"\bpdf\b", re.IGNORECASE),
+    re.compile(r"\bforum\b", re.IGNORECASE),
 ]
 
 _WHOLESALE_HIGH_NICOTINE_PATTERNS = [
@@ -91,24 +149,39 @@ FAQ_DENYLIST_CATEGORIES: list[DenylistCategory] = [
     DenylistCategory(
         name="health_medical",
         patterns=_HEALTH_MEDICAL_PATTERNS,
-        description="Health/medical claims (e.g. 'better for you', 'healthier', quitting/cessation)",
+        description="Health/medical claims (e.g. 'better for you', 'healthier', quitting/cessation, lung healing)",
     ),
     DenylistCategory(
         name="cigarette_tobacco_comparison",
         patterns=_CIGARETTE_TOBACCO_PATTERNS,
-        description="Cigarette/tobacco comparisons (e.g. 'how many cigarettes', 'vs smoking')",
+        description="Cigarette/tobacco comparisons (e.g. 'how many cigarettes', 'vs smoking', 'transitioning from smoking')",
     ),
     DenylistCategory(
         name="superlative_bait",
         patterns=_SUPERLATIVE_BAIT_PATTERNS,
-        description="Superlative/bait phrasing (e.g. '#1 brand', 'best brand', 'rarest flavour')",
+        description="Superlative/bait phrasing (e.g. '#1 disposable', 'top 10 flavours', 'most sold', 'best flavour of vape')",
     ),
     DenylistCategory(
         name="wholesale_high_nicotine",
         patterns=_WHOLESALE_HIGH_NICOTINE_PATTERNS,
         description="Wholesale questions and high nicotine strengths (100 mg)",
     ),
+    DenylistCategory(
+        name="puffs_per_day",
+        patterns=_PUFFS_PER_DAY_PATTERNS,
+        description="Consumption/puffs per day questions (e.g. 'is 20 puffs a day a lot')",
+    ),
+    DenylistCategory(
+        name="external_source",
+        patterns=_EXTERNAL_SOURCE_PATTERNS,
+        description="External source / community bait (e.g. 'reddit', 'forum', 'pdf')",
+    ),
 ]
+
+
+# Competitor brands that trigger off-brand filtering
+# Questions mentioning these brands will be filtered if the article is not about them
+COMPETITOR_BRAND_PATTERNS = _COMPETITOR_BRAND_PATTERNS
 
 
 def _match_denylist_category(text: str) -> tuple[str, str] | None:
@@ -123,15 +196,48 @@ def _match_denylist_category(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _mentions_competitor_brand(text: str, target_brand: str | None = None) -> str | None:
+    """Check if text mentions a competitor brand that is not the target brand.
+
+    Args:
+        text: The text to check.
+        target_brand: The brand the article is about (case-insensitive).
+                     If None, all competitor brand mentions are flagged.
+
+    Returns:
+        The competitor brand name if found (and not the target), None otherwise.
+    """
+    if not text:
+        return None
+
+    text_lower = text.lower()
+    target_lower = (target_brand or "").lower().strip()
+
+    for pattern in _COMPETITOR_BRAND_PATTERNS:
+        match = pattern.search(text_lower)
+        if match:
+            matched_brand = match.group(0).strip()
+            # If the matched brand is the target brand, don't filter it
+            if target_lower and matched_brand in target_lower:
+                continue
+            if target_lower and target_lower in matched_brand:
+                continue
+            return matched_brand
+    return None
+
+
 def filter_paa_questions(
     questions: list[dict[str, Any]],
     *,
+    target_brand: str | None = None,
     log_dropped: bool = True,
 ) -> list[dict[str, Any]]:
     """Filter PAA/FAQ questions, removing those matching denylist patterns.
 
     Args:
         questions: List of question dicts, each with at least a 'question' key.
+        target_brand: The brand the article is about. If provided, questions about
+                     other competitor brands will be filtered out.
         log_dropped: If True, log each dropped question at INFO level.
 
     Returns:
@@ -150,6 +256,7 @@ def filter_paa_questions(
         if not question_text:
             continue
 
+        # Check denylist patterns
         match = _match_denylist_category(question_text)
         if match:
             dropped_count += 1
@@ -160,6 +267,20 @@ def filter_paa_questions(
                     category,
                     question_text[:80] + ("…" if len(question_text) > 80 else ""),
                     description,
+                )
+            continue
+
+        # Check for off-brand competitor mentions
+        competitor = _mentions_competitor_brand(question_text, target_brand)
+        if competitor:
+            dropped_count += 1
+            if log_dropped:
+                logger.info(
+                    "FAQ filter dropped question (category=off_brand_competitor): %r — "
+                    "mentions competitor brand '%s' in an article about '%s'",
+                    question_text[:80] + ("…" if len(question_text) > 80 else ""),
+                    competitor,
+                    target_brand or "(no target)",
                 )
             continue
 
@@ -659,3 +780,439 @@ def filter_required_questions_by_h3(
         )
 
     return kept
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BODY / H2 / ALT TEXT CONTENT FILTERING
+# ─────────────────────────────────────────────────────────────────────────────
+
+_H2_TAG_RE = re.compile(r"(?is)<h2\b[^>]*>(.*?)</h2\s*>")
+
+
+def filter_body_html_content(
+    body_html: str,
+    *,
+    target_brand: str | None = None,
+    log_dropped: bool = True,
+) -> str:
+    """Filter body HTML to remove problematic H2 sections.
+
+    Removes entire H2 sections (heading + content until next H2) that match
+    health/safety denylist patterns like 'Health Considerations'.
+
+    Args:
+        body_html: The article body HTML.
+        target_brand: The brand the article is about (for off-brand filtering).
+        log_dropped: If True, log each removed H2 at INFO level.
+
+    Returns:
+        Filtered body HTML with problematic H2 sections removed.
+    """
+    if not body_html:
+        return body_html
+
+    # Find all H2 positions
+    h2_matches = list(_H2_TAG_RE.finditer(body_html))
+    if not h2_matches:
+        return body_html
+
+    sections_to_remove: list[tuple[int, int, str]] = []
+
+    for i, match in enumerate(h2_matches):
+        h2_content = match.group(1) or ""
+        h2_plain = _TAG_STRIP_RE.sub(" ", h2_content)
+        h2_plain = html_module.unescape(h2_plain)
+        h2_plain = re.sub(r"\s+", " ", h2_plain).strip()
+
+        # Check against denylist
+        deny_match = _match_denylist_category(h2_plain)
+        if deny_match:
+            # Determine section boundaries
+            start = match.start()
+            if i + 1 < len(h2_matches):
+                end = h2_matches[i + 1].start()
+            else:
+                # Last H2 - find end or take rest of content
+                end = len(body_html)
+
+            sections_to_remove.append((start, end, h2_plain))
+            if log_dropped:
+                category, description = deny_match
+                logger.info(
+                    "Body filter removed H2 section (category=%s): %r — %s",
+                    category,
+                    h2_plain[:60] + ("…" if len(h2_plain) > 60 else ""),
+                    description,
+                )
+
+    if not sections_to_remove:
+        return body_html
+
+    # Remove sections in reverse order to maintain correct positions
+    result = body_html
+    for start, end, _ in reversed(sections_to_remove):
+        result = result[:start] + result[end:]
+
+    return result
+
+
+def filter_and_dedupe_helpful_questions(
+    questions: list[str],
+    existing_questions: list[str] | None = None,
+    *,
+    target_brand: str | None = None,
+    log_dropped: bool = True,
+) -> list[str]:
+    """Filter and dedupe a list of question strings.
+
+    Used for the 'Helpful questions before you choose' block.
+
+    Args:
+        questions: List of question strings to filter.
+        existing_questions: Questions already in the article (for deduplication).
+        target_brand: The brand the article is about (for off-brand filtering).
+        log_dropped: If True, log each dropped question at INFO level.
+
+    Returns:
+        Filtered and deduplicated list of questions.
+    """
+    if not questions:
+        return []
+
+    existing_normalized = set()
+    for q in existing_questions or []:
+        norm = _normalize_for_matching(q)
+        if norm:
+            existing_normalized.add(norm)
+
+    kept: list[str] = []
+    seen_normalized: set[str] = set(existing_normalized)
+
+    for q in questions:
+        q_stripped = q.strip()
+        if not q_stripped:
+            continue
+
+        # Normalize spelling first
+        q_normalized_spelling = normalize_flavor_to_flavour(q_stripped, log_changes=False)
+
+        # Check denylist
+        deny_match = _match_denylist_category(q_normalized_spelling)
+        if deny_match:
+            if log_dropped:
+                category, description = deny_match
+                logger.info(
+                    "Helpful questions filter dropped (category=%s): %r — %s",
+                    category,
+                    q_stripped[:80] + ("…" if len(q_stripped) > 80 else ""),
+                    description,
+                )
+            continue
+
+        # Check for off-brand competitor mentions
+        competitor = _mentions_competitor_brand(q_normalized_spelling, target_brand)
+        if competitor:
+            if log_dropped:
+                logger.info(
+                    "Helpful questions filter dropped (category=off_brand_competitor): %r — "
+                    "mentions competitor brand '%s'",
+                    q_stripped[:80] + ("…" if len(q_stripped) > 80 else ""),
+                    competitor,
+                )
+            continue
+
+        # Deduplication
+        q_norm_match = _normalize_for_matching(q_normalized_spelling)
+        if q_norm_match in seen_normalized:
+            if log_dropped:
+                logger.info(
+                    "Helpful questions filter dropped (duplicate): %r",
+                    q_stripped[:80] + ("…" if len(q_stripped) > 80 else ""),
+                )
+            continue
+
+        seen_normalized.add(q_norm_match)
+        kept.append(q_normalized_spelling)
+
+    return kept
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE ALT TEXT GUARDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Patterns indicating prompt/instruction leakage in alt text
+_ALT_PROMPT_LEAK_PATTERNS = [
+    re.compile(r"\bmaximum\s+\d+\s+characters?\b", re.IGNORECASE),
+    re.compile(r"\bcharacter\s+limit\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*[-–]\s*\d+\s+characters?\b", re.IGNORECASE),
+    re.compile(r"^\s*\*\s*$"),  # Just an asterisk
+    re.compile(r"\balt\s+text\b", re.IGNORECASE),
+    re.compile(r"\bdescribe\s+(?:the\s+)?image\b", re.IGNORECASE),
+    re.compile(r"\bimage\s+description\b", re.IGNORECASE),
+    re.compile(r"\bprompt\b", re.IGNORECASE),
+    re.compile(r"\binstruction\b", re.IGNORECASE),
+]
+
+# Characters that indicate cut-off alt text
+_ALT_CUTOFF_INDICATORS = [
+    r"[^.!?…]\s*$",  # Doesn't end with sentence-ending punctuation
+]
+
+
+def validate_and_fix_alt_text(
+    alt_text: str,
+    fallback_text: str = "",
+    *,
+    min_length: int = 20,
+    max_length: int = 125,
+    log_issues: bool = True,
+) -> tuple[str, bool]:
+    """Validate and fix image alt text.
+
+    Guards against:
+    - Prompt/instruction leakage
+    - Cut-off text (truncated mid-word)
+    - Text that's too short or too long
+    - US spelling (normalizes to Canadian)
+
+    Args:
+        alt_text: The alt text to validate.
+        fallback_text: Fallback text to use if alt is invalid/unfixable.
+        min_length: Minimum acceptable length.
+        max_length: Maximum acceptable length (will truncate at word boundary).
+        log_issues: If True, log validation issues at INFO level.
+
+    Returns:
+        Tuple of (fixed_alt_text, was_modified).
+    """
+    if not alt_text or not alt_text.strip():
+        if log_issues:
+            logger.info("Alt text guard: empty alt text, using fallback")
+        return fallback_text.strip() or "Product image", True
+
+    original = alt_text.strip()
+    result = original
+    was_modified = False
+
+    # Check for prompt/instruction leakage
+    for pattern in _ALT_PROMPT_LEAK_PATTERNS:
+        if pattern.search(result):
+            if log_issues:
+                logger.info(
+                    "Alt text guard: prompt leakage detected in %r, using fallback",
+                    result[:60] + ("…" if len(result) > 60 else ""),
+                )
+            return fallback_text.strip() or "Product image", True
+
+    # Normalize spelling (flavor -> flavour)
+    normalized = normalize_flavor_to_flavour(result, log_changes=False)
+    if normalized != result:
+        result = normalized
+        was_modified = True
+
+    # Check for cut-off text (ends mid-word or mid-sentence without punctuation)
+    if len(result) < min_length:
+        if log_issues:
+            logger.info(
+                "Alt text guard: too short (%d chars), using fallback: %r",
+                len(result),
+                result,
+            )
+        return fallback_text.strip() or "Product image", True
+
+    # Truncate at word boundary if too long
+    if len(result) > max_length:
+        truncated = result[:max_length]
+        # Find last word boundary
+        last_space = truncated.rfind(" ")
+        if last_space > min_length:
+            truncated = truncated[:last_space].rstrip(".,;:!?")
+        result = truncated.rstrip()
+        was_modified = True
+        if log_issues:
+            logger.info(
+                "Alt text guard: truncated at word boundary from %d to %d chars",
+                len(original),
+                len(result),
+            )
+
+    # Check for apparent cut-off (ends with incomplete word or parenthesis)
+    if result and result[-1] in "([{":
+        result = result[:-1].rstrip()
+        was_modified = True
+        if log_issues:
+            logger.info("Alt text guard: removed trailing bracket/parenthesis")
+
+    # Check for cut-off mid-word (common AI issue)
+    if result and not result[-1].isalnum() and result[-1] not in ".!?…":
+        # Likely cut off - try to clean up
+        result = result.rstrip(" ,;:-–—")
+        was_modified = True
+
+    return result, was_modified
+
+
+def filter_body_text_content(
+    text: str,
+    *,
+    target_brand: str | None = None,
+    log_dropped: bool = True,
+) -> str:
+    """Filter plain text content (like body paragraphs) to remove problematic sentences.
+
+    Unlike filter_body_html_content which removes entire H2 sections, this
+    removes individual sentences that match denylist patterns.
+
+    Args:
+        text: Plain text content.
+        target_brand: The brand the article is about.
+        log_dropped: If True, log each removed sentence at INFO level.
+
+    Returns:
+        Filtered text with problematic sentences removed.
+    """
+    if not text:
+        return text
+
+    # Split into sentences (simple heuristic)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    kept: list[str] = []
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        # Check denylist
+        deny_match = _match_denylist_category(sentence)
+        if deny_match:
+            if log_dropped:
+                category, description = deny_match
+                logger.info(
+                    "Body text filter removed sentence (category=%s): %r — %s",
+                    category,
+                    sentence[:80] + ("…" if len(sentence) > 80 else ""),
+                    description,
+                )
+            continue
+
+        kept.append(sentence)
+
+    return " ".join(kept)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXCERPT / SUMMARY GUARDS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Patterns indicating generic/boilerplate excerpt text
+_EXCERPT_BOILERPLATE_PATTERNS = [
+    # "In this article" / "In this guide" / "In this post" openers
+    re.compile(r"^in\s+this\s+(?:article|guide|post|blog|piece)\b", re.IGNORECASE),
+    # "Read our article about..."
+    re.compile(r"\bread\s+(?:our|this|the)\s+(?:article|guide|post|blog)\b", re.IGNORECASE),
+    # "Learn more about..."
+    re.compile(r"^learn\s+(?:more\s+)?about\b", re.IGNORECASE),
+    # "Click to read..." / "Click here..."
+    re.compile(r"\bclick\s+(?:to\s+read|here)\b", re.IGNORECASE),
+    # "Find out..."
+    re.compile(r"^find\s+out\b", re.IGNORECASE),
+    # "Discover..." opener (generic)
+    re.compile(r"^discover\s+(?:how|what|why|the)\b", re.IGNORECASE),
+    # "We'll explore..." / "We will discuss..."
+    re.compile(r"\bwe(?:'ll|'re\s+going\s+to|\s+will)\s+(?:explore|discuss|cover|look\s+at)\b", re.IGNORECASE),
+    # "This article covers..." / "This guide explains..."
+    re.compile(r"^this\s+(?:article|guide|post|blog)\s+(?:covers|explains|discusses|explores)\b", re.IGNORECASE),
+    # "Everything you need to know..."
+    re.compile(r"\beverything\s+you\s+need\s+to\s+know\b", re.IGNORECASE),
+    # "Here's what you'll learn..."
+    re.compile(r"\bhere(?:'s|\s+is)\s+what\s+you(?:'ll|\s+will)\b", re.IGNORECASE),
+    # Prompt leakage patterns
+    re.compile(r"\bcharacter\s+(?:count|limit)\b", re.IGNORECASE),
+    re.compile(r"\bmaximum\s+\d+\s+characters?\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s*[-–]\s*\d+\s+characters?\b", re.IGNORECASE),
+    re.compile(r"\bseo\s+description\b", re.IGNORECASE),
+    re.compile(r"\bmeta\s+description\b", re.IGNORECASE),
+    re.compile(r"\bexcerpt\b", re.IGNORECASE),
+]
+
+
+def validate_and_fix_excerpt(
+    excerpt: str,
+    fallback_excerpt: str = "",
+    *,
+    min_length: int = 50,
+    max_length: int = 160,
+    log_issues: bool = True,
+) -> tuple[str, bool]:
+    """Validate and fix article excerpt/summary text.
+
+    Guards against:
+    - Generic boilerplate phrases (e.g. "In this article, we...")
+    - Prompt/instruction leakage
+    - Text that's too short or too long
+    - US spelling (normalizes to Canadian)
+
+    Args:
+        excerpt: The excerpt text to validate.
+        fallback_excerpt: Fallback text to use if excerpt is invalid/unfixable.
+        min_length: Minimum acceptable length.
+        max_length: Maximum acceptable length (will truncate at word boundary).
+        log_issues: If True, log validation issues at INFO level.
+
+    Returns:
+        Tuple of (fixed_excerpt, was_modified).
+    """
+    if not excerpt or not excerpt.strip():
+        if log_issues:
+            logger.info("Excerpt guard: empty excerpt, using fallback")
+        return fallback_excerpt.strip() or "", True
+
+    original = excerpt.strip()
+    result = original
+    was_modified = False
+
+    # Check for boilerplate/prompt leakage patterns
+    for pattern in _EXCERPT_BOILERPLATE_PATTERNS:
+        if pattern.search(result):
+            if log_issues:
+                logger.info(
+                    "Excerpt guard: boilerplate/leakage detected in %r, using fallback",
+                    result[:60] + ("…" if len(result) > 60 else ""),
+                )
+            return fallback_excerpt.strip() or "", True
+
+    # Normalize spelling (flavor -> flavour)
+    normalized = normalize_flavor_to_flavour(result, log_changes=False)
+    if normalized != result:
+        result = normalized
+        was_modified = True
+
+    # Check for text that's too short
+    if len(result) < min_length:
+        if log_issues:
+            logger.info(
+                "Excerpt guard: too short (%d chars), using fallback: %r",
+                len(result),
+                result,
+            )
+        return fallback_excerpt.strip() or "", True
+
+    # Truncate at word boundary if too long
+    if len(result) > max_length:
+        truncated = result[:max_length]
+        # Find last word boundary
+        last_space = truncated.rfind(" ")
+        if last_space > min_length:
+            truncated = truncated[:last_space].rstrip(".,;:!?")
+        result = truncated.rstrip()
+        was_modified = True
+        if log_issues:
+            logger.info(
+                "Excerpt guard: truncated at word boundary from %d to %d chars",
+                len(original),
+                len(result),
+            )
+
+    return result, was_modified

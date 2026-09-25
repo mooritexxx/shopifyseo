@@ -37,6 +37,8 @@ from shopifyseo.dashboard_store import (
 )
 from shopifyseo.sqlite_retry import run_with_db_lock_retry
 from shopifyseo.shopify_catalog_sync.blogs import sync_article
+from shopifyseo.dashboard_ai_engine_parts.config import get_store_identity
+from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import validate_and_fix_excerpt
 from backend.app.services.article_service import (
     get_blog_article_detail,
     get_blog_article_inspection_link,
@@ -716,45 +718,79 @@ def _run_generate_article_draft(
             finally:
                 conn_gen.close()
 
-        p(
-            "Starting images: featured cover + per-section body images…",
-            "image",
-            "start",
-            run_id=run_id,
-            step_key="images",
-            step_label="Generate/upload images",
-            step_index=8,
-            step_total=12,
-        )
-        conn_img = open_db_connection()
-        try:
-            featured_url, featured_alt, body_images, image_notes = try_prepare_article_images_bundle(
-                conn_img,
-                title=generated["title"],
-                topic=payload.topic,
-                body_html=generated["body"],
-                on_step=p,
+        # Check for saved images from a prior run (resume reuse)
+        saved_images = (resume_run or {}).get("image_payload") or {}
+        if isinstance(saved_images, str):
+            try:
+                saved_images = json.loads(saved_images) if saved_images.strip() else {}
+            except (json.JSONDecodeError, TypeError):
+                saved_images = {}
+        saved_featured_url = str(saved_images.get("featured_url") or "").strip()
+        saved_body_images = saved_images.get("body_images") or []
+        if not isinstance(saved_body_images, list):
+            saved_body_images = []
+
+        if saved_featured_url.startswith("https://"):
+            # Reuse images from prior run checkpoint
+            featured_url = saved_featured_url
+            featured_alt = str(saved_images.get("featured_alt") or generated["title"])
+            body_images = [img for img in saved_body_images if isinstance(img, dict) and img.get("url")]
+            image_notes = saved_images.get("notes") or []
+            if not isinstance(image_notes, list):
+                image_notes = []
+            image_notes.append("Reused images from prior run checkpoint (resume).")
+            p(
+                f"Reusing images from checkpoint: featured + {len(body_images)} section image{'s' if len(body_images) != 1 else ''}.",
+                "image",
+                "done",
+                run_id=run_id,
+                step_key="images",
+                step_label="Generate/upload images",
+                step_index=8,
+                step_total=12,
+                result_summary=f"Reused featured + {len(body_images)} inline image{'s' if len(body_images) != 1 else ''}",
             )
-        finally:
-            conn_img.close()
-        for note in image_notes:
-            p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=8, step_total=12)
-        image_failures = [
-            note for note in image_notes
-            if any(token in note.lower() for token in ("failed", "skipp"))
-        ]
-        if not featured_url or image_failures:
-            update_run(
-                image_payload_json={
-                    "featured_url": featured_url or "",
-                    "featured_alt": featured_alt or "",
-                    "body_images": body_images,
-                    "notes": image_notes,
-                },
-                current_step="images",
+        else:
+            # Generate fresh images
+            p(
+                "Starting images: featured cover + per-section body images…",
+                "image",
+                "start",
+                run_id=run_id,
+                step_key="images",
+                step_label="Generate/upload images",
+                step_index=8,
+                step_total=12,
             )
-            detail = "; ".join(image_failures[-3:] or image_notes[-3:] or ["Image generation/upload failed"])
-            raise RuntimeError(f"Image generation/upload failed: {detail}")
+            conn_img = open_db_connection()
+            try:
+                featured_url, featured_alt, body_images, image_notes = try_prepare_article_images_bundle(
+                    conn_img,
+                    title=generated["title"],
+                    topic=payload.topic,
+                    body_html=generated["body"],
+                    on_step=p,
+                )
+            finally:
+                conn_img.close()
+            for note in image_notes:
+                p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=8, step_total=12)
+            image_failures = [
+                note for note in image_notes
+                if any(token in note.lower() for token in ("failed", "skipp"))
+            ]
+            if not featured_url or image_failures:
+                update_run(
+                    image_payload_json={
+                        "featured_url": featured_url or "",
+                        "featured_alt": featured_alt or "",
+                        "body_images": body_images,
+                        "notes": image_notes,
+                    },
+                    current_step="images",
+                )
+                detail = "; ".join(image_failures[-3:] or image_notes[-3:] or ["Image generation/upload failed"])
+                raise RuntimeError(f"Image generation/upload failed: {detail}")
         update_run(
             image_payload_json={
                 "featured_url": featured_url or "",
@@ -826,10 +862,24 @@ def _run_generate_article_draft(
         update_run(body=body_html)
     except Exception as exc:
         if run_id:
+            # Use extended retry for terminal status to ensure we don't leave runs stuck on "running"
+            def _mark_failed() -> None:
+                conn_f = open_db_connection()
+                try:
+                    update_article_draft_run(conn_f, run_id, status="failed", error_message=str(exc)[:2000])
+                finally:
+                    conn_f.close()
+
             try:
-                update_run(status="failed", error_message=str(exc))
-            except Exception:
-                pass
+                # Extended retry: max_retries=12, initial_backoff=500ms for ~2 minutes total
+                run_with_db_lock_retry(_mark_failed, max_retries=12, initial_backoff_ms=500)
+            except Exception as status_exc:
+                logger.error(
+                    "Failed to mark draft run %s as failed after extended retry: %s (original error: %s)",
+                    run_id,
+                    status_exc,
+                    exc,
+                )
         raise
     finally:
         if conn is not None:
@@ -960,6 +1010,15 @@ def _run_generate_article_draft(
             ]
             handle = seo_article_slug(generated["title"], keywords=kw_list)
 
+        # Validate and fix the excerpt/summary to guard against boilerplate
+        validated_excerpt, excerpt_modified = validate_and_fix_excerpt(
+            generated["seo_description"],
+            fallback_excerpt="",
+            log_issues=True,
+        )
+        if excerpt_modified and validated_excerpt:
+            generated["seo_description"] = validated_excerpt
+
         if resume_shopify_id:
             handle = resume_shopify_handle or handle
             p(
@@ -973,6 +1032,10 @@ def _run_generate_article_draft(
                 step_total=12,
             )
             try:
+                resume_author = (payload.author_name or "").strip()
+                if not resume_author:
+                    store_name, _ = get_store_identity()
+                    resume_author = store_name or ""
                 live_update_article(
                     DB_PATH,
                     resume_shopify_id,
@@ -980,6 +1043,10 @@ def _run_generate_article_draft(
                     generated["seo_title"],
                     generated["seo_description"],
                     body_html,
+                    author_name=resume_author,
+                    summary=generated["seo_description"],
+                    image_url=featured_url or "",
+                    image_alt=featured_alt or "",
                 )
             except SystemExit as exc:
                 update_run(status="failed", current_step="shopify", error_message=str(exc) or "Shopify request failed")
@@ -1007,11 +1074,15 @@ def _run_generate_article_draft(
                 step_total=12,
             )
             try:
+                author_name = (payload.author_name or "").strip()
+                if not author_name:
+                    store_name, _ = get_store_identity()
+                    author_name = store_name or ""
                 result = create_article(
                     blog_id=payload.blog_id,
                     title=generated["title"],
                     body_html=body_html,
-                    author_name=payload.author_name or "",
+                    author_name=author_name,
                     handle=handle,
                     summary=generated["seo_description"],
                     tags=None,

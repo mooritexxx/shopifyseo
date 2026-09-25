@@ -89,9 +89,14 @@ def test_run_with_db_lock_retry_uses_exponential_backoff():
 
 
 def test_default_retry_constants():
-    """Verify default constants are set appropriately."""
-    assert DB_LOCK_MAX_RETRIES == 5
-    assert DB_LOCK_INITIAL_BACKOFF_MS == 100
+    """Verify default constants are set appropriately.
+
+    Updated to 8 retries and 200ms initial backoff (from 5/100ms)
+    to provide ~25s total retry window, covering embedding sync
+    lock contention during draft runs.
+    """
+    assert DB_LOCK_MAX_RETRIES == 8
+    assert DB_LOCK_INITIAL_BACKOFF_MS == 200
 
 
 class TestBusyTimeoutPragmaApplication:

@@ -222,7 +222,19 @@ def live_update_article(
     seo_title: str,
     seo_description: str,
     body_html: str,
+    *,
+    author_name: str = "",
+    summary: str = "",
+    image_url: str = "",
+    image_alt: str = "",
 ) -> dict:
+    """Update an article via the Admin GraphQL API.
+
+    Optional keyword arguments:
+    - author_name: Update the article author
+    - summary: Update the excerpt
+    - image_url + image_alt: Update featured image (requires HTTPS URL)
+    """
     mutation = """
     mutation UpdateArticle($id: ID!, $article: ArticleUpdateInput!) {
       articleUpdate(id: $id, article: $article) {
@@ -231,6 +243,9 @@ def live_update_article(
           handle
           title
           body
+          summary
+          author { name }
+          image { url altText }
         }
         userErrors {
           field
@@ -245,6 +260,16 @@ def live_update_article(
     metafields = _seo_metafields(seo_title, seo_description)
     if metafields:
         article["metafields"] = metafields
+    if (author_name or "").strip():
+        article["author"] = {"name": author_name.strip()}
+    if (summary or "").strip():
+        article["summary"] = summary.strip()
+    u = (image_url or "").strip()
+    if u.startswith("https://"):
+        article["image"] = {
+            "url": u,
+            "altText": (image_alt or title or "Blog image")[:512],
+        }
     data = graphql_request(mutation, {"id": article_id, "article": article})
     result = data["data"]["articleUpdate"]
     if result["userErrors"]:

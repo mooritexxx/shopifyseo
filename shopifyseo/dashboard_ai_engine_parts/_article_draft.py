@@ -12,6 +12,12 @@ logger = logging.getLogger(__name__)
 from .providers import AIProviderRequestError, _call_ai
 from .qa import clamp_generated_seo_field
 from .settings import ai_settings
+from .faq_content_filter import (
+    filter_and_dedupe_helpful_questions,
+    filter_body_html_content,
+    normalize_flavor_to_flavour,
+    validate_and_fix_alt_text,
+)
 
 _A_BODY_TAG_RE = re.compile(r"(?is)<a\s+([^>]+)>(.*?)</a>")
 
@@ -1756,6 +1762,9 @@ def generate_article_draft(
         out = strip_faqpage_jsonld_blocks(out)
         # Normalize US 'flavor' spelling to Canadian 'flavour' (case-preserving)
         out = normalize_article_body_spelling(out)
+        # Filter problematic H2 sections (e.g., "Health Considerations")
+        _target_brand = (cluster_meta.get("detected_entity") or "").strip() or (topic or "").strip()
+        out = filter_body_html_content(out, target_brand=_target_brand, log_dropped=True)
         return out
 
     # Gap 11: require a minimum count of approved-target links so silent sanitizer
@@ -1952,6 +1961,35 @@ def generate_article_draft(
         missing = _questions_missing_from_body(body_html, required_questions)
         if not missing:
             return body_html
+
+        # Extract existing H3 questions from body for deduplication
+        from .faq_content_filter import _extract_h3_texts
+        existing_h3s = _extract_h3_texts(body_html)
+
+        # Determine target brand from cluster metadata or topic for off-brand filtering
+        _target_brand = (cluster_meta.get("detected_entity") or "").strip()
+        if not _target_brand:
+            # Try to extract brand from topic (e.g., "Flavour Beast" from "best flavour beast flavours")
+            _target_brand = (topic or "").strip()
+
+        # Filter and dedupe the missing questions:
+        # 1. Remove questions matching denylist patterns
+        # 2. Normalize flavor -> flavour spelling
+        # 3. Remove duplicates (questions already in body or repeated)
+        filtered_missing = filter_and_dedupe_helpful_questions(
+            missing,
+            existing_questions=existing_h3s,
+            target_brand=_target_brand,
+            log_dropped=True,
+        )
+
+        if not filtered_missing:
+            logger.info(
+                "Helpful questions block: all %d questions filtered out, skipping block",
+                len(missing),
+            )
+            return body_html
+
         schema = {
             "name": "article_draft_faq_repair",
             "strict": True,
@@ -1960,8 +1998,8 @@ def generate_article_draft(
                 "properties": {
                     "answers": {
                         "type": "array",
-                        "minItems": len(missing),
-                        "maxItems": len(missing),
+                        "minItems": len(filtered_missing),
+                        "maxItems": len(filtered_missing),
                         "items": {"type": "string", "minLength": 80, "maxLength": 900},
                     }
                 },
@@ -1972,7 +2010,7 @@ def generate_article_draft(
         # Pair each missing question with its SerpAPI snippet (when we have one) so the
         # repair AI can ground its answer in what Google's PAA already surfaces.
         missing_with_snippets: list[dict[str, str]] = []
-        for q in missing:
+        for q in filtered_missing:
             snippet = _paa_snippet_by_question_norm.get(_norm_loose(q), "")
             missing_with_snippets.append({"question": q, "snippet": snippet})
 
@@ -2023,14 +2061,17 @@ def generate_article_draft(
             answers = [str(x).strip() for x in raw_answers if str(x).strip()]
         except Exception:
             logger.warning("FAQ repair AI failed; using deterministic fallback answers", exc_info=True)
-        while len(answers) < len(missing):
+        while len(answers) < len(filtered_missing):
             answers.append(
                 "The best answer depends on your device, preferences, budget, and local availability. "
                 "Use the criteria in this guide to compare options carefully before choosing."
             )
         block = "\n<h2>Helpful questions before you choose</h2>"
-        for q, ans in zip(missing, answers):
-            block += f"\n<h3>{html_module.escape(q)}</h3><p>{html_module.escape(ans)}</p>"
+        for q, ans in zip(filtered_missing, answers):
+            # Normalize spelling one more time for the final output
+            q_normalized = normalize_flavor_to_flavour(q, log_changes=False)
+            ans_normalized = normalize_flavor_to_flavour(ans, log_changes=False)
+            block += f"\n<h3>{html_module.escape(q_normalized)}</h3><p>{html_module.escape(ans_normalized)}</p>"
         return (body_html or "").rstrip() + block
 
     def _append_repair_html(body_html: str, gaps: list[str], title: str) -> str:

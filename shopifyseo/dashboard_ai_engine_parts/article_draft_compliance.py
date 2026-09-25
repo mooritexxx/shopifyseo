@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import html as html_module
 import json
+import logging
 import re
 from urllib.parse import urlparse
+
+from .faq_content_filter import (
+    filter_faq_items_by_h3_headings,
+    filter_paa_questions,
+    normalize_flavor_to_flavour,
+)
+
+logger = logging.getLogger(__name__)
 
 _HREF_RE = re.compile(r"""href\s*=\s*(["'])(.*?)\1""", re.IGNORECASE | re.DOTALL)
 _SCRIPT_RE = re.compile(r"(?is)<script[^>]*>.*?</script>")
@@ -326,14 +335,51 @@ def append_server_generated_faqpage_jsonld(
     body_html: str,
     *,
     required_questions: list[str] | None = None,
+    filter_by_h3_headings: bool = True,
 ) -> tuple[str, list[dict[str, str]]]:
-    """Replace FAQPage JSON-LD with schema generated from visible FAQ text."""
+    """Replace FAQPage JSON-LD with schema generated from visible FAQ text.
+
+    Args:
+        body_html: The article body HTML.
+        required_questions: List of questions to prioritize in FAQ extraction.
+        filter_by_h3_headings: If True (default), filter FAQ items to only those
+            that map 1:1 to H3 headings in the article. This ensures FAQs don't
+            introduce topics not covered by the article body.
+
+    Returns:
+        Tuple of (updated body HTML with FAQPage JSON-LD, list of FAQ items used).
+    """
     body = strip_faqpage_jsonld_blocks(body_html or "")
     items = extract_visible_faq_items(body, required_questions=required_questions)
+
+    # Filter FAQ items to only those with matching H3 headings
+    if filter_by_h3_headings and items:
+        items = filter_faq_items_by_h3_headings(items, body, log_dropped=True)
+
     script = render_faqpage_jsonld(items)
     if script:
         body = body.rstrip() + "\n" + script
     return body, items
+
+
+def normalize_article_body_spelling(body_html: str) -> str:
+    """Normalize US 'flavor' spelling to Canadian 'flavour' in article body.
+
+    This function applies case-preserving normalization to the body HTML,
+    converting flavor/Flavor/FLAVOR variants to flavour/Flavour/FLAVOUR.
+
+    URLs, href/src attributes, and known brand names (e.g., 'Flavor Beast')
+    are preserved unchanged.
+
+    Args:
+        body_html: The article body HTML.
+
+    Returns:
+        Body HTML with normalized spelling.
+    """
+    if not body_html:
+        return body_html
+    return normalize_flavor_to_flavour(body_html, log_changes=True)
 
 
 def _headings_match_blobs(body_html: str) -> tuple[str, str]:

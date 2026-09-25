@@ -10,6 +10,7 @@ from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import (
     filter_paa_questions,
     filter_required_questions_by_h3,
     normalize_flavor_to_flavour,
+    normalize_spelling_for_comparison,
 )
 
 
@@ -452,3 +453,66 @@ class TestCaseInsensitivity:
         result = _match_denylist_category(text)
         assert result is not None
         assert result[0] == "cigarette_tobacco_comparison"
+
+
+class TestNormalizeSpellingForComparison:
+    """Test US/CA spelling normalization for comparison purposes."""
+
+    def test_flavor_variants(self):
+        assert normalize_spelling_for_comparison("flavor") == "flavour"
+        assert normalize_spelling_for_comparison("flavors") == "flavours"
+        assert normalize_spelling_for_comparison("flavored") == "flavoured"
+        assert normalize_spelling_for_comparison("flavorful") == "flavourful"
+        assert normalize_spelling_for_comparison("flavoring") == "flavouring"
+        assert normalize_spelling_for_comparison("flavorless") == "flavourless"
+
+    def test_color_variants(self):
+        assert normalize_spelling_for_comparison("color") == "colour"
+        assert normalize_spelling_for_comparison("colors") == "colours"
+        assert normalize_spelling_for_comparison("colored") == "coloured"
+        assert normalize_spelling_for_comparison("colorful") == "colourful"
+        assert normalize_spelling_for_comparison("coloring") == "colouring"
+        assert normalize_spelling_for_comparison("colorless") == "colourless"
+
+    def test_favorite_variants(self):
+        assert normalize_spelling_for_comparison("favorite") == "favourite"
+        assert normalize_spelling_for_comparison("favorites") == "favourites"
+
+    def test_case_insensitive_output_lowercase(self):
+        # Output is always lowercase for comparison purposes
+        assert normalize_spelling_for_comparison("FLAVOR") == "flavour"
+        assert normalize_spelling_for_comparison("Flavor") == "flavour"
+        assert normalize_spelling_for_comparison("COLORS") == "colours"
+
+    def test_mixed_sentence(self):
+        text = "My favorite flavor is colorful and flavorful"
+        expected = "my favourite flavour is colourful and flavourful"
+        assert normalize_spelling_for_comparison(text) == expected
+
+    def test_already_canadian_spelling(self):
+        # Canadian spellings stay as-is (lowercased)
+        assert normalize_spelling_for_comparison("flavour") == "flavour"
+        assert normalize_spelling_for_comparison("colour") == "colour"
+        assert normalize_spelling_for_comparison("favourite") == "favourite"
+
+    def test_empty_input(self):
+        assert normalize_spelling_for_comparison("") == ""
+        assert normalize_spelling_for_comparison(None) is None
+
+    def test_no_spelling_variants(self):
+        text = "This text has no spelling variants"
+        assert normalize_spelling_for_comparison(text) == text.lower()
+
+    def test_regression_idea_12_phrase(self):
+        """Regression test for idea 12: the required SERP phrase."""
+        query = "Flavour beast unleashed flavors"
+        normalized = normalize_spelling_for_comparison(query)
+        assert normalized == "flavour beast unleashed flavours"
+
+        # Body after normalization (what the body contains)
+        body_phrase = "Flavour Beast Unleashed flavours"
+        normalized_body = normalize_spelling_for_comparison(body_phrase)
+        assert normalized_body == "flavour beast unleashed flavours"
+
+        # Both should match after normalization
+        assert normalized == normalized_body

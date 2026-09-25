@@ -241,6 +241,88 @@ def test_validate_includes_tier_queries_kwarg():
     assert any("SERP position 1–3" in g for g in gaps)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REGRESSION: US/CA spelling variants in tier-1 related search compliance
+# ─────────────────────────────────────────────────────────────────────────────
+# PR #29 added a flavor→flavour normalizer that rewrites the body to Canadian
+# spelling. However, tier-1 related search queries from SERP data retain US
+# spelling (e.g., "Flavour beast unleashed flavors"). The compliance check must
+# be spelling-insensitive so that "flavors" in the query matches "flavours" in
+# the normalized body.
+#
+# This test reproduces the idea 12 blocker from the 2026-09-25 operator report:
+# the required phrase "Flavour beast unleashed flavors" failed compliance on
+# every attempt because the body was normalized to "flavours" but the query
+# wasn't.
+
+
+def test_tier1_us_spelling_in_query_matches_ca_spelling_in_body():
+    """Tier-1 compliance passes when body has Canadian spelling and query has US spelling.
+
+    This is a regression test for the idea 12 blocker: the SERP related search
+    "Flavour beast unleashed flavors" must match a body containing "Flavour
+    beast unleashed flavours" (normalized from the original US spelling).
+    """
+    # The body contains Canadian spelling (as if normalize_article_body_spelling was applied)
+    body = (
+        "<h2>Flavour Beast Unleashed Flavours</h2>"
+        "<p>The Flavour Beast Unleashed flavours lineup includes exciting options "
+        "for Canadian vapers.</p>"
+        "<p>" + ("x " * 9000) + "</p>"
+    )
+    # The SERP query retains US spelling
+    query_us_spelling = "Flavour beast unleashed flavors"
+
+    gaps = tier1_related_search_heading_gaps(body, [query_us_spelling])
+    assert gaps == [], f"Expected no gaps, but got: {gaps}"
+
+
+def test_tier1_still_fails_for_genuinely_missing_phrase():
+    """Tier-1 compliance still fails when the phrase is genuinely absent.
+
+    Spelling normalization should not cause false positives—a phrase that is
+    not in the body at all (regardless of spelling) must still fail compliance.
+    """
+    body = (
+        "<h2>Totally Different Topic</h2>"
+        "<p>This article is about something completely unrelated to the query.</p>"
+        "<p>" + ("y " * 9000) + "</p>"
+    )
+    query = "Flavour beast unleashed flavors"
+
+    gaps = tier1_related_search_heading_gaps(body, [query])
+    assert len(gaps) == 1
+    assert "SERP position 1–3" in gaps[0]
+
+
+def test_tier1_color_spelling_variants_match():
+    """Tier-1 compliance matches color/colour spelling variants."""
+    body = (
+        "<h2>Colourful Vape Options</h2>"
+        "<p>Our coloured devices come in many colours.</p>"
+        "<p>" + ("z " * 9000) + "</p>"
+    )
+    # US spelling in query
+    query = "Colorful vape options"
+
+    gaps = tier1_related_search_heading_gaps(body, [query])
+    assert gaps == [], f"Expected no gaps for color/colour variant, but got: {gaps}"
+
+
+def test_tier1_favorite_spelling_variants_match():
+    """Tier-1 compliance matches favorite/favourite spelling variants."""
+    body = (
+        "<h2>Favourite Vape Flavours</h2>"
+        "<p>These are Canadian favourites.</p>"
+        "<p>" + ("a " * 9000) + "</p>"
+    )
+    # US spelling in query
+    query = "Favorite vape flavors"
+
+    gaps = tier1_related_search_heading_gaps(body, [query])
+    assert gaps == [], f"Expected no gaps for favorite/favourite variant, but got: {gaps}"
+
+
 def test_faqpage_empty_mainentity_gap():
     script = (
         '<script type="application/ld+json">'

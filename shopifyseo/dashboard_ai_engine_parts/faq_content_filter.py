@@ -411,6 +411,63 @@ def normalize_flavor_to_flavour(text: str, *, log_changes: bool = True) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# US/CA SPELLING NORMALIZATION FOR COMPARISON
+# ─────────────────────────────────────────────────────────────────────────────
+# Simple regex patterns for normalizing US spellings to Canadian/UK for
+# comparison purposes. These handle common variants without HTML-awareness
+# (intended for plain text comparison keys, not for rendering).
+
+_US_CA_SPELLING_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # flavor/flavour variants
+    (re.compile(r"\bflavor\b", re.IGNORECASE), "flavour"),
+    (re.compile(r"\bflavors\b", re.IGNORECASE), "flavours"),
+    (re.compile(r"\bflavored\b", re.IGNORECASE), "flavoured"),
+    (re.compile(r"\bflavorful\b", re.IGNORECASE), "flavourful"),
+    (re.compile(r"\bflavoring\b", re.IGNORECASE), "flavouring"),
+    (re.compile(r"\bflavorless\b", re.IGNORECASE), "flavourless"),
+    # color/colour variants
+    (re.compile(r"\bcolor\b", re.IGNORECASE), "colour"),
+    (re.compile(r"\bcolors\b", re.IGNORECASE), "colours"),
+    (re.compile(r"\bcolored\b", re.IGNORECASE), "coloured"),
+    (re.compile(r"\bcolorful\b", re.IGNORECASE), "colourful"),
+    (re.compile(r"\bcoloring\b", re.IGNORECASE), "colouring"),
+    (re.compile(r"\bcolorless\b", re.IGNORECASE), "colourless"),
+    # favorite/favourite variants
+    (re.compile(r"\bfavorite\b", re.IGNORECASE), "favourite"),
+    (re.compile(r"\bfavorites\b", re.IGNORECASE), "favourites"),
+]
+
+
+def normalize_spelling_for_comparison(text: str) -> str:
+    """Normalize US spellings to Canadian/UK for comparison purposes.
+
+    This function normalizes common US spelling variants (flavor, color,
+    favorite) to their Canadian/UK equivalents in lowercase. Intended for
+    creating comparison keys where both sides need consistent spelling.
+
+    Unlike normalize_flavor_to_flavour, this function:
+    - Works on plain text (not HTML-aware)
+    - Returns lowercase output
+    - Handles multiple spelling variant families (flavor, color, favorite)
+    - Does not preserve case (designed for comparison, not rendering)
+
+    Args:
+        text: Plain text to normalize.
+
+    Returns:
+        Lowercase text with US spellings converted to Canadian/UK.
+    """
+    if not text:
+        return text
+
+    result = text.lower()
+    for pattern, replacement in _US_CA_SPELLING_PATTERNS:
+        result = pattern.sub(replacement, result)
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FAQ H3 HEADING MAPPING FILTER
 # ─────────────────────────────────────────────────────────────────────────────
 

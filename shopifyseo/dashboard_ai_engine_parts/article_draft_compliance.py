@@ -12,6 +12,7 @@ from .faq_content_filter import (
     filter_faq_items_by_h3_headings,
     filter_paa_questions,
     normalize_flavor_to_flavour,
+    normalize_spelling_for_comparison,
 )
 
 logger = logging.getLogger(__name__)
@@ -217,16 +218,30 @@ def _normalize_faq_match_key(text: str) -> tuple[str, str]:
 
 
 def _faq_question_text_visible(question: str, visible_blob: str) -> bool:
-    """True if the question (or a long-prefix / looser form) appears in *visible_blob*."""
+    """True if the question (or a long-prefix / looser form) appears in *visible_blob*.
+
+    Both the question and the visible_blob are normalized for US/CA spelling
+    variants (flavor/flavour, color/colour, favorite/favourite) before
+    comparison, so SERP queries containing US spellings match bodies that have
+    been normalized to Canadian spelling.
+    """
     strict, loose = _normalize_faq_match_key(question)
     if not strict:
         return True
-    if strict in visible_blob:
+
+    # Normalize both sides for US/CA spelling variants before comparison.
+    # The body may have been normalized (flavor→flavour) while the SERP query
+    # retains US spelling. Normalizing both sides makes comparison spelling-insensitive.
+    strict_normalized = normalize_spelling_for_comparison(strict)
+    loose_normalized = normalize_spelling_for_comparison(loose)
+    visible_normalized = normalize_spelling_for_comparison(visible_blob)
+
+    if strict_normalized in visible_normalized:
         return True
-    if len(loose) >= 12 and loose in visible_blob:
+    if len(loose_normalized) >= 12 and loose_normalized in visible_normalized:
         return True
-    if len(strict) > 96:
-        return strict[:96] in visible_blob
+    if len(strict_normalized) > 96:
+        return strict_normalized[:96] in visible_normalized
     return False
 
 
@@ -430,15 +445,28 @@ def collect_tier_related_queries(related_searches: object, *, max_position: int 
 
 
 def _tier_query_matches_heading_blob(query: str, strict_blob: str, loose_headings_blob: str) -> bool:
+    """Check if a tier-1 related query appears in heading blobs.
+
+    Both the query and the heading blobs are normalized for US/CA spelling
+    variants before comparison, ensuring SERP queries with US spelling match
+    headings that use Canadian spelling.
+    """
     strict_q, loose_q = _normalize_faq_match_key(query)
     if not strict_q:
         return True
-    if strict_q in strict_blob:
+
+    # Normalize both sides for US/CA spelling variants
+    strict_q_normalized = normalize_spelling_for_comparison(strict_q)
+    loose_q_normalized = normalize_spelling_for_comparison(loose_q)
+    strict_blob_normalized = normalize_spelling_for_comparison(strict_blob)
+    loose_blob_normalized = normalize_spelling_for_comparison(loose_headings_blob)
+
+    if strict_q_normalized in strict_blob_normalized:
         return True
-    if len(loose_q) >= 10 and loose_q in loose_headings_blob:
+    if len(loose_q_normalized) >= 10 and loose_q_normalized in loose_blob_normalized:
         return True
-    if len(strict_q) > 64:
-        return strict_q[:64] in strict_blob
+    if len(strict_q_normalized) > 64:
+        return strict_q_normalized[:64] in strict_blob_normalized
     return False
 
 

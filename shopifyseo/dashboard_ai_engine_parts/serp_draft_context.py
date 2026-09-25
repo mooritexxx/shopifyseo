@@ -7,6 +7,8 @@ import re
 import sqlite3
 from typing import Any
 
+from .faq_content_filter import filter_paa_questions, filter_paa_hierarchy
+
 # Total appendix budget (chars). Drop lowest-priority sections first when trimming.
 DEFAULT_SERP_APPENDIX_MAX_CHARS = 7200
 # PAA: cap count and per-row snippet so SERP data cannot dominate the prompt.
@@ -192,12 +194,21 @@ def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> li
 
     Parent PAA questions represent section intent. Expanded children are capped and
     deduped so they can add depth without overwhelming the prompt or forcing thin FAQ spam.
+
+    Questions matching the FAQ denylist (health claims, cigarette comparisons,
+    superlatives, wholesale/high-nicotine) are filtered out before inclusion.
     """
     ctx = idea_serp_context or {}
     raw_aq = ctx.get("audience_questions") or []
     audience_questions = raw_aq if isinstance(raw_aq, list) else []
     raw_exp = ctx.get("paa_expansion") or []
     expansions = raw_exp if isinstance(raw_exp, list) else []
+
+    # Pre-filter audience questions using the denylist
+    audience_questions = filter_paa_questions(
+        [q for q in audience_questions if isinstance(q, dict)],
+        log_dropped=True,
+    )
 
     expansion_by_parent: dict[str, list[dict[str, str]]] = {}
     expansion_order: list[str] = []
@@ -259,6 +270,9 @@ def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> li
             break
         if key not in seen_parent_keys:
             _append_parent(expansion_parent_text.get(key, ""))
+
+    # Apply denylist filter to the hierarchy (filters both parents and children)
+    rows = filter_paa_hierarchy(rows, log_dropped=True)
 
     return rows
 
@@ -341,6 +355,11 @@ def build_serp_appendix_and_retrieval_boost(
     audience_questions: list[dict[str, str]] = idea_serp_context.get("audience_questions") or []
     if not isinstance(audience_questions, list):
         audience_questions = []
+    # Filter audience questions using the denylist before building appendix
+    audience_questions = filter_paa_questions(
+        [q for q in audience_questions if isinstance(q, dict)],
+        log_dropped=True,
+    )
     paa_hierarchy = build_paa_question_hierarchy(idea_serp_context)
 
     top_pages: list[dict[str, str]] = idea_serp_context.get("top_ranking_pages") or []

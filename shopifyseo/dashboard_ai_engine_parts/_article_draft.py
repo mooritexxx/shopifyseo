@@ -121,6 +121,7 @@ def generate_article_draft(
         extract_visible_faq_items,
         length_only_article_compliance_gaps,
         mixed_length_and_serp_compliance_gaps,
+        normalize_article_body_spelling,
         strip_faqpage_jsonld_blocks,
         strip_html_for_compliance_search,
         validate_article_draft_compliance,
@@ -1753,6 +1754,8 @@ def generate_article_draft(
                 out, path_to_canonical=path_to_canonical, base_url=_base_url
             )
         out = strip_faqpage_jsonld_blocks(out)
+        # Normalize US 'flavor' spelling to Canadian 'flavour' (case-preserving)
+        out = normalize_article_body_spelling(out)
         return out
 
     # Gap 11: require a minimum count of approved-target links so silent sanitizer

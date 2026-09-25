@@ -214,6 +214,7 @@ class ProductActionResult(BaseModel):
     state: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     steps: dict[str, Any] | None = None
+    warnings: list[str] | None = None
 
 
 class FieldRegenerateRequest(BaseModel):

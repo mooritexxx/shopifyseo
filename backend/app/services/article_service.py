@@ -243,22 +243,28 @@ def get_blog_article_inspection_link(blog_handle: str, article_slug: str) -> tup
     return get_object_inspection_link("blog_article", composite)
 
 
-def update_blog_article(blog_handle: str, article_slug: str, payload: dict[str, Any]) -> tuple[bool, str]:
+def update_blog_article(
+    blog_handle: str, article_slug: str, payload: dict[str, Any]
+) -> tuple[bool, str, list[str] | None]:
     """Update a blog article with partial update semantics.
 
     Only fields present in the payload (with non-None values) are updated.
     Missing fields are left unchanged on both Shopify and the local DB.
+
+    Returns:
+        A tuple of (success, message, warnings) where warnings is a list of
+        warning messages or None if no warnings.
     """
     conn = open_db_connection()
     try:
         detail = dq.fetch_blog_article_detail(conn, blog_handle, article_slug)
         if not detail:
-            return False, "Article not found"
+            return False, "Article not found", None
         row = detail["article"]
         composite = dq.blog_article_composite_handle(blog_handle, article_slug)
         try:
             with SYNC_LOCK:
-                live_update_article(
+                _, warnings = live_update_article(
                     DB_PATH,
                     row["shopify_id"],
                     title=payload.get("title"),
@@ -292,9 +298,9 @@ def update_blog_article(blog_handle: str, article_slug: str, payload: dict[str, 
                     )
                 refresh_object_structured_seo_data(conn, "blog_article", composite)
             clear_last_error()
-            return True, "Article saved"
+            return True, "Article saved", warnings if warnings else None
         except (Exception, SystemExit) as exc:
             record_last_error(exc)
-            return False, str(exc)
+            return False, str(exc), None
     finally:
         conn.close()

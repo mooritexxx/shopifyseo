@@ -181,6 +181,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "collections", {"api_unreachable": "INTEGER DEFAULT 0"})
     _ensure_columns(conn, "pages", SEO_SIGNAL_COLUMNS)
     _ensure_columns(conn, "blog_articles", SEO_SIGNAL_COLUMNS)
+    # featured_image_alt: stores the alt text for article featured images (PR #33)
+    _ensure_columns(conn, "blog_articles", {"featured_image_alt": "TEXT"})
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS seo_workflow_states (

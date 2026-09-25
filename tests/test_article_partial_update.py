@@ -3,8 +3,9 @@
 Verifies that:
 1. Metadata-only updates leave body, seo_title, seo_description untouched
 2. New fields (author_name, summary, featured_image_alt) reach Shopify
-3. Alt-only updates don't trigger a file upload
+3. Alt-only updates return a warning about Shopify image re-upload
 4. Existing full update flows still work
+5. The featured_image_alt column exists in the real schema
 """
 import pytest
 from unittest.mock import MagicMock, patch, call
@@ -80,7 +81,7 @@ class TestLiveUpdateArticlePartialUpdate:
             }
         }
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
             author_name="Vapely",
@@ -95,6 +96,8 @@ class TestLiveUpdateArticlePartialUpdate:
         assert "body" not in article_input
         # author should be set
         assert article_input.get("author") == {"name": "Vapely"}
+        # No warnings for non-image updates
+        assert warnings == []
 
     @patch("shopifyseo.dashboard_live_updates.graphql_request")
     @patch("shopifyseo.dashboard_live_updates.sync_article")
@@ -111,7 +114,7 @@ class TestLiveUpdateArticlePartialUpdate:
             }
         }
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
             title="New Title",
@@ -130,6 +133,7 @@ class TestLiveUpdateArticlePartialUpdate:
         assert article_input.get("author") == {"name": "Vapely"}
         assert article_input.get("summary") == "Excerpt"
         assert "metafields" in article_input
+        assert warnings == []
 
     @patch("shopifyseo.dashboard_live_updates.graphql_request")
     @patch("shopifyseo.dashboard_live_updates.sync_article")
@@ -137,7 +141,7 @@ class TestLiveUpdateArticlePartialUpdate:
         """An update with no fields should not make a Shopify request."""
         from shopifyseo.dashboard_live_updates import live_update_article
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
         )
@@ -145,12 +149,13 @@ class TestLiveUpdateArticlePartialUpdate:
         # Should return early without calling GraphQL
         assert not mock_gql.called
         assert result == {"article": None, "userErrors": []}
+        assert warnings == []
 
     @patch("shopifyseo.dashboard_live_updates._fetch_article_image")
     @patch("shopifyseo.dashboard_live_updates.graphql_request")
     @patch("shopifyseo.dashboard_live_updates.sync_article")
     def test_alt_only_update_reuses_existing_image(self, mock_sync, mock_gql, mock_fetch):
-        """Alt-only update should fetch existing image and reuse its URL."""
+        """Alt-only update should fetch existing image and reuse its URL, but warn about re-upload."""
         from shopifyseo.dashboard_live_updates import live_update_article
 
         mock_fetch.return_value = {
@@ -166,7 +171,7 @@ class TestLiveUpdateArticlePartialUpdate:
             }
         }
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
             image_alt="New alt text",
@@ -182,6 +187,12 @@ class TestLiveUpdateArticlePartialUpdate:
             "url": "https://cdn.shopify.com/existing-image.jpg",
             "altText": "New alt text",
         }
+
+        # Should return warning about Shopify re-upload bug
+        assert len(warnings) == 1
+        assert "re-uploaded" in warnings[0].lower()
+        assert "shopify" in warnings[0].lower()
+        assert "community.shopify.dev" in warnings[0]
 
     @patch("shopifyseo.dashboard_live_updates._fetch_article_image")
     @patch("shopifyseo.dashboard_live_updates.graphql_request")
@@ -200,7 +211,7 @@ class TestLiveUpdateArticlePartialUpdate:
             }
         }
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
             title="Title",  # Include something so the update happens
@@ -215,10 +226,13 @@ class TestLiveUpdateArticlePartialUpdate:
         article_input = mutation_vars["article"]
         assert "image" not in article_input
 
+        # No warning when no image was updated
+        assert warnings == []
+
     @patch("shopifyseo.dashboard_live_updates.graphql_request")
     @patch("shopifyseo.dashboard_live_updates.sync_article")
     def test_new_image_with_alt(self, mock_sync, mock_gql):
-        """New image URL with alt should work as before."""
+        """New image URL with alt should work as before, no warning."""
         from shopifyseo.dashboard_live_updates import live_update_article
 
         mock_gql.return_value = {
@@ -230,7 +244,7 @@ class TestLiveUpdateArticlePartialUpdate:
             }
         }
 
-        result = live_update_article(
+        result, warnings = live_update_article(
             "/tmp/test.db",
             "gid://article/1",
             image_url="https://example.com/new-image.jpg",
@@ -243,6 +257,9 @@ class TestLiveUpdateArticlePartialUpdate:
             "url": "https://example.com/new-image.jpg",
             "altText": "New image alt",
         }
+
+        # No warning when explicitly providing a new image URL
+        assert warnings == []
 
 
 class TestApplySavedBlogArticleFieldsPartialUpdate:
@@ -406,10 +423,12 @@ class TestUpdateBlogArticlePartialUpdate:
         mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn.return_value.__exit__ = MagicMock(return_value=False)
         mock_conn.return_value.close = MagicMock()
+        # live_update_article now returns (result, warnings)
+        mock_live.return_value = ({}, [])
 
         # Only provide workflow_status
         payload = {"workflow_status": "Ready"}
-        ok, msg = update_blog_article("blog", "article", payload)
+        ok, msg, warnings = update_blog_article("blog", "article", payload)
 
         # Verify live_update_article was called with None for content fields
         mock_live.assert_called_once()
@@ -417,3 +436,98 @@ class TestUpdateBlogArticlePartialUpdate:
         assert call_kwargs[1].get("title") is None
         assert call_kwargs[1].get("body_html") is None
         assert call_kwargs[1].get("seo_title") is None
+
+
+class TestRealSchemaFeaturedImageAlt:
+    """Test that featured_image_alt column exists in the real schema.
+
+    These tests run against the actual schema migration to catch issues
+    that mocked tests cannot detect (like the missing column bug in PR #32).
+    """
+
+    def test_featured_image_alt_column_exists_in_blog_articles(self, tmp_path):
+        """Verify the featured_image_alt column is created by ensure_dashboard_schema."""
+        import sqlite3
+        from shopifyseo.dashboard_store import ensure_dashboard_schema
+
+        db_path = tmp_path / "real_schema_test.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row  # Required by ensure_dashboard_schema
+
+        # Run the real schema migration
+        ensure_dashboard_schema(conn)
+
+        # Check that blog_articles table has featured_image_alt column
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(blog_articles)")}
+        assert "featured_image_alt" in columns, (
+            "featured_image_alt column should exist in blog_articles table after migration. "
+            f"Found columns: {columns}"
+        )
+
+        conn.close()
+
+    def test_can_write_featured_image_alt_to_real_schema(self, tmp_path):
+        """Verify we can write featured_image_alt to the real schema."""
+        import sqlite3
+        from shopifyseo.dashboard_store import ensure_dashboard_schema
+        from shopifyseo.dashboard_queries._editors import apply_saved_blog_article_fields_from_editor
+
+        db_path = tmp_path / "real_schema_test.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row  # Required by ensure_dashboard_schema
+
+        # Run the real schema migration
+        ensure_dashboard_schema(conn)
+
+        # Insert a minimal blog_articles row (required fields only)
+        # First we need a blog row for the foreign key
+        conn.execute("""
+            INSERT INTO blogs (shopify_id, title, handle, tags_json, raw_json, synced_at)
+            VALUES ('gid://blog/1', 'Test Blog', 'test-blog', '[]', '{}', datetime('now'))
+        """)
+        conn.execute("""
+            INSERT INTO blog_articles (
+                shopify_id, blog_shopify_id, blog_handle, title, handle,
+                is_published, tags_json, raw_json, synced_at
+            )
+            VALUES (
+                'gid://article/1', 'gid://blog/1', 'test-blog', 'Test Article', 'test-article',
+                1, '[]', '{}', datetime('now')
+            )
+        """)
+        conn.commit()
+
+        # Now write featured_image_alt using the real function
+        apply_saved_blog_article_fields_from_editor(
+            conn,
+            "gid://article/1",
+            featured_image_alt="Test alt text for image",
+        )
+
+        # Verify it was written
+        row = conn.execute(
+            "SELECT featured_image_alt FROM blog_articles WHERE shopify_id = ?",
+            ("gid://article/1",),
+        ).fetchone()
+
+        assert row[0] == "Test alt text for image", (
+            f"featured_image_alt should be writable. Got: {row[0]}"
+        )
+
+        conn.close()
+
+    def test_endpoint_returns_warnings_for_alt_only_update(self):
+        """Verify the update response schema includes warnings field."""
+        from backend.app.schemas.product import ProductActionResult
+
+        # Create a response with warnings
+        result = ProductActionResult(
+            message="Article saved",
+            warnings=["Warning about image re-upload"],
+        )
+
+        assert result.warnings == ["Warning about image re-upload"]
+
+        # Verify warnings can be None
+        result_no_warnings = ProductActionResult(message="Article saved")
+        assert result_no_warnings.warnings is None

@@ -227,7 +227,7 @@ def live_update_article(
     summary: str | None = None,
     image_url: str | None = None,
     image_alt: str | None = None,
-) -> dict:
+) -> tuple[dict, list[str]]:
     """Update an article via the Admin GraphQL API.
 
     Partial update semantics: fields set to None are not updated.
@@ -247,7 +247,9 @@ def live_update_article(
                   updating only the alt text of an existing image
 
     Returns:
-        The Shopify articleUpdate mutation result.
+        A tuple of (result, warnings) where:
+        - result: The Shopify articleUpdate mutation result
+        - warnings: List of warning messages (e.g., for alt-only image updates)
 
     Raises:
         RuntimeError: If Shopify returns userErrors.
@@ -272,6 +274,8 @@ def live_update_article(
     }
     """
     article: dict = {}
+    warnings: list[str] = []
+    alt_only_update = False
 
     if body_html is not None:
         article["body"] = body_html
@@ -306,9 +310,10 @@ def live_update_article(
                 "url": existing_image["url"],
                 "altText": image_alt[:512],
             }
+            alt_only_update = True
 
     if not article:
-        return {"article": None, "userErrors": []}
+        return {"article": None, "userErrors": []}, []
 
     data = graphql_request(mutation, {"id": article_id, "article": article})
     result = data["data"]["articleUpdate"]
@@ -317,14 +322,25 @@ def live_update_article(
     sync_article(db_path, article_id)
     if body_html is not None:
         _schedule_internal_link_refresh_safe(db_path)
-    return result
+
+    if alt_only_update:
+        warnings.append(
+            "Image alt text updated, but Shopify re-uploaded the image (new image ID assigned). "
+            "This is a known Shopify API limitation: "
+            "https://community.shopify.dev/t/unable-to-update-alt-text-on-an-image-while-keeping-existing-image/6793"
+        )
+
+    return result, warnings
 
 
 def _fetch_article_image(article_id: str) -> dict | None:
     """Fetch the current featured image for an article (for alt-only updates).
 
     Returns dict with 'url' and 'altText' keys, or None if no image exists.
-    This avoids re-uploading the image when only updating the alt text.
+
+    Note: Shopify's articleUpdate mutation re-uploads the image even when passing
+    the same URL with a new altText. This is a known Shopify bug:
+    https://community.shopify.dev/t/unable-to-update-alt-text-on-an-image-while-keeping-existing-image/6793
     """
     query = """
     query GetArticleImage($id: ID!) {

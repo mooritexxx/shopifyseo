@@ -25,7 +25,7 @@ from backend.app.schemas.blog import (
 from backend.app.routers import field_regen_errors
 from backend.app.schemas.article_ideas import KeywordCoveragePayload
 from backend.app.schemas.common import SuccessResponse, success_response
-from backend.app.schemas.content import ContentDetailPayload, ContentUpdatePayload
+from backend.app.schemas.content import ArticleUpdatePayload, ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
 from shopifyseo.dashboard_store import (
@@ -1258,9 +1258,18 @@ def article_keyword_coverage(blog_handle: str, article_handle: str):
 
 @router.post("/articles/{blog_handle}/{article_handle}/update", response_model=SuccessResponse[ProductActionResult])
 def article_update(
-    blog_handle: str, article_handle: str, payload: ContentUpdatePayload
+    blog_handle: str, article_handle: str, payload: ArticleUpdatePayload
 ):
-    ok, message = update_blog_article(blog_handle, article_handle, payload.model_dump())
+    """Update an article with partial update semantics.
+
+    Only fields present in the request body are updated. Fields not included
+    or set to null are left unchanged on both Shopify and the local database.
+
+    This allows metadata-only updates (e.g., workflow_status) without
+    accidentally clearing the article body or SEO fields.
+    """
+    update_data = payload.model_dump(exclude_none=True)
+    ok, message = update_blog_article(blog_handle, article_handle, update_data)
     if not ok:
         if message == "Article not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)

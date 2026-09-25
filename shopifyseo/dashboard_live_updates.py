@@ -218,22 +218,39 @@ def publish_article(db_path: str, article_id: str, *, is_published: bool) -> dic
 def live_update_article(
     db_path: str,
     article_id: str,
-    title: str,
-    seo_title: str,
-    seo_description: str,
-    body_html: str,
+    title: str | None = None,
+    seo_title: str | None = None,
+    seo_description: str | None = None,
+    body_html: str | None = None,
     *,
-    author_name: str = "",
-    summary: str = "",
-    image_url: str = "",
-    image_alt: str = "",
+    author_name: str | None = None,
+    summary: str | None = None,
+    image_url: str | None = None,
+    image_alt: str | None = None,
 ) -> dict:
     """Update an article via the Admin GraphQL API.
 
-    Optional keyword arguments:
-    - author_name: Update the article author
-    - summary: Update the excerpt
-    - image_url + image_alt: Update featured image (requires HTTPS URL)
+    Partial update semantics: fields set to None are not updated.
+    Only fields with non-None values are included in the mutation.
+
+    Args:
+        db_path: Path to the local SQLite database
+        article_id: Shopify article GID
+        title: Article title (None = don't update)
+        seo_title: SEO meta title (None = don't update)
+        seo_description: SEO meta description (None = don't update)
+        body_html: Article body HTML (None = don't update)
+        author_name: Article author name (None = don't update)
+        summary: Article excerpt/summary (None = don't update)
+        image_url: Featured image URL - requires HTTPS (None = don't update image)
+        image_alt: Featured image alt text - can update without image_url if
+                  updating only the alt text of an existing image
+
+    Returns:
+        The Shopify articleUpdate mutation result.
+
+    Raises:
+        RuntimeError: If Shopify returns userErrors.
     """
     mutation = """
     mutation UpdateArticle($id: ID!, $article: ArticleUpdateInput!) {
@@ -254,26 +271,75 @@ def live_update_article(
       }
     }
     """
-    article: dict = {"body": body_html}
-    if title.strip():
+    article: dict = {}
+
+    if body_html is not None:
+        article["body"] = body_html
+
+    if title is not None and title.strip():
         article["title"] = title
-    metafields = _seo_metafields(seo_title, seo_description)
+
+    metafields: list[dict[str, Any]] = []
+    if seo_title is not None and seo_title.strip():
+        metafields.append({"namespace": "global", "key": "title_tag", "type": "single_line_text_field", "value": seo_title})
+    if seo_description is not None and seo_description.strip():
+        metafields.append({"namespace": "global", "key": "description_tag", "type": "multi_line_text_field", "value": seo_description})
     if metafields:
         article["metafields"] = metafields
-    if (author_name or "").strip():
+
+    if author_name is not None and author_name.strip():
         article["author"] = {"name": author_name.strip()}
-    if (summary or "").strip():
+
+    if summary is not None and summary.strip():
         article["summary"] = summary.strip()
+
     u = (image_url or "").strip()
     if u.startswith("https://"):
         article["image"] = {
             "url": u,
             "altText": (image_alt or title or "Blog image")[:512],
         }
+    elif image_alt is not None:
+        existing_image = _fetch_article_image(article_id)
+        if existing_image and existing_image.get("url"):
+            article["image"] = {
+                "url": existing_image["url"],
+                "altText": image_alt[:512],
+            }
+
+    if not article:
+        return {"article": None, "userErrors": []}
+
     data = graphql_request(mutation, {"id": article_id, "article": article})
     result = data["data"]["articleUpdate"]
     if result["userErrors"]:
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
     sync_article(db_path, article_id)
-    _schedule_internal_link_refresh_safe(db_path)
+    if body_html is not None:
+        _schedule_internal_link_refresh_safe(db_path)
     return result
+
+
+def _fetch_article_image(article_id: str) -> dict | None:
+    """Fetch the current featured image for an article (for alt-only updates).
+
+    Returns dict with 'url' and 'altText' keys, or None if no image exists.
+    This avoids re-uploading the image when only updating the alt text.
+    """
+    query = """
+    query GetArticleImage($id: ID!) {
+      article(id: $id) {
+        image {
+          url
+          altText
+        }
+      }
+    }
+    """
+    try:
+        data = graphql_request(query, {"id": article_id})
+        image = data.get("data", {}).get("article", {}).get("image")
+        return image if image else None
+    except Exception:
+        logger.warning("Failed to fetch article image for alt update", exc_info=True)
+        return None

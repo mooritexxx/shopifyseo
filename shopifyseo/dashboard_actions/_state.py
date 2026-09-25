@@ -377,10 +377,14 @@ def _raise_if_sync_cancelled() -> None:
 # ---------------------------------------------------------------------------
 
 
+BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+
+
 def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn

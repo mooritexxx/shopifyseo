@@ -1994,10 +1994,14 @@ def refresh_structured_seo_data(
     conn.commit()
 
 
+BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+
+
 def db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     ensure_dashboard_schema(conn)
@@ -2006,9 +2010,10 @@ def db_connect() -> sqlite3.Connection:
 
 
 def bootstrap_runtime_settings() -> None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     configure_sqlite_text_decode(conn)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     try:
         ensure_dashboard_schema(conn)
         apply_runtime_settings(conn)

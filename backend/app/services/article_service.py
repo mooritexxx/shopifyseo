@@ -244,6 +244,11 @@ def get_blog_article_inspection_link(blog_handle: str, article_slug: str) -> tup
 
 
 def update_blog_article(blog_handle: str, article_slug: str, payload: dict[str, Any]) -> tuple[bool, str]:
+    """Update a blog article with partial update semantics.
+
+    Only fields present in the payload (with non-None values) are updated.
+    Missing fields are left unchanged on both Shopify and the local DB.
+    """
     conn = open_db_connection()
     try:
         detail = dq.fetch_blog_article_detail(conn, blog_handle, article_slug)
@@ -256,26 +261,35 @@ def update_blog_article(blog_handle: str, article_slug: str, payload: dict[str, 
                 live_update_article(
                     DB_PATH,
                     row["shopify_id"],
-                    payload.get("title", ""),
-                    payload.get("seo_title", ""),
-                    payload.get("seo_description", ""),
-                    payload.get("body_html", ""),
+                    title=payload.get("title"),
+                    seo_title=payload.get("seo_title"),
+                    seo_description=payload.get("seo_description"),
+                    body_html=payload.get("body_html"),
+                    author_name=payload.get("author_name"),
+                    summary=payload.get("summary"),
+                    image_alt=payload.get("featured_image_alt"),
                 )
                 dq.apply_saved_blog_article_fields_from_editor(
                     conn,
                     row["shopify_id"],
-                    title=str(payload.get("title") or ""),
-                    seo_title=str(payload.get("seo_title") or ""),
-                    seo_description=str(payload.get("seo_description") or ""),
-                    body_html=str(payload.get("body_html") or ""),
+                    title=payload.get("title"),
+                    seo_title=payload.get("seo_title"),
+                    seo_description=payload.get("seo_description"),
+                    body_html=payload.get("body_html"),
+                    author_name=payload.get("author_name"),
+                    summary=payload.get("summary"),
+                    featured_image_alt=payload.get("featured_image_alt"),
                 )
-                dq.set_workflow_state(
-                    conn,
-                    "blog_article",
-                    composite,
-                    payload.get("workflow_status", "Needs fix"),
-                    payload.get("workflow_notes", ""),
-                )
+                wf_status = payload.get("workflow_status")
+                wf_notes = payload.get("workflow_notes")
+                if wf_status is not None or wf_notes is not None:
+                    dq.set_workflow_state(
+                        conn,
+                        "blog_article",
+                        composite,
+                        wf_status if wf_status is not None else "Needs fix",
+                        wf_notes if wf_notes is not None else "",
+                    )
                 refresh_object_structured_seo_data(conn, "blog_article", composite)
             clear_last_error()
             return True, "Article saved"

@@ -106,3 +106,20 @@ class ContentDetailPayload(BaseModel):
 
 class ContentUpdatePayload(ContentDraftPayload):
     pass
+
+
+class ArticleUpdatePayload(BaseModel):
+    """Payload for partial article updates.
+
+    All fields are optional (None = not provided, don't update).
+    This distinguishes 'not provided' from 'explicitly set to empty string'.
+    """
+    title: str | None = None
+    seo_title: str | None = None
+    seo_description: str | None = None
+    body_html: str | None = None
+    workflow_status: str | None = None
+    workflow_notes: str | None = None
+    author_name: str | None = None
+    summary: str | None = None
+    featured_image_alt: str | None = None

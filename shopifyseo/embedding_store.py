@@ -755,6 +755,8 @@ def sync_embeddings(
             )
             pruned = prune_stale_embeddings(conn, t)
             total_pruned += pruned
+            # Release the write lock before the (slow) scan and embedding API calls.
+            conn.commit()
             _set_sync_progress(pruned=total_pruned)
 
             existing = {}
@@ -802,8 +804,10 @@ def sync_embeddings(
                 ),
             )
 
+            # Commit the scan's DELETEs now so no write transaction stays open
+            # across the network calls to the embedding API below.
+            conn.commit()
             if not texts_to_embed:
-                conn.commit()
                 continue
 
             for batch_start in range(0, len(texts_to_embed), BATCH_SIZE):

@@ -446,7 +446,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
 def open_db(db_path: str | Path) -> sqlite3.Connection:

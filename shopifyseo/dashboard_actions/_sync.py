@@ -887,6 +887,21 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         conn.close()
 
 
+def _retry_on_db_lock(fn, *args, attempts: int = 4, **kwargs):
+    """Box hotpatch 2026-09-29: retry a DB write that hit 'database is locked'."""
+    import time as _time
+    delay = 2.0
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == attempts:
+                raise
+            logger.warning("DB locked (attempt %s/%s); retrying in %.0fs", attempt, attempts, delay)
+            _time.sleep(delay)
+            delay *= 2
+
+
 def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force_refresh: bool = False) -> dict:
     conn = _db_connect_for_actions(db_path)
     summary = {
@@ -935,7 +950,8 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
             sync_queue_mark_running("index", rk)
             try:
                 worker_conn = _db_connect_for_actions(db_path)
-                dg.get_url_inspection(
+                _retry_on_db_lock(
+                    dg.get_url_inspection,
                     worker_conn,
                     url,
                     refresh=True,
@@ -976,7 +992,7 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
                     SYNC_STATE["index_progress_done"] = summary["considered"]
         _raise_if_sync_cancelled()
         if touched_targets:
-            refresh_index_signal_data_for_objects(conn, touched_targets)
+            _retry_on_db_lock(refresh_index_signal_data_for_objects, conn, touched_targets)
     finally:
         conn.close()
     return summary

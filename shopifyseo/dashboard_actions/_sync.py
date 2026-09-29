@@ -189,7 +189,7 @@ def _reconcile_catalog_signal_columns_from_cache(db_path: str, *, after_scope: s
         conn.close()
 
 
-def _start_gsc_query_embedding_sync(db_path: str) -> None:
+def _start_gsc_query_embedding_sync(db_path: str) -> threading.Thread:
     """Refresh GSC-query embeddings after visible sync completion."""
 
     def _worker() -> None:
@@ -205,7 +205,9 @@ def _start_gsc_query_embedding_sync(db_path: str) -> None:
             if conn is not None:
                 conn.close()
 
-    threading.Thread(target=_worker, daemon=True).start()
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
 
 
 def _start_internal_link_refresh(db_path: str) -> threading.Thread:
@@ -283,11 +285,11 @@ def _run_deferred_post_sync_jobs() -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _start_catalog_embedding_sync(db_path: str) -> None:
+def _start_catalog_embedding_sync(db_path: str):
     """Refresh catalog embeddings (products, collections, pages, articles) after Shopify sync."""
     from ..embedding_sync import enqueue_embedding_sync
 
-    enqueue_embedding_sync(
+    return enqueue_embedding_sync(
         db_path,
         object_types=["product", "collection", "page", "blog_article"],
     )

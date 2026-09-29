@@ -244,6 +244,45 @@ def _start_internal_link_refresh(db_path: str) -> threading.Thread:
     return thread
 
 
+_DEFERRED_POST_SYNC: list[tuple] = []
+_DEFERRED_POST_SYNC_LOCK = threading.Lock()
+
+
+def _defer_until_sync_done(fn, *args) -> None:
+    """Run a background DB writer after the visible sync finishes.
+
+    Embedding refreshes and the internal-link rebuild hold long SQLite write
+    transactions; started mid-sync they block the next sync step past
+    busy_timeout ("database is locked"). Outside a sync, run immediately.
+    """
+    if SYNC_STATE.get("running"):
+        with _DEFERRED_POST_SYNC_LOCK:
+            if not any(f is fn and a == args for f, a in _DEFERRED_POST_SYNC):
+                _DEFERRED_POST_SYNC.append((fn, args))
+        return
+    fn(*args)
+
+
+def _run_deferred_post_sync_jobs() -> None:
+    with _DEFERRED_POST_SYNC_LOCK:
+        jobs = list(_DEFERRED_POST_SYNC)
+        _DEFERRED_POST_SYNC.clear()
+    if not jobs:
+        return
+
+    def _worker() -> None:
+        for fn, args in jobs:
+            try:
+                result = fn(*args)
+                # Starters return a thread (or enqueue one); wait so jobs don't overlap.
+                if isinstance(result, threading.Thread):
+                    result.join()
+            except Exception:
+                logger.warning("Deferred post-sync job %s failed", getattr(fn, "__name__", fn), exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _start_catalog_embedding_sync(db_path: str) -> None:
     """Refresh catalog embeddings (products, collections, pages, articles) after Shopify sync."""
     from ..embedding_sync import enqueue_embedding_sync
@@ -781,8 +820,8 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         _raise_if_sync_cancelled()
         _flush_gsc_signal_targets(final=True)
         if touched_targets:
-            _start_gsc_query_embedding_sync(db_path)
-            _start_internal_link_refresh(db_path)
+            _defer_until_sync_done(_start_gsc_query_embedding_sync, db_path)
+            _defer_until_sync_done(_start_internal_link_refresh, db_path)
     finally:
         try:
             dg.delete_search_console_overview_timeseries_only(conn)
@@ -1128,7 +1167,7 @@ def _run_selected_sync_steps(db_path: str, selected_scopes: list[str], force_ref
             _sync_current("Shopify: finalizing catalog rows")
             _reconcile_catalog_signal_columns_from_cache(db_path, after_scope="shopify")
             _set_shopify_finalize_progress(1)
-            _start_catalog_embedding_sync(db_path)
+            _defer_until_sync_done(_start_catalog_embedding_sync, db_path)
         elif selected_scope == "gsc":
             _set_sync_stage(
                 stage="refreshing_gsc",
@@ -1410,6 +1449,7 @@ def run_sync(
             raise
         finally:
             SYNC_STATE["running"] = False
+            _run_deferred_post_sync_jobs()
 
 
 def start_sync_background(db_path: str, scope: str, selected_scopes: list[str] | None = None, force_refresh: bool = False) -> bool:

@@ -201,6 +201,7 @@ def enqueue_embedding_sync(
         daemon=True,
     )
     thread.start()
+    return thread
 
 
 def enqueue_embedding_sync_for_type(

@@ -768,6 +768,7 @@ def sync_embeddings(
 
             rows = _load_rows(conn, t)
             texts_to_embed: list[tuple[str, str, int]] = []  # (handle, text, chunk_index)
+            stale_chunk_deletes: list[tuple[str, str, int]] = []
 
             for row in rows:
                 handle = row["_handle"]
@@ -779,10 +780,9 @@ def sync_embeddings(
                 if isinstance(text_or_chunks, str):
                     text_or_chunks = [text_or_chunks]
 
-                conn.execute(
-                    "DELETE FROM embeddings WHERE object_type = ? AND object_handle = ? AND chunk_index >= ?",
-                    (t, handle, len(text_or_chunks)),
-                )
+                # Defer the write: doing DELETEs during the (long) scan would hold
+                # the SQLite write lock for the whole scan and block the sync.
+                stale_chunk_deletes.append((t, handle, len(text_or_chunks)))
 
                 for ci, chunk_text in enumerate(text_or_chunks):
                     if not chunk_text.strip():
@@ -804,8 +804,13 @@ def sync_embeddings(
                 ),
             )
 
-            # Commit the scan's DELETEs now so no write transaction stays open
-            # across the network calls to the embedding API below.
+            # Apply the scan's deletes in one short transaction, and commit so no
+            # write transaction stays open across the embedding API calls below.
+            if stale_chunk_deletes:
+                conn.executemany(
+                    "DELETE FROM embeddings WHERE object_type = ? AND object_handle = ? AND chunk_index >= ?",
+                    stale_chunk_deletes,
+                )
             conn.commit()
             if not texts_to_embed:
                 continue

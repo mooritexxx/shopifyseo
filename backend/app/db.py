@@ -16,7 +16,7 @@ _bootstrapped_paths: set[str] = set()
 _bootstrap_lock = threading.Lock()
 
 
-BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
 def get_db_path() -> str:

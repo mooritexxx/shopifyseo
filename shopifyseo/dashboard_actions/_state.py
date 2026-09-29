@@ -377,7 +377,7 @@ def _raise_if_sync_cancelled() -> None:
 # ---------------------------------------------------------------------------
 
 
-BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
 def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:

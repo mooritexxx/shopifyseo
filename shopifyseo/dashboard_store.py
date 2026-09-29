@@ -1996,7 +1996,7 @@ def refresh_structured_seo_data(
     conn.commit()
 
 
-BUSY_TIMEOUT_MS = 5000  # 5 seconds wait on lock contention
+BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
 def db_connect() -> sqlite3.Connection:

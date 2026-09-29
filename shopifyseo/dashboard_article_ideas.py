@@ -1733,6 +1733,12 @@ def ensure_idea_serp_fresh(
             "error": None,
         }
 
+    # BOX HOTPATCH 2026-09-29 (CoS ops review): Salar-approved stale-SERP fallback.
+    # When refresh fails but stored SERP is <= 7 days old, continue with a warning
+    # instead of aborting the draft. Proper settings-based PR still needed when
+    # cloud-agent usage returns (prompt: /workspace/vapely-agent-briefs/2026-09-29-serp-stale-cloud-agent-prompt.md).
+    # Do not treat this local edit as the durable fix — next main pull may overwrite it.
+    STALE_SERP_FALLBACK_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
     try:
         refresh_article_idea_serp_snapshot(conn, idea_id)
         return {
@@ -1742,6 +1748,30 @@ def ensure_idea_serp_fresh(
             "error": None,
         }
     except (LookupError, ValueError) as exc:
+        age_seconds = None
+        if has_data and serp_ts is not None:
+            age_seconds = now - int(serp_ts)
+        if (
+            has_data
+            and age_seconds is not None
+            and age_seconds <= STALE_SERP_FALLBACK_MAX_AGE_SECONDS
+        ):
+            age_days = round(age_seconds / 86400, 2)
+            warn = (
+                f"SERP refresh failed ({exc}); continuing with stale snapshot "
+                f"age_days={age_days} (fallback max 7d)"
+            )
+            import logging
+            logging.getLogger(__name__).warning(warn)
+            return {
+                "status": "reused",
+                "refreshed": False,
+                "reason": warn,
+                "error": None,
+                "serp_stale": True,
+                "serp_age_days": age_days,
+                "warning": warn,
+            }
         return {
             "status": "failed",
             "refreshed": False,

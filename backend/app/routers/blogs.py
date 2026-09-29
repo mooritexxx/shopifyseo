@@ -364,8 +364,14 @@ def _run_generate_article_draft(
                     result_summary="Refreshed via SerpAPI",
                 )
             elif serp_result["status"] == "reused":
+                stale = bool(serp_result.get("serp_stale"))
+                summary = (
+                    f"Reused stale SERP (~{serp_result.get('serp_age_days')}d)"
+                    if stale
+                    else "Reused existing"
+                )
                 p(
-                    f"SERP snapshot is fresh: {serp_result['reason']}",
+                    f"SERP snapshot reused: {serp_result['reason']}",
                     "serp",
                     "done",
                     run_id=run_id,
@@ -373,7 +379,7 @@ def _run_generate_article_draft(
                     step_label="Ensure SERP snapshot",
                     step_index=1,
                     step_total=12,
-                    result_summary="Reused existing",
+                    result_summary=summary,
                 )
             else:
                 update_run(status="failed", current_step="ensure_serp_fresh", error_message=serp_result["error"] or "SERP refresh failed")

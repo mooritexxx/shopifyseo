@@ -63,7 +63,18 @@ Rankings, cluster/competitor details and Opportunity Inbox now share compact sum
 
 Evidence: [Rankings mobile](batch-3-evidence/rankings-mobile.png), [ranking dialog](batch-3-evidence/rankings-dialog-small.png), [cluster mobile](batch-3-evidence/cluster-mobile.png), [coverage dialog](batch-3-evidence/coverage-small-phone.png), [competitor mobile](batch-3-evidence/competitor-mobile.png), [Inbox desktop](batch-3-evidence/inbox-desktop.png), [Inbox mobile](batch-3-evidence/inbox-mobile.png), [width checks](batch-3-evidence/width-checks.json).
 
-Next: Batch 4, content planning and drafting.
+## Batch 4 — content planning implemented
+
+Article Ideas now shares compact status tabs, a named scrollable table with sticky title/selection columns, keyboard sort controls and native detail links. Detail headings/actions wrap by available width, the brief/sidebar grid stacks, and research explanations are shorter without removing refresh/cost guidance.
+
+- Existing 70 frontend tests passed; a new keyboard regression test passed separately (71 total), covering status-tab navigation, sorting and opening a detail without selecting its row. Clean production build/restart passed.
+- Populated queue and idea detail checked at 1440, 1024, 768, 390 and 320px: no document overflow. New status tab, title sort and detail link activated with the keyboard.
+- Draft dialog at 320×600 stays between y=16 and y=584 with internal scrolling; opening and cancelling verified. Generation, live status edits/deletion, SERP refresh and Shopify writes were not triggered. Success/error/resume fixtures and zoom remain open.
+- No API request or response handling changed. Existing full-row sorting/selection is retained.
+
+Evidence: [idea detail](batch-4-evidence/idea-desktop.png), [queue](batch-4-evidence/queue-desktop.png), [short draft dialog](batch-4-evidence/draft-small-phone.png), [width checks](batch-4-evidence/width-checks.json).
+
+Next: Batch 5, optimization and tools.
 
 ## Outcome of the first pass
 
@@ -128,8 +139,8 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | `/keywords` | Seeds, Competitors, Targets, Clusters; Approved/New/Dismissed states for competitors and targets | Seed edits, add/discovery dialogs, filters/sorts/selections, match change, long clusters, progress/cancel/error | 1 pilot | ✓/✓ | ✓/partial/partial |
 | `/keywords/clusters/:id` | Populated representative cluster | Coverage dialog, assigned pages, keyword actions, empty/error and long content | 3 | ✓/✓ | ✓/partial/partial |
 | `/keywords/competitors/:domain` | Populated representative competitor | Metric refresh/progress, filters/sorts/paging, drill-down, empty/error | 3 | ✓/✓ | ✓/partial/partial |
-| `/article-ideas` | Approved/New/Rejected queues | Filters, selection/bulk actions, status changes, delete confirmation, generation and failures | 4 | ✓/✓ | —/—/— |
-| `/article-ideas/:ideaId` | Populated brief, strategy/mind-map content, clipping | Draft dialog, links/coverage disclosure, generation/resume, linked articles, editable fields and errors | 4 | ✓/✓ | —/—/— |
+| `/article-ideas` | Approved/New/Rejected queues | Filters, selection/bulk actions, status changes, delete confirmation, generation and failures | 4 | ✓/✓ | ✓/partial/partial |
+| `/article-ideas/:ideaId` | Populated brief, strategy/mind-map content, clipping | Draft dialog, links/coverage disclosure, generation/resume, linked articles, editable fields and errors | 4 | ✓/✓ | ✓/partial/partial |
 | `/opportunities` | Populated inbox, task controls | Filters/sorts/paging; fixture-based prepare, draft compare/load, applied/monitoring/dismiss/reopen, empty/error | 3 | ✓/✓ | ✓/partial/partial |
 | `/google-ads-lab` | Keyword ideas, Historical metrics, Forecast metrics, Ad group themes | Field validation/reset, result/error/loading views using saved fixtures; minor overflow reproduction | 5 | ✓/✓ | —/—/— |
 | `/embeddings` | Populated metrics and coverage table | Refresh/progress, unavailable key, partial/error/empty coverage | 5 | ✓/✓ | —/—/— |

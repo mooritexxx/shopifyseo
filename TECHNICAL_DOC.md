@@ -587,6 +587,9 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 
 ## Screens / Pages
 
+Content planning uses `routes/content-planning.css` for compact queue tabs, sticky identity columns and container-responsive idea details. Queue headers are keyboard sort controls and idea titles are native route links; existing selection, sorting and generation data flows are preserved.
+
+
 Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths = `/app` + route.
 
 

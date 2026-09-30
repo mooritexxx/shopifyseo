@@ -1,3 +1,5 @@
+import "./content-planning.css";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
@@ -336,7 +338,7 @@ export function ArticleIdeasPage() {
   const isGenerating = generateMutation.isPending;
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="content-planning space-y-5 pb-12">
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent className="sm:max-w-md" onClick={(e) => e.stopPropagation()}>
           <DialogHeader>
@@ -374,19 +376,19 @@ export function ArticleIdeasPage() {
       </Dialog>
 
       {/* Page header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="content-planning-header">
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
             Content Strategy
           </p>
-          <h2 className="mt-2 text-4xl font-bold text-ink">Article Ideas</h2>
+          <h1 className="content-planning-title mt-1">Article Ideas</h1>
           <p className="mt-2 text-sm text-slate-500 max-w-xl">
             AI-generated article recommendations based on your keyword cluster
             gaps, collection search demand, and informational queries landing on
             the wrong pages.
           </p>
         </div>
-        <div className="shrink-0 pt-2 flex gap-2">
+        <div className="content-planning-actions">
           <Button
             variant="secondary"
             onClick={() => generateMutation.mutate()}
@@ -473,9 +475,9 @@ export function ArticleIdeasPage() {
           </Button>
         </div>
       ) : (
-        <div className="rounded-[24px] border border-line/80 bg-white">
+        <Tabs value={statusTab} onValueChange={(value) => setStatusTab(value as ArticleIdeaStatusTab)} className="content-planning-panel">
           {/* ── Toolbar: search + filter buttons + bulk actions ─────── */}
-          <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-line/60">
+          <div className="content-toolbar">
             {/* Search */}
             <div className="relative min-w-[180px] max-w-xs flex-1">
               <Search
@@ -485,6 +487,7 @@ export function ArticleIdeasPage() {
               <input
                 ref={searchRef}
                 type="text"
+                aria-label="Search article ideas"
                 placeholder="Search ideas…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -493,6 +496,7 @@ export function ArticleIdeasPage() {
               {searchQuery ? (
                 <button
                   type="button"
+                  aria-label="Clear idea search"
                   onClick={() => {
                     setSearchQuery("");
                     searchRef.current?.focus();
@@ -536,7 +540,7 @@ export function ArticleIdeasPage() {
 
             {/* Bulk actions */}
             {selectedList.length > 0 ? (
-              <div className="flex items-center gap-2">
+              <div className="content-bulk-actions">
                 <span className="text-xs font-medium text-slate-500">
                   {selectedList.length} selected
                 </span>
@@ -587,31 +591,10 @@ export function ArticleIdeasPage() {
             </span>
           </div>
 
-          {/* Status tabs — above table (same pattern as Target Keywords) */}
-          <div
-            className="flex items-stretch gap-0 border-b border-line/60 px-5"
-            role="tablist"
-            aria-label="Idea status"
-          >
-            {STATUS_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={statusTab === tab.id}
-                onClick={() => setStatusTab(tab.id)}
-                className={cn(
-                  "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                  statusTab === tab.id
-                    ? "border-ocean text-ocean"
-                    : "border-transparent text-slate-500 hover:text-slate-700",
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
+          <TabsList scrollable aria-label="Idea status" className="m-3 max-w-[calc(100%-1.5rem)]">
+            {STATUS_TABS.map((tab) => <TabsTrigger key={tab.id} value={tab.id}>{tab.label}</TabsTrigger>)}
+          </TabsList>
+          <TabsContent value={statusTab} className="mt-0">
           {/* ── Table ──────────────────────────────────────────────── */}
           {filtered.length === 0 ? (
             <div className="mx-5 my-6 flex min-h-[100px] items-center justify-center rounded-xl border-2 border-dashed border-slate-200 text-sm text-slate-400">
@@ -623,11 +606,12 @@ export function ArticleIdeasPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <Table className="w-full text-sm">
+              <Table scrollLabel="Article idea results" className="content-ideas-table w-full">
                 <TableHeader>
                   <TableRow className="border-b border-line text-left text-xs font-medium text-slate-400">
                     <TableHead className="pl-5 pb-2 pr-3 w-8">
                       <Checkbox
+                        aria-label="Select all visible ideas"
                         checked={allFilteredSelected}
                         onCheckedChange={() => toggleAll()}
                         className="h-4 w-4"
@@ -635,54 +619,54 @@ export function ArticleIdeasPage() {
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink"
-                      onClick={() => toggleSort("suggested_title")}
+                      aria-sort={sortKey === "suggested_title" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Title{sortIndicator("suggested_title")}
+                      <button type="button" onClick={() => toggleSort("suggested_title")}>Title{sortIndicator("suggested_title")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink"
-                      onClick={() => toggleSort("primary_keyword")}
+                      aria-sort={sortKey === "primary_keyword" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Primary Keyword{sortIndicator("primary_keyword")}
+                      <button type="button" onClick={() => toggleSort("primary_keyword")}>Primary Keyword{sortIndicator("primary_keyword")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("total_volume")}
+                      aria-sort={sortKey === "total_volume" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Volume{sortIndicator("total_volume")}
+                      <button type="button" onClick={() => toggleSort("total_volume")}>Volume{sortIndicator("total_volume")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("avg_difficulty")}
+                      aria-sort={sortKey === "avg_difficulty" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      KD{sortIndicator("avg_difficulty")}
+                      <button type="button" onClick={() => toggleSort("avg_difficulty")}>KD{sortIndicator("avg_difficulty")}</button>
                     </TableHead>
                     <TableHead className="whitespace-nowrap pb-2 pr-3">
                       Intent
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("article_count")}
+                      aria-sort={sortKey === "article_count" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Articles{sortIndicator("article_count")}
+                      <button type="button" onClick={() => toggleSort("article_count")}>Articles{sortIndicator("article_count")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("agg_gsc_clicks")}
+                      aria-sort={sortKey === "agg_gsc_clicks" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Clicks{sortIndicator("agg_gsc_clicks")}
+                      <button type="button" onClick={() => toggleSort("agg_gsc_clicks")}>Clicks{sortIndicator("agg_gsc_clicks")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("agg_gsc_impressions")}
+                      aria-sort={sortKey === "agg_gsc_impressions" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Imp.{sortIndicator("agg_gsc_impressions")}
+                      <button type="button" onClick={() => toggleSort("agg_gsc_impressions")}>Imp.{sortIndicator("agg_gsc_impressions")}</button>
                     </TableHead>
                     <TableHead
                       className="cursor-pointer whitespace-nowrap pb-2 pr-3 hover:text-ink text-right"
-                      onClick={() => toggleSort("coverage_pct")}
+                      aria-sort={sortKey === "coverage_pct" ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
                     >
-                      Coverage{sortIndicator("coverage_pct")}
+                      <button type="button" onClick={() => toggleSort("coverage_pct")}>Coverage{sortIndicator("coverage_pct")}</button>
                     </TableHead>
                     <TableHead className="whitespace-nowrap pb-2 pr-5">
                       Status
@@ -698,7 +682,7 @@ export function ArticleIdeasPage() {
                         const target = e.target as HTMLElement;
                         if (
                           target.closest(
-                            "button, [role='combobox'], [role='listbox'], [role='checkbox'], input, label",
+                            "a, button, [role='combobox'], [role='listbox'], [role='checkbox'], input, label",
                           )
                         )
                           return;
@@ -710,15 +694,16 @@ export function ArticleIdeasPage() {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <Checkbox
+                          aria-label={`Select ${idea.suggested_title}`}
                           checked={selected.has(idea.id)}
                           onCheckedChange={() => toggleOne(idea.id)}
                           className="h-4 w-4"
                         />
                       </TableCell>
                       <TableCell className="py-2.5 pr-3 max-w-[260px]">
-                        <span className="font-medium text-ink truncate block">
+                        <Link to={`/article-ideas/${idea.id}`} className="font-medium text-ink line-clamp-2 hover:text-blue-700" title={idea.suggested_title}>
                           {idea.suggested_title}
-                        </span>
+                        </Link>
                       </TableCell>
                       <TableCell className="py-2.5 pr-3 text-slate-600 max-w-[160px] truncate">
                         {idea.primary_keyword || (
@@ -808,7 +793,8 @@ export function ArticleIdeasPage() {
               {ideas.length !== 1 ? "s" : ""}
             </p>
           </div>
-        </div>
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   );

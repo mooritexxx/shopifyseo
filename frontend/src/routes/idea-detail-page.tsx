@@ -1,3 +1,4 @@
+import "./content-planning.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -592,7 +593,7 @@ export function IdeaDetailPage() {
   });
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="content-planning space-y-5 pb-12">
       {/* Back link */}
       <Link
         to="/article-ideas"
@@ -603,12 +604,12 @@ export function IdeaDetailPage() {
 
       {/* Header */}
       <div className="space-y-2">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="content-planning-header">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Article Idea</p>
-            <h2 className="mt-2 text-3xl font-bold text-ink leading-snug">
+            <h1 className="content-planning-title mt-2">
               {idea.suggested_title}
-            </h2>
+            </h1>
             <div className="mt-3 flex flex-wrap gap-1.5">
               <span
                 className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${intent.color}`}
@@ -623,8 +624,8 @@ export function IdeaDetailPage() {
               <span className="text-xs text-slate-400 self-center ml-1">Generated {date}</span>
             </div>
           </div>
-          <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end sm:pt-2">
-            <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="min-w-0 flex flex-col gap-2">
+            <div className="content-planning-actions">
               <Select
                 value={idea.status}
                 onValueChange={(value) =>
@@ -701,17 +702,14 @@ export function IdeaDetailPage() {
           role="status"
         >
           <span className="font-semibold">Cluster not linked.</span>{" "}
-          This idea has no <code className="rounded bg-amber-100/80 px-1">linked_cluster_id</code>, so AI drafts will
-          not receive cluster SEO keyword gaps from the database—only the keywords you enter here, SERP data on the
-          idea, and interlink targets. Link the idea to a cluster (see maintainer docs / SQL) to restore full cluster
-          gap coverage in drafts.
+          Drafts will use this idea’s keywords, search results and internal-link targets. Cluster keyword gaps are unavailable until a cluster is linked.
         </div>
       ) : null}
 
       {/* Two-column layout: Brief + Sidebar info */}
-      <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="content-detail-layout">
         {/* Main content — 2/3 */}
-        <div className="min-w-0 lg:col-span-2 space-y-6">
+        <div className="min-w-0 space-y-5">
           {/* Brief */}
           <Card className="border-[#e2eaf4]">
             <CardHeader className="px-6 pt-6 pb-0">
@@ -747,8 +745,7 @@ export function IdeaDetailPage() {
                 <h3 className="text-lg font-semibold text-ink">Top Ranking Pages</h3>
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                Organic result titles and URLs from the Google SERP for the primary keyword (via SerpAPI at idea
-                generation or after a manual refresh). Useful for competitive context and outline benchmarking.
+                Search results for the primary keyword, saved when this idea was generated or refreshed.
               </p>
             </CardHeader>
             <CardContent className="px-6 pb-6 pt-3">
@@ -786,10 +783,7 @@ export function IdeaDetailPage() {
                 <h3 className="text-lg font-semibold text-ink">People also ask — map</h3>
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                Primary keyword on the left, first-level “People also ask” in the middle, expanded follow-up questions
-                on the right (when SerpAPI returned <span className="font-mono text-[11px]">next_page_token</span> and a
-                successful <span className="font-mono text-[11px]">google_related_questions</span> fetch). Similar layout
-                to PAA tree tools; scroll sideways if needed.
+                Explore the primary keyword, related questions and follow-ups. Scroll sideways to see the full map.
               </p>
             </CardHeader>
             <CardContent className="px-3 pb-6 pt-2 sm:px-5">
@@ -808,9 +802,7 @@ export function IdeaDetailPage() {
                 <h3 className="text-lg font-semibold text-ink">Related questions</h3>
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                From SerpAPI (Google Search “People also ask”) when this idea was generated or after a manual refresh,
-                using the primary keyword. Each row stores the question and Google’s ``snippet`` preview from the SERP
-                JSON. Intended for headings, FAQ, and draft enrichment.
+                Questions and answer previews from Google’s “People also ask” results for the primary keyword.
               </p>
             </CardHeader>
             <CardContent className="px-6 pb-6 pt-3">
@@ -845,11 +837,7 @@ export function IdeaDetailPage() {
                 <h3 className="text-lg font-semibold text-ink">Expanded “People also ask”</h3>
               </div>
               <p className="mt-1 text-xs text-slate-400">
-                One level deeper: for each top-level PAA item that includes an expand token, we call SerpAPI{" "}
-                <span className="font-mono text-[11px]">engine=google_related_questions</span> (extra credits). SERP data
-                auto-refreshes when stale (&gt;24h) during draft generation. Use{" "}
-                <span className="font-medium text-slate-600">Force refresh SERP</span> to fetch immediately. If Google
-                does not return tokens, this section stays empty.
+                Follow-up questions, when available. Drafting refreshes search data older than 24 hours; manual refresh uses additional SerpAPI credits.
               </p>
             </CardHeader>
             <CardContent className="px-6 pb-6 pt-3">
@@ -881,10 +869,7 @@ export function IdeaDetailPage() {
                 </div>
               ) : (
                 <p className="text-sm text-slate-400 leading-relaxed">
-                  No expanded questions yet. SERP data auto-refreshes when stale (&gt;24h) during draft generation, or click{" "}
-                  <span className="font-medium text-slate-600">Force refresh SERP</span>{" "}
-                  with a SerpAPI key. We expand up to a few top-level PAA items when SerpAPI provides{" "}
-                  <span className="font-mono text-[11px]">next_page_token</span> on the main Google result.
+                  No follow-up questions stored. Use Force refresh SERP to check for available questions.
                 </p>
               )}
             </CardContent>
@@ -892,7 +877,7 @@ export function IdeaDetailPage() {
 
           {/* Linked articles table */}
           <Card className="border-[#e2eaf4]">
-            <CardHeader className="px-6 pt-6 pb-0 flex flex-row items-center justify-between">
+            <CardHeader className="px-6 pt-6 pb-0 flex flex-row flex-wrap gap-3 items-center justify-between">
               <h3 className="text-lg font-semibold text-ink">
                 Linked Articles
                 {perf?.articles
@@ -1103,8 +1088,7 @@ export function IdeaDetailPage() {
                 <h4 className="text-sm font-semibold text-ink">Related searches</h4>
               </div>
               <p className="mt-1 text-xs text-slate-500 leading-relaxed">
-                From the same Google SERP (SerpAPI). Position uses the API when present; otherwise order on the page
-                (1 = first).
+                Related searches from Google, listed in their returned order.
               </p>
             </CardHeader>
             <CardContent className="px-5 pb-5 pt-3">

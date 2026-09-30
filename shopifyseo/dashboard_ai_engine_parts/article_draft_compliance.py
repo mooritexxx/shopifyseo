@@ -6,10 +6,13 @@ import html as html_module
 import json
 import logging
 import re
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 from .faq_content_filter import (
     filter_faq_items_by_h3_headings,
+    health_claim_reason,
+    is_question_heading,
     filter_paa_questions,
     normalize_flavor_to_flavour,
     normalize_spelling_for_comparison,
@@ -286,7 +289,7 @@ def extract_h2_h4_heading_plain_texts(body_html: str) -> list[str]:
 
 
 def extract_visible_faq_items(body_html: str, *, required_questions: list[str] | None = None) -> list[dict[str, str]]:
-    """Extract visible FAQ-style H3 questions and nearby answer text from the article body."""
+    """Extract visible FAQ-style H2/H3 questions and nearby answer text from the article body."""
     html = body_html or ""
     required_keys = {
         _normalize_faq_match_key(q)[1]
@@ -294,8 +297,8 @@ def extract_visible_faq_items(body_html: str, *, required_questions: list[str] |
         if _normalize_faq_match_key(q)[1]
     }
     items: list[dict[str, str]] = []
-    h3_re = re.compile(r"(?is)<h3\b[^>]*>(.*?)</h3\s*>")
-    matches = list(h3_re.finditer(html))
+    heading_re = re.compile(r"(?is)<h[23]\b[^>]*>(.*?)</h[23]\s*>")
+    matches = list(heading_re.finditer(html))
     for i, m in enumerate(matches):
         q_html = m.group(1) or ""
         q = html_module.unescape(_TAG_RE.sub(" ", q_html))
@@ -303,7 +306,7 @@ def extract_visible_faq_items(body_html: str, *, required_questions: list[str] |
         if not q:
             continue
         _strict, loose = _normalize_faq_match_key(q)
-        looks_like_question = "?" in q or loose in required_keys
+        looks_like_question = is_question_heading(q) or loose in required_keys
         if not looks_like_question:
             continue
         start = m.end()
@@ -521,6 +524,40 @@ def count_storefront_internal_links(
     return count
 
 
+def count_distinct_approved_product_links(body_html: str, path_to_canonical: dict[str, str]) -> int:
+    """Count canonical product destinations, ignoring repeats, queries and foreign hosts."""
+    class Anchors(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hrefs: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                href = dict(attrs).get('href')
+                if href:
+                    self.hrefs.append(href)
+
+    anchors = Anchors()
+    anchors.feed(_SCRIPT_RE.sub('', body_html))
+    products: set[str] = set()
+    for href in anchors.hrefs:
+        href = html_module.unescape(href)
+        parsed = urlparse(href)
+        canonical = path_to_canonical.get(_path_key(href))
+        if not canonical:
+            continue
+        approved = urlparse(canonical)
+        if parsed.scheme and parsed.scheme not in {'http', 'https'}:
+            continue
+        if parsed.netloc and parsed.netloc.lower() != approved.netloc.lower():
+            continue
+        path = _path_key(canonical)
+        match = re.fullmatch(r'(?:/collections/[^/]+)?/products/([^/]+)', path)
+        if match:
+            products.add(approved.netloc.lower() + '/products/' + match.group(1))
+    return len(products)
+
+
 def validate_article_draft_compliance(
     *,
     body_html: str,
@@ -530,6 +567,9 @@ def validate_article_draft_compliance(
     path_to_canonical: dict[str, str],
     tier1_related_queries: list[str] | None = None,
     min_internal_links: int | None = None,
+    min_product_links: int = 0,
+    faq_candidates_rejected: bool = False,
+    check_health_claims: bool = False,
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
@@ -544,6 +584,18 @@ def validate_article_draft_compliance(
     article with fewer interlinks than planned.
     """
     gaps: list[str] = []
+    if faq_candidates_rejected:
+        gaps.append("All FAQ candidates were rejected by the final content filters; provide useful on-topic questions and answers.")
+    if min_product_links:
+        actual_products = count_distinct_approved_product_links(body_html, path_to_canonical)
+        if actual_products < min_product_links:
+            gaps.append(f"Article must link to at least {min_product_links} distinct approved product URLs (currently {actual_products}); collection links and repeated product URLs do not count.")
+    visible_blocks = re.split(
+        r"(?is)</?(?:p|li|h[1-6]|div|td|th|section|blockquote)\b[^>]*>",
+        _SCRIPT_RE.sub("", body_html),
+    )
+    if check_health_claims and any(health_claim_reason(strip_html_for_compliance_search(block)) for block in visible_blocks):
+        gaps.append("Body still contains a prohibited health or quit-smoking claim; remove it before saving.")
     if require_faqpage_ld and not faqpage_ld_present(body_html):
         gaps.append("Body must include FAQPage JSON-LD in a script type application/ld+json block (PAA signals were provided).")
     if faqpage_ld_present(body_html):

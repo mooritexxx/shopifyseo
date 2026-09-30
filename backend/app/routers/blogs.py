@@ -681,48 +681,29 @@ def _run_generate_article_draft(
         conn.close()
         conn = None
 
-        stored_body = str((resume_run or {}).get("body") or "")
-        if stored_body and (resume_run or {}).get("title"):
-            generated = {
-                "title": str((resume_run or {}).get("title") or ""),
-                "seo_title": str((resume_run or {}).get("seo_title") or ""),
-                "seo_description": str((resume_run or {}).get("seo_description") or ""),
-                "body": stored_body,
-            }
-            p(
-                "Resuming from saved content checkpoint.",
-                "content",
-                "done",
-                run_id=run_id,
-                step_key="content_checkpoint",
-                step_label="Save content checkpoint",
-                step_index=7,
-                step_total=12,
-                result_summary=f"Body {len(stored_body):,} chars",
+        # Saved content must pass current filters and validation before resume.
+        conn_gen = open_db_connection()
+        try:
+            generated = generate_article_draft(
+                conn_gen,
+                topic=payload.topic,
+                keywords=keywords,
+                author_name=payload.author_name,
+                linked_cluster_id=cluster_id,
+                primary_target=primary_target_dict,
+                secondary_targets=secondary_targets_list,
+                idea_serp_context=idea_serp_context,
+                idea_linked_keywords=idea_linked_keywords,
+                idea_meta=idea_meta,
+                cluster_sibling_articles=cluster_sibling_articles,
+                request_context=payload.model_dump(),
+                regeneration_context=regeneration_context,
+                draft_run_id=run_id,
+                resume_run=resume_run,
+                on_progress=on_progress,
             )
-        else:
-            conn_gen = open_db_connection()
-            try:
-                generated = generate_article_draft(
-                    conn_gen,
-                    topic=payload.topic,
-                    keywords=keywords,
-                    author_name=payload.author_name,
-                    linked_cluster_id=cluster_id,
-                    primary_target=primary_target_dict,
-                    secondary_targets=secondary_targets_list,
-                    idea_serp_context=idea_serp_context,
-                    idea_linked_keywords=idea_linked_keywords,
-                    idea_meta=idea_meta,
-                    cluster_sibling_articles=cluster_sibling_articles,
-                    request_context=payload.model_dump(),
-                    regeneration_context=regeneration_context,
-                    draft_run_id=run_id,
-                    resume_run=resume_run,
-                    on_progress=on_progress,
-                )
-            finally:
-                conn_gen.close()
+        finally:
+            conn_gen.close()
 
         # Check for saved images from a prior run (resume reuse)
         saved_images = (resume_run or {}).get("image_payload") or {}

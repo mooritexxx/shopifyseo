@@ -257,6 +257,8 @@ Generated draft article images use Gemini aspect-ratio hints when Gemini is the 
 
 Article draft generation now persists `article_draft_runs` and uses a canonical SEO brief for every AI step. The backend flow is: prepare SEO brief → outline → section batches with article memory → server-rendered FAQ/schema → targeted validation repair → saved content checkpoint → optimized WebP images → Shopify create/update → local save. SSE progress events include `run_id`, `step_key`, `step_label`, `step_index`, `step_total`, optional batch counts, and `result_summary`.
 
+Article content checks run after every FAQ/helpful-question append and targeted repair, including saved-content resumes. The final pass normalizes spelling (preserving brand names and URLs), removes prohibited or duplicate H2/H3 question blocks and health-claim body blocks, then rebuilds FAQ JSON-LD from surviving visible questions. Drafts must retain at least three distinct approved product destinations (collections and repeated links do not count); all rejected FAQ candidates or remaining health claims fail validation with caller-visible errors after bounded repairs. Known product-line exclusions and contextual health rules live in `faq_content_filter.py`; factual regulatory names, handling guidance, and manufacturer capacity prose have preservation tests. These are deterministic content guards, not a guarantee that every possible phrasing is detected.
+
 
 ### GSC Opportunity Inbox
 

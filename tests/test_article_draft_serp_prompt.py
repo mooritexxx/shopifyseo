@@ -21,7 +21,11 @@ def _disable_phased_article_draft(monkeypatch):
 
 
 @pytest.fixture
-def db_conn():
+def db_conn(monkeypatch):
+    from shopifyseo.dashboard_ai_engine_parts import config
+    monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
+    from shopifyseo.dashboard_queries import _urls
+    monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_dashboard_schema(conn)
@@ -33,9 +37,15 @@ def db_conn():
         "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
         ("pods", "Pod Kits"),
     )
+    conn.executemany(
+        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
+        [(f"product-{i}", f"Product {i}") for i in range(3)],
+    )
     conn.commit()
     return conn
 
+
+PRODUCT_LINKS = ''.join(f'<a href="https://example.com/products/product-{i}">Product {i}</a>' for i in range(3))
 
 def _filler_body(url: str) -> str:
     """Passes compliance: length, primary keyword phrase, FAQPage JSON-LD, primary href."""
@@ -56,7 +66,7 @@ def _filler_body(url: str) -> str:
         f"<h3>{qtext}</h3><p>Start with a simple refillable kit.</p>"
         f"<h3>{child_q}</h3><p>Look for simple controls, easy refills, and available pods.</p>"
     )
-    return link + serp_h2 + visible + faq + "<p>" + ("word " * 5000) + "</p>"
+    return PRODUCT_LINKS + link + serp_h2 + visible + faq + "<p>" + ("word " * 5000) + "</p>"
 
 
 def test_generate_article_draft_includes_serp_signals_in_user_message(db_conn, monkeypatch):
@@ -167,7 +177,7 @@ def test_compliance_retry_calls_ai_twice(db_conn, monkeypatch):
                 "This is a meta description that is within the 135 to 155 character bound required "
                 "by the schema. Concrete, specific, click-worthy."
             ),
-            "body": body,
+            "body": PRODUCT_LINKS + body,
         }
 
     monkeypatch.setattr(_article_draft, "_call_ai", fake_call_ai)

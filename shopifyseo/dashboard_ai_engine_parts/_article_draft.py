@@ -14,7 +14,8 @@ from .qa import clamp_generated_seo_field
 from .settings import ai_settings
 from .faq_content_filter import (
     filter_and_dedupe_helpful_questions,
-    filter_body_html_content,
+    filter_final_article_content,
+    ARTICLE_CONTENT_FILTER_INSTRUCTION,
     normalize_flavor_to_flavour,
     validate_and_fix_alt_text,
 )
@@ -69,6 +70,8 @@ def sanitize_article_internal_links(
 
         if pk and pk in path_to_canonical:
             canon = path_to_canonical[pk]
+            if urlparse(href).netloc and urlparse(href).netloc.lower() != urlparse(canon).netloc.lower():
+                return inner
             quote = hm.group(1)
             if quote in canon:
                 quote = "'" if quote == '"' else '"'
@@ -1249,6 +1252,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     system_outline = (
@@ -1260,6 +1264,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     system_section = (
@@ -1276,6 +1281,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     _serp_user_block = ""
@@ -1562,7 +1568,10 @@ def generate_article_draft(
     # Compliance enforces every required body keyword: SERP-derived primary + first manual keyword.
     primary_kw_for_compliance = list(_required_body_keywords) or None
     require_faqpage_ld = bool(_is_faq or _has_serp_paa)
-    _tier_queries = collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3)
+    _tier_queries = filter_and_dedupe_helpful_questions(
+        collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3),
+        target_brand=topic,
+    )
 
     def _keyword_texts(raw_keywords: list[str | dict] | None) -> list[str]:
         out: list[str] = []
@@ -1762,9 +1771,6 @@ def generate_article_draft(
         out = strip_faqpage_jsonld_blocks(out)
         # Normalize US 'flavor' spelling to Canadian 'flavour' (case-preserving)
         out = normalize_article_body_spelling(out)
-        # Filter problematic H2 sections (e.g., "Health Considerations")
-        _target_brand = (cluster_meta.get("detected_entity") or "").strip() or (topic or "").strip()
-        out = filter_body_html_content(out, target_brand=_target_brand, log_dropped=True)
         return out
 
     # Gap 11: require a minimum count of approved-target links so silent sanitizer
@@ -1780,7 +1786,7 @@ def generate_article_draft(
         else 0
     )
 
-    def _compliance_gaps(body_html: str) -> list[str]:
+    def _compliance_gaps(body_html: str, *, faq_candidates_rejected: bool = False) -> list[str]:
         return validate_article_draft_compliance(
             body_html=body_html,
             require_faqpage_ld=require_faqpage_ld,
@@ -1789,6 +1795,9 @@ def generate_article_draft(
             path_to_canonical=path_to_canonical,
             tier1_related_queries=_tier_queries,
             min_internal_links=_min_internal_links,
+            min_product_links=3,
+            faq_candidates_rejected=faq_candidates_rejected,
+            check_health_claims=True,
         )
 
     resume_checkpoints = resume_run.get("checkpoints") if isinstance(resume_run, dict) else {}
@@ -2142,14 +2151,22 @@ def generate_article_draft(
                 step_index=4,
                 step_total=11,
             )
+        had_faq_candidates = require_faqpage_ld
         for attempt in range(3):
             body = _ensure_required_links(body)
             if require_faqpage_ld:
                 body = _append_faq_answers(body)
+            body = _sanitize_body(body)
+            body, candidate_count, surviving_count = filter_final_article_content(body, target_brand=topic)
+            had_faq_candidates = had_faq_candidates or candidate_count > 0
+            faq_candidates_rejected = had_faq_candidates and surviving_count == 0
+            if had_faq_candidates:
                 body, _faq_items = append_server_generated_faqpage_jsonld(
                     body,
                     required_questions=required_questions,
+                    filter_by_h3_headings=False,
                 )
+                faq_candidates_rejected = faq_candidates_rejected or not _faq_items
                 _emit(
                     "FAQPage schema generated from visible FAQ questions.",
                     phase="content",
@@ -2171,7 +2188,7 @@ def generate_article_draft(
                 step_total=11,
                 result_summary=f"Attempt {attempt + 1}/3 · Body {len(body):,} chars",
             )
-            gaps = _compliance_gaps(body)
+            gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
             if not gaps:
                 memory = _save_memory(body, html_parts)
                 validation = {
@@ -2211,7 +2228,7 @@ def generate_article_draft(
             )
             body = _append_repair_html(body, gaps, title)
             body = _sanitize_body(body)
-        final_gaps = _compliance_gaps(body)
+        final_gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
         if final_gaps:
             raise RuntimeError(
                 "Article draft failed compliance after targeted repairs: " + " | ".join(final_gaps)
@@ -2500,7 +2517,11 @@ def generate_article_draft(
         return meta, body_merged
 
     use_phased = bool(settings.get("article_draft_phased", True))
-    if use_phased:
+    if isinstance(resume_run, dict) and resume_run.get("body") and resume_run.get("title"):
+        result = {key: resume_run.get(key, "") for key in ("title", "seo_title", "seo_description")}
+        body_out, validation = _finalize_and_repair_body(result, str(resume_run["body"]))
+        _persist_content_checkpoint(result, body_out, validation)
+    elif use_phased:
         _emit("Using phased generation (outline + HTML batches)…", phase="content", state="start")
         phased_pair = _try_phased()
         if phased_pair is None:

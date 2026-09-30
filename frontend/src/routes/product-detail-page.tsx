@@ -1,3 +1,4 @@
+import "./detail-page.css";
 import { useBodyDraftSync } from "../hooks/use-body-draft-sync";
 import { BodyDraftConflict } from "../components/body-draft-conflict";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -729,7 +730,7 @@ export function ProductDetailPage() {
 
   return (
     <TooltipProvider>
-      <div className="space-y-6 pb-10">
+      <div className="detail-page space-y-6 pb-10">
         {toast ? <Toast variant={detectToastVariant(toast)}>{toast}</Toast> : null}
         {aiGenerationToast ? (
           <Toast
@@ -757,7 +758,7 @@ export function ProductDetailPage() {
           </Link>
         </div>
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <section className="detail-signal-grid" aria-label="Performance and indexing metrics">
           {signalCards.map((signal) => (
             <SignalCard
               key={signal.step}
@@ -775,10 +776,10 @@ export function ProductDetailPage() {
             <CardHeader className="pb-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Main fields</p>
-                <h2 className="mt-2 text-2xl font-bold text-ink">Product details</h2>
+                <p className="detail-eyebrow">Main fields</p>
+                <h2 className="detail-heading mt-1">Product details</h2>
               </div>
-              <div className="flex flex-wrap gap-3">
+              <div className="detail-actions flex flex-wrap gap-2">
                 <Button
                   variant="secondary"
                   onClick={() => window.open(product.online_store_url || (storeUrl ? `${storeUrl}/products/${product.handle}` : ""), "_blank", "noopener,noreferrer")}
@@ -800,8 +801,8 @@ export function ProductDetailPage() {
             </CardHeader>
 
             <CardContent className="space-y-6 pt-0">
-              <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-                <div className="flex w-full flex-col gap-2 lg:w-[220px] lg:max-w-[240px] lg:shrink-0">
+              <div className="detail-editor-layout">
+                <div className="detail-editor-media flex min-w-0 flex-col gap-2">
                   {galleryImages.length > 0 ? (
                     <>
                       <button
@@ -950,7 +951,7 @@ export function ProductDetailPage() {
         <section>
           <Card className="border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#f9fcff_100%)]">
             <CardHeader className="px-6 pt-6 pb-0">
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Related data</p>
+              <p className="detail-eyebrow">Related data</p>
               <CardTitle className="mt-2 text-2xl text-ink">Collections</CardTitle>
             </CardHeader>
 
@@ -964,7 +965,7 @@ export function ProductDetailPage() {
                     asChild
                     variant="outline"
                     size="sm"
-                    className="h-auto rounded-full border-[#d7e2f0] bg-[linear-gradient(180deg,#fbfdff_0%,#f2f7ff_100%)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 hover:border-[#bfd1eb] hover:bg-[linear-gradient(180deg,#ffffff_0%,#ebf3ff_100%)]"
+                    className="detail-related-link h-auto max-w-full whitespace-normal rounded-lg border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-100"
                   >
                     <Link to={`/collections/${item.handle || ""}`}>
                       {item.title}
@@ -980,7 +981,7 @@ export function ProductDetailPage() {
         <section>
           <Card className="border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]">
             <CardHeader className="px-6 pt-6 pb-0">
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Keywords</p>
+              <p className="detail-eyebrow">Keywords</p>
               <CardTitle className="mt-2 text-2xl text-ink">Tags</CardTitle>
             </CardHeader>
             <CardContent className="px-6 pb-6 pt-5">

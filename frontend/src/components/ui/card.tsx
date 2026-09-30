@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
+      data-slot="card"
       className={cn(
         "rounded-2xl border border-white/70 bg-card text-card-foreground shadow-panel backdrop-blur",
         className

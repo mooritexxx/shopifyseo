@@ -712,7 +712,7 @@ export function AppShell({ children }: PropsWithChildren) {
 
   return (
     <SidekickProvider>
-    <div className={cn("min-h-screen text-ink", location.pathname === "/" ? "bg-[#f6f7f9]" : "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)]")}>
+    <div className={cn("min-h-screen text-ink", (location.pathname === "/" || /^\/(products|collections|pages)\/[^/]+\/?$/.test(location.pathname) || /^\/articles\/[^/]+\/[^/]+\/?$/.test(location.pathname)) ? "bg-[#f6f7f9]" : "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)]")}>
       <div
         className={cn(
           "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-0 lg:px-0 lg:py-0",

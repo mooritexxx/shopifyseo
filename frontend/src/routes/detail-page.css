@@ -1,0 +1,42 @@
+.detail-page {
+  container-type: inline-size;
+  min-width: 0;
+  color: #172033;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+.detail-signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+.detail-page [data-slot="card"] {
+  min-width: 0;
+  border: 1px solid #e2e7ed;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 3%);
+  backdrop-filter: none;
+}
+.detail-page .detail-signal-content { display: flex; flex-direction: column; gap: 10px; height: 100%; padding: 20px; }
+.detail-signal-label { padding-top: 5px; font-size: 13px; font-weight: 500; color: #526174; line-height: 1.4; }
+.detail-signal-value { font-size: 28px; font-weight: 600; line-height: 1.25; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.detail-signal-description { font-size: 13px; line-height: 1.6; color: #64748b; overflow-wrap: anywhere; }
+.detail-signal-updated { margin-top: auto; padding-top: 6px; font-size: 11px; line-height: 1.5; color: #64748b; }
+.detail-page .detail-heading, .detail-page h3 { font-size: 18px; line-height: 1.4; font-weight: 650; letter-spacing: -0.02em; }
+.detail-eyebrow { font-size: 12px; font-weight: 500; color: #64748b; }
+.detail-editor-layout { display: flex; align-items: flex-start; gap: 24px; }
+.detail-editor-media { width: 200px; flex-shrink: 0; }
+.detail-page input, .detail-page textarea { min-width: 0; border-color: #dce2e9; border-radius: 8px; background: #fff; box-shadow: none; }
+.detail-page button { max-width: 100%; }
+.detail-page .detail-actions { min-width: 0; }
+.detail-page .detail-actions button { white-space: normal; height: auto; min-height: 36px; }
+@container (max-width: 760px) {
+  .detail-editor-layout { flex-direction: column; align-items: stretch; }
+  .detail-editor-media { width: 100%; max-width: 240px; }
+  .detail-editor-layout > .flex-1 { width: 100%; }
+}
+@container (max-width: 520px) {
+  .detail-actions { width: 100%; }
+  .detail-actions button { flex: 1 1 140px; }
+  .detail-page [data-slot="card"] > .p-5 { padding: 16px; }
+  .detail-page [data-slot="card"] > .pt-0 { padding-top: 0; }
+}
+
+.detail-page .detail-related-link { justify-content: flex-start; overflow-wrap: anywhere; letter-spacing: normal; text-transform: none; }

@@ -576,6 +576,8 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | SettingsPage         | `/settings`                              | Integrations + models            | `/api/settings`, tests, `/api/google-signals`   |
 
 
+**Catalog detail layout:** Product, collection, page, and article details share `routes/detail-page.css`: available-width metric grids, neutral cards, full-width values, labeled refresh buttons, and stacked image/editor layouts in narrow content areas. Styling does not change signal data or save/refresh actions.
+
 **Shell:** `frontend/src/components/shell/app-shell.tsx` wraps routes with nav, sync controls, `SidekickProvider`. Below 1024px, a compact header toggles navigation. Sync overlays below 1440px and docks on wider screens. Overview grids follow available content width; narrow top-page rows become cards, cache freshness is a compact status, and catalog coverage counts expand within Catalog health.
 
 ---

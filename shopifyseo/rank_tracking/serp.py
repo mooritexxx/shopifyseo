@@ -14,6 +14,10 @@ class RankError(ValueError):
     pass
 
 
+class RankCancelled(RankError):
+    pass
+
+
 def clean_url(value):
     try:
         p = urlsplit(value)
@@ -89,7 +93,8 @@ def request_page(key, params, before_request):
 
 def check_term(term, max_pages, key, before_request):
     result = dict(position=None, ranking_url=None, pages_checked=0, checked_depth=0,
-                  top1_domain=None, top2_domain=None, top3_domain=None, status='ok', error=None)
+                  top1_domain=None, top2_domain=None, top3_domain=None, status='ok', error=None,
+                  coverage_complete=True, cancelled=False)
     seen_pages = set()
     incomplete = False
     try:
@@ -112,6 +117,11 @@ def check_term(term, max_pages, key, before_request):
                 raise RankError('Invalid or repeated results page; rank is unknown.')
             seen_pages.add(links)
             result['pages_checked'] += 1
+            # Google can return fewer than ten organic results on a valid page.
+            # Keep page coverage separate from a verified top-N absence.
+            if set(positions) != set(range(1, 11)):
+                incomplete = True
+                result['coverage_complete'] = False
             if page == 0:
                 domains = list(dict.fromkeys(host(link) for link in links))[:3]
                 result.update({f'top{i+1}_domain': d for i, d in enumerate(domains)})
@@ -120,13 +130,10 @@ def check_term(term, max_pages, key, before_request):
                 result['position'], result['ranking_url'] = min(hits)
                 result['checked_depth'] = start + max(positions)
                 return result
-            # Missing slots make a top-N absence assertion unsafe. Preserve an error instead.
-            if set(positions) != set(range(1, 11)):
-                incomplete = True
             if not incomplete:
                 result['checked_depth'] = start + 10
-        if incomplete:
-            raise RankError('Incomplete organic results pages; absence from the top range is unverified.')
+    except RankCancelled:
+        result.update(status='error', cancelled=True, error='Check stopped by user; rank is unknown.')
     except (RankError, TypeError, ValueError) as exc:
         result.update(status='error', position=None, ranking_url=None,
                       error=str(exc) if isinstance(exc, RankError) else 'Unexpected search response; rank is unknown.')

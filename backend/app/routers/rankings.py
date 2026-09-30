@@ -67,3 +67,8 @@ def check(payload: CheckRequest):
 @router.post('/weekly-run')
 def weekly_run(payload: EstimateRequest):
     return perform(svc.start_job, None, payload.max_pages, 'weekly-' + svc.now()[:10], weekly=True, conflict=True)
+
+
+@router.post('/jobs/{job_id}/stop')
+def stop(job_id: str):
+    return perform(svc.stop_job, job_id)

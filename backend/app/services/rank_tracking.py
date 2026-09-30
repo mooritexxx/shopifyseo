@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.db import open_db_connection
-from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankError, check_term,
+from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankCancelled, RankError, check_term,
                                           clean_url, is_target, remaining_credits, url_identity)
 
 TZ = ZoneInfo('America/Vancouver')
@@ -159,11 +159,29 @@ def start_job(conn, ids, max_pages, request_key, weekly=False, launch=True):
     return dict(job_id=job_id, status='running', skipped=False)
 
 
+def stop_job(conn, job_id):
+    # Keep the running reservation until in-flight requests have settled.
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        job = conn.execute('SELECT status FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
+        if not job:
+            raise RankError('Ranking job not found.')
+        if job['status'] == 'running':
+            conn.execute('UPDATE rank_jobs SET cancel_requested=1 WHERE id=?', (job_id,))
+        conn.commit()
+        return dict(job_id=job_id, status='stopping' if job['status'] == 'running' else job['status'])
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def record_request(job_id, keyword_id):
     conn = open_db_connection()
     try:
         conn.execute('BEGIN IMMEDIATE')
-        job = conn.execute('SELECT status,reserved FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
+        job = conn.execute('SELECT status,reserved,cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
+        if job and job['cancel_requested']:
+            raise RankCancelled('Check stopped by user.')
         if not job or job['status'] != 'running' or job['reserved'] < 1:
             raise RankError('Ranking job no longer has a request reservation.')
         current_usage = usage(conn)
@@ -187,10 +205,12 @@ def run_job(job_id, terms, max_pages, key):
         try:
             stamp = now()
             count = conn.execute('SELECT count(*) FROM rank_requests WHERE job_id=? AND keyword_id=?', (job_id,term['id'])).fetchone()[0]
+            if result['cancelled'] and count == 0:
+                return  # Unstarted terms retain their previous snapshot.
             conn.execute('''INSERT INTO rank_checks(keyword_id,job_id,checked_at,check_date,position,ranking_url,
-                top1_domain,top2_domain,top3_domain,pages_checked,searches_used,checked_depth,source,status,error,profile,target_url)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                (term['id'],job_id,stamp,stamp[:10],result['position'],result['ranking_url'],result['top1_domain'],result['top2_domain'],result['top3_domain'],result['pages_checked'],count,result['checked_depth'],'serpapi',result['status'],result['error'],PROFILE_JSON,term['target_url']))
+                top1_domain,top2_domain,top3_domain,pages_checked,searches_used,checked_depth,source,status,error,profile,target_url,
+                coverage_complete,cancelled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (term['id'],job_id,stamp,stamp[:10],result['position'],result['ranking_url'],result['top1_domain'],result['top2_domain'],result['top3_domain'],result['pages_checked'],count,result['checked_depth'],'serpapi',result['status'],result['error'],PROFILE_JSON,term['target_url'],result['coverage_complete'],result['cancelled']))
             conn.execute('UPDATE rank_jobs SET completed=completed+1 WHERE id=?', (job_id,))
             conn.commit()
         finally:
@@ -203,31 +223,39 @@ def run_job(job_id, terms, max_pages, key):
         error = 'Ranking worker interrupted. Unfinished keywords have unknown results.'
     conn = open_db_connection()
     try:
+        conn.execute('BEGIN IMMEDIATE')
+        cancelled = conn.execute('SELECT cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()[0]
         # Also create unknown outcomes for keywords lost to a worker failure.
         for term in terms:
             if not conn.execute('SELECT 1 FROM rank_checks WHERE job_id=? AND keyword_id=?', (job_id,term['id'])).fetchone():
-                insert_interrupted(conn,job_id,term['id'])
+                insert_interrupted(conn,job_id,term['id'],cancelled=cancelled)
         failed = conn.execute("SELECT count(*) FROM rank_checks WHERE job_id=? AND status='error'", (job_id,)).fetchone()[0]
         conn.execute('UPDATE rank_jobs SET status=?,reserved=0,finished_at=?,error=? WHERE id=?',
-                     ('error' if error or failed else 'complete', now(), error or (f'{failed} keyword checks failed. See history.' if failed else None), job_id))
+                     ('cancelled' if cancelled else ('error' if error or failed else 'complete'), now(),
+                      None if cancelled else error or (f'{failed} keyword checks failed. See history.' if failed else None), job_id))
         conn.commit()
     finally:
         conn.close()
 
 
-def insert_interrupted(conn, job_id, keyword_id):
+def insert_interrupted(conn, job_id, keyword_id, cancelled=False):
     stamp = now()
     count = conn.execute('SELECT count(*) FROM rank_requests WHERE job_id=? AND keyword_id=?', (job_id,keyword_id)).fetchone()[0]
-    conn.execute('''INSERT OR IGNORE INTO rank_checks(keyword_id,job_id,checked_at,check_date,searches_used,source,status,error,profile)
-        VALUES (?,?,?,?,?,'serpapi','error','Check interrupted; rank is unknown.',?)''', (keyword_id,job_id,stamp,stamp[:10],count,PROFILE_JSON))
+    if cancelled and not count:
+        return
+    message = 'Check stopped by user; rank is unknown.' if cancelled else 'Check interrupted; rank is unknown.'
+    conn.execute('''INSERT OR IGNORE INTO rank_checks(keyword_id,job_id,checked_at,check_date,searches_used,source,status,error,profile,cancelled)
+        VALUES (?,?,?,?,?,'serpapi','error',?,?,?)''', (keyword_id,job_id,stamp,stamp[:10],count,message,PROFILE_JSON,cancelled))
 
 
 def recover_jobs(conn):
     """Single-process app startup: preserve dispatched usage, release unused reservations."""
-    for job in conn.execute("SELECT id,keyword_ids FROM rank_jobs WHERE status='running'").fetchall():
+    for job in conn.execute("SELECT id,keyword_ids,cancel_requested FROM rank_jobs WHERE status='running'").fetchall():
         for keyword_id in json.loads(job['keyword_ids']):
-            insert_interrupted(conn,job['id'],keyword_id)
-    conn.execute("UPDATE rank_jobs SET status='error',reserved=0,finished_at=?,error='App restarted during ranking check.' WHERE status='running'", (now(),))
+            insert_interrupted(conn,job['id'],keyword_id,cancelled=job['cancel_requested'])
+        conn.execute('UPDATE rank_jobs SET status=?,reserved=0,finished_at=?,error=? WHERE id=?',
+                     ('cancelled' if job['cancel_requested'] else 'error', now(),
+                      None if job['cancel_requested'] else 'App restarted during ranking check.', job['id']))
     conn.commit()
 
 

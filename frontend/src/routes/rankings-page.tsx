@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Plus, RefreshCw, Search, Trash2, Pencil } from "lucide-react";
+import { Plus, RefreshCw, Search, Trash2, Pencil, Square } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -40,13 +40,16 @@ const date = (value: string) =>
   });
 export function rankLabel(check: RankCheck | null): string {
   if (!check) return "Not checked";
+  if (check.cancelled) return "Stopped · unknown";
   if (check.status === "error") return "Unknown · error";
   if (check.status === "unverified")
     return check.reported_position === null
       ? "Unverified · not found"
       : `Unverified · reported #${check.reported_position}`;
   return check.position === null
-    ? `>${check.checked_depth}`
+    ? check.coverage_complete === 0
+      ? `Not found in ${check.pages_checked} ${check.pages_checked === 1 ? "page" : "pages"} checked`
+      : `>${check.checked_depth}`
     : `#${check.position}`;
 }
 function Rank({ check }: { check: RankCheck | null }) {
@@ -114,7 +117,8 @@ function Trend({
 
 export function RankingsPage() {
   const query = useRankings();
-  const { save, remove, run } = useRankActions();
+  const { save, remove, run, stop } = useRankActions();
+  const [stoppedJob, setStoppedJob] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [group, setGroup] = useState("");
   const [sort, setSort] = useState("keyword");
@@ -135,6 +139,7 @@ export function RankingsPage() {
   const history = useRankHistory(selected?.id);
   const data = query.data;
   const running = data?.job?.status === "running";
+  const stopping = running && (!!data?.job?.cancel_requested || stoppedJob === data?.job?.id || stop.isPending);
   const groups = [
     ...new Set(data?.items.map((k) => k.grp).filter((g): g is string => !!g)),
   ].sort();
@@ -174,6 +179,17 @@ export function RankingsPage() {
       setEstimating(false);
     }
   }
+  async function stopCheck() {
+    if (!data?.job) return;
+    const id = data.job.id;
+    setStoppedJob(id);
+    try {
+      await stop.mutateAsync(id);
+    } catch (e) {
+      setStoppedJob(null);
+      toast.error(e instanceof Error ? e.message : "Unable to stop check");
+    }
+  }
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -195,13 +211,13 @@ export function RankingsPage() {
             Add keyword
           </Button>
           <Button
-            disabled={running || estimating || !data?.items.length}
-            onClick={() => void prepare()}
+            disabled={running ? stopping : estimating || !data?.items.length}
+            onClick={() => void (running ? stopCheck() : prepare())}
           >
-            <RefreshCw
-              className={`mr-2 h-4 w-4 ${running ? "animate-spin" : ""}`}
-            />
-            {running ? "Checking…" : "Check all"}
+            {running && !stopping ? <Square className="mr-2 h-4 w-4" /> : (
+              <RefreshCw className={`mr-2 h-4 w-4 ${stopping ? "animate-spin" : ""}`} />
+            )}
+            {stopping ? "Stopping…" : running ? "Stop check" : "Check all"}
           </Button>
         </div>
       </header>
@@ -255,8 +271,13 @@ export function RankingsPage() {
           className="rounded-xl bg-blue-50 p-4 text-sm text-blue-800"
         >
           Checking keywords: {data.job?.completed} of{" "}
-          {JSON.parse(data.job?.keyword_ids || "[]").length} complete. You can
-          leave this page while it runs.
+          {JSON.parse(data.job?.keyword_ids || "[]").length} processed.{" "}
+          {stopping ? "Stopping: waiting for requests already sent to finish. No further requests will be sent." : "You can leave this page while it runs."}
+        </div>
+      )}
+      {data?.job?.status === "cancelled" && (
+        <div role="status" className="rounded-xl bg-slate-100 p-4 text-sm text-slate-700">
+          Check stopped. Completed results are saved; keywords that had not started keep their previous results.
         </div>
       )}
       {data?.job?.status === "error" && (
@@ -652,7 +673,9 @@ export function RankingsPage() {
                               {c.ranking_url}
                             </a>
                           ) : (
-                            `Not found in top ${c.checked_depth}`
+                            c.coverage_complete === 0
+                              ? `Not found in ${c.pages_checked} pages checked. Google returned fewer than 10 organic results on at least one page; full top-range absence is unverified.`
+                              : `Not found in top ${c.checked_depth}`
                           ))}
                       </td>
                     </tr>

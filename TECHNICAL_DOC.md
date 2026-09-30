@@ -97,13 +97,25 @@ adding the same normalized term. No Shopify writes.
 | DELETE | `/api/rankings/keywords/{id}` | Stop tracking; preserve history |
 | POST | `/api/rankings/estimate` | Credit check and worst-case requests for `{keyword_ids?, max_pages:1..5}` |
 | POST | `/api/rankings/check` | Reserve budget and start a background job; also requires a client `request_key` for deduplication |
+| POST | `/api/rankings/jobs/{job_id}/stop` | Stop further requests for that job; in-flight requests finish before reservations are released |
 | POST | `/api/rankings/weekly-run` | All active terms; body `{max_pages:5}`; one accepted weekly run per Pacific date |
 
 Checks use page offset + provider organic position, never the number of accumulated URLs.
-Failed/incomplete/repeated pages are unknown outcomes, not proof of absence. Absence is
-shown as `>N` only after a complete check of that depth. URLs lose tracking parameters but
+Failed, malformed, or repeated pages are unknown outcomes, not proof of absence. Valid pages
+with fewer than ten organic results are successful checks, labelled “Not found in N pages checked”
+when the target is absent. They do not establish full top-range absence. `coverage_complete=0`
+distinguishes these from `>N` outcomes with complete coverage. The schema migration corrects only
+historical errors with the exact old incomplete-page message after all requested pages were checked;
+it preserves the request ledger, legacy imports, and real failures. URLs lose tracking parameters but
 retain meaningful query parameters. The current ranking URL is compared with the configured
 target URL. Error and unverified snapshots break chart lines and numeric movement comparisons.
+
+The main button changes from **Check all** to **Stop check** while running, then **Stopping…**
+until in-flight requests finish. Cancellation is durable (`cancel_requested`), checked atomically
+before every request including retries, and retains the running reservation until workers drain.
+Finished snapshots are retained; partially checked terms are labelled stopped/unknown via `cancelled`,
+and terms that never dispatched a request keep their previous snapshot. Stopped jobs end as
+`cancelled`, including after a restart. A stop request for an old job cannot stop a newer job.
 
 Workers use a daemon thread with at most four concurrent keywords. SQLite atomically reserves
 `keywords × pages × 2` request slots (one retry per page), allows only one active rank job,
@@ -429,7 +441,7 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 ## Services
 
-Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
+Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, cooperative cancellation, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
 
 Backend orchestration lives in `backend/app/services/` and delegates to `shopifyseo/*`.
 
@@ -484,7 +496,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
 | OverviewPage         | `/`                                      | Dashboard overview               | `/api/summary`, sync/status                     |
-| RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks and budget confirmation | `/api/rankings` |
+| RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |
 | ProductDetailPage    | `/products/:handle`                      | Product SEO + signals + Sidekick + Top search queries (GSC) | `/api/products/{handle}`, AI stream, inspection |
 | ContentListPage      | `/collections`, `/pages`                 | List collections or pages        | `/api/collections`, `/api/pages`                |
@@ -513,8 +525,8 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 Ranking tables (created through the existing schema bootstrap):
 - `tracked_keywords`: normalized unique term, optional target/group, active flag; removal is soft.
-- `rank_checks`: immutable outcome and fixed search profile, rank or unknown state, reported legacy rank, target-at-check, competitors and timestamp; indexed `(keyword_id, checked_at DESC)`, unique import identity and `(job_id, keyword_id)`.
-- `rank_jobs`: request-key and weekly-date uniqueness, progress and durable request reservation; a partial unique index permits one running job.
+- `rank_checks`: outcome (including coverage and cancellation flags) and fixed search profile, rank or unknown state, reported legacy rank, target-at-check, competitors and timestamp; indexed `(keyword_id, checked_at DESC)`, unique import identity and `(job_id, keyword_id)`.
+- `rank_jobs`: request-key and weekly-date uniqueness, progress, durable cancellation flag and request reservation; a partial unique index permits one running job.
 - `rank_requests`: one ledger row per dispatched attempt, indexed by Pacific calendar month; remains after restart.
 
 SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/dashboard_store.py`, `shopifyseo/dashboard_google/_cache.py`. No Alembic/SQLAlchemy ORM.

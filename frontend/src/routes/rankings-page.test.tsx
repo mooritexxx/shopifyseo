@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   run: vi.fn(),
   estimate: vi.fn(),
+  stop: vi.fn(),
+  job: null as null | { id: string; status: string; completed: number; keyword_ids: string; cancel_requested: number },
 }));
 vi.mock("../hooks/use-rankings", () => ({
   useRankings: () => ({
@@ -28,7 +30,7 @@ vi.mock("../hooks/use-rankings", () => ({
           top_competitor: null,
         },
       ],
-      job: null,
+      job: mocks.job,
       month_used: 0,
       monthly_budget: 250,
       reserved: 0,
@@ -39,6 +41,7 @@ vi.mock("../hooks/use-rankings", () => ({
     save: { mutateAsync: mocks.save },
     remove: { mutateAsync: mocks.remove },
     run: { mutateAsync: mocks.run },
+    stop: { mutateAsync: mocks.stop, isPending: false },
   }),
   estimateRanks: mocks.estimate,
 }));
@@ -47,6 +50,8 @@ import { RankingsPage, rankLabel } from "./rankings-page";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.job = null;
+  mocks.stop.mockResolvedValue({});
   mocks.save.mockResolvedValue({});
   mocks.remove.mockResolvedValue({});
   mocks.run.mockResolvedValue({});
@@ -143,4 +148,37 @@ describe("Rankings", () => {
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect(mocks.run).not.toHaveBeenCalled();
   });
+});
+
+
+it("shows limited page coverage and cancellation distinctly", () => {
+  const c = { status: "ok", position: null, checked_depth: 0, coverage_complete: 0, pages_checked: 5 } as RankCheck;
+  expect(rankLabel(c)).toBe("Not found in 5 pages checked");
+  expect(rankLabel({ ...c, status: "error", cancelled: 1 })).toBe("Stopped · unknown");
+});
+
+it("uses the same main button to stop a running check", async () => {
+  mocks.job = { id: "active-job", status: "running", completed: 1, keyword_ids: "[1,2]", cancel_requested: 0 };
+  const user = userEvent.setup();
+  mount();
+  await user.click(screen.getByRole("button", { name: "Stop check" }));
+  expect(mocks.stop).toHaveBeenCalledWith("active-job");
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(mocks.estimate).not.toHaveBeenCalled();
+  expect((screen.getByRole("button", { name: "Stopping…" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("shows durable stopping state after reload", () => {
+  mocks.job = { id: "active-job", status: "running", completed: 1, keyword_ids: "[1,2]", cancel_requested: 1 };
+  mount();
+  expect((screen.getByRole("button", { name: "Stopping…" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("restores stop control if the request fails", async () => {
+  mocks.job = { id: "active-job", status: "running", completed: 1, keyword_ids: "[1,2]", cancel_requested: 0 };
+  mocks.stop.mockRejectedValue(new Error("Network unavailable"));
+  const user = userEvent.setup();
+  mount();
+  await user.click(screen.getByRole("button", { name: "Stop check" }));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Stop check" }) as HTMLButtonElement).disabled).toBe(false));
 });

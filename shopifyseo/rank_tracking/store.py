@@ -44,6 +44,30 @@ def ensure_schema(conn):
       );
       CREATE INDEX IF NOT EXISTS rank_requests_month ON rank_requests(month);
     ''')
+    for table, columns in {
+        'rank_jobs': {'cancel_requested': 'INTEGER NOT NULL DEFAULT 0'},
+        'rank_checks': {'coverage_complete': 'INTEGER NOT NULL DEFAULT 1',
+                        'cancelled': 'INTEGER NOT NULL DEFAULT 0'},
+    }.items():
+        existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+    # Older code rejected otherwise valid searches solely for short organic pages.
+    # Correct that specific outcome without claiming full top-N coverage or spending credits.
+    affected = conn.execute('''SELECT DISTINCT job_id FROM rank_checks
+        WHERE status='error' AND source='serpapi' AND position IS NULL
+        AND error='Incomplete organic results pages; absence from the top range is unverified.'
+        AND pages_checked=(SELECT max_pages FROM rank_jobs WHERE id=job_id)''').fetchall()
+    conn.execute('''UPDATE rank_checks SET status='ok',error=NULL,coverage_complete=0
+        WHERE status='error' AND source='serpapi' AND position IS NULL
+        AND error='Incomplete organic results pages; absence from the top range is unverified.'
+        AND pages_checked=(SELECT max_pages FROM rank_jobs WHERE id=job_id)''')
+    for row in affected:
+        failed = conn.execute("SELECT count(*) FROM rank_checks WHERE job_id=? AND status='error'", (row[0],)).fetchone()[0]
+        conn.execute('''UPDATE rank_jobs SET status=?,error=? WHERE id=? AND status='error'
+            AND error GLOB '[0-9]* keyword checks failed. See history.' ''',
+            ('error' if failed else 'complete', f'{failed} keyword checks failed. See history.' if failed else None, row[0]))
     # A marker prevents deleted/deactivated seed keywords reappearing on restart.
     seeded = conn.execute("SELECT value FROM service_settings WHERE key='rank_tracking_seeded'").fetchone()
     if not seeded:

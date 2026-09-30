@@ -11,6 +11,9 @@ export const checkSchema = z.object({
   status: z.enum(["ok", "error", "unverified"]),
   error: z.string().nullable(),
   checked_depth: z.number(),
+  pages_checked: z.number(),
+  coverage_complete: z.number(),
+  cancelled: z.number(),
   searches_used: z.number(),
   source: z.string(),
   profile: z.string(),
@@ -39,6 +42,7 @@ const rankingsSchema = z.object({
       id: z.string(),
       status: z.string(),
       completed: z.number(),
+      cancel_requested: z.number(),
       keyword_ids: z.string(),
       error: z.string().nullable(),
     })
@@ -111,5 +115,14 @@ export function useRankActions() {
       ),
     onSuccess: refresh,
   });
-  return { save, remove, run };
+  const stop = useMutation({
+    mutationFn: (id: string) =>
+      postJson(
+        `/api/rankings/jobs/${encodeURIComponent(id)}/stop`,
+        z.object({ job_id: z.string(), status: z.string() }),
+        {},
+      ),
+    onSuccess: refresh,
+  });
+  return { save, remove, run, stop };
 }

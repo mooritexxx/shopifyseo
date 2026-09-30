@@ -70,10 +70,9 @@ def test_not_found_only_for_verified_depth(monkeypatch):
     assert result['checked_depth'] == 20
 
 
-@pytest.mark.parametrize('kind', ['short','missing','offset','repeated','positions'])
+@pytest.mark.parametrize('kind', ['missing','offset','repeated','positions'])
 def test_uncertain_results_are_errors(monkeypatch,kind):
     p = pages()
-    if kind == 'short': p[0]['organic_results'] = p[0]['organic_results'][:4]
     if kind == 'missing': p[0].pop('organic_results')
     if kind == 'offset': p[1]['search_parameters']['start'] = 0
     if kind == 'repeated': p[1]['organic_results'] = p[0]['organic_results']
@@ -234,6 +233,11 @@ def test_api_contract_and_no_paid_call_without_check(database,monkeypatch):
     assert client.delete(f'/api/rankings/keywords/{key}').status_code==200
     assert client.post('/api/rankings/estimate',json={'max_pages':0}).status_code==422
     assert client.post('/api/rankings/estimate',json={'keyword_ids':[]}).status_code==400
+    job = svc.start_job(conn, [1], 1, 'api-stop', launch=False)['job_id']
+    assert client.post(f'/api/rankings/jobs/{job}/stop').json()['data']['status'] == 'stopping'
+    assert client.get('/api/rankings').json()['data']['job']['cancel_requested'] == 1
+    assert client.post('/api/rankings/jobs/missing/stop').status_code == 400
+    svc.recover_jobs(conn)
     conn.execute("UPDATE service_settings SET value='0' WHERE key='serpapi_rank_monthly_budget'");conn.commit()
     assert client.post('/api/rankings/check',json={'request_key':'blocked'}).status_code==409
 
@@ -280,3 +284,135 @@ def test_api_weekly_calls_are_idempotent(database, monkeypatch):
     assert first['job_id']==second['job_id']
     assert second['skipped']
     assert conn.execute('SELECT count(*) FROM rank_jobs').fetchone()[0]==1
+
+
+def test_short_pages_are_successful_without_claiming_full_coverage(monkeypatch):
+    payloads = pages()
+    payloads[1]['organic_results'] = payloads[1]['organic_results'][:8]
+    result, http = check(monkeypatch, payloads)
+    assert result['status'] == 'ok' and result['error'] is None
+    assert result['position'] is None and not result['coverage_complete']
+    assert result['pages_checked'] == 5 and http.call_count == 5
+    assert result['checked_depth'] == 10  # only the uninterrupted complete range
+
+
+def test_stop_before_start_preserves_history_and_blocks_new_job(database, monkeypatch):
+    conn, _ = database
+    add_check(conn, 3)
+    job = svc.start_job(conn, [1, 2], 5, 'stop-before', launch=False)['job_id']
+    http = Mock(side_effect=AssertionError('Must not spend a request'))
+    monkeypatch.setattr(serp.requests, 'get', http)
+    assert svc.stop_job(conn, job)['status'] == 'stopping'
+    assert svc.stop_job(conn, job)['status'] == 'stopping'
+    assert svc.usage(conn)['reserved'] == 20
+    with pytest.raises(serp.RankError, match='already running'):
+        svc.start_job(conn, [1], 1, 'too-soon', launch=False)
+    svc.run_job(job, svc.keywords(conn, [1, 2]), 5, 'secret')
+    assert not http.called
+    assert svc.history(conn, 1)[0]['position'] == 3
+    assert svc.history(conn, 2) == []
+    assert svc.stop_job(conn, job)['status'] == 'cancelled'
+    assert svc.usage(conn)['reserved'] == svc.usage(conn)['month_used'] == 0
+    new = svc.start_job(conn, [1], 1, 'next', launch=False)['job_id']
+    svc.stop_job(conn, job)  # stale tabs cannot cancel the new job
+    assert conn.execute('SELECT cancel_requested FROM rank_jobs WHERE id=?', (new,)).fetchone()[0] == 0
+    with pytest.raises(serp.RankError, match='not found'):
+        svc.stop_job(conn, 'missing')
+
+
+@pytest.mark.parametrize('hit', [False, True])
+def test_stop_during_inflight_preserves_response_and_usage(database, monkeypatch, hit):
+    from threading import Event, Thread
+    conn, _ = database
+    sent, release = Event(), Event()
+    payload = pages()[0]
+    if hit:
+        payload['organic_results'][2]['link'] = 'https://vapely.ca/p'
+    def search(*args, **kwargs):
+        sent.set()
+        assert release.wait(5)
+        response = Mock(status_code=200)
+        response.json.return_value = payload
+        return response
+    http = Mock(side_effect=search)
+    monkeypatch.setattr(serp.requests, 'get', http)
+    job = svc.start_job(conn, [1], 5, 'inflight', launch=False)['job_id']
+    thread = Thread(target=svc.run_job, args=(job, svc.keywords(conn, [1]), 5, 'secret'))
+    thread.start()
+    try:
+        assert sent.wait(5)
+        assert svc.stop_job(conn, job)['status'] == 'stopping'
+        assert svc.usage(conn)['reserved'] == 9
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive() and http.call_count == 1
+    row = svc.history(conn, 1)[0]
+    assert row['searches_used'] == 1 and row['pages_checked'] == 1
+    assert row['position'] == (3 if hit else None)
+    assert row['cancelled'] == (0 if hit else 1)
+    assert row['status'] == ('ok' if hit else 'error')
+    assert svc.usage(conn)['month_used'] == 1 and svc.usage(conn)['reserved'] == 0
+    assert conn.execute('SELECT status FROM rank_jobs WHERE id=?', (job,)).fetchone()[0] == 'cancelled'
+
+
+def test_stop_blocks_retry_and_queued_terms(database, monkeypatch):
+    conn, connect = database
+    job = svc.start_job(conn, None, 5, 'retry-stop', launch=False)['job_id']
+    # Cancel atomically from the first dispatched request; other workers may have
+    # already reserved requests, but neither retries nor later terms can dispatch.
+    def search(*args, **kwargs):
+        c = connect()
+        try:
+            svc.stop_job(c, job)
+        finally:
+            c.close()
+        raise requests.Timeout()
+    http = Mock(side_effect=search)
+    monkeypatch.setattr(serp.requests, 'get', http)
+    monkeypatch.setattr(serp.time, 'sleep', lambda _: None)
+    svc.run_job(job, svc.keywords(conn), 5, 'secret')
+    assert 1 <= http.call_count <= 4
+    checks = conn.execute('SELECT * FROM rank_checks WHERE job_id=?', (job,)).fetchall()
+    assert len(checks) == http.call_count
+    assert all(c['cancelled'] and c['searches_used'] == 1 for c in checks)
+    assert svc.usage(conn)['month_used'] == http.call_count
+    assert svc.usage(conn)['reserved'] == 0
+
+
+def test_restart_retains_stop_request(database):
+    conn, _ = database
+    job = svc.start_job(conn, [1, 2], 5, 'restart-stop', launch=False)['job_id']
+    svc.record_request(job, 1)
+    svc.stop_job(conn, job)
+    svc.recover_jobs(conn)
+    assert svc.history(conn, 1)[0]['cancelled'] == 1
+    assert svc.history(conn, 2) == []
+    assert svc.usage(conn)['reserved'] == 0 and svc.usage(conn)['month_used'] == 1
+    assert conn.execute('SELECT status FROM rank_jobs WHERE id=?', (job,)).fetchone()[0] == 'cancelled'
+
+
+@pytest.mark.parametrize('real_error', [False, True])
+def test_migration_repairs_only_completed_short_page_errors(database, real_error):
+    conn, _ = database
+    job = svc.start_job(conn, [1, 2], 5, 'historical', launch=False)['job_id']
+    svc.record_request(job, 1)
+    short = 'Incomplete organic results pages; absence from the top range is unverified.'
+    for keyword_id, error, checked in [(1, short, 5), (2, 'SerpApi returned HTTP 401.' if real_error else short, 5)]:
+        conn.execute('''INSERT INTO rank_checks(keyword_id,job_id,checked_at,check_date,pages_checked,source,status,error,profile)
+            VALUES (?,?,'2026-09-30','2026-09-30',?,'serpapi','error',?,?)''',
+            (keyword_id, job, checked, error, serp.PROFILE_JSON))
+    conn.execute("UPDATE rank_jobs SET status='error',reserved=0,error='2 keyword checks failed. See history.' WHERE id=?", (job,))
+    conn.commit()
+    before = svc.usage(conn)
+    ensure_schema(conn)
+    ensure_schema(conn)  # idempotent
+    first = svc.history(conn, 1)[0]
+    assert first['status'] == 'ok' and first['position'] is None
+    assert first['coverage_complete'] == 0 and first['pages_checked'] == 5
+    second = svc.history(conn, 2)[0]
+    assert second['status'] == ('error' if real_error else 'ok')
+    result = conn.execute('SELECT status,error FROM rank_jobs WHERE id=?', (job,)).fetchone()
+    assert result['status'] == ('error' if real_error else 'complete')
+    assert result['error'] == ('1 keyword checks failed. See history.' if real_error else None)
+    assert svc.usage(conn) == before

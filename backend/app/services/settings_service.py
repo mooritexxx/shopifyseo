@@ -131,6 +131,11 @@ def save_settings(payload: dict[str, str]) -> str:
     conn = open_db_connection()
     try:
         migrated_payload = dict(payload)
+        if "serpapi_rank_monthly_budget" in migrated_payload:
+            budget = str(migrated_payload["serpapi_rank_monthly_budget"]).strip()
+            if not budget.isdigit() or not 0 <= int(budget) <= 1000000:
+                raise ValueError("Ranking monthly budget must be an integer between 0 and 1000000.")
+            migrated_payload["serpapi_rank_monthly_budget"] = budget
         for key in RUNTIME_SETTING_KEYS:
             if key in migrated_payload:
                 new_value = migrated_payload[key].strip()

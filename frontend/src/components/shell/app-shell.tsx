@@ -146,6 +146,7 @@ const items: NavItem[] = [
   { to: "/pages", label: "Pages", icon: BookOpen, group: "Catalog", countKey: "pages" },
   { to: "/articles", label: "Articles", icon: FileText, group: "Catalog", countKey: "blog_articles" },
   { to: "/blogs", label: "Blogs", icon: Rss, group: "Catalog", countKey: "blogs" },
+  { to: "/rankings", label: "Rankings", icon: Key, group: "Research" },
   { to: "/keywords", label: "Keyword Research", icon: Key, group: "Research" },
   { to: "/opportunities", label: "Opportunity Inbox", icon: Inbox, group: "Research", badge: "NEW" },
   { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Research" },

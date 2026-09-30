@@ -215,7 +215,7 @@ export function renderSettingsTabSections({
         title: "SerpAPI",
         description:
           "Optional. When set, new article ideas call SerpAPI’s Google related questions engine for each idea’s primary keyword; only the questions are saved for drafting. Test connection runs a live request for the query “black coffee”.",
-        fields: ["serpapi_api_key"] as const
+        fields: ["serpapi_api_key", "serpapi_rank_monthly_budget"] as const
       }
     ],
     "ai-models": [

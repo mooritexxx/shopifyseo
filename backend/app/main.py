@@ -33,6 +33,7 @@ from backend.app.routers.internal_links import router as internal_links_router
 from backend.app.routers.google_ads_lab import router as google_ads_lab_router
 from backend.app.routers.opportunities import router as opportunities_router
 from backend.app.routers.status import router as status_router
+from backend.app.routers.rankings import router as rankings_router
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +50,8 @@ async def lifespan(app: FastAPI):
 
         conn = open_db_connection()
         try:
+            from backend.app.services.rank_tracking import recover_jobs
+            recover_jobs(conn)
             n = refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn)
             log.info("PageSpeed catalog reconciled from cache (%s object(s))", n)
         finally:
@@ -70,6 +73,7 @@ app.include_router(keywords_router)
 app.include_router(clusters_router)
 app.include_router(operations_router)
 app.include_router(status_router)
+app.include_router(rankings_router)
 app.include_router(sidekick_router)
 app.include_router(actions_router)
 app.include_router(ai_stream_router)

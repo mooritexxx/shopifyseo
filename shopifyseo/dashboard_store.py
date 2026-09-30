@@ -782,6 +782,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_suggestion ON link_suggestion_events (suggestion_id)"
     )
+    from .rank_tracking.store import ensure_schema as ensure_rank_schema
+    ensure_rank_schema(conn)
     conn.commit()
 
 

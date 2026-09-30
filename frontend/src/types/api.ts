@@ -1045,6 +1045,7 @@ export const settingsSchema = z.object({
     dataforseo_api_password: z.string().default(""),
     open_page_rank_api_key: z.string().default(""),
     serpapi_api_key: z.string().default(""),
+    serpapi_rank_monthly_budget: z.string().default("250"),
     openrouter_api_key: z.string().default(""),
     ollama_api_key: z.string().default(""),
     ollama_base_url: z.string().default(""),

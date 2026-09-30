@@ -1,592 +1,260 @@
-"""Tests for wrapping anchors and applying suggestions."""
-
-import hashlib
+"""Safety regressions use real local schemas and mocked Shopify transport only."""
+import json
 import sqlite3
+from unittest.mock import Mock
 
 import pytest
 
-from shopifyseo.internal_links.apply import apply_suggestion, wrap_phrase_in_html
-
-
-def _hash_body(body: str) -> str:
-    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
+from internal_links_support import BASE, OLD, Shopify, apply, database, preview
+from shopifyseo.internal_links import apply as service, shopify_io
+from shopifyseo.internal_links.apply import wrap_phrase_in_html
+from shopifyseo.internal_links.safety import LinkConflict, build_edit, guard_edit, body_hash
 
 
 def test_wrap_phrase_wraps_first_eligible_occurrence_only():
-    html = '<h2>ceramic tanks</h2><p><a href="/x">ceramic tanks</a> Love ceramic tanks. More ceramic tanks.</p>'
-    out = wrap_phrase_in_html(html, "ceramic tanks", "https://s.com/collections/ceramic-tanks")
-    assert out.count('<a href="https://s.com/collections/ceramic-tanks">ceramic tanks</a>') == 1
-    # heading and existing link untouched
-    assert "<h2>ceramic tanks</h2>" in out
-    assert '<a href="/x">ceramic tanks</a>' in out
-    # second plain occurrence untouched
-    assert out.endswith("More ceramic tanks.</p>")
+    html = '<h2>ceramic tanks</h2><!-- ceramic tanks --><p title="ceramic tanks"><a href="/x">ceramic tanks</a> Love ceramic tanks. More ceramic tanks.</p>'
+    new = wrap_phrase_in_html(html, 'ceramic tanks', BASE + '/collections/ceramic-tanks')
+    assert new == html.replace('Love ceramic tanks.', 'Love <a href="https://s.com/collections/ceramic-tanks">ceramic tanks</a>.')
+    assert wrap_phrase_in_html('<p>nothing</p>', 'ceramic tanks', 'u') is None
 
 
-def test_wrap_phrase_returns_none_when_absent():
-    assert wrap_phrase_in_html("<p>nothing here</p>", "ceramic tanks", "u") is None
+def test_preview_has_no_writes_and_apply_uses_live_html():
+    conn = database()
+    live = Shopify(OLD + '<img src="/live.jpg"><a href="https://external.example/source">Reference</a>')
+    before = conn.total_changes
+    plan = preview(conn, live)
+    assert conn.total_changes == before and plan['allowed'] and not plan['text_diff']
+    live.push.assert_not_called()
+    result = apply(conn, live, token=plan['preview_token'])
+    assert result['status'] == 'applied'
+    assert live.body == plan['new_html']
+    assert 'live.jpg' in live.body and 'https://external.example/source' in live.body
+    assert conn.execute('SELECT description_html FROM products').fetchone()[0] == live.body
+    assert conn.execute('SELECT COUNT(*) FROM internal_links').fetchone()[0] == 1
 
 
-def _conn() -> sqlite3.Connection:
-    body = "<p>Love ceramic tanks.</p>"
-    body_hash = _hash_body(body)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT,
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
-            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]',
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
-            seo_title TEXT, seo_description TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT,
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            anchor_text TEXT,
-            href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
-            anchor_phrase TEXT,
-            ai_anchor_html TEXT,
-            source_body_hash TEXT,
-            score REAL NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'suggested'
-                CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
-            created_at INTEGER NOT NULL,
-            applied_at INTEGER,
-            UNIQUE (source_type, source_handle, target_type, target_handle)
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
-        (body,),
-    )
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', ?, 1.0, 1)",
-        (body_hash,),
-    )
+def test_snapshot_committed_before_push_and_no_transaction_during_network(tmp_path):
+    path = tmp_path / 'backup.sqlite'
+    conn = database(path)
+    live = Shopify()
+    def push(*args):
+        assert not conn.in_transaction
+        other = sqlite3.connect(path)
+        backup = other.execute('SELECT old_body,status FROM link_body_snapshots').fetchone()
+        other.close()
+        assert backup == (OLD, 'prepared')
+        return live._push(*args)
+    live.push.side_effect = push
+    apply(conn, live)
+
+
+@pytest.mark.parametrize('change', ['body', 'token', 'suggestion', 'target', 'expired'])
+def test_stale_or_tampered_preview_is_rejected(change, monkeypatch):
+    conn = database()
+    live = Shopify()
+    token = preview(conn, live)['preview_token']
+    if change == 'body': live.body += '<p>New live work.</p>'
+    if change == 'token': token += 'x'
+    if change == 'suggestion': conn.execute("UPDATE link_suggestions SET anchor_phrase='Original'"); conn.commit()
+    if change == 'target': conn.execute("UPDATE link_suggestions SET target_handle='missing'"); conn.commit()
+    if change == 'expired': monkeypatch.setattr('shopifyseo.internal_links.safety.time.time', lambda: 9999999999)
+    with pytest.raises(LinkConflict): apply(conn, live, token=token)
+    live.push.assert_not_called()
+
+
+def test_apply_requires_preview_even_with_mock_writer():
+    conn = database(); live = Shopify()
+    with pytest.raises(LinkConflict, match='Preview'):
+        service.apply_suggestion(conn, 1, BASE, fetch_fn=live.fetch, push_fn=live.push)
+    live.push.assert_not_called()
+
+
+def test_live_changes_after_reservation_block_push():
+    conn = database(); live = Shopify()
+    token = preview(conn, live)['preview_token']
+    live.fetch.side_effect = [OLD, OLD + '<p>Concurrent edit</p>']
+    with pytest.raises(LinkConflict, match='changed'): apply(conn, live, token=token)
+    live.push.assert_not_called()
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0] == 'failed'
+
+
+def test_suggestion_changed_during_final_live_read_blocks_push():
+    conn = database()
+    live = Shopify()
+    token = preview(conn, live)['preview_token']
+    live.fetch.reset_mock()
+
+    def fetch(*_):
+        if live.fetch.call_count == 2:
+            conn.execute("UPDATE link_suggestions SET anchor_phrase = 'Original'")
+            conn.commit()
+        return OLD
+
+    live.fetch.side_effect = fetch
+    with pytest.raises(LinkConflict, match='Suggestion changed'):
+        apply(conn, live, token=token)
+    live.push.assert_not_called()
+
+
+def test_changed_catalog_identity_keeps_backup_without_overwriting_local_body():
+    conn = database()
+    live = Shopify()
+
+    def push(*args):
+        conn.execute("UPDATE products SET shopify_id = 'gid://shopify/Product/999'")
+        conn.commit()
+        return live._push(*args)
+
+    live.push.side_effect = push
+    with pytest.raises(LinkConflict, match='identity changed'):
+        apply(conn, live)
+    assert conn.execute('SELECT description_html FROM products').fetchone()[0] == OLD
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0] == 'needs_reconciliation'
+
+
+@pytest.mark.parametrize('replacement', ['<p>Reworded.</p>', '<p>Love ceramic tanks.</p>', OLD.replace('Original', 'Rewritten')])
+def test_legacy_full_body_is_never_applied(replacement):
+    conn = database(); live = Shopify()
+    conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_anchor_html=?", (replacement,)); conn.commit()
+    with pytest.raises(LinkConflict, match='Legacy'): apply(conn, live, token='anything')
+    live.push.assert_not_called()
+
+
+def test_guard_rejects_text_and_invisible_html_changes():
+    old = OLD + '<a href="https://source.example">Source</a><img src="/x.jpg">'
+    edit = {'anchor_phrase': 'ceramic tanks'}
+    url = BASE + '/collections/ceramic-tanks'
+    new = build_edit(old, edit, url)
+    for changed in [new.replace('Original', 'Rewritten'), new.replace('/x.jpg', '/y.jpg'), new.replace('https://source.example', 'https://other.example'), new.replace('<img src="/x.jpg">', '')]:
+        with pytest.raises(LinkConflict): guard_edit(old, changed, edit, url)
+
+
+def test_structured_sentence_is_spliced_once_preserving_every_original_byte():
+    conn = database(); live = Shopify()
+    edit = {'anchor_phrase': 'Ceramic Tanks', 'insert_sentence': 'Explore Ceramic Tanks for more options.', 'insert_after_text': 'Original second sentence.'}
+    conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (json.dumps(edit),)); conn.commit()
+    apply(conn, live)
+    assert live.body.startswith(OLD)
+    assert live.body == OLD + '<p>Explore <a href="https://s.com/collections/ceramic-tanks">Ceramic Tanks</a> for more options.</p>'
+
+
+@pytest.mark.parametrize('edit', [
+    {'anchor_phrase':'ceramic tanks','insert_sentence':'See ceramic tanks. Another sentence.','insert_after_text':'Love ceramic tanks.'},
+    {'anchor_phrase':'ceramic tanks','insert_sentence':'See <img> ceramic tanks.','insert_after_text':'Love ceramic tanks.'},
+    {'anchor_phrase':'ceramic tanks','insert_sentence':'See ceramic tanks.','insert_after_text':'Not in this body'},
+])
+def test_invalid_insertions_do_not_push(edit):
+    conn = database(); live = Shopify()
+    conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (json.dumps(edit),)); conn.commit()
+    assert not preview(conn, live)['allowed']
+    with pytest.raises(LinkConflict): apply(conn, live, token='anything')
+    live.push.assert_not_called()
+
+
+def test_ambiguous_paragraph_is_rejected():
+    with pytest.raises(LinkConflict, match='ambiguous'):
+        build_edit('<p>Same.</p><p>Same.</p>', {'anchor_phrase':'tanks','insert_sentence':'Explore tanks.','insert_after_text':'Same.'}, BASE)
+
+
+@pytest.mark.parametrize('source_type,resource,field', [('product','product','descriptionHtml'),('collection','collection','descriptionHtml'),('blog_article','article','body')])
+def test_shopify_payload_is_body_only(source_type, resource, field, monkeypatch):
+    graphql = Mock(return_value={'data': {resource+'Update': {resource: {field: '<p>Body</p>'}, 'userErrors': []}}})
+    monkeypatch.setattr(shopify_io, 'graphql_request', graphql)
+    assert shopify_io.push_body(source_type, {'shopify_id':'gid://object'}, '<p>Body</p>') == '<p>Body</p>'
+    variables = graphql.call_args.args[1]
+    if resource == 'article': assert variables == {'id':'gid://object','article':{'body':'<p>Body</p>'}}
+    else: assert variables == {'input':{'id':'gid://object',field:'<p>Body</p>'}}
+    assert graphql.call_count == 1
+
+
+def test_timeout_does_not_repeat_write_and_can_reconcile():
+    conn = database(); live = Shopify()
+    def timed_out(*args): live._push(*args); raise TimeoutError('response lost')
+    live.push.side_effect = timed_out
+    with pytest.raises(TimeoutError): apply(conn, live)
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0] == 'needs_reconciliation'
+    assert conn.execute('SELECT description_html FROM products').fetchone()[0] == OLD
+    result = service.reconcile_suggestion(conn, 1, BASE, fetch_fn=live.fetch)
+    assert result['status'] == 'applied' and live.push.call_count == 1
+    assert conn.execute('SELECT description_html FROM products').fetchone()[0] == live.body
+
+
+def test_failed_write_reconciles_without_mutating_content():
+    conn = database(); live = Shopify()
+    live.push.side_effect = RuntimeError('failed')
+    with pytest.raises(RuntimeError): apply(conn, live)
+    assert service.reconcile_suggestion(conn, 1, BASE, fetch_fn=live.fetch)['status'] == 'not_written'
+    assert conn.execute('SELECT status FROM link_suggestions').fetchone()[0] == 'suggested'
+
+
+def test_local_failure_after_remote_success_keeps_backup(monkeypatch):
+    conn = database(); live = Shopify()
+    with monkeypatch.context() as m:
+        m.setattr(service, '_update_local', Mock(side_effect=sqlite3.OperationalError('local failure')))
+        with pytest.raises(sqlite3.OperationalError): apply(conn, live)
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0] == 'needs_reconciliation'
+    assert service.reconcile_suggestion(conn, 1, BASE, fetch_fn=live.fetch)['status'] == 'applied'
+    assert live.push.call_count == 1
+
+
+def test_sibling_edits_invalidated_and_concurrent_apply_blocked(tmp_path):
+    path = tmp_path/'parallel.sqlite'; conn = database(path); live = Shopify()
+    conn.execute("INSERT INTO collections (shopify_id,handle,title,raw_json,synced_at) VALUES ('gid://c/3','other','Other','{}','now')")
+    conn.execute("INSERT INTO link_suggestions (source_type,source_handle,target_type,target_handle,kind,anchor_phrase,ai_edit_json,created_at) VALUES ('product','source','collection','other','ai_woven','Original','{\"anchor_phrase\":\"Original\"}',1)")
     conn.commit()
-    return conn
+    second_token = preview(conn, live, 2)['preview_token']
+    def concurrent(*args):
+        other = sqlite3.connect(path); other.row_factory=sqlite3.Row
+        try:
+            with pytest.raises(LinkConflict, match='Another write'): apply(other, live, 2, second_token)
+        finally: other.close()
+        return live._push(*args)
+    live.push.side_effect=concurrent
+    apply(conn, live)
+    sibling=conn.execute('SELECT source_body_hash,ai_edit_json FROM link_suggestions WHERE id=2').fetchone()
+    assert sibling['source_body_hash']==body_hash(live.body) and sibling['ai_edit_json'] is None
+    assert live.push.call_count==1
 
 
-def test_apply_phrase_wrap_pushes_and_updates_state():
-    conn = _conn()
-    pushed = {}
-    sanitized = []
-
-    def fake_push(source_type, row, new_body):
-        pushed["body"] = new_body
-        return {"ok": True}
-
-    def fake_sanitize(body):
-        sanitized.append(body)
-        return body
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    result = apply_suggestion(conn, sid, base_url="https://s.com", push_fn=fake_push, sanitize_fn=fake_sanitize)
-    assert result["status"] == "applied"
-    assert '<a href="https://s.com/collections/ceramic-tanks">ceramic tanks</a>' in pushed["body"]
-    assert len(sanitized) == 1, "sanitize_fn should have been called"
-    row = conn.execute("SELECT status, applied_at FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
-    assert row["status"] == "applied" and row["applied_at"]
-    # local body updated and graph row inserted
-    body = conn.execute("SELECT body FROM blog_articles WHERE handle = 'post'").fetchone()["body"]
-    assert 'href="https://s.com/collections/ceramic-tanks"' in body
-    assert conn.execute(
-        "SELECT COUNT(*) FROM internal_links WHERE source_handle = 'news/post' AND target_handle = 'ceramic-tanks'"
-    ).fetchone()[0] == 1
+def test_auto_apply_uses_live_preview_guard_and_body_writer():
+    from shopifyseo.internal_links.auto_apply import run_auto_apply
+    conn=database(); live=Shopify(OLD+'<p>Live-only text.</p>')
+    conn.execute("INSERT INTO service_settings(key,value) VALUES ('internal_link_auto_apply_enabled','1')")
+    conn.execute('UPDATE link_suggestions SET score=1.5');conn.commit()
+    result=run_auto_apply(conn,BASE,fetch_fn=live.fetch,push_fn=live.push)
+    assert result['applied']==1 and 'Live-only text' in live.body
+    assert conn.execute('SELECT old_body FROM link_body_snapshots').fetchone()[0]==OLD+'<p>Live-only text.</p>'
+    assert conn.execute('SELECT event_type FROM link_suggestion_events').fetchone()[0]=='auto_apply'
 
 
-def test_apply_failure_leaves_status_suggested():
-    conn = _conn()
-
-    def failing_push(source_type, row, new_body):
-        raise RuntimeError("shopify down")
-
-    def fake_sanitize(body):
-        return body
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    with pytest.raises(RuntimeError):
-        apply_suggestion(conn, sid, base_url="https://s.com", push_fn=failing_push, sanitize_fn=fake_sanitize)
-    row = conn.execute("SELECT status FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
-    assert row["status"] == "suggested"
-    body = conn.execute("SELECT body FROM blog_articles WHERE handle = 'post'").fetchone()["body"]
-    assert "<a " not in body  # local untouched
+def test_auto_apply_never_applies_ai_woven_even_if_enabled():
+    from shopifyseo.internal_links.auto_apply import run_auto_apply
+    conn=database(); live=Shopify()
+    conn.execute("INSERT INTO service_settings(key,value) VALUES ('internal_link_auto_apply_enabled','1')")
+    conn.execute("INSERT INTO service_settings(key,value) VALUES ('internal_link_auto_apply_kinds','ai_woven')")
+    conn.execute("UPDATE link_suggestions SET score=2,kind='ai_woven',ai_edit_json='{\"anchor_phrase\":\"ceramic tanks\"}'");conn.commit()
+    assert run_auto_apply(conn,BASE,fetch_fn=live.fetch,push_fn=live.push)['applied']==0
+    live.push.assert_not_called()
 
 
-def test_apply_ai_woven_preserves_correct_internal_links():
-    """Apply must NOT remap correct internal links to different handles.
-
-    Regression test for the bug where zipping two frozensets (allowed_paths,
-    allowed_full) in arbitrary order caused path_to_canonical to pair paths
-    with random URLs. For example, /collections/abt-85k would be mapped to
-    https://vapely.ca/collections/draggg-4k instead of the correct URL.
-
-    This test verifies that an ai_woven body with correct target URLs is
-    preserved exactly, even when the allowlist contains other collections,
-    products, and pages.
-    """
-    ai_body = (
-        '<p>Check out our <a href="https://vapely.ca/collections/abt-85k-disposable-vapes">'
-        'ABT 85K Disposable Vapes</a> collection featuring '
-        '<a href="https://vapely.ca/products/abt-85k-mint-disposable">ABT 85K Mint</a> and '
-        '<a href="https://vapely.ca/products/abt-85k-grape-disposable">ABT 85K Grape</a>.</p>'
-    )
-    body_hash = _hash_body(ai_body)
-
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
-        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
-            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
-        CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
-            seo_title TEXT, seo_description TEXT);
-        CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT);
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            anchor_text TEXT,
-            href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
-            anchor_phrase TEXT,
-            ai_anchor_html TEXT,
-            source_body_hash TEXT,
-            score REAL NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'suggested'
-                CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
-            created_at INTEGER NOT NULL,
-            applied_at INTEGER,
-            UNIQUE (source_type, source_handle, target_type, target_handle)
-        );
-        """
-    )
-    # Insert the target collection plus several OTHER collections that could be
-    # incorrectly swapped in if path_to_canonical is built wrong
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('abt-85k-disposable-vapes', 'ABT 85K Disposables')")
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('draggg-4k-disposable-vapes', 'Draggg 4K Disposables')")
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('elf-bar-5000', 'Elf Bar 5000')")
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('lost-mary', 'Lost Mary')")
-    # Insert target products plus unrelated ones
-    conn.execute("INSERT INTO products (handle, title, status) VALUES ('abt-85k-mint-disposable', 'ABT 85K Mint', 'ACTIVE')")
-    conn.execute("INSERT INTO products (handle, title, status) VALUES ('abt-85k-grape-disposable', 'ABT 85K Grape', 'ACTIVE')")
-    conn.execute("INSERT INTO products (handle, title, status) VALUES ('draggg-peach', 'Draggg Peach', 'ACTIVE')")
-    conn.execute("INSERT INTO products (handle, title, status) VALUES ('elf-bar-strawberry', 'Elf Bar Strawberry', 'ACTIVE')")
-    # Insert some pages too
-    conn.execute("INSERT INTO pages (handle, title) VALUES ('about-us', 'About Us')")
-    conn.execute("INSERT INTO pages (handle, title) VALUES ('contact', 'Contact')")
-    # Source article with the AI-generated body
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/99', 'news', 'test-article', 'Test', ?, 'st', 'sd')",
-        (ai_body,),
-    )
-    # ai_woven suggestion - the ai_anchor_html is the full replacement body
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, ai_anchor_html, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/test-article', 'collection', 'abt-85k-disposable-vapes', 'ai_woven', "
-        "'ABT 85K Disposable Vapes', ?, ?, 1.0, 1)",
-        (ai_body, body_hash),
-    )
-    conn.commit()
-
-    pushed_body = {}
-
-    def fake_push(source_type, row, new_body):
-        pushed_body["html"] = new_body
-        return {"ok": True}
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    # NOTE: We pass sanitize_fn=None to trigger the real sanitize logic in apply
-    # We need to verify the REAL sanitize path works correctly
-    result = apply_suggestion(conn, sid, base_url="https://vapely.ca", push_fn=fake_push, sanitize_fn=None)
-    assert result["status"] == "applied"
-
-    # The critical assertion: the pushed body must preserve the correct URLs
-    html = pushed_body["html"]
-    assert 'href="https://vapely.ca/collections/abt-85k-disposable-vapes"' in html, \
-        "Target collection URL must be preserved, not remapped"
-    assert 'href="https://vapely.ca/products/abt-85k-mint-disposable"' in html, \
-        "Target product URL must be preserved"
-    assert 'href="https://vapely.ca/products/abt-85k-grape-disposable"' in html, \
-        "Target product URL must be preserved"
-
-    # Must NOT contain wrong URLs
-    assert "draggg-4k" not in html, "Must not remap to wrong collection"
-    assert "elf-bar" not in html, "Must not remap to unrelated collection"
-    assert "draggg-peach" not in html, "Must not remap to wrong product"
+def test_reconciliation_serializes_readers(tmp_path):
+    path=tmp_path/'reconcile.sqlite'; conn=database(path); live=Shopify()
+    live.push.side_effect=TimeoutError()
+    with pytest.raises(TimeoutError): apply(conn,live)
+    def fetch(*args):
+        other=sqlite3.connect(path);other.row_factory=sqlite3.Row
+        try:
+            with pytest.raises(LinkConflict,match='still be running'):
+                service.reconcile_suggestion(other,1,BASE,fetch_fn=lambda *_:OLD)
+        finally: other.close()
+        return OLD
+    assert service.reconcile_suggestion(conn,1,BASE,fetch_fn=fetch)['status']=='not_written'
 
 
-def test_apply_rejects_stale_body():
-    """Apply should reject if source body changed since suggestion was created."""
-    body_old = "<p>Love ceramic tanks.</p>"
-    body_new = "<p>Updated body content.</p>"
-    hash_old = _hash_body(body_old)
-
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY,
-            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
-            anchor_text TEXT, href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY,
-            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
-            kind TEXT, anchor_phrase TEXT, ai_anchor_html TEXT, source_body_hash TEXT,
-            score REAL DEFAULT 0, status TEXT DEFAULT 'suggested', created_at INTEGER, applied_at INTEGER,
-            UNIQUE (source_type, source_handle, target_type, target_handle)
-        );
-        CREATE TABLE collections (handle TEXT, title TEXT);
-        """
-    )
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
-        (body_new,),
-    )
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', ?, 1.0, 1)",
-        (hash_old,),
-    )
-    conn.commit()
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    with pytest.raises(ValueError, match="Source body changed"):
-        apply_suggestion(conn, sid, base_url="https://s.com", push_fn=lambda *a: {}, sanitize_fn=lambda b: b)
-
-
-def test_apply_succeeds_after_generate_updates_hash():
-    """Apply should succeed when generate_ai_anchor has updated hash to current body.
-
-    Regression test for bug: Apply failed with "Source body changed" even after
-    Generate ran on the current body, because Generate didn't update source_body_hash.
-    """
-    from shopifyseo.internal_links.ai_weave import generate_ai_anchor
-
-    current_body = "<p>Short body text.</p>"
-    stale_hash = "stale_hash_from_old_rebuild"
-    current_hash = _hash_body(current_body)
-    ai_body = '<p>Short body text. See <a href="https://s.com/products/widget">Widget</a>.</p>'
-
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT);
-        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
-            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY,
-            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
-            anchor_text TEXT, href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY,
-            source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT,
-            kind TEXT, anchor_phrase TEXT, ai_anchor_html TEXT, source_body_hash TEXT,
-            score REAL DEFAULT 0, status TEXT DEFAULT 'suggested', created_at INTEGER, applied_at INTEGER,
-            UNIQUE (source_type, source_handle, target_type, target_handle)
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
-        (current_body,),
-    )
-    conn.execute("INSERT INTO products (handle, title, status) VALUES ('widget', 'Widget', 'ACTIVE')")
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'product', 'widget', 'ai_woven', ?, 1.0, 1)",
-        (stale_hash,),
-    )
-    conn.commit()
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-
-    def fake_call_ai(messages, json_schema):
-        return {"revised_body": ai_body}
-
-    generate_ai_anchor(conn, sid, base_url="https://s.com", call_ai_fn=fake_call_ai)
-
-    row = conn.execute("SELECT source_body_hash FROM link_suggestions WHERE id = ?", (sid,)).fetchone()
-    assert row["source_body_hash"] == current_hash, "Generate should update hash"
-
-    pushed = {}
-
-    def fake_push(source_type, row, new_body):
-        pushed["body"] = new_body
-        return {"ok": True}
-
-    result = apply_suggestion(conn, sid, base_url="https://s.com", push_fn=fake_push, sanitize_fn=lambda b: b)
-    assert result["status"] == "applied", "Apply should succeed after Generate updates hash"
-    assert 'href="https://s.com/products/widget"' in pushed["body"]
-
-
-def _conn_with_siblings() -> sqlite3.Connection:
-    """Create a DB with multiple suggestions for the same source (sibling suggestions)."""
-    body = "<p>Love ceramic tanks. And glass tanks too.</p>"
-    body_hash = _hash_body(body)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT,
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
-            description_html TEXT, seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]',
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT, description_html TEXT,
-            seo_title TEXT, seo_description TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE pages (shopify_id TEXT, handle TEXT, title TEXT, body TEXT,
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            anchor_text TEXT,
-            href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT NOT NULL,
-            source_handle TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_handle TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('phrase_wrap', 'ai_woven')),
-            anchor_phrase TEXT,
-            ai_anchor_html TEXT,
-            source_body_hash TEXT,
-            score REAL NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'suggested'
-                CHECK (status IN ('suggested', 'applied', 'dismissed', 'undone')),
-            created_at INTEGER NOT NULL,
-            applied_at INTEGER
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
-        (body,),
-    )
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('glass-tanks', 'Glass Tanks')")
-    # First suggestion: phrase_wrap for "ceramic tanks"
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', ?, 1.0, 1)",
-        (body_hash,),
-    )
-    # Second suggestion: phrase_wrap for "glass tanks" (sibling)
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'glass-tanks', 'phrase_wrap', 'glass tanks', ?, 0.9, 2)",
-        (body_hash,),
-    )
-    conn.commit()
-    return conn
-
-
-def test_apply_sibling_succeeds_without_rebuild():
-    """Applying one suggestion should update sibling hashes so the next apply succeeds.
-    
-    Regression test for the bug where applying one suggestion didn't update the 
-    source_body_hash on other pending suggestions for the same source, causing
-    subsequent applies to fail with "Source body changed since suggestion was generated".
-    """
-    conn = _conn_with_siblings()
-
-    def fake_push(source_type, row, new_body):
-        return {"ok": True}
-
-    def fake_sanitize(body):
-        return body
-
-    # Get both suggestion IDs
-    rows = conn.execute(
-        "SELECT id, target_handle FROM link_suggestions ORDER BY created_at"
-    ).fetchall()
-    first_id, second_id = rows[0]["id"], rows[1]["id"]
-    assert rows[0]["target_handle"] == "ceramic-tanks"
-    assert rows[1]["target_handle"] == "glass-tanks"
-
-    # Apply the first suggestion
-    result1 = apply_suggestion(conn, first_id, base_url="https://s.com", push_fn=fake_push, sanitize_fn=fake_sanitize)
-    assert result1["status"] == "applied"
-
-    # The sibling should now have an updated source_body_hash matching the new body
-    sibling = conn.execute(
-        "SELECT source_body_hash, status FROM link_suggestions WHERE id = ?", (second_id,)
-    ).fetchone()
-    assert sibling["status"] == "suggested"
-    
-    # Get the actual current body hash
-    current_body = conn.execute("SELECT body FROM blog_articles WHERE handle = 'post'").fetchone()["body"]
-    current_hash = _hash_body(current_body)
-    assert sibling["source_body_hash"] == current_hash, "Sibling hash should be updated to match new body"
-
-    # Now apply the second suggestion - this should succeed without "Source body changed" error
-    result2 = apply_suggestion(conn, second_id, base_url="https://s.com", push_fn=fake_push, sanitize_fn=fake_sanitize)
-    assert result2["status"] == "applied"
-
-    # Verify both links were applied
-    final_body = conn.execute("SELECT body FROM blog_articles WHERE handle = 'post'").fetchone()["body"]
-    assert 'href="https://s.com/collections/ceramic-tanks"' in final_body
-    assert 'href="https://s.com/collections/glass-tanks"' in final_body
-
-
-def test_apply_clears_ai_anchor_html_on_siblings():
-    """Applying a suggestion should clear ai_anchor_html on ai_woven siblings.
-    
-    ai_woven suggestions have a pre-generated ai_anchor_html that is the full
-    replacement body. After applying a different suggestion on the same source,
-    the ai_anchor_html is stale (it was generated for the old body), so it must
-    be cleared to force regeneration.
-    """
-    body = "<p>Love ceramic tanks. And glass tanks too.</p>"
-    body_hash = _hash_body(body)
-    ai_body = "<p>Love ceramic tanks. Check out our <a href='https://s.com/collections/glass-tanks'>glass tanks</a> too.</p>"
-    
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
-            body TEXT, is_published INTEGER DEFAULT 1, seo_title TEXT, seo_description TEXT,
-            gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0);
-        CREATE TABLE collections (handle TEXT, title TEXT);
-        CREATE TABLE internal_links (
-            id INTEGER PRIMARY KEY, source_type TEXT, source_handle TEXT, target_type TEXT, 
-            target_handle TEXT, anchor_text TEXT, href TEXT,
-            UNIQUE (source_type, source_handle, target_type, target_handle, href)
-        );
-        CREATE TABLE link_suggestions (
-            id INTEGER PRIMARY KEY, source_type TEXT, source_handle TEXT, target_type TEXT,
-            target_handle TEXT, kind TEXT, anchor_phrase TEXT, ai_anchor_html TEXT, source_body_hash TEXT,
-            score REAL DEFAULT 0, status TEXT DEFAULT 'suggested', created_at INTEGER, applied_at INTEGER
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO blog_articles (shopify_id, blog_handle, handle, title, body, seo_title, seo_description) "
-        "VALUES ('gid://shopify/Article/1', 'news', 'post', 'Post', ?, 'st', 'sd')",
-        (body,),
-    )
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
-    conn.execute("INSERT INTO collections (handle, title) VALUES ('glass-tanks', 'Glass Tanks')")
-    # First suggestion: phrase_wrap 
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', ?, 1.0, 1)",
-        (body_hash,),
-    )
-    # Second suggestion: ai_woven with pre-generated ai_anchor_html
-    conn.execute(
-        "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, "
-        "anchor_phrase, ai_anchor_html, source_body_hash, score, created_at) VALUES "
-        "('blog_article', 'news/post', 'collection', 'glass-tanks', 'ai_woven', NULL, ?, ?, 0.9, 2)",
-        (ai_body, body_hash),
-    )
-    conn.commit()
-
-    rows = conn.execute("SELECT id, kind FROM link_suggestions ORDER BY created_at").fetchall()
-    phrase_wrap_id, ai_woven_id = rows[0]["id"], rows[1]["id"]
-
-    def fake_push(*a):
-        return {"ok": True}
-
-    # Verify ai_woven has ai_anchor_html before apply
-    before = conn.execute(
-        "SELECT ai_anchor_html FROM link_suggestions WHERE id = ?", (ai_woven_id,)
-    ).fetchone()
-    assert before["ai_anchor_html"] is not None
-
-    # Apply the phrase_wrap suggestion
-    apply_suggestion(conn, phrase_wrap_id, base_url="https://s.com", push_fn=fake_push, sanitize_fn=lambda b: b)
-
-    # ai_woven sibling should have ai_anchor_html cleared
-    after = conn.execute(
-        "SELECT ai_anchor_html, source_body_hash FROM link_suggestions WHERE id = ?", (ai_woven_id,)
-    ).fetchone()
-    assert after["ai_anchor_html"] is None, "ai_anchor_html must be cleared for ai_woven siblings"
-    # But source_body_hash should be updated
-    current_body = conn.execute("SELECT body FROM blog_articles WHERE handle = 'post'").fetchone()["body"]
-    assert after["source_body_hash"] == _hash_body(current_body)
-
-
-def test_apply_returns_target_url_not_shadowed():
-    """Apply should return the target URL, not a random URL from the sanitize allowlist.
-    
-    Regression test for the bug where the `url` variable was shadowed in the
-    sanitize allowlist loop, causing the returned {"url": url} to be a random
-    allowlist URL instead of the applied target URL.
-    """
-    conn = _conn()
-    target_url = "https://s.com/collections/ceramic-tanks"
-
-    def fake_push(source_type, row, new_body):
-        return {"ok": True}
-
-    def fake_sanitize(body):
-        return body
-
-    sid = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
-    result = apply_suggestion(conn, sid, base_url="https://s.com", push_fn=fake_push, sanitize_fn=fake_sanitize)
-    
-    assert result["status"] == "applied"
-    assert result["url"] == target_url, f"Expected target URL {target_url}, got {result['url']}"
+def test_changed_live_content_keeps_reconciliation_backup():
+    conn=database();live=Shopify();live.push.side_effect=TimeoutError()
+    with pytest.raises(TimeoutError): apply(conn,live)
+    live.body=OLD+'<p>Someone else edited.</p>'
+    with pytest.raises(LinkConflict,match='neither backup'):
+        service.reconcile_suggestion(conn,1,BASE,fetch_fn=live.fetch)
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0]=='needs_reconciliation'

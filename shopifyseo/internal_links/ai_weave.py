@@ -1,26 +1,35 @@
 """Generate an AI-woven anchor sentence for suggestions with no matching phrase."""
 from __future__ import annotations
 
+import json
 import sqlite3
-from typing import Callable
 
 from ..dashboard_queries._urls import object_url_with_base
-from .apply import _hash_body, _load_source_row, _SOURCE_META
+from .apply import _hash_body, _load_source_row
+
+from . import shopify_io
+from .safety import LinkConflict, build_edit, require_ai_enabled, text_diff, validate_edit
 
 WEAVE_SCHEMA = {
     "type": "object",
-    "properties": {"revised_body": {"type": "string", "minLength": 1}},
-    "required": ["revised_body"],
+    "properties": {
+        "anchor_phrase": {"type": "string", "minLength": 1, "maxLength": 120},
+        "insert_sentence": {"type": "string", "maxLength": 300},
+        "insert_after_text": {"type": "string"},
+    },
+    "required": ["anchor_phrase"],
     "additionalProperties": False,
 }
 
 _PROMPT = (
-    "You are an SEO editor. Revise the HTML body below so it naturally links to the target page. "
-    "Change AT MOST one sentence (rewrite one existing sentence or append one short sentence to the most "
-    "relevant paragraph). Keep every other character of the HTML identical. The link must use the exact "
-    "URL given, with natural anchor text related to the target title.\n\n"
-    "Target title: {title}\nTarget URL: {url}\n\nHTML body:\n{body}\n\n"
-    'Return JSON: {{"revised_body": "<the full revised HTML body>"}}'
+    "Suggest exactly one additive internal link edit. Never return HTML or a revised body. "
+    "Prefer anchor_phrase: an exact existing phrase outside headings and existing links. "
+    "If no suitable phrase exists, also return insert_sentence (one short plain-text sentence, "
+    "at most 300 characters, containing anchor_phrase exactly once) and insert_after_text "
+    "(the entire visible text of exactly one existing paragraph). "
+    "The server will add the link and, if requested, a new paragraph after that paragraph. "
+    "Never rewrite, remove or replace existing text. Avoid unsupported product claims.\n\n"
+    "Target title: {title}\nTarget URL: {url}\n\nCurrent live HTML:\n{body}"
 )
 
 
@@ -51,34 +60,36 @@ def _target_title(conn: sqlite3.Connection, t_type: str, t_handle: str) -> str:
     return (row["title"] if row else "") or t_handle
 
 
-def generate_ai_anchor(
-    conn: sqlite3.Connection,
-    suggestion_id: int,
-    base_url: str,
-    call_ai_fn: Callable | None = None,
-) -> dict:
-    """Generate and persist the revised body for an ai_woven suggestion."""
+def generate_ai_anchor(conn, suggestion_id, base_url, call_ai_fn=None, fetch_fn=None):
+    """Persist a small validated edit, never model-authored replacement HTML."""
     call_ai_fn = call_ai_fn or _default_call_ai
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
-    if not sug:
-        raise ValueError(f"suggestion {suggestion_id} not found")
+    if not sug or sug["status"] != "suggested":
+        raise LinkConflict("Suggestion not found or no longer pending.")
     if sug["kind"] != "ai_woven":
         raise ValueError("anchor generation only applies to ai_woven suggestions")
-
+    require_ai_enabled(conn, sug["source_type"])
     row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
-    body_col = _SOURCE_META[sug["source_type"]][2]
-    current_body = row[body_col] or ""
-    current_hash = _hash_body(current_body)
+    body = (fetch_fn or shopify_io.fetch_body)(sug["source_type"], row)
     url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
     title = _target_title(conn, sug["target_type"], sug["target_handle"])
-    prompt = _PROMPT.format(title=title, url=url, body=current_body)
-    raw = call_ai_fn([{"role": "user", "content": prompt}], WEAVE_SCHEMA)
-    revised = str(raw.get("revised_body") or "").strip()
-    if f'href="{url}"' not in revised:
-        raise ValueError("AI response does not contain the target link")
-    conn.execute(
-        "UPDATE link_suggestions SET ai_anchor_html = ?, source_body_hash = ? WHERE id = ?",
-        (revised, current_hash, suggestion_id),
-    )
+    raw = call_ai_fn([{"role": "user", "content": _PROMPT.format(title=title, url=url, body=body)}], WEAVE_SCHEMA)
+    try:
+        edit = validate_edit(raw)
+        build_edit(body, edit, url)
+    except LinkConflict as exc:
+        if isinstance(raw, dict) and isinstance(raw.get("revised_body"), str):
+            raise LinkConflict(str(exc), text_diff=text_diff(body, raw["revised_body"])) from None
+        raise
+    changed = conn.execute(
+        "UPDATE link_suggestions SET ai_edit_json = ?, ai_anchor_html = NULL, anchor_phrase = ?, source_body_hash = ? "
+        "WHERE id = ? AND status = 'suggested' AND NOT EXISTS ("
+        "SELECT 1 FROM link_body_snapshots WHERE suggestion_id = link_suggestions.id "
+        "AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation'))",
+        (json.dumps(edit, sort_keys=True), edit["anchor_phrase"], _hash_body(body), suggestion_id),
+    ).rowcount
+    if not changed:
+        conn.rollback()
+        raise LinkConflict("Suggestion changed during generation. Refresh the list.")
     conn.commit()
-    return {"ai_anchor_html": revised, "current_body": current_body, "url": url}
+    return {"edit": edit, "url": url}

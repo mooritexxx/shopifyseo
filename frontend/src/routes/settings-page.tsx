@@ -27,6 +27,7 @@ import {
 } from "../lib/settings-connection-storage";
 import { actionSchema, settingsSchema, shopifyShopInfoSchema } from "../types/api";
 import { renderSettingsTabSections, settingsTabs, type SettingsTabId } from "./settings-page-fields";
+import { AiLinkTypesSettings } from "../components/ai-link-types-settings";
 
 const modelsSchema = z.object({
   models: z.array(z.string())
@@ -541,6 +542,7 @@ export function SettingsPage() {
             </TabsContent>
             <TabsContent value="runtime" className="mt-0 space-y-4">
               {renderSettingsTabSections({ ...fieldsProps, tabKey: "runtime" })}
+              <AiLinkTypesSettings />
             </TabsContent>
             <TabsContent value="data-sources" className="mt-0 space-y-4">
               {renderSettingsTabSections({ ...fieldsProps, tabKey: "data-sources" })}

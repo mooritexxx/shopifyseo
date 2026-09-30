@@ -71,6 +71,9 @@ def _conn() -> sqlite3.Connection:
         CREATE TABLE cluster_keywords (cluster_id INTEGER, keyword TEXT, PRIMARY KEY (cluster_id, keyword));
         """
     )
+    from shopifyseo.internal_links.store import ensure_schema
+    ensure_schema(conn)
+    conn.commit()
     return conn
 
 
@@ -328,3 +331,12 @@ def test_db_lock_retry_exhaustion_raises():
         _run_with_db_lock_retry(always_locked, max_retries=3)
     
     assert call_count[0] == 3
+
+
+def test_rebuild_preserves_unresolved_write():
+    from internal_links_support import database, OLD
+    conn = database()
+    conn.execute("INSERT INTO link_body_snapshots(suggestion_id,source_type,source_handle,shopify_id,old_body,new_body,status,created_at,updated_at) VALUES (1,'product','source','gid://shopify/Product/1',?,?,'needs_reconciliation',1,1)", (OLD,OLD+'<p>New</p>'))
+    conn.commit()
+    generate_link_suggestions(conn, related_fn=lambda *args, **kwargs: [], rebuild_graph=False)
+    assert conn.execute('SELECT id FROM link_suggestions WHERE id=1').fetchone()

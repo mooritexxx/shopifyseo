@@ -12,6 +12,9 @@ export interface LinkSuggestion {
   kind: "phrase_wrap" | "ai_woven";
   anchor_phrase: string | null;
   ai_anchor_html: string | null;
+  ai_edit_json: string | null;
+  ai_enabled: boolean;
+  pending_operation?: string | null;
   score: number;
   status: "suggested" | "applied" | "dismissed" | "undone";
   weak_anchor_warning?: string | null;
@@ -21,15 +24,21 @@ export interface LinkSuggestion {
 export interface AppliedLink extends LinkSuggestion {
   live_present: boolean | null;
   href: string | null;
+  can_undo: boolean;
 }
 
 export interface LinkPreview {
   suggestion_id: number;
-  kind: "phrase_wrap" | "ai_woven";
-  current_body_snippet: string | null;
-  preview_body_snippet: string | null;
-  anchor_phrase: string | null;
-  target_url: string;
+  kind?: "phrase_wrap" | "ai_woven";
+  old_html: string | null;
+  new_html: string | null;
+  text_diff: string;
+  html_diff?: string;
+  allowed: boolean;
+  reason?: string;
+  preview_token: string | null;
+  anchor_phrase?: string;
+  target_url?: string;
 }
 
 export interface GraphNode {
@@ -70,8 +79,8 @@ async function getJson<T>(url: string): Promise<T> {
   return body.data as T;
 }
 
-async function postJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { method: "POST" });
+async function postJson<T>(url: string, payload?: unknown): Promise<T> {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload === undefined ? undefined : JSON.stringify(payload) });
   const body = await res.json();
   if (!body.ok) throw new Error(body.error?.message ?? body.detail ?? "Request failed");
   return body.data as T;
@@ -153,13 +162,22 @@ export function useGraphStatsForEntity(objectType: string, handle: string) {
 
 function useInvalidate() {
   const qc = useQueryClient();
-  return () => qc.invalidateQueries({ queryKey: ["internal-links"] });
+  return () => {
+    if (typeof BroadcastChannel !== "undefined") {
+      const channel = new BroadcastChannel("internal-link-body");
+      channel.postMessage("changed");
+      channel.close();
+    }
+    // Refresh body-derived editor drafts as well as the link list.
+    void qc.invalidateQueries({ predicate: (q) => ["internal-links", "product-detail", "collections", "pages", "article"].includes(String(q.queryKey[0])) });
+  };
 }
 
 export function useApplySuggestion() {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: (id: number) => postJson(`/api/internal-links/suggestions/${id}/apply`),
+    mutationFn: ({ id, previewToken }: { id: number; previewToken: string }) => postJson(`/api/internal-links/suggestions/${id}/apply`, { preview_token: previewToken }),
+    onError: invalidate,
     onSuccess: invalidate,
   });
 }
@@ -176,7 +194,7 @@ export function useGenerateAnchor() {
   const invalidate = useInvalidate();
   return useMutation({
     mutationFn: (id: number) =>
-      postJson<{ ai_anchor_html: string; current_body: string }>(
+      postJson<{ edit: Record<string, string> }>(
         `/api/internal-links/suggestions/${id}/generate-anchor`,
       ),
     onSuccess: invalidate,
@@ -206,6 +224,7 @@ export function useUndoSuggestion() {
     mutationFn: (id: number) => postJson<{ status: string; url?: string; link_not_found?: boolean; message?: string }>(
       `/api/internal-links/suggestions/${id}/undo`,
     ),
+    onError: invalidate,
     onSuccess: invalidate,
   });
 }
@@ -213,7 +232,10 @@ export function useUndoSuggestion() {
 export function useLinkPreview(suggestionId: number | null) {
   return useQuery({
     queryKey: ["internal-links", "preview", suggestionId],
-    queryFn: () => getJson<LinkPreview>(`/api/internal-links/suggestions/${suggestionId}/preview`),
+    queryFn: () => postJson<LinkPreview>(`/api/internal-links/suggestions/${suggestionId}/preview`),
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
     enabled: suggestionId !== null,
   });
 }
@@ -286,6 +308,7 @@ export interface InternalLinkSettings {
   sim_threshold: number;
   sim_threshold_default: number;
   ai_body_links_enabled: boolean;
+  ai_woven_enabled_types: string[];
   auto_apply_enabled: boolean;
   auto_apply_min_score: number;
   auto_apply_min_score_default: number;
@@ -305,6 +328,7 @@ export function useInternalLinkSettings() {
 export interface SaveSettingsParams {
   sim_threshold?: number;
   ai_body_links_enabled?: boolean;
+  ai_woven_enabled_types?: string[];
   auto_apply_enabled?: boolean;
   auto_apply_min_score?: number;
   auto_apply_max_per_day?: number;
@@ -315,6 +339,7 @@ export function useSaveInternalLinkSettings() {
   return useMutation({
     mutationFn: (params: SaveSettingsParams) => {
       const search = new URLSearchParams();
+      if (params.ai_woven_enabled_types !== undefined) search.set("ai_woven_enabled_types", params.ai_woven_enabled_types.join(","));
       if (params.sim_threshold !== undefined) search.set("sim_threshold", String(params.sim_threshold));
       if (params.ai_body_links_enabled !== undefined) search.set("ai_body_links_enabled", String(params.ai_body_links_enabled));
       if (params.auto_apply_enabled !== undefined) search.set("auto_apply_enabled", String(params.auto_apply_enabled));
@@ -322,10 +347,15 @@ export function useSaveInternalLinkSettings() {
       if (params.auto_apply_max_per_day !== undefined) search.set("auto_apply_max_per_day", String(params.auto_apply_max_per_day));
       return fetch(`/api/internal-links/settings?${search.toString()}`, { method: "PUT" })
         .then((r) => r.json())
-        .then((j) => j.data);
+        .then((j) => { if (!j.ok) throw new Error(j.error?.message ?? "Settings save failed"); return j.data; });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["internal-links"] });
     },
   });
+}
+
+export function useReconcileLink() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (id: number) => postJson<{ status: string }>(`/api/internal-links/suggestions/${id}/reconcile`), onSuccess: invalidate });
 }

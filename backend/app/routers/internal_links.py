@@ -5,6 +5,10 @@ import threading
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+
+from shopifyseo.internal_links.safety import LinkConflict, AI_TYPES_KEY, SOURCE_TYPES, ai_enabled_types
 
 from backend.app.db import open_db_connection
 from backend.app.schemas.common import SuccessResponse, success_response
@@ -128,8 +132,15 @@ def suggestions(
         sql += " ORDER BY score DESC LIMIT ?"
         params.append(limit)
         rows = []
+        enabled_types = ai_enabled_types(conn)
+        operations = {r["suggestion_id"]: dict(r) for r in conn.execute(
+            "SELECT suggestion_id, status FROM link_body_snapshots WHERE status IN "
+            "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')"
+        )}
         for r in conn.execute(sql, params).fetchall():
             row_dict = dict(r)
+            row_dict["ai_enabled"] = row_dict["source_type"] in enabled_types
+            row_dict["pending_operation"] = operations.get(row_dict["id"], {}).get("status")
             # Add weak anchor warning for phrase_wrap suggestions
             if row_dict.get("kind") == "phrase_wrap":
                 row_dict["weak_anchor_warning"] = get_weak_anchor_warning(row_dict.get("anchor_phrase"))
@@ -148,6 +159,8 @@ def generate_anchor(suggestion_id: int):
         from shopifyseo.internal_links.ai_weave import generate_ai_anchor
 
         return success_response(generate_ai_anchor(conn, suggestion_id, base_url=_base_url(conn)))
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -157,13 +170,19 @@ def generate_anchor(suggestion_id: int):
         conn.close()
 
 
+class ApplyRequest(BaseModel):
+    preview_token: str = ""
+
+
 @router.post("/suggestions/{suggestion_id}/apply", response_model=SuccessResponse[dict])
-def apply(suggestion_id: int):
+def apply(suggestion_id: int, payload: ApplyRequest):
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.apply import apply_suggestion
 
-        return success_response(apply_suggestion(conn, suggestion_id, base_url=_base_url(conn)))
+        return success_response(apply_suggestion(conn, suggestion_id, base_url=_base_url(conn), preview_token_value=payload.preview_token))
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -177,15 +196,24 @@ def apply(suggestion_id: int):
 def dismiss(suggestion_id: int):
     conn = open_db_connection()
     try:
+        pending = conn.execute("SELECT 1 FROM link_body_snapshots WHERE suggestion_id = ? AND status IN "
+                               "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')", (suggestion_id,)).fetchone()
+        if pending:
+            raise HTTPException(status_code=409, detail="Reconcile the unfinished write before dismissing this suggestion.")
         # Get suggestion data before updating for event logging
         sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
         if not sug or sug["status"] != "suggested":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="suggestion not found or not pending")
         
-        conn.execute(
-            "UPDATE link_suggestions SET status = 'dismissed' WHERE id = ?",
+        changed = conn.execute(
+            "UPDATE link_suggestions SET status = 'dismissed' WHERE id = ? AND status = 'suggested' "
+            "AND NOT EXISTS (SELECT 1 FROM link_body_snapshots WHERE suggestion_id = link_suggestions.id "
+            "AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation'))",
             (suggestion_id,),
-        )
+        ).rowcount
+        if not changed:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="The suggestion changed or has an unfinished write. Refresh its status.")
         
         # Phase D: Log the dismiss event
         from shopifyseo.internal_links.apply import _log_suggestion_event
@@ -222,7 +250,7 @@ def applied_list(
     problems_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
 ):
-    """List applied suggestions with live-present status check."""
+    """List applied suggestions with presence in the saved catalog body."""
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.apply import check_link_present_in_body, _SOURCE_META
@@ -244,7 +272,10 @@ def applied_list(
         rows = []
         for r in conn.execute(sql, params).fetchall():
             row_dict = dict(r)
-            
+            snapshot = conn.execute("SELECT status FROM link_body_snapshots WHERE suggestion_id = ? ORDER BY id DESC LIMIT 1", (r["id"],)).fetchone()
+            row_dict["can_undo"] = bool(snapshot and snapshot["status"] == "applied")
+            row_dict["pending_operation"] = snapshot["status"] if snapshot and snapshot["status"] in ("undo_prepared", "undo_needs_reconciliation") else None
+
             # Check if link is present in current body
             src_type = row_dict["source_type"]
             src_handle = row_dict["source_handle"]
@@ -286,12 +317,14 @@ def applied_list(
 
 @router.post("/suggestions/{suggestion_id}/undo", response_model=SuccessResponse[dict])
 def undo(suggestion_id: int):
-    """Undo an applied suggestion: remove the link from live Shopify body."""
+    """Restore an applied suggestion's backup if the live body is unchanged."""
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.apply import undo_suggestion
 
         return success_response(undo_suggestion(conn, suggestion_id, base_url=_base_url(conn)))
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -302,84 +335,30 @@ def undo(suggestion_id: int):
 
 
 @router.get("/suggestions/{suggestion_id}/preview", response_model=SuccessResponse[dict])
+@router.post("/suggestions/{suggestion_id}/preview", response_model=SuccessResponse[dict])
 def preview(suggestion_id: int):
-    """Get a preview of what applying this suggestion would look like."""
+    from shopifyseo.internal_links.apply import preview_suggestion
     conn = open_db_connection()
     try:
-        from shopifyseo.internal_links.apply import _SOURCE_META, _load_source_row, wrap_phrase_in_html
-        from shopifyseo.dashboard_queries._urls import object_url_with_base
-        import re
+        return success_response(preview_suggestion(conn, suggestion_id, _base_url(conn)))
+    except Exception:
+        logger.warning("Live preview failed", exc_info=True)
+        raise HTTPException(status_code=502, detail="Could not read Shopify for preview. Nothing was written.")
+    finally:
+        conn.close()
 
-        base_url = _base_url(conn)
-        sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
-        if not sug:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="suggestion not found")
 
-        row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
-        body_col = _SOURCE_META[sug["source_type"]][2]
-        current_body = row[body_col] or ""
-        url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
-
-        preview_data = {
-            "suggestion_id": suggestion_id,
-            "kind": sug["kind"],
-            "current_body_snippet": None,
-            "preview_body_snippet": None,
-            "anchor_phrase": sug["anchor_phrase"],
-            "target_url": url,
-        }
-
-        if sug["kind"] == "phrase_wrap" and sug["anchor_phrase"]:
-            # Find the sentence/context containing the anchor phrase
-            phrase = sug["anchor_phrase"]
-            # Extract a snippet around the phrase (up to 200 chars before and after)
-            pattern = re.compile(
-                r'([^.!?]*?' + re.escape(phrase) + r'[^.!?]*[.!?]?)',
-                re.IGNORECASE | re.DOTALL
-            )
-            match = pattern.search(current_body)
-            if match:
-                snippet = match.group(0).strip()
-                # Clean up HTML tags for display
-                clean_snippet = re.sub(r'<[^>]+>', ' ', snippet)
-                clean_snippet = ' '.join(clean_snippet.split())[:300]
-                preview_data["current_body_snippet"] = clean_snippet
-                
-                # Show preview with link
-                new_body = wrap_phrase_in_html(current_body, phrase, url)
-                if new_body:
-                    match_new = pattern.search(new_body)
-                    if match_new:
-                        new_snippet = match_new.group(0).strip()
-                        # Show the HTML with the link for preview
-                        preview_data["preview_body_snippet"] = new_snippet[:400]
-        
-        elif sug["kind"] == "ai_woven" and sug["ai_anchor_html"]:
-            # For ai_woven, show the diff between current and generated
-            ai_html = sug["ai_anchor_html"]
-            # Find the paragraph containing the new link
-            link_match = re.search(
-                r'<p>[^<]*<a\s+href=["\']' + re.escape(url) + r'["\'][^>]*>[^<]*</a>[^<]*</p>',
-                ai_html,
-                re.IGNORECASE | re.DOTALL
-            )
-            if link_match:
-                preview_data["preview_body_snippet"] = link_match.group(0)[:400]
-            else:
-                # Just show first 300 chars of ai_anchor_html
-                preview_data["preview_body_snippet"] = ai_html[:400] + ("..." if len(ai_html) > 400 else "")
-            
-            # Show corresponding current body snippet
-            preview_data["current_body_snippet"] = current_body[:300] + ("..." if len(current_body) > 300 else "")
-
-        return success_response(preview_data)
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except Exception as exc:
-        logger.warning("Preview generation failed", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+@router.post("/suggestions/{suggestion_id}/reconcile", response_model=SuccessResponse[dict])
+def reconcile(suggestion_id: int):
+    from shopifyseo.internal_links.apply import reconcile_suggestion
+    conn = open_db_connection()
+    try:
+        return success_response(reconcile_suggestion(conn, suggestion_id, _base_url(conn)))
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+    except Exception:
+        logger.warning("Reconciliation failed", exc_info=True)
+        raise HTTPException(status_code=502, detail="Could not reconcile with Shopify. The backup is retained.")
     finally:
         conn.close()
 
@@ -671,6 +650,7 @@ def get_internal_link_settings():
             "sim_threshold": sim_threshold,
             "sim_threshold_default": DEFAULT_SIM_THRESHOLD,
             "ai_body_links_enabled": ai_body_enabled,
+            "ai_woven_enabled_types": ai_enabled_types(conn),
             "auto_apply_enabled": auto_apply["enabled"],
             "auto_apply_min_score": auto_apply["min_score"],
             "auto_apply_min_score_default": DEFAULT_AUTO_APPLY_MIN_SCORE,
@@ -687,6 +667,7 @@ def get_internal_link_settings():
 def save_internal_link_settings(
     sim_threshold: float | None = Query(default=None, ge=0.1, le=1.0),
     ai_body_links_enabled: bool | None = Query(default=None),
+    ai_woven_enabled_types: str | None = Query(default=None),
     auto_apply_enabled: bool | None = Query(default=None),
     auto_apply_min_score: float | None = Query(default=None, ge=0.1, le=2.0),
     auto_apply_max_per_day: int | None = Query(default=None, ge=1, le=1000),
@@ -697,6 +678,12 @@ def save_internal_link_settings(
         from shopifyseo.dashboard_google import set_service_setting
         
         saved: dict[str, str | float | int | bool] = {}
+        if ai_woven_enabled_types is not None:
+            enabled = [t for t in ai_woven_enabled_types.split(",") if t]
+            if any(t not in SOURCE_TYPES for t in enabled):
+                raise HTTPException(status_code=400, detail="Unsupported AI link source type.")
+            set_service_setting(conn, AI_TYPES_KEY, ",".join(sorted(set(enabled))))
+            saved["ai_woven_enabled_types"] = ",".join(sorted(set(enabled)))
         
         if sim_threshold is not None:
             set_service_setting(conn, "internal_link_sim_threshold", str(sim_threshold))
@@ -750,6 +737,8 @@ def run_auto_apply(dry_run: bool = Query(default=False)):
         
         result = _run(conn, base_url=_base_url(conn), dry_run=dry_run)
         return success_response(result)
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:

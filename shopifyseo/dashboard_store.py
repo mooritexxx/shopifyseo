@@ -754,6 +754,8 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "link_suggestions", {"source_body_hash": "TEXT"})
     # Phase B: weak_anchor flag for demoted suggestions
     _ensure_columns(conn, "link_suggestions", {"weak_anchor": "INTEGER DEFAULT 0"})
+    from .internal_links.store import ensure_schema as ensure_link_body_schema
+    ensure_link_body_schema(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
     )

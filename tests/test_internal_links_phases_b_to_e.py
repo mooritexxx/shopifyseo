@@ -86,6 +86,9 @@ def _make_test_db() -> sqlite3.Connection:
         CREATE TABLE cluster_keywords (cluster_id INTEGER, keyword TEXT, PRIMARY KEY (cluster_id, keyword));
         """
     )
+    from shopifyseo.internal_links.store import ensure_schema
+    ensure_schema(conn)
+    conn.commit()
     return conn
 
 
@@ -235,10 +238,11 @@ class TestPhaseDEventLogging:
         
         sug_id = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
         
-        def fake_push(source_type, row, new_body):
-            return {"ok": True}
-        
-        apply_suggestion(conn, sug_id, base_url="https://test.com", push_fn=fake_push, sanitize_fn=lambda b: b)
+        from internal_links_support import Shopify
+        from shopifyseo.internal_links.apply import preview_suggestion
+        live = Shopify(body)
+        token = preview_suggestion(conn, sug_id, "https://test.com", fetch_fn=live.fetch)["preview_token"]
+        apply_suggestion(conn, sug_id, base_url="https://test.com", push_fn=live.push, fetch_fn=live.fetch, preview_token_value=token)
         
         event = conn.execute(
             "SELECT * FROM link_suggestion_events WHERE suggestion_id = ?", (sug_id,)
@@ -275,11 +279,12 @@ class TestPhaseDEventLogging:
         
         sug_id = conn.execute("SELECT id FROM link_suggestions").fetchone()["id"]
         
-        def fake_push(source_type, row, new_body):
-            return {"ok": True}
-        
-        apply_suggestion(conn, sug_id, base_url="https://test.com", push_fn=fake_push, sanitize_fn=lambda b: b)
-        undo_suggestion(conn, sug_id, base_url="https://test.com", push_fn=fake_push)
+        from internal_links_support import Shopify
+        from shopifyseo.internal_links.apply import preview_suggestion
+        live = Shopify(body)
+        token = preview_suggestion(conn, sug_id, "https://test.com", fetch_fn=live.fetch)["preview_token"]
+        apply_suggestion(conn, sug_id, base_url="https://test.com", push_fn=live.push, fetch_fn=live.fetch, preview_token_value=token)
+        undo_suggestion(conn, sug_id, base_url="https://test.com", push_fn=live.push, fetch_fn=live.fetch)
         
         events = conn.execute(
             "SELECT event_type FROM link_suggestion_events WHERE suggestion_id = ? ORDER BY created_at",

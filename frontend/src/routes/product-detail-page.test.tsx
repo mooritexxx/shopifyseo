@@ -30,6 +30,8 @@ describe("ProductDetailPage", () => {
 
   it("loads product detail with draft fields and posts to generate-ai (no recommendation modal)", async () => {
     mockedGetJson.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/opportunities/tasks")) return [];
+      if (path === "/api/seo-quality-policy") return {};
       if (path === "/api/ai-status") {
         return {
           running: false,
@@ -138,6 +140,8 @@ describe("ProductDetailPage", () => {
 
   it("renders regenerate buttons for each field", async () => {
     mockedGetJson.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/opportunities/tasks")) return [];
+      if (path === "/api/seo-quality-policy") return {};
       if (path === "/api/ai-status") {
         return {
           running: false,
@@ -175,6 +179,8 @@ describe("ProductDetailPage", () => {
 
   it("opens cached Search Console inspection link without refreshing first", async () => {
     mockedGetJson.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/opportunities/tasks")) return [];
+      if (path === "/api/seo-quality-policy") return {};
       if (path === "/api/ai-status") {
         return {
           running: false,
@@ -231,6 +237,8 @@ describe("ProductDetailPage", () => {
 
   it("fetches a fresh inspection link when only the generic Search Console URL is cached", async () => {
     mockedGetJson.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/opportunities/tasks")) return [];
+      if (path === "/api/seo-quality-policy") return {};
       if (path === "/api/ai-status") {
         return {
           running: false,
@@ -292,6 +300,8 @@ describe("ProductDetailPage", () => {
 
   it("saves the edited draft", async () => {
     mockedGetJson.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/opportunities/tasks")) return [];
+      if (path === "/api/seo-quality-policy") return {};
       if (path === "/api/ai-status") {
         return {
           running: false,

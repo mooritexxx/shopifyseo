@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
         try:
             from backend.app.services.rank_tracking import recover_jobs
             recover_jobs(conn)
+            from shopifyseo.opportunity_tasks import recover
+            recover(conn)
             n = refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn)
             log.info("PageSpeed catalog reconciled from cache (%s object(s))", n)
         finally:

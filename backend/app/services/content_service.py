@@ -212,6 +212,8 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
                 return False, "Page not found"
             current = detail["page"]
         try:
+            from shopifyseo.seo_quality import validate_changed_metadata
+            validate_changed_metadata(kind, dict(current), payload)
             partial_msg = ""
             with SYNC_LOCK:
                 if kind == "collection":
@@ -264,6 +266,8 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
             clear_last_error()
             if partial_msg:
                 return True, partial_msg
+            from shopifyseo.opportunity_tasks import record_applied
+            record_applied(conn, kind, handle, payload)
             return True, f"{kind.title()} saved"
         except (Exception, SystemExit) as exc:
             record_last_error(exc)

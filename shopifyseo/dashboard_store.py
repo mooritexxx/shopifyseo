@@ -174,6 +174,8 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
 
 def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     ensure_schema(conn)
+    from .opportunity_tasks import ensure_schema as ensure_opportunity_tasks
+    ensure_opportunity_tasks(conn)
     dg.ensure_google_cache_schema(conn)
     _ensure_columns(conn, "products", SEO_SIGNAL_COLUMNS)
     _ensure_columns(conn, "collections", SEO_SIGNAL_COLUMNS)

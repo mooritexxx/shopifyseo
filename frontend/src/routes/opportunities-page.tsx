@@ -1,6 +1,7 @@
+import { OpportunityTaskQueue, taskSchema, useOpportunityTasks } from "../components/seo/opportunity-task";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Inbox,
   TrendingUp,
@@ -35,7 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
-import { getJson } from "../lib/api";
+import { getJson, postJson } from "../lib/api";
 import { cn } from "../lib/utils";
 import { opportunitiesPayloadSchema, opportunityStatsSchema } from "../types/api";
 
@@ -125,6 +126,11 @@ function StatCard({
 }
 
 export function OpportunitiesPage() {
+  const navigate = useNavigate();
+  const tasks = useOpportunityTasks();
+  const client = useQueryClient();
+  const prepare = useMutation({mutationFn:(opp:{object_type:string;object_handle:string;query:string})=>postJson('/api/opportunities/prepare-fix',taskSchema,opp), onSuccess:(task)=>{void client.invalidateQueries({queryKey:['opportunity-tasks']}); navigate(task.detail_url);}});
+
   const [pageType, setPageType] = useState<PageTypeFilter>("all");
   const [sortBy, setSortBy] = useState<SortKey>("opportunity_score");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -206,6 +212,8 @@ export function OpportunitiesPage() {
         </div>
       </div>
 
+      <OpportunityTaskQueue />
+      {prepare.error && <p role="alert" className="mb-4 text-red-700">{prepare.error.message}</p>}
       {stats && (
         <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <StatCard
@@ -295,7 +303,7 @@ export function OpportunitiesPage() {
                 <SortHeader field="ctr">CTR</SortHeader>
               </TableHead>
               <TableHead>Suggested Action</TableHead>
-              <TableHead className="w-[50px]"></TableHead>
+              <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -315,6 +323,7 @@ export function OpportunitiesPage() {
             )}
             {opportunities?.items.map((opp) => {
               const detailLink = getDetailLink(opp.object_type, opp.object_handle);
+              const existingTask = tasks.data?.find(t => t.object_type === opp.object_type && t.object_handle === opp.object_handle);
               return (
                 <TableRow key={opp.id} className="hover:bg-slate-50/50">
                   <TableCell>
@@ -354,9 +363,11 @@ export function OpportunitiesPage() {
                     <span className="text-xs text-slate-600">{opp.suggested_action}</span>
                   </TableCell>
                   <TableCell>
+                    {existingTask ? <Link className="mr-3 whitespace-nowrap font-medium text-indigo-700" to={existingTask.detail_url}>View fix</Link> : <Button variant="secondary" disabled={prepare.isPending} onClick={()=>prepare.mutate({object_type:opp.object_type,object_handle:opp.object_handle,query:opp.query})}>{prepare.isPending ? "Preparing…" : "Prepare fix"}</Button>}
                     {detailLink && (
                       <Link
                         to={detailLink}
+                        aria-label={`Open ${opp.object_handle}`}
                         className="inline-flex items-center text-blue-600 hover:text-blue-800"
                       >
                         <ExternalLink className="h-4 w-4" />

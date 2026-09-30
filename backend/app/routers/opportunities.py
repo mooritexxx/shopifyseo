@@ -5,6 +5,11 @@ Provides API endpoints for browsing and acting on GSC-derived SEO opportunities.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from typing import Literal
+
+from shopifyseo import opportunity_tasks as tasks
+from shopifyseo.seo_quality import quality_policy
 
 from backend.app.db import open_db_connection
 from backend.app.schemas.common import SuccessResponse, success_response
@@ -103,3 +108,57 @@ def create_idea_from_opportunity(payload: CreateIdeaFromOpportunityRequest):
         )
     finally:
         conn.close()
+
+
+
+class PrepareFixRequest(BaseModel):
+    object_type: Literal['product', 'collection', 'page', 'blog_article']
+    object_handle: str = Field(min_length=1, max_length=500)
+    query: str = Field(min_length=1, max_length=1000)
+
+
+class ReviewFixRequest(BaseModel):
+    fields: dict[str, str]
+
+
+def task_action(fn):
+    conn = open_db_connection()
+    try:
+        return success_response(fn(conn))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@router.get('/seo-quality-policy', response_model=SuccessResponse[dict])
+def seo_quality_policy():
+    return success_response({kind: quality_policy(kind) for kind in tasks.KINDS})
+
+
+@router.get('/opportunities/tasks', response_model=SuccessResponse[list[dict]])
+def opportunity_tasks(object_type: str | None = None, object_handle: str | None = None):
+    return task_action(lambda conn: tasks.list_tasks(conn, object_type, object_handle))
+
+
+@router.post('/opportunities/prepare-fix', response_model=SuccessResponse[dict])
+def prepare_fix(payload: PrepareFixRequest):
+    def prepare(conn):
+        task = tasks.prepare(conn, payload.object_type, payload.object_handle, payload.query)
+        return tasks.generate(conn, task['id'])
+    return task_action(prepare)
+
+
+@router.post('/opportunities/tasks/{task_id}/retry', response_model=SuccessResponse[dict])
+def retry_fix(task_id: int):
+    return task_action(lambda conn: tasks.generate(conn, task_id))
+
+
+@router.post('/opportunities/tasks/{task_id}/review', response_model=SuccessResponse[dict])
+def review_fix(task_id: int, payload: ReviewFixRequest):
+    return task_action(lambda conn: tasks.review(conn, task_id, payload.fields))
+
+
+@router.post('/opportunities/tasks/{task_id}/monitor', response_model=SuccessResponse[dict])
+def monitor_fix(task_id: int):
+    return task_action(lambda conn: tasks.monitor(conn, task_id))

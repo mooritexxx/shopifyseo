@@ -263,6 +263,8 @@ def update_blog_article(
         row = detail["article"]
         composite = dq.blog_article_composite_handle(blog_handle, article_slug)
         try:
+            from shopifyseo.seo_quality import validate_changed_metadata
+            validate_changed_metadata("blog_article", dict(row), payload)
             with SYNC_LOCK:
                 _, warnings = live_update_article(
                     DB_PATH,
@@ -298,6 +300,8 @@ def update_blog_article(
                     )
                 refresh_object_structured_seo_data(conn, "blog_article", composite)
             clear_last_error()
+            from shopifyseo.opportunity_tasks import record_applied
+            record_applied(conn, "blog_article", composite, payload)
             return True, "Article saved", warnings if warnings else None
         except (Exception, SystemExit) as exc:
             record_last_error(exc)

@@ -10,7 +10,8 @@ import { z } from "zod";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { CharacterBar } from "../components/ui/character-bar";
+import { SeoQualityField } from "../components/seo/seo-quality-field";
+import { OpportunityTaskPanel } from "../components/seo/opportunity-task";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Modal } from "../components/ui/modal";
@@ -731,6 +732,7 @@ export function ProductDetailPage() {
   return (
     <TooltipProvider>
       <div className="detail-page space-y-6 pb-10">
+        <OpportunityTaskPanel kind={"product"} handle={handle} draft={draft} onLoad={(fields) => setDraft(current => ({...current, ...fields}))} />
         {toast ? <Toast variant={detectToastVariant(toast)}>{toast}</Toast> : null}
         {aiGenerationToast ? (
           <Toast
@@ -877,11 +879,9 @@ export function ProductDetailPage() {
                       value={draft.seo_title}
                       onChange={(event) => setDraft((current) => ({ ...current, seo_title: event.target.value }))}
                     />
-                    <CharacterBar current={draft.seo_title.trim().length} max={65} goodMin={45} />
+                    <SeoQualityField kind={"product"} field="seo_title" value={draft.seo_title} />
                     <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-                      <span className={draft.seo_title.trim().length > 65 ? "text-red-500 font-medium" : ""}>
-                        {draft.seo_title.trim().length}/65 characters
-                      </span>
+
                       <span className="flex gap-2">
                         <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_title")} disabled={fieldRegenMutation.isPending}>
                           <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_title") ? "animate-spin" : ""}`} />
@@ -901,9 +901,9 @@ export function ProductDetailPage() {
                     value={draft.seo_description}
                     onChange={(event) => setDraft((current) => ({ ...current, seo_description: event.target.value }))}
                   />
-                  <CharacterBar current={draft.seo_description.trim().length} max={160} goodMin={140} />
+                  <SeoQualityField kind={"product"} field="seo_description" value={draft.seo_description} />
                   <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-                    <span className={draft.seo_description.trim().length > 160 ? "text-red-500 font-medium" : ""}>{draft.seo_description.trim().length}/160 characters</span>
+
                     <span className="flex gap-2">
                       <Button variant="ghost" size="sm" onClick={() => startFieldRegeneration("seo_description")} disabled={fieldRegenMutation.isPending}>
                         <RefreshCw className={`mr-1 h-3 w-3 ${isRegeneratingField("seo_description") ? "animate-spin" : ""}`} />

@@ -289,6 +289,43 @@ Each opportunity includes:
 **Frontend:** `/opportunities` route with filterable table and stats cards
 
 
+### Opportunity fix workflow and shared quality policy
+
+The Opportunity Inbox has a **Prepare fix** action and a persistent **SEO tasks** list.
+`seo_opportunity_tasks` keeps one task per `(object_type, object_handle)`, combining the
+selected query with up to 19 related cached queries. Preparing a fix generates metadata
+and, for content actions, a body draft using the existing single-field AI pipeline.
+It never writes to Shopify. Repeated clicks reuse the task and reserve at most one worker.
+
+The shared panel on product, collection, page and article details shows evidence and an
+escaped draft comparison. The operator explicitly loads the prepared fields, edits them,
+and marks the editor values reviewed. Existing **Save to Shopify** actions mark a task
+**Applied** only after a complete successful save matching the reviewed fields. Partial
+collection saves and changed drafts do not advance it. **Monitoring** is an explicit
+tracking state; performance remains available through the existing page history, without
+a scheduled before/after evaluation. Interrupted preparation is marked failed on startup
+and can be retried; provider failures remain visible in the task.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/opportunities/tasks` | Task summaries; optional `object_type` and `object_handle` load one page's draft/review fields |
+| POST | `/api/opportunities/prepare-fix` | `{object_type, object_handle, query}`; validate cached evidence, deduplicate, start draft preparation |
+| POST | `/api/opportunities/tasks/{id}/retry` | Retry a failed/detected task; concurrent starts are coalesced |
+| POST | `/api/opportunities/tasks/{id}/review` | `{fields}`; validate and save the exact editor fields being reviewed |
+| POST | `/api/opportunities/tasks/{id}/monitor` | Move a successfully applied task into monitoring |
+| GET | `/api/seo-quality-policy` | Canonical metadata minimum, target and maximum by object type |
+
+**Implementation:** `shopifyseo/opportunity_tasks.py`, `shopifyseo/seo_quality.py`,
+`frontend/src/components/seo/`. Quality limits are configured in
+`shopifyseo/dashboard_ai_engine_parts/config.py`; editor guidance reads them through the
+policy endpoint. Hard minimum/maximum violations block generated metadata and changed,
+nonempty metadata saves. Existing unchanged metadata and intentional clearing remain
+editable. Recommended targets are advisory: AI tries up to two corrections and the editor
+shows a warning if valid output remains below target. Full generation and single-field
+regeneration share this loop; overlength output is rewritten and the former separate
+length-padding path is no longer used. The policy describes app quality rules, not a
+promise of a search ranking outcome.
+
 ### Article ideas
 
 
@@ -501,6 +538,8 @@ previews; `shopify_io.py` performs narrow live reads and body-only mutations;
 `store.py` migrates edit storage and creates durable write reservations. The existing
 router and Settings surfaces expose these contracts.
 
+Opportunity fixes: `shopifyseo/opportunity_tasks.py` owns task preparation, evidence, draft workers, review transitions, save matching and restart recovery. `shopifyseo/seo_quality.py` exposes the shared metadata policy to AI, editors and publishing services.
+
 Backend orchestration lives in `backend/app/services/` and delegates to `shopifyseo/*`.
 
 
@@ -614,6 +653,7 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `blogs`, `blog_articles`                                                 | Blogs and articles + signals               | Article unique `(blog_shopify_id, handle)`       | articles → blogs                                 |
 | `shopify_metaobjects`                                                    | Cached metaobjects                         |                                                  |                                                  |
 | `product_image_file_cache`                                               | Local image cache metadata                 | `image_shopify_id` PK                            |                                                  |
+| `seo_opportunity_tasks` | Persistent opportunity evidence, draft, reviewed fields, status and failure reason | Unique `(object_type, object_handle)` | One task per page; no automatic publishing |
 | `seo_workflow_states`                                                    | Per-object workflow                        | `(object_type, handle)` PK                       |                                                  |
 | `service_tokens`                                                         | OAuth tokens                               | `service`                                        |                                                  |
 | `service_settings`                                                       | App settings key/value                     | Mirrors env for runtime                          |                                                  |

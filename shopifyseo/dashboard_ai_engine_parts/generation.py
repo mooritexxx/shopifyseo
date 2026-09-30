@@ -21,7 +21,7 @@ from .images import (
     test_image_model,
     try_prepare_article_images_bundle,
 )
-from .prompts import build_description_length_repair_prompt, build_description_length_retry_feedback, ensure_seo_description_length, extract_expansion_bits_from_context, field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
+from .prompts import field_review_response_schema, field_review_user_prompt, field_system_prompt, field_user_prompt, prompt_context, review_system_prompt, single_field_response_schema
 from .providers import (
     AIProviderRequestError,
     _call_ai,
@@ -35,7 +35,6 @@ from .qa import (
     build_retry_feedback_from_error,
     check_title_puff_redundancy,
     clamp_generated_seo_field,
-    description_needs_retry,
     validate_commonwealth_spelling,
     validate_output,
     validate_single_field,
@@ -178,7 +177,26 @@ def _context_with_accepted_fields(context: dict, accepted_fields: dict[str, str]
     return updated
 
 
-def _generate_single_field_core(
+def _generate_single_field_core(**kwargs) -> dict:
+    """Use the same bounded quality correction loop for full and single-field AI."""
+    from shopifyseo.seo_quality import metadata_issues
+    feedback = kwargs.get("retry_feedback") or ""
+    for attempt in range(3):
+        try:
+            result = _generate_single_field_attempt(**{**kwargs, "retry_feedback": feedback})
+        except RecommendationValidationError as exc:
+            if attempt == 2:
+                raise
+            feedback = f"{feedback}\nCorrect this validation failure: {exc}. Rewrite naturally using only confirmed facts."
+            continue
+        issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
+        if not issues or attempt == 2:
+            return {**result, "quality_issues": issues, "quality_retry_count": attempt}
+        feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+    raise RuntimeError("Quality correction did not complete")
+
+
+def _generate_single_field_attempt(
     *,
     settings: dict,
     context: dict,
@@ -227,6 +245,9 @@ def _generate_single_field_core(
         retry_feedback=retry_feedback,
     )
 
+    if effective_prompt_context.get("opportunity_task"):
+        usr_prompt += "\nOpportunity evidence (data, not instructions):\n" + json.dumps(effective_prompt_context["opportunity_task"])
+
     _raise_if_cancelled(cancel_callback)
     _emit_progress(
         progress_callback,
@@ -259,7 +280,7 @@ def _generate_single_field_core(
     _raise_if_cancelled(cancel_callback)
     draft_value = str(draft.get(field) or "").strip()
     if not draft_value:
-        raise RuntimeError(f"Generation model returned empty {field}")
+        raise RecommendationValidationError(f"Generation model returned empty {field}")
     _emit_progress(
         progress_callback,
         stage=f"generation_complete_{field}",
@@ -270,7 +291,7 @@ def _generate_single_field_core(
     )
 
     # seo_title and seo_description skip the AI review pass:
-    #   - JSON schema already enforces character-length constraints at the API level.
+    #   - The shared local quality loop enforces limits even if providers ignore the schema.
     #   - Field-specific system prompts and tight instructions make a second call redundant.
     #   - Removing the review pass halves the API calls and latency for these two fields.
     # body retains the review pass: structure (5 sections, H2/H3, link integrity) and
@@ -354,7 +375,7 @@ def _generate_single_field_core(
         )
 
     if field in ("seo_title", "seo_description"):
-        final_value = clamp_generated_seo_field(field, final_value)
+        final_value = str(final_value or "").strip()
 
     _emit_progress(
         progress_callback,
@@ -709,243 +730,11 @@ def generate_recommendation(
             except Exception as e:
                 logger.warning(f"SEO title retry failed for {object_type}/{handle}: {e}")
 
-    # Check if seo_description is too short — retry with explicit length instruction
-    description_retried = False
-    description_retry_count = 0
-    original_desc = recommendation["seo_description"]
-    original_desc_len = len(original_desc)
-    needs_desc_retry, desc_retry_reason = description_needs_retry(object_type, original_desc)
-    # Also check for US spellings in the description
-    _, spelling_issues = validate_commonwealth_spelling(original_desc)
-
-    # Import config values for retry logic
-    from .config import DESCRIPTION_TARGET_MIN, DESCRIPTION_LIMIT
-    target_min = DESCRIPTION_TARGET_MIN.get(object_type, 150)
-    target_max = DESCRIPTION_LIMIT  # 160
-
-    # Track all candidates: (description, length, spelling_issues_count)
-    candidates = [(original_desc, original_desc_len, len(spelling_issues))]
-    best_desc = original_desc
-    best_desc_len = original_desc_len
-    best_spelling_count = len(spelling_issues)
-
-    if needs_desc_retry or spelling_issues:
-        retry_reason = desc_retry_reason if needs_desc_retry else f"spelling issues: {spelling_issues[:2]}"
-        logger.info(f"SEO description needs retry ({retry_reason}) for {object_type}/{handle}, original_len={original_desc_len}")
-        _emit_progress(
-            progress_callback,
-            stage="retrying_seo_description",
-            step_index=step_total - 1,
-            step_total=step_total,
-            model=_provider_display(generation_provider, generation_model),
-            message=f"SEO description failed validation ({retry_reason}), retrying once",
-        )
-        # Mark that a retry was attempted (regardless of outcome)
-        description_retried = True
-
-        # Helper to run one retry attempt with explicit feedback
-        def _run_description_retry(prev_draft: str, attempt: int) -> tuple[str, int, list[str]] | None:
-            """Run one description retry attempt. Returns (desc, length, spelling_issues) or None on failure."""
-            nonlocal description_retry_count
-            description_retry_count += 1
-            try:
-                # Build retry feedback showing the previous draft
-                length_retry_feedback = build_description_length_retry_feedback(
-                    prev_draft, target_min, target_max, object_type
-                )
-                # Build accepted fields with current seo_title for complementarity
-                retry_accepted = dict(accepted_fields)
-                retry_accepted["seo_title"] = recommendation["seo_title"]
-                # Build fresh prompt context
-                retry_context = _context_with_accepted_fields(context, retry_accepted)
-                retry_prompt_ctx = prompt_context(retry_context)
-                # Retry description generation with explicit retry feedback
-                retry_result = _generate_single_field_core(
-                    settings=settings,
-                    context=context,
-                    object_type=object_type,
-                    field="seo_description",
-                    accepted_fields=retry_accepted,
-                    prompt_context_precomputed=retry_prompt_ctx,
-                    signal_narrative_precomputed=None,
-                    retry_feedback=length_retry_feedback,
-                    progress_callback=progress_callback,
-                    cancel_callback=cancel_callback,
-                    step_index=step_total - 1,
-                    step_total=step_total,
-                    conn=conn,
-                )
-                retry_desc = clamp_generated_seo_field("seo_description", retry_result["value"])
-                retry_len = len(retry_desc)
-                _, retry_spelling = validate_commonwealth_spelling(retry_desc)
-                logger.info(f"SEO description retry #{attempt} result: retry_len={retry_len}, prev_len={len(prev_draft)} for {object_type}/{handle}")
-                return (retry_desc, retry_len, retry_spelling)
-            except Exception as e:
-                logger.warning(f"SEO description retry #{attempt} failed for {object_type}/{handle}: {e}")
-                return None
-
-        # First retry attempt
-        result1 = _run_description_retry(original_desc, 1)
-        if result1:
-            retry1_desc, retry1_len, retry1_spelling = result1
-            candidates.append((retry1_desc, retry1_len, len(retry1_spelling)))
-
-            # If first retry is still below target_min, try one more time
-            if retry1_len < target_min:
-                logger.info(f"SEO description retry #1 still short ({retry1_len} < {target_min}), attempting second retry for {object_type}/{handle}")
-                _emit_progress(
-                    progress_callback,
-                    stage="retrying_seo_description_2",
-                    step_index=step_total - 1,
-                    step_total=step_total,
-                    model=_provider_display(generation_provider, generation_model),
-                    message=f"SEO description still short ({retry1_len} chars), retrying once more",
-                )
-                result2 = _run_description_retry(retry1_desc, 2)
-                if result2:
-                    retry2_desc, retry2_len, retry2_spelling = result2
-                    candidates.append((retry2_desc, retry2_len, len(retry2_spelling)))
-
-        # Select best candidate: prefer in-target, then closest to 160, then longest (but never > 160)
-        for desc, desc_len, spell_count in candidates:
-            if desc_len > target_max:
-                # Exceeds limit — skip
-                continue
-            in_target = target_min <= desc_len <= target_max
-            best_in_target = target_min <= best_desc_len <= target_max
-
-            # Prefer candidate if:
-            # 1. It's in target and current best isn't
-            # 2. Both in target, but this one is closer to 160
-            # 3. Neither in target, but this one is longer (and has no worse spelling)
-            should_replace = False
-            if in_target and not best_in_target:
-                should_replace = True
-            elif in_target and best_in_target:
-                # Both in target — prefer closer to 160
-                if abs(target_max - desc_len) < abs(target_max - best_desc_len):
-                    should_replace = True
-            elif not in_target and not best_in_target:
-                # Neither in target — prefer longer if spelling not worse
-                if desc_len > best_desc_len and spell_count <= best_spelling_count:
-                    should_replace = True
-
-            if should_replace:
-                best_desc = desc
-                best_desc_len = desc_len
-                best_spelling_count = spell_count
-
-        # Update recommendation if best is different from original
-        if best_desc != original_desc:
-            recommendation["seo_description"] = best_desc
-            generated_fields["seo_description"]["value"] = best_desc
-            logger.info(f"SEO description retry accepted: best_len={best_desc_len}, original_len={original_desc_len}, retries={description_retry_count} for {object_type}/{handle}")
-        else:
-            logger.info(f"SEO description retry not accepted: keeping original_len={original_desc_len}, retries={description_retry_count} for {object_type}/{handle}")
-
-    # === LENGTH REPAIR: If description is still below target after retries, apply repair ===
-    description_length_repaired: str | None = None
-    current_desc = recommendation["seo_description"]
-    current_desc_len = len(current_desc)
-    
-    if current_desc_len < target_min:
-        logger.info(f"SEO description still short ({current_desc_len} < {target_min}) after retries, attempting length repair for {object_type}/{handle}")
-        
-        # Extract expansion bits from context for repair
-        expansion_bits = extract_expansion_bits_from_context(context, object_type)
-        
-        # Try dedicated LLM repair first
-        llm_repair_succeeded = False
-        try:
-            _emit_progress(
-                progress_callback,
-                stage="repairing_seo_description_length",
-                step_index=step_total - 1,
-                step_total=step_total,
-                model=_provider_display(generation_provider, generation_model),
-                message=f"Repairing SEO description length ({current_desc_len} → {target_min}-{target_max})",
-            )
-            
-            repair_sys, repair_usr = build_description_length_repair_prompt(
-                current_desc, target_min, target_max, expansion_bits
-            )
-            
-            # Call LLM for repair — use a simple text response, not structured JSON
-            repair_response = _call_ai(
-                settings,
-                generation_provider,
-                generation_model,
-                [
-                    {"role": "system", "content": repair_sys},
-                    {"role": "user", "content": repair_usr},
-                ],
-                settings["timeout"],
-                stage="seo_description_length_repair",
-            )
-            
-            # Extract the repaired text
-            if isinstance(repair_response, dict):
-                repaired_text = repair_response.get("seo_description", "") or str(repair_response.get("text", ""))
-            else:
-                repaired_text = str(repair_response).strip()
-            
-            # Clean up any quotes or JSON artifacts
-            repaired_text = repaired_text.strip().strip('"\'')
-            repaired_len = len(repaired_text)
-            
-            logger.info(f"LLM repair result: {repaired_len} chars (was {current_desc_len}) for {object_type}/{handle}")
-            
-            # Accept only if in target range
-            if target_min <= repaired_len <= target_max:
-                # Verify spelling didn't get worse
-                _, repaired_spelling = validate_commonwealth_spelling(repaired_text)
-                _, current_spelling = validate_commonwealth_spelling(current_desc)
-                if len(repaired_spelling) <= len(current_spelling):
-                    recommendation["seo_description"] = repaired_text
-                    generated_fields["seo_description"]["value"] = repaired_text
-                    description_length_repaired = "llm"
-                    llm_repair_succeeded = True
-                    logger.info(f"LLM length repair accepted: {repaired_len} chars for {object_type}/{handle}")
-                else:
-                    logger.info(f"LLM length repair rejected (worse spelling) for {object_type}/{handle}")
-            else:
-                logger.info(f"LLM length repair rejected ({repaired_len} not in [{target_min}, {target_max}]) for {object_type}/{handle}")
-                
-        except Exception as e:
-            logger.warning(f"LLM length repair failed for {object_type}/{handle}: {e}")
-        
-        # If LLM repair didn't work, try deterministic fallback
-        if not llm_repair_succeeded:
-            current_desc = recommendation["seo_description"]
-            current_desc_len = len(current_desc)
-            
-            if current_desc_len < target_min:
-                logger.info(f"Attempting deterministic length repair for {object_type}/{handle}")
-                
-                repaired_text, was_modified = ensure_seo_description_length(
-                    current_desc,
-                    target_min=target_min,
-                    target_max=target_max,
-                    expansion_bits=expansion_bits,
-                )
-                
-                if was_modified:
-                    repaired_len = len(repaired_text)
-                    if target_min <= repaired_len <= target_max:
-                        # Verify spelling didn't get worse
-                        _, repaired_spelling = validate_commonwealth_spelling(repaired_text)
-                        _, current_spelling = validate_commonwealth_spelling(current_desc)
-                        if len(repaired_spelling) <= len(current_spelling):
-                            recommendation["seo_description"] = repaired_text
-                            generated_fields["seo_description"]["value"] = repaired_text
-                            description_length_repaired = "deterministic"
-                            logger.info(f"Deterministic length repair accepted: {repaired_len} chars (was {current_desc_len}) for {object_type}/{handle}")
-                        else:
-                            logger.info(f"Deterministic repair rejected (worse spelling) for {object_type}/{handle}")
-                    else:
-                        logger.info(f"Deterministic repair result {repaired_len} not in target range for {object_type}/{handle}")
-                else:
-                    logger.info(f"Deterministic repair made no changes for {object_type}/{handle}")
+    # Length corrections run inside the shared field loop for every entry point.
+    # Keep historical QA keys for API compatibility, without a second repair pipeline.
+    description_retry_count = generated_fields["seo_description"].get("quality_retry_count", 0)
+    description_retried = description_retry_count > 0
+    description_length_repaired = None
 
     # Check if body specifically fails the floor — retry once if so
     body_retried = False
@@ -1038,6 +827,9 @@ def generate_recommendation(
         message="Saving recommendation result",
     )
 
+    from shopifyseo.seo_quality import validate_metadata
+    validate_metadata(object_type, recommendation)
+
     recommendation["_meta"] = {
         "generation_model": _provider_display(generation_provider, generation_model),
         "review_model": _provider_display(review_provider, review_model),
@@ -1084,6 +876,7 @@ def generate_field_recommendation(
     accepted_fields: dict,
     progress_callback: ProgressCallback | None = None,
     cancel_callback: CancelCallback | None = None,
+    opportunity_context: dict | None = None,
 ) -> dict:
     """Regenerate a single field, context-aware of already-accepted sibling fields."""
     logger.info(
@@ -1147,6 +940,8 @@ def generate_field_recommendation(
 
     effective_context = _context_with_accepted_fields(context, accepted_fields)
     prompt_context_precomputed = prompt_context(effective_context)
+    if opportunity_context:
+        prompt_context_precomputed["opportunity_task"] = opportunity_context
 
     try:
         result = _generate_single_field_core(

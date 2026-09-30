@@ -169,27 +169,12 @@ def validate_single_field(
     if not value:
         raise RecommendationValidationError(f"Generated {field} is empty")
 
-    if field == "seo_title":
-        hard_min = TITLE_HARD_MIN.get(object_type, 40)
-        if len(value) < hard_min:
-            raise RecommendationValidationError(
-                f"Generated seo_title too short: {len(value)} chars (minimum {hard_min})"
-            )
-        if len(value) > TITLE_LIMIT:
-            raise RecommendationValidationError(
-                f"Generated seo_title too long: {len(value)} chars (maximum {TITLE_LIMIT})"
-            )
-
-    elif field == "seo_description":
-        hard_min = DESCRIPTION_HARD_MIN.get(object_type, 110)
-        if len(value) < hard_min:
-            raise RecommendationValidationError(
-                f"Generated seo_description too short: {len(value)} chars (minimum {hard_min})"
-            )
-        if len(value) > DESCRIPTION_LIMIT:
-            raise RecommendationValidationError(
-                f"Generated seo_description too long: {len(value)} chars (maximum {DESCRIPTION_LIMIT})"
-            )
+    if field in ("seo_title", "seo_description"):
+        from shopifyseo.seo_quality import validate_metadata
+        try:
+            validate_metadata(object_type, {field: value})
+        except ValueError as exc:
+            raise RecommendationValidationError(str(exc)) from exc
 
     elif field == "body":
         import re

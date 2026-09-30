@@ -228,6 +228,8 @@ def update_product(handle: str, payload: dict[str, Any]) -> tuple[bool, str]:
             return False, "Product not found"
         product = detail["product"]
         try:
+            from shopifyseo.seo_quality import validate_changed_metadata
+            validate_changed_metadata("product", dict(product), payload)
             with SYNC_LOCK:
                 live_update_product(
                     DB_PATH,
@@ -255,6 +257,8 @@ def update_product(handle: str, payload: dict[str, Any]) -> tuple[bool, str]:
                     payload.get("workflow_notes", ""),
                 )
             clear_last_error()
+            from shopifyseo.opportunity_tasks import record_applied
+            record_applied(conn, "product", handle, payload)
             return True, "Product saved"
         except (Exception, SystemExit) as exc:
             record_last_error(exc)

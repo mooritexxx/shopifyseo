@@ -167,7 +167,7 @@ export function OverviewPage() {
   return (
     <div className="overview-page space-y-8 pb-8">
       <header className="space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight text-ink">Overview</h1>
+        <h1 className="overview-title">Overview</h1>
         <p className="mt-1 text-sm text-slate-500">Search performance and catalog health at a glance.</p>
           <div className="overview-toolbar flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
@@ -218,7 +218,7 @@ export function OverviewPage() {
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Search Console (property)</p>
+            <h2 className="overview-section-title">Search performance</h2>
             <p className="text-sm text-slate-600">
               {gsc.available && siteCur
                 ? `${siteCur.start_date} → ${siteCur.end_date} · timezone ${gsc.timezone} · data through ${gsc.anchor_date}`
@@ -229,7 +229,7 @@ export function OverviewPage() {
         </div>
 
         {!gsc.available ? (
-          <Card className="border-[#e8e4f8] bg-[#faf8ff] p-6">
+          <Card className="overview-panel p-6">
             <p className="text-sm font-medium text-ink">Site-level GSC not available</p>
             <p className="mt-2 text-sm text-slate-600">{gsc.error || "Connect Google Search Console to see property rollups."}</p>
             <Link
@@ -318,14 +318,14 @@ export function OverviewPage() {
 
 
 
-            <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+            <Card className="overview-panel mt-4 p-6">
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <div className="mb-1 flex items-center gap-2">
                     <MousePointerClick className="text-[#5746d9]" size={18} />
-                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Daily trend</p>
+                    <p className="overview-eyebrow">Daily trend</p>
                   </div>
-                  <h2 className="text-xl font-bold text-ink">
+                  <h2 className="overview-section-title">
                     {gscChartTab === "traffic" ? "Clicks & impressions" : "CTR & average position"}
                   </h2>
                   <p className="mt-1 text-sm text-slate-500">
@@ -521,15 +521,15 @@ export function OverviewPage() {
               </div>
             </Card>
             {data.gsc_property_breakdowns.available ? (
-              <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+              <Card className="overview-panel mt-4 p-6">
                 <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                   <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f4f2ff] text-[#5746d9] shadow-[0_2px_8px_rgba(87,70,217,0.12)]">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
                       <Layers size={22} strokeWidth={1.75} aria-hidden />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Segment mix</p>
-                      <h3 className="mt-1 text-lg font-bold tracking-tight text-ink">Property splits</h3>
+                      <p className="overview-eyebrow">Segment mix</p>
+                      <h3 className="mt-1 overview-section-title">Property splits</h3>
                       <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
                         <span className="font-medium text-slate-600">
                           {data.gsc_property_breakdowns.window.start_date} →{" "}
@@ -586,7 +586,7 @@ export function OverviewPage() {
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">GA4 (property)</p>
+            <h2 className="overview-section-title">Analytics</h2>
             <p className="text-sm text-slate-600">
               {ga4.available && ga4Cur
                 ? `${ga4Cur.start_date} → ${ga4Cur.end_date} · timezone ${ga4.timezone} · reporting date ${ga4.anchor_date}`
@@ -601,7 +601,7 @@ export function OverviewPage() {
         </div>
 
         {!ga4.available ? (
-          <Card className="border-[#e8e4f8] bg-[#f0fdfa] p-6">
+          <Card className="overview-panel p-6">
             <p className="text-sm font-medium text-ink">GA4 overview not available</p>
             <p className="mt-2 text-sm text-slate-600">{ga4.error || "Connect Google Analytics."}</p>
             <p className="mt-3 text-sm text-slate-600">
@@ -725,12 +725,12 @@ export function OverviewPage() {
               </div>
             </div>
 
-            <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+            <Card className="overview-panel mt-4 p-6">
               <div className="mb-1 flex items-center gap-2">
                 <Activity className="text-[#0891b2]" size={18} />
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Daily trend</p>
+                <p className="overview-eyebrow">Daily trend</p>
               </div>
-              <h2 className="text-xl font-bold text-ink">Sessions &amp; views</h2>
+              <h2 className="overview-section-title">Sessions &amp; views</h2>
               <p className="mt-1 text-sm text-slate-500">Current period; % change on KPIs uses the prior window (same as GSC toggle).</p>
               <div
                 className="mt-6 h-[300px] w-full min-w-0"
@@ -865,7 +865,7 @@ export function OverviewPage() {
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Indexing (database)</p>
+            <h2 className="overview-section-title">Indexing</h2>
             <p className="text-sm text-slate-600">
               Rollup of last-known Search Console inspection states on synced catalog URLs. Run a sync with index refresh
               to fill gaps; open any product, collection, page, or article for detail.
@@ -883,10 +883,10 @@ export function OverviewPage() {
           <KpiCard label="Needs review" value={formatNumber(idx.needs_review)} hint="Ambiguous or partial data" />
           <KpiCard label="Unknown" value={formatNumber(idx.unknown)} hint="No inspection text stored yet" />
         </div>
-        <Card className="mt-4 border-[#e8e4f8] bg-white p-5 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+        <Card className="overview-panel mt-4 p-5">
           <div className="flex flex-wrap items-center gap-2">
             <FileSearch className="text-[#5746d9]" size={18} />
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">By entity type</p>
+            <p className="overview-eyebrow">By entity type</p>
           </div>
           <ul className="overview-tiles mt-4 text-sm">
             {(
@@ -921,8 +921,8 @@ export function OverviewPage() {
       <section>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Tracked URLs (database)</p>
-            <p className="text-sm text-slate-600">Totals from synced entities with GSC/GA4 facts—subset of the property</p>
+            <h2 className="overview-section-title">Tracked URL performance</h2>
+            <p className="text-sm text-slate-600">Search Console and Analytics totals for synced catalog URLs.</p>
           </div>
         </div>
         <div className="overview-metrics">
@@ -936,9 +936,9 @@ export function OverviewPage() {
 
       {/* Catalog SEO completion (plan S4) */}
       <section>
-        <Card className="border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Catalog health</p>
-          <h2 className="mt-2 text-xl font-bold text-ink">Metadata coverage</h2>
+        <Card className="overview-panel p-6">
+          <p className="overview-eyebrow">Catalog health</p>
+          <h2 className="mt-2 overview-section-title">Metadata coverage</h2>
           <p className="mt-1 text-sm text-slate-500">
             Share of synced entities with both SEO title and description filled. Products also show thin-body count
             (description under 200 characters).
@@ -1032,12 +1032,12 @@ export function OverviewPage() {
       {/* Top organic pages by GSC clicks */}
       {data.top_pages.length > 0 && (
         <section>
-          <Card className="border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+          <Card className="overview-panel p-6">
             <div className="mb-1 flex items-center gap-2">
               <TrendingUp className="text-[#5746d9]" size={18} />
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Organic performance</p>
+              <p className="overview-eyebrow">Organic performance</p>
             </div>
-            <h2 className="text-xl font-bold text-ink">Top pages by GSC clicks</h2>
+            <h2 className="overview-section-title">Top pages by GSC clicks</h2>
             <p className="mt-1 text-sm text-slate-500">
               Highest-click entities across all types from locally-synced GSC data. Click any title to open its detail
               page.
@@ -1105,14 +1105,14 @@ export function OverviewPage() {
 
       {/* SEO debt (entity counts live under Catalog scale above) */}
       <section>
-        <Card className="border-[#e8e4f8] p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">SEO debt snapshot</p>
+        <Card className="overview-panel p-6">
+          <h2 className="overview-section-title">SEO debt snapshot</h2>
           <div className="overview-tiles mt-4">
             <div>
               <p className="text-sm text-slate-500">Products missing meta</p>
               <Link
                 to="/products?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-bold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
+                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
               >
                 {formatNumber(data.metrics.products_missing_meta)}
               </Link>
@@ -1121,7 +1121,7 @@ export function OverviewPage() {
               <p className="text-sm text-slate-500">Thin product copy</p>
               <Link
                 to="/products?focus=thin_body&sort=body_length&direction=asc"
-                className="mt-1 block text-3xl font-bold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
+                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
               >
                 {formatNumber(data.metrics.products_thin_body)}
               </Link>
@@ -1130,7 +1130,7 @@ export function OverviewPage() {
               <p className="text-sm text-slate-500">Collections missing meta</p>
               <Link
                 to="/collections?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-bold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
+                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
               >
                 {formatNumber(data.metrics.collections_missing_meta)}
               </Link>
@@ -1139,7 +1139,7 @@ export function OverviewPage() {
               <p className="text-sm text-slate-500">Pages missing meta</p>
               <Link
                 to="/pages?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-bold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
+                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
               >
                 {formatNumber(data.metrics.pages_missing_meta)}
               </Link>

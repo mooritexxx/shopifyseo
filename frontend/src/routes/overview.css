@@ -1,4 +1,27 @@
-.overview-page { container-type: inline-size; }
+.overview-page {
+  container-type: inline-size;
+  color: #172033;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+.overview-title { font-size: 32px; font-weight: 650; letter-spacing: -0.035em; line-height: 1.2; }
+.overview-page .overview-section-title { font-size: 18px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.4; }
+.overview-eyebrow { font-size: 12px; font-weight: 500; letter-spacing: 0; color: #64748b; }
+.overview-page .overview-panel,
+.overview-metric {
+  border: 1px solid #e2e7ed;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 3%);
+  backdrop-filter: none;
+}
+.overview-metric { display: flex; flex-direction: column; gap: 8px; }
+.overview-metric-label { font-size: 13px; font-weight: 500; line-height: 1.4; color: #526174; }
+.overview-metric-value { font-size: 30px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; letter-spacing: -0.035em; overflow-wrap: anywhere; }
+.overview-metric-hint { margin-top: auto; padding-top: 4px; line-height: 1.5; }
+.overview-metric-sparkline { margin-top: auto; }
+.overview-page > section > div:first-child > div > .overview-section-title + p { margin-top: 5px; font-size: 13px; color: #64748b; max-width: 76ch; }
+
 .overview-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 16px; }
 .overview-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 20px; }
 .overview-page section { min-width: 0; }
@@ -11,7 +34,7 @@
   .overview-top-pages { min-width: 0; }
   .overview-top-pages thead { display: none; }
   .overview-top-pages tbody { display: grid; gap: 12px; }
-  .overview-top-pages tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; border: 1px solid #e8e4f8; border-radius: 12px; }
+  .overview-top-pages tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; border: 1px solid #e2e7ed; border-radius: 12px; }
   .overview-top-pages td { display: block; padding: 8px 0; text-align: left; }
   .overview-top-pages td:first-child { grid-column: 1 / -1; }
   .overview-top-pages td:first-child > div { flex-direction: column; gap: 6px; align-items: flex-start; }

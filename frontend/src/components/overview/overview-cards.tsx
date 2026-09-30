@@ -66,16 +66,16 @@ export function SegmentMixTile({
 }) {
   const row = topGscPropertyBreakdownRow(slice);
   return (
-    <div className="min-w-0 rounded-2xl border border-[#e8e4f8] bg-white p-5 shadow-[0_2px_12px_rgba(87,70,217,0.06)]">
+    <div className="overview-metric min-w-0 p-5">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</p>
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#f4f2ff] text-[#5746d9]">
+        <p className="overview-metric-label">{label}</p>
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
           <Icon size={16} strokeWidth={2} aria-hidden />
         </span>
       </div>
       {row ? (
         <>
-          <p className="mt-2 break-words font-mono text-2xl font-bold tabular-nums tracking-tight text-ink">
+          <p className="overview-metric-value">
             {formatNumber(row.impressions)}
           </p>
           <p className="mt-1 text-xs font-medium text-slate-600">
@@ -88,7 +88,7 @@ export function SegmentMixTile({
         </>
       ) : (
         <>
-          <p className="mt-2 break-words font-mono text-2xl font-bold tabular-nums text-slate-300">—</p>
+          <p className="overview-metric-value text-slate-400">—</p>
           <p className="mt-1 text-xs text-slate-500">No rows in cache</p>
         </>
       )}
@@ -165,14 +165,14 @@ export function KpiCard({
   return (
     <div
       className={cn(
-        "min-w-0 rounded-2xl border border-[#e8e4f8] bg-white p-5 shadow-[0_2px_12px_rgba(87,70,217,0.06)]",
+        "overview-metric min-w-0 p-5",
         className
       )}
     >
-      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">{label}</p>
-      <p className="mt-2 break-words font-mono text-2xl font-bold tabular-nums tracking-tight text-ink">{value}</p>
-      {sparkline ? <div className="mt-3 w-full min-w-0">{sparkline}</div> : null}
-      {hint ? <div className="mt-1.5 text-xs text-slate-500">{hint}</div> : null}
+      <p className="overview-metric-label">{label}</p>
+      <p className="overview-metric-value">{value}</p>
+      {sparkline ? <div className="overview-metric-sparkline mt-3 w-full min-w-0">{sparkline}</div> : null}
+      {hint ? <div className="overview-metric-hint text-xs text-slate-500">{hint}</div> : null}
     </div>
   );
 }

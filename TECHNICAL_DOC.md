@@ -553,7 +553,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
-| OverviewPage         | `/`                                      | Responsive dashboard: performance, indexing, catalog health | `/api/summary`, sync/status                     |
+| OverviewPage         | `/`                                      | Responsive dashboard: performance, indexing, catalog health; scoped neutral surfaces and consistent metric/heading typography | `/api/summary`, sync/status                     |
 | InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |

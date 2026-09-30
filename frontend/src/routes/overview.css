@@ -81,18 +81,15 @@
 .overview-page #overview-attention ul { margin-top: 8px; }
 .overview-audience-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .overview-audience-item + .overview-audience-item { border-left: 1px solid #e2e7ed; padding-left: 20px; }
-.overview-health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-.overview-health-grid .overview-indexing-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.overview-health-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .overview-health-grid .overview-panel .overview-panel { padding: 0; border: 0; box-shadow: none; }
-.overview-entity-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.overview-health-grid .overview-coverage-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 12px 0; }
-.overview-health-grid .overview-coverage-progress { grid-row: 2; grid-column: 1 / -1; }
-.overview-health-grid .overview-coverage-status { grid-row: 1; grid-column: 2; }
+.overview-entity-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.overview-health-grid .overview-coverage-row { padding: 12px 0; }
 .overview-support-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 16px; }
 .overview-page .overview-gsc-table { border-radius: 12px; border-color: #e2e7ed; box-shadow: none; }
 .overview-comparison { display: grid; gap: 6px; margin-top: 12px; }
 @container (max-width: 760px) {
-  .overview-health-grid { grid-template-columns: 1fr; }
+  .overview-entity-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-page .overview-metrics, .overview-page [aria-label="Whole-site Analytics"] .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-audience-grid { gap: 12px; }
   .overview-audience-item + .overview-audience-item { padding-left: 12px; }
@@ -115,3 +112,7 @@
 @container (max-width: 760px) {
   .overview-tracked-metrics > :last-child { grid-column: 1 / -1; }
 }
+
+.overview-report-section:not(.overview-panel) { border-top: 1px solid #e2e7ed; padding-top: 14px; }
+
+.overview-page .recharts-wrapper { overflow: clip; }

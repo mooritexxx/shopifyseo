@@ -601,7 +601,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
-| OverviewPage         | `/`                                      | Compact Search snapshot and immediate Needs attention actions; Search/Analytics workspaces, audience shares, paired indexing/metadata health, and expandable scoped reports. Period affects property reports; Search URL filter affects GSC metrics and query/page tables only. Catalog signals retain their stored per-URL windows. | `/api/summary`, sync/status                     |
+| OverviewPage         | `/`                                      | Compact Search snapshot and immediate Needs attention actions; Search/Analytics workspaces, audience shares, stacked indexing/metadata health, and always-visible scoped reports. Period affects property reports; Search URL filter affects GSC metrics and query/page tables only. Catalog signals retain their stored per-URL windows. | `/api/summary`, sync/status                     |
 | InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |

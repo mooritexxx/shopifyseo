@@ -66,7 +66,6 @@ export function OverviewPage() {
   const [gscOverviewPeriod, setGscOverviewPeriod] = useState<OverviewGscPeriod>(() => readStoredOverviewGscPeriod());
   const [gscSegment, setGscSegment] = useState<(typeof GSC_SEGMENT_OPTIONS)[number]["value"]>("all");
   const [comparePrevious, setComparePrevious] = useState(false);
-  const [searchDetailsOpen, setSearchDetailsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<"queries" | "pages" | "countries" | "devices">("queries");
   const [gscChartTab, setGscChartTab] = useState<GscChartTab>("traffic");
   const { data, isLoading, error } = useQuery({
@@ -530,8 +529,8 @@ export function OverviewPage() {
                   <h3 className="overview-section-title">Audience at a glance</h3><span className="overview-scope">Whole site · impressions</span>
                 </div>
                 <div className="overview-audience-grid">
-                  <SegmentMixTile label="Country" dimension="country" slice={data.gsc_property_breakdowns.country} icon={Globe} onExplore={() => { setDetailTab("countries"); setSearchDetailsOpen(true); }} />
-                  <SegmentMixTile label="Device" dimension="device" slice={data.gsc_property_breakdowns.device} icon={Monitor} onExplore={() => { setDetailTab("devices"); setSearchDetailsOpen(true); }} />
+                  <SegmentMixTile label="Country" dimension="country" slice={data.gsc_property_breakdowns.country} icon={Globe} onExplore={() => { setDetailTab("countries"); }} />
+                  <SegmentMixTile label="Device" dimension="device" slice={data.gsc_property_breakdowns.device} icon={Monitor} onExplore={() => { setDetailTab("devices"); }} />
                   <SegmentMixTile label="Search appearance" dimension="appearance" slice={data.gsc_property_breakdowns.searchAppearance} icon={FileSearch} />
                 </div>
                 <details className="overview-disclosure mt-4">
@@ -541,8 +540,8 @@ export function OverviewPage() {
                 </details>
               </Card>
             ) : null}
-              <details id="overview-search-details" className="overview-disclosure overview-panel p-5" open={searchDetailsOpen} onToggle={event => setSearchDetailsOpen(event.currentTarget.open)}>
-                <summary>Search details <span className="font-normal text-slate-500">· queries, pages, countries &amp; devices</span></summary>
+              <section id="overview-search-details" className="overview-panel p-5">
+                <h2 className="overview-section-title">Search details</h2>
         {gsc.available ? (
           <div className="mt-4 space-y-2">
             {data.gsc_performance_error ? (
@@ -583,7 +582,7 @@ export function OverviewPage() {
           </div>
         ) : null}
 
-              </details>
+              </section>
             </> : <p className="overview-panel p-5 text-sm text-slate-500">Connect Search Console using the settings link above to see trends and detailed reports.</p>}
           </TabsContent>
           <TabsContent value="analytics">
@@ -844,8 +843,8 @@ export function OverviewPage() {
           </div>
         </div>
         <IndexingSummary {...idx} />
-        <details className="overview-disclosure mt-4">
-          <summary>Indexing by entity type</summary>
+        <div className="overview-report-section mt-4">
+          <h3 className="overview-section-title">Indexing by entity type</h3>
           <ul className="overview-entity-grid mt-4 text-sm">
             {(
               [
@@ -872,7 +871,7 @@ export function OverviewPage() {
               );
             })}
           </ul>
-        </details>
+        </div>
       </section>
 
       {/* Catalog SEO completion (plan S4) */}
@@ -894,8 +893,8 @@ export function OverviewPage() {
               return <CompletionBar key={key} label={label} complete={coverage.meta_complete} total={coverage.total} missing={coverage.missing_meta} href={href} issueHref={key === "articles" ? href : `${href}?focus=missing_meta&sort=score&direction=desc`} />;
             })}
           </div>
-          <details className="overview-disclosure mt-4">
-            <summary className="cursor-pointer text-sm font-medium text-[#5746d9]">View coverage counts by entity type</summary>
+          <div className="overview-report-section mt-4">
+            <h3 className="overview-section-title">Coverage counts by entity type</h3>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600">
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: CHART_META_COMPLETE }} />
@@ -946,7 +945,7 @@ export function OverviewPage() {
               </BarChart>
             </ResponsiveContainer>
           </div>
-          </details>
+          </div>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-sm">
             <span>Short product descriptions <strong className="ml-2 tabular-nums">{formatNumber(data.metrics.products_thin_body)}</strong></span>
             <Link className="font-medium text-[#5746d9] hover:underline" to="/products?focus=thin_body&sort=body_length&direction=asc">Review descriptions →</Link>
@@ -959,8 +958,8 @@ export function OverviewPage() {
         </div>
       </section>
       <section id="overview-details" className="space-y-4">
-        <details className="overview-disclosure overview-panel p-5">
-          <summary>Synced catalog performance <span className="font-normal text-slate-500">· metrics &amp; top pages</span></summary>
+        <div className="overview-report-section overview-panel p-5">
+          <h3 className="overview-section-title">Synced catalog performance</h3>
           <div className="mt-5 space-y-5">
       {/* Tracked URL rollup — local DB facts (not full property) */}
       <section>
@@ -1054,7 +1053,7 @@ export function OverviewPage() {
 
 
           </div>
-        </details>
+        </div>
         <div className="overview-support-grid">
           <SiteAuthorityCard />
           <Card className="overview-panel p-5">

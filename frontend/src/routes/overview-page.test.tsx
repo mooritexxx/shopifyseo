@@ -43,7 +43,7 @@ beforeEach(() => {
 });
 
 describe("Overview workspaces", () => {
-  it("keeps actions ahead of reports and opens audience details with the correct tab", async () => {
+  it("keeps actions ahead of reports and selects audience details with the correct tab", async () => {
     const user = userEvent.setup();
     renderWithProviders(<OverviewPage />);
     const attention = await screen.findByRole("heading", {name:"Needs attention"});
@@ -59,7 +59,7 @@ describe("Overview workspaces", () => {
     expect(screen.getByText("Whole site · unaffected by the Search URL filter")).toBeInTheDocument();
   });
 
-  it("preserves Analytics and catalog metrics behind their controls", async () => {
+  it("preserves Analytics controls and keeps catalog reports visible", async () => {
     const user = userEvent.setup();
     renderWithProviders(<OverviewPage />);
     await screen.findByRole("heading", {name:"Needs attention"});
@@ -69,7 +69,9 @@ describe("Overview workspaces", () => {
     expect(within(sourceTabs).getByRole("tab",{name:"Analytics"})).toHaveAttribute("aria-selected","true");
     expect(screen.getByText("New users")).toBeVisible();
     expect(screen.getByText("↓ 10.0 pp vs prior")).toHaveClass("text-emerald-600");
-    await user.click(screen.getByText("Synced catalog performance",{exact:false,selector:"summary"}));
+    expect(screen.getByRole("heading", { name: "Synced catalog performance" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Indexing by entity type" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Coverage counts by entity type" })).toBeVisible();
     expect(screen.getByRole("link",{name:"Example product"})).toHaveAttribute("href","/products/example");
     expect(screen.getByText(/per-URL sync windows/)).toBeVisible();
     expect(screen.queryByText("Cache",{exact:true})).not.toBeInTheDocument();

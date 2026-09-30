@@ -2,6 +2,14 @@
 
 Updated: September 30, 2026. Baseline: `1bfe6b3`.
 
+## Overview layout follow-up — September 30, 2026
+
+Report disclosures are now permanent sections: Search details, indexing by entity type, metadata counts, and synced catalog performance. Indexing and Metadata coverage stack at every width, with full-width desktop coverage rows. Help and freshness disclosures remain compact. Chart tooltip overflow is contained during viewport changes.
+
+Verification: all 15 targeted Overview tests passed; clean production rebuild and local restart passed. Desktop at 1440px confirms vertically stacked health cards and visible report headings. The final rebuilt phone page has document width 320px at a 320px viewport, with chart overflow contained. Audience links still select the correct report tab. Evidence: [stacked desktop health](overview-redesign-evidence/stacked-health-desktop.png), [visible phone reports](overview-redesign-evidence/visible-reports-mobile.png).
+
+The redesign record below describes the preceding version; this follow-up supersedes its disclosure and paired-health choices.
+
 ## Overview redesign — September 30, 2026
 
 The eight approved Overview improvements are implemented, preserving existing metrics, reports, catalog links, goal lines, provider settings and authority refresh.

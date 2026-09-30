@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
+import { formatRelativeTimestamp } from "../../lib/utils";
 import { getJson, postJson } from "../../lib/api";
 import { MiniSparkline } from "../ui/mini-sparkline";
 import { KpiCard } from "./overview-cards";
@@ -63,23 +64,23 @@ export function SiteAuthorityCard({ className }: { className?: string }) {
       onClick={() => refresh.mutate()}
       disabled={refresh.isPending}
       className="text-left underline-offset-2 hover:text-ocean hover:underline disabled:opacity-60"
-      title={`Open PageRank has no entry for ${data?.domain || "this domain"} — too few referring domains to appear in the Common Crawl web graph. Not a score of zero. Click to re-check.`}
+      title={`Open PageRank has no entry for ${data?.domain || "this domain"}. This is not a score of zero or a Google indexing status. Click to re-check.`}
     >
-      {refresh.isPending ? "Checking…" : "Not indexed yet — re-check"}
+      {refresh.isPending ? "Checking…" : "No authority data available · re-check"}
     </button>
   );
 
   return (
     <KpiCard
       className={className}
-      label="Domain authority"
+      label="Domain authority · Open PageRank"
       value={data?.found && data.authority != null ? data.authority.toFixed(2) : "—"}
       sparkline={
         series.length > 1 ? (
           <MiniSparkline values={series} color="#5746d9" ariaLabel="Domain authority trend" />
         ) : undefined
       }
-      hint={hint}
+      hint={<><div>{hint}</div><p className="mt-2 text-xs text-slate-500">Separate from Google indexing.{data?.as_of ? ` Data as of ${data.as_of}.` : ""}{data?.checked_at ? ` Checked ${formatRelativeTimestamp(data.checked_at).split(" · ")[0]}.` : ""}</p></>}
     />
   );
 }

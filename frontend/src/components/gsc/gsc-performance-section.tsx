@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, FileSearch } from "lucide-react";
 
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { cn, formatNumber, formatPercent } from "../../lib/utils";
@@ -15,7 +16,7 @@ function toNumber(value: number | string | undefined) {
 }
 
 /** GSC searchAnalytics returns dimension values as keys[0]; normalize display (ISO alpha-3 countries, DEVICE enums, etc.). */
-function formatGscBreakdownLabel(
+export function formatGscBreakdownLabel(
   dimension: "country" | "device" | "searchAppearance",
   raw: string
 ): string {
@@ -201,15 +202,23 @@ export function GscPerformanceSection({
   gsc_queries,
   gsc_pages,
   countrySlice,
-  deviceSlice
+  deviceSlice,
+  activeTab: controlledTab,
+  onTabChange,
+  queryPageScope
 }: {
   gscRangeLabel: string;
   gsc_queries: GscMetricRow[];
   gsc_pages: GscMetricRow[];
   countrySlice: GscBreakdownSlice;
   deviceSlice: GscBreakdownSlice;
+  activeTab?: GscPerfTab;
+  onTabChange?: (tab: GscPerfTab) => void;
+  queryPageScope?: string;
 }) {
-  const [activeTab, setActiveTab] = useState<GscPerfTab>("queries");
+  const [localTab, setLocalTab] = useState<GscPerfTab>("queries");
+  const activeTab = controlledTab ?? localTab;
+  const setActiveTab = (tab: string) => { setLocalTab(tab as GscPerfTab); onTabChange?.(tab as GscPerfTab); };
   const [tabSort, setTabSort] = useState<
     Record<GscPerfTab, { column: GscSortColumn; direction: "asc" | "desc" }>
   >({
@@ -320,7 +329,8 @@ export function GscPerformanceSection({
   const sort = tabSort[activeTab];
 
   return (
-    <Card className={cn("overflow-hidden border-[#e8e4f8] p-0", cardElevated, "w-full")}>
+    <Tabs value={activeTab} onValueChange={setActiveTab}>
+    <Card className={cn("overview-gsc-table overflow-hidden border-[#e8e4f8] p-0", cardElevated, "w-full")}>
       <div className="border-b border-[#ede9f7] bg-[linear-gradient(180deg,#ffffff_0%,#faf8ff_100%)] px-4 py-4 sm:px-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -333,39 +343,13 @@ export function GscPerformanceSection({
             </span>
           ) : null}
         </div>
-        <div
-          className="mt-3 flex gap-1 overflow-x-auto border-b border-transparent pb-px [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          role="tablist"
-          aria-label="Search Console dimensions"
-        >
-          {GSC_PERF_TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === id}
-              id={`gsc-perf-tab-${id}`}
-              aria-controls={`gsc-perf-panel-${id}`}
-              onClick={() => setActiveTab(id)}
-              className={cn(
-                "shrink-0 border-b-2 px-2.5 py-2 text-[10px] font-bold uppercase tracking-[0.12em] transition",
-                activeTab === id
-                  ? "border-ink text-ink"
-                  : "border-transparent text-slate-500 hover:text-slate-700"
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {queryPageScope ? <p className="mt-2 text-xs text-slate-500">{activeTab === "countries" || activeTab === "devices" ? "Whole site · unaffected by the Search URL filter" : queryPageScope}</p> : null}
+        <TabsList scrollable className="mt-3" aria-label="Search Console dimensions">
+          {GSC_PERF_TABS.map(({ id, label }) => <TabsTrigger key={id} value={id}>{label}</TabsTrigger>)}
+        </TabsList>
       </div>
 
-      <div
-        className="p-2 sm:p-3"
-        role="tabpanel"
-        id={`gsc-perf-panel-${activeTab}`}
-        aria-labelledby={`gsc-perf-tab-${activeTab}`}
-      >
+      <TabsContent value={activeTab} className="p-2 sm:p-3">
         {(activeTab === "queries" || activeTab === "pages") && gscListEmpty ? (
           <div className="px-3 py-8 text-center text-sm text-slate-500">{emptyHint}</div>
         ) : (
@@ -377,7 +361,7 @@ export function GscPerformanceSection({
               <div className="px-3 py-8 text-center text-sm text-slate-500">{emptyHint}</div>
             ) : null}
             {sortedRows.length > 0 ? (
-              <div className="min-w-0 overflow-x-auto">
+              <div className="min-w-0 overflow-x-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#5746d9]" role="region" aria-label={`${tableTitle} table, scroll horizontally`} tabIndex={0}>
                 <table className="w-full min-w-[520px] border-collapse text-sm">
                   <caption className="sr-only">{tableTitle}</caption>
                   <thead>
@@ -521,7 +505,8 @@ export function GscPerformanceSection({
             {activeTab === "countries" ? countrySlice.cache.text : deviceSlice.cache.text}
           </p>
         ) : null}
-      </div>
+      </TabsContent>
     </Card>
+    </Tabs>
   );
 }

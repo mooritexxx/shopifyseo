@@ -1,25 +1,30 @@
 import type { ComponentType, ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { cn, formatNumber, formatRelativeTimestamp } from "../../lib/utils";
+import { formatGscBreakdownLabel } from "../gsc/gsc-performance-section";
+import { cn, formatNumber } from "../../lib/utils";
 
 export function DeltaInline({
   pct,
-  unit = "percent"
+  unit = "percent",
+  lowerIsBetter = false
 }: {
   pct: number | null | undefined;
   unit?: "percent" | "points";
+  lowerIsBetter?: boolean;
 }) {
   if (pct == null || Number.isNaN(pct)) return null;
   const up = pct > 0;
   const down = pct < 0;
+  const improved = lowerIsBetter ? down : up;
+  const worsened = lowerIsBetter ? up : down;
   const suffix = unit === "points" ? " pp" : "%";
   return (
     <span
       className={cn(
         "ml-1.5 text-xs font-semibold tabular-nums",
-        up && "text-emerald-600",
-        down && "text-rose-600",
+        improved && "text-emerald-600",
+        worsened && "text-rose-600",
         !up && !down && "text-slate-500"
       )}
     >
@@ -29,93 +34,32 @@ export function DeltaInline({
   );
 }
 
-function topGscPropertyBreakdownRow(slice: {
-  rows: Array<{ keys?: string[]; impressions?: number | string }>;
-}): { rawKey: string; impressions: number } | null {
-  const r = slice.rows?.[0];
-  if (!r?.keys?.length) return null;
-  const rawKey = String(r.keys[0] ?? "").trim();
-  if (!rawKey) return null;
-  return { rawKey, impressions: Number(r.impressions) || 0 };
-}
-
-function formatGscBreakdownSegmentLabel(rawKey: string, dimension: "country" | "device" | "appearance"): string {
-  const s = rawKey.trim();
-  if (!s) return "—";
-  if (dimension === "country" && s.length <= 3) return s.toUpperCase();
-  if (dimension === "device") {
-    const lower = s.toLowerCase();
-    return lower.charAt(0).toUpperCase() + lower.slice(1);
-  }
-  return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-export function SegmentMixTile({
-  label,
-  dimension,
-  slice,
-  icon: Icon
-}: {
+export function SegmentMixTile({ label, dimension, slice, icon: Icon, onExplore }: {
   label: string;
   dimension: "country" | "device" | "appearance";
-  slice: {
-    rows: Array<{ keys?: string[]; impressions?: number | string }>;
-    top_bucket_impressions_pct_vs_prior?: number | null;
-  };
+  slice: { rows: Array<{ keys?: string[]; impressions?: number | string }>; top_bucket_impressions_pct_vs_prior?: number | null };
   icon: ComponentType<{ size?: number; strokeWidth?: number; "aria-hidden"?: boolean }>;
+  onExplore?: () => void;
 }) {
-  const row = topGscPropertyBreakdownRow(slice);
-  return (
-    <div className="overview-metric min-w-0 p-5">
-      <div className="flex items-start justify-between gap-2">
-        <p className="overview-metric-label">{label}</p>
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
-          <Icon size={16} strokeWidth={2} aria-hidden />
-        </span>
-      </div>
-      {row ? (
-        <>
-          <p className="overview-metric-value">
-            {formatNumber(row.impressions)}
-          </p>
-          <p className="mt-1 text-xs font-medium text-slate-600">
-            {formatGscBreakdownSegmentLabel(row.rawKey, dimension)}
-          </p>
-          <p className="mt-2 text-[11px] leading-snug text-slate-500">
-            Impressions · top bucket in window
-            <DeltaInline pct={slice.top_bucket_impressions_pct_vs_prior ?? null} />
-          </p>
-        </>
-      ) : (
-        <>
-          <p className="overview-metric-value text-slate-400">—</p>
-          <p className="mt-1 text-xs text-slate-500">No rows in cache</p>
-        </>
-      )}
-    </div>
-  );
-}
-
-export function overviewCacheHint(cache: { text: string; meta?: unknown }) {
-  const meta =
-    cache.meta && typeof cache.meta === "object" && cache.meta !== null
-      ? (cache.meta as Record<string, unknown>)
-      : null;
-  const raw = meta?.fetched_at;
-  const ts =
-    raw != null
-      ? typeof raw === "number"
-        ? raw
-        : Number(raw)
-      : null;
-  const relative =
-    ts != null && Number.isFinite(ts) ? formatRelativeTimestamp(ts).split(" · ")[0] : null;
-  return (
-    <span className="block space-y-0.5">
-      {relative ? <span className="font-medium text-slate-700">Refreshed {relative}</span> : null}
-      <span className="text-slate-500">{cache.text}</span>
-    </span>
-  );
+  const rows = slice.rows.filter(row => row.keys?.[0]?.trim()).map(row => ({
+    key: String(row.keys![0]), impressions: Math.max(0, Number(row.impressions) || 0)
+  })).sort((a, b) => b.impressions - a.impressions);
+  const top = rows[0];
+  const total = rows.reduce((sum, row) => sum + row.impressions, 0);
+  const share = top && total > 0 ? top.impressions / total * 100 : null;
+  return <div className="overview-audience-item min-w-0">
+    <p className="flex items-center gap-2 text-xs font-medium text-slate-500"><Icon size={15} aria-hidden />{label}</p>
+    <p className="mt-2 text-base font-semibold text-slate-800">{top ? formatGscBreakdownLabel(dimension === "appearance" ? "searchAppearance" : dimension, top.key) : "No data available"}</p>
+    {top ? <>
+      <p className="mt-1 text-sm tabular-nums text-slate-600">{formatNumber(top.impressions)} impressions</p>
+      {share != null ? <>
+        <div className="my-2 h-1.5 overflow-hidden rounded-full bg-slate-100" role="img" aria-label={`${share.toFixed(1)}% of returned ${label.toLowerCase()} impressions`}><div className="h-full rounded-full bg-[#5746d9]" style={{width: `${share}%`}} /></div>
+        <p className="text-xs text-slate-500">{share.toFixed(1)}% of returned impressions</p>
+      </> : null}
+      <div className="mt-1"><DeltaInline pct={slice.top_bucket_impressions_pct_vs_prior ?? null} /></div>
+    </> : <p className="mt-1 text-xs text-slate-500">No stored rows for this period.</p>}
+    {onExplore ? <a className="mt-3 inline-block text-xs font-medium text-[#5746d9] hover:underline" href="#overview-search-details" onClick={onExplore}>View {dimension === "country" ? "countries" : "devices"} →</a> : null}
+  </div>;
 }
 
 export function CompletionBar({ label, complete, total, missing, href, issueHref }: {

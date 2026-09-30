@@ -1,6 +1,6 @@
 import "./overview.css";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ArrowRight, FileSearch, Globe, Layers, Monitor, MousePointerClick, TrendingUp } from "lucide-react";
+import { Activity, ArrowRight, FileSearch, Globe, Monitor, MousePointerClick, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -28,7 +28,6 @@ import {
   DeltaInline,
   KpiCard,
   SegmentMixTile,
-  overviewCacheHint
 } from "../components/overview/overview-cards";
 import { OverviewOnboarding, overviewShowsOnboarding } from "../components/overview/overview-onboarding";
 import { SiteAuthorityCard } from "../components/overview/site-authority-card";
@@ -37,7 +36,6 @@ import {
   CHART_META_COMPLETE,
   CHART_MISSING_META,
   CHART_PRIMARY,
-  CHART_THIN_BODY,
   CHART_TOOLTIP_STYLE,
   ENTITY_TYPE_COLORS,
   ENTITY_TYPE_LABELS,
@@ -48,6 +46,8 @@ import {
   entityAppPath,
   formatChartAxisDate
 } from "../components/overview/overview-theme";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { OverviewFreshness, PreviousPeriodComparison, periodDays } from "../components/overview/overview-reporting";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -65,6 +65,9 @@ type GscChartTab = "traffic" | "ctr_position";
 export function OverviewPage() {
   const [gscOverviewPeriod, setGscOverviewPeriod] = useState<OverviewGscPeriod>(() => readStoredOverviewGscPeriod());
   const [gscSegment, setGscSegment] = useState<(typeof GSC_SEGMENT_OPTIONS)[number]["value"]>("all");
+  const [comparePrevious, setComparePrevious] = useState(false);
+  const [searchDetailsOpen, setSearchDetailsOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState<"queries" | "pages" | "countries" | "devices">("queries");
   const [gscChartTab, setGscChartTab] = useState<GscChartTab>("traffic");
   const { data, isLoading, error } = useQuery({
     queryKey: ["summary", gscOverviewPeriod, gscSegment],
@@ -83,26 +86,22 @@ export function OverviewPage() {
       {
         name: "Products",
         meta_complete: cc.products.meta_complete,
-        missing_meta: cc.products.missing_meta,
-        thin_body: cc.products.thin_body
+        missing_meta: cc.products.missing_meta
       },
       {
         name: "Collections",
         meta_complete: cc.collections.meta_complete,
-        missing_meta: cc.collections.missing_meta,
-        thin_body: 0
+        missing_meta: cc.collections.missing_meta
       },
       {
         name: "Pages",
         meta_complete: cc.pages.meta_complete,
-        missing_meta: cc.pages.missing_meta,
-        thin_body: 0
+        missing_meta: cc.pages.missing_meta
       },
       {
         name: "Articles",
         meta_complete: cc.articles.meta_complete,
-        missing_meta: cc.articles.missing_meta,
-        thin_body: 0
+        missing_meta: cc.articles.missing_meta
       }
     ];
   }, [data]);
@@ -128,7 +127,7 @@ export function OverviewPage() {
     return (
       <div className="space-y-6">
         <div className="overview-metrics">
-          {Array.from({ length: 5 }).map((_, i) => (
+          {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="h-28 animate-pulse rounded-2xl bg-slate-100" />
           ))}
         </div>
@@ -160,16 +159,22 @@ export function OverviewPage() {
   const ga4 = data.ga4_site;
   const ga4Cur = ga4.available ? ga4.current : null;
 
+  // Rollups also exist for empty windows; do not imply that missing history is a zero baseline.
+  const gscPrior = gsc.previous && gsc.previous.impressions > 0 ? gsc.previous : null;
+  const ga4Prior = ga4.previous && ga4.previous.sessions > 0 ? ga4.previous : null;
+
   const idx = data.indexing_rollup;
   const idxTotal = idx.total;
 
   const goals = data.overview_goals;
 
+  const searchScope = gscSegment === "all" ? "Whole site" : `Search URLs · ${GSC_SEGMENT_OPTIONS.find(option => option.value === gscSegment)?.label}`;
+
   return (
-    <div className="overview-page space-y-8 pb-8">
+    <div className="overview-page space-y-6 pb-8">
       <header className="space-y-3">
         <h1 className="overview-title">Overview</h1>
-        <p className="mt-1 text-sm text-slate-500">Search performance and catalog health at a glance.</p>
+        <p className="mt-1 text-sm text-slate-500">Your search performance, priorities, and catalog health.</p>
           <div className="overview-toolbar flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
               {OVERVIEW_GSC_PERIOD_OPTIONS.map(({ value, label }) => (
@@ -177,6 +182,7 @@ export function OverviewPage() {
                   key={value}
                   type="button"
                   variant="ghost"
+                  aria-pressed={gscOverviewPeriod === value}
                   onClick={() => {
                     setGscOverviewPeriod(value);
                     persistOverviewGscPeriod(value);
@@ -194,13 +200,14 @@ export function OverviewPage() {
             </div>
             <div className="flex max-w-full flex-wrap gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
               <span className="self-center px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                URL path
+                Search URLs
               </span>
               {GSC_SEGMENT_OPTIONS.map(({ value, label }) => (
                 <Button
                   key={value}
                   type="button"
                   variant="ghost"
+                  aria-pressed={gscSegment === value}
                   onClick={() => setGscSegment(value)}
                   className={cn(
                     "h-auto rounded-md px-2.5 py-1.5 text-xs font-medium transition",
@@ -214,21 +221,18 @@ export function OverviewPage() {
               ))}
             </div>
           </div>
+        <p className="text-xs text-slate-500">Period applies to Search and Analytics. Search URLs filters Search metrics and query/page reports only.</p>
+        <nav className="overview-section-nav" aria-label="Overview sections">
+          <a href="#overview-performance">Performance</a><a href="#overview-attention">Attention</a><a href="#overview-health">Catalog health</a><a href="#overview-details">Details</a>
+        </nav>
       </header>
-      {/* Site-level GSC — property totals + trend (Phase 1) */}
-      <section>
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="overview-section-title">Search performance</h2>
-            <p className="text-sm text-slate-600">
-              {gsc.available && siteCur
-                ? `${siteCur.start_date} → ${siteCur.end_date} · timezone ${gsc.timezone} · data through ${gsc.anchor_date}`
-                : "Connect Google and pick a Search Console property in Settings → Data sources to load site-level GSC."}
-            </p>
-          </div>
 
+      <section aria-label="Search snapshot" className="space-y-3">
+        <div className="overview-section-heading">
+          <div><p className="overview-eyebrow">Search snapshot</p><h2 className="overview-section-title">{searchScope}</h2></div>
+          {gsc.available ? <OverviewFreshness cache={gsc.cache} timezone={gsc.timezone} anchorDate={gsc.anchor_date} source="Search Console" /> : null}
         </div>
-
+        {siteCur ? <p className="text-xs text-slate-500">{siteCur.start_date} → {siteCur.end_date}{gscPrior ? " · changes versus the previous period" : ""}</p> : null}
         {!gsc.available ? (
           <Card className="overview-panel p-6">
             <p className="text-sm font-medium text-ink">Site-level GSC not available</p>
@@ -242,12 +246,8 @@ export function OverviewPage() {
               <ArrowRight size={14} />
             </Link>
           </Card>
+
         ) : (
-          <>
-            <p className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-              <span className="rounded-full bg-slate-100 px-2.5 py-1">{gsc.cache.label || "Cached data"}</span>
-              {overviewCacheHint(gsc.cache)}
-            </p>
             <div
               className="overview-metrics"
               role="group"
@@ -266,7 +266,7 @@ export function OverviewPage() {
                 }
                 hint={
                   <span>
-                    Property total
+                    {searchScope}
                     <DeltaInline pct={gsc.deltas.clicks_pct ?? null} />
                   </span>
                 }
@@ -284,7 +284,7 @@ export function OverviewPage() {
                 }
                 hint={
                   <span>
-                    Property total
+                    {searchScope}
                     <DeltaInline pct={gsc.deltas.impressions_pct ?? null} />
                   </span>
                 }
@@ -300,7 +300,7 @@ export function OverviewPage() {
                     ariaLabel="Daily average click-through rate in the selected period"
                   />
                 }
-                hint="Clicks ÷ impressions (property)"
+                hint="Clicks ÷ impressions"
               />
               <KpiCard
                 className="min-w-0"
@@ -315,11 +315,30 @@ export function OverviewPage() {
                   </span>
                 }
               />
-              <SiteAuthorityCard className="min-w-0" />
             </div>
+        )}
+      </section>
+      <section id="overview-attention" aria-label="Catalog issues">
+        <NeedsAttention hasCatalog={idxTotal > 0} items={[
+          { label: "Products missing metadata", count: data.metrics.products_missing_meta, href: "/products?focus=missing_meta&sort=score&direction=desc", action: "Review products" },
+          { label: "Short product descriptions", count: data.metrics.products_thin_body, href: "/products?focus=thin_body&sort=body_length&direction=asc", action: "Improve copy" },
+          { label: "Collections missing metadata", count: data.metrics.collections_missing_meta, href: "/collections?focus=missing_meta&sort=score&direction=desc", action: "Review collections" },
+          { label: "Pages missing metadata", count: data.metrics.pages_missing_meta, href: "/pages?focus=missing_meta&sort=score&direction=desc", action: "Review pages" },
+          { label: "Articles missing metadata", count: data.catalog_completion.articles.missing_meta, href: "/articles", action: "Browse articles" }
+        ]} />
+
+      </section>
 
 
-
+      <section id="overview-performance" className="space-y-4">
+        <Tabs defaultValue="search">
+          <div className="overview-section-heading">
+            <div><p className="overview-eyebrow">Explore your traffic</p><h2 className="overview-section-title">Performance</h2></div>
+            <TabsList aria-label="Performance source"><TabsTrigger value="search">Search</TabsTrigger><TabsTrigger value="analytics">Analytics</TabsTrigger></TabsList>
+          </div>
+          <TabsContent value="search" className="space-y-4">
+            <p className="text-xs text-slate-500">Chart and query/page reports: {searchScope}. Audience, countries, and devices: whole site.</p>
+            {gsc.available ? <>
             <Card className="overview-panel mt-4 p-6">
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="min-w-0">
@@ -332,41 +351,20 @@ export function OverviewPage() {
                   </h2>
                   <p className="mt-1 text-sm text-slate-500">
                     {gscChartTab === "traffic"
-                      ? "Current period only; prior window is used for % change on the KPIs."
-                      : "Daily CTR (clicks ÷ impressions) and Search Console average position. Lower position is better."}
+                      ? "Daily totals · clicks on the left axis, impressions on the right."
+                      : "CTR on the left axis; average position on the right. Lower position is better."}
                   </p>
                 </div>
-                <div className="flex shrink-0 gap-1 self-start rounded-lg border border-[#e8e4f8] bg-[#faf8ff] p-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setGscChartTab("traffic")}
-                    className={cn(
-                      "h-auto rounded-md px-3 py-1.5 text-xs font-medium transition",
-                      gscChartTab === "traffic"
-                        ? "bg-[#5746d9] text-white hover:bg-[#5746d9]/90"
-                        : "text-slate-600 hover:bg-slate-100"
-                    )}
-                  >
-                    Clicks &amp; impressions
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setGscChartTab("ctr_position")}
-                    className={cn(
-                      "h-auto rounded-md px-3 py-1.5 text-xs font-medium transition",
-                      gscChartTab === "ctr_position"
-                        ? "bg-[#5746d9] text-white hover:bg-[#5746d9]/90"
-                        : "text-slate-600 hover:bg-slate-100"
-                    )}
-                  >
-                    CTR &amp; position
-                  </Button>
-                </div>
+                <Tabs value={gscChartTab} onValueChange={value => setGscChartTab(value as GscChartTab)}>
+                  <TabsList aria-label="Search chart metrics">
+                    <TabsTrigger value="traffic" aria-controls="overview-search-chart">Clicks &amp; impressions</TabsTrigger>
+                    <TabsTrigger value="ctr_position" aria-controls="overview-search-chart">CTR &amp; position</TabsTrigger>
+                  </TabsList>
+                </Tabs>
               </div>
+              <PreviousPeriodComparison previous={gscPrior} checked={comparePrevious} onChange={setComparePrevious} />
               <div
-                className="mt-4 h-[300px] w-full min-w-0"
+                id="overview-search-chart" className="overview-chart mt-4 h-[280px] w-full min-w-0"
                 role="img"
                 aria-label={
                   gscChartTab === "traffic"
@@ -409,6 +407,8 @@ export function OverviewPage() {
                         formatter={(value: number, name: string) => [formatNumber(value), name === "clicks" ? "Clicks" : "Impressions"]}
                       />
                       <Legend wrapperStyle={{ color: "#475569", fontSize: 12 }} />
+                      {comparePrevious && gscPrior && periodDays(gscPrior) > 0 ? <ReferenceLine yAxisId="clicks" y={gscPrior.clicks / periodDays(gscPrior)} stroke={CHART_PRIMARY} strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
+                      {comparePrevious && gscPrior && periodDays(gscPrior) > 0 ? <ReferenceLine yAxisId="impr" y={gscPrior.impressions / periodDays(gscPrior)} stroke="#64748b" strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
                       {goals.gsc_daily_clicks != null ? (
                         <ReferenceLine
                           yAxisId="clicks"
@@ -494,6 +494,8 @@ export function OverviewPage() {
                         }}
                       />
                       <Legend wrapperStyle={{ color: "#475569", fontSize: 12 }} />
+                      {comparePrevious && gscPrior ? <ReferenceLine yAxisId="ctr" y={gscPrior.ctr * 100} stroke={CHART_PRIMARY} strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
+                      {comparePrevious && gscPrior && gscPrior.position != null && gscPrior.position > 0 ? <ReferenceLine yAxisId="pos" y={gscPrior.position} stroke="#64748b" strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
                       <Line
                         yAxisId="ctr"
                         type="monotone"
@@ -523,75 +525,77 @@ export function OverviewPage() {
               </div>
             </Card>
             {data.gsc_property_breakdowns.available ? (
-              <Card className="overview-panel mt-4 p-6">
-                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
-                      <Layers size={22} strokeWidth={1.75} aria-hidden />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="overview-eyebrow">Segment mix</p>
-                      <h3 className="mt-1 overview-section-title">Property splits</h3>
-                      <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
-                        <span className="font-medium text-slate-600">
-                          {data.gsc_property_breakdowns.window.start_date} →{" "}
-                          {data.gsc_property_breakdowns.window.end_date}
-                        </span>
-                        {data.gsc_property_breakdowns.period_mode
-                          ? ` · ${data.gsc_property_breakdowns.period_mode.replace(/_/g, " ")}`
-                          : ""}
-                        . Highest-impression bucket per country, device, and search appearance for this window. Data is
-                        loaded from your dashboard store (updated when you run a Search Console sync); this block does
-                        not call Google on every page load.
-                      </p>
-                    </div>
-                  </div>
-                  <Link
-                    className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-[#e8e4f8] bg-[#faf8ff] px-3 py-2 text-xs font-semibold text-[#5746d9] transition hover:border-[#d4ccf0] hover:bg-[#f4f2ff]"
-                    to="/settings?tab=data-sources"
-                  >
-                    Search Console settings
-                    <ArrowRight size={14} aria-hidden />
-                  </Link>
+              <Card className="overview-panel p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="overview-section-title">Audience at a glance</h3><span className="overview-scope">Whole site · impressions</span>
                 </div>
-                <div
-                  className="overview-tiles"
-                  role="group"
-                  aria-label="Top Search Console segment buckets by dimension"
-                >
-                  <SegmentMixTile
-                    label="Country"
-                    dimension="country"
-                    slice={data.gsc_property_breakdowns.country}
-                    icon={Globe}
-                  />
-                  <SegmentMixTile
-                    label="Device"
-                    dimension="device"
-                    slice={data.gsc_property_breakdowns.device}
-                    icon={Monitor}
-                  />
-                  <SegmentMixTile
-                    label="Search appearance"
-                    dimension="appearance"
-                    slice={data.gsc_property_breakdowns.searchAppearance}
-                    icon={FileSearch}
-                  />
+                <div className="overview-audience-grid">
+                  <SegmentMixTile label="Country" dimension="country" slice={data.gsc_property_breakdowns.country} icon={Globe} onExplore={() => { setDetailTab("countries"); setSearchDetailsOpen(true); }} />
+                  <SegmentMixTile label="Device" dimension="device" slice={data.gsc_property_breakdowns.device} icon={Monitor} onExplore={() => { setDetailTab("devices"); setSearchDetailsOpen(true); }} />
+                  <SegmentMixTile label="Search appearance" dimension="appearance" slice={data.gsc_property_breakdowns.searchAppearance} icon={FileSearch} />
                 </div>
+                <details className="overview-disclosure mt-4">
+                  <summary>About audience data</summary>
+                  <p className="mt-2 text-xs text-slate-500">{data.gsc_property_breakdowns.window.start_date} → {data.gsc_property_breakdowns.window.end_date}. Shares are of the returned impression rows in each dimension, which may not cover the full property. These whole-site breakdowns are updated by Search Console sync and are unaffected by the Search URL filter.</p>
+                  <Link className="mt-2 inline-block text-xs font-medium text-[#5746d9]" to="/settings?tab=data-sources">Search Console settings →</Link>
+                </details>
               </Card>
             ) : null}
-          </>
-        )}
-      </section>
+              <details id="overview-search-details" className="overview-disclosure overview-panel p-5" open={searchDetailsOpen} onToggle={event => setSearchDetailsOpen(event.currentTarget.open)}>
+                <summary>Search details <span className="font-normal text-slate-500">· queries, pages, countries &amp; devices</span></summary>
+        {gsc.available ? (
+          <div className="mt-4 space-y-2">
+            {data.gsc_performance_error ? (
+              <p className="rounded-xl border border-[#fecaca] bg-[#fff4ef] px-3 py-2 text-sm text-[#8f3e20]">
+                {data.gsc_performance_error}
+              </p>
+            ) : null}
+            <GscPerformanceSection
+              activeTab={detailTab}
+              onTabChange={setDetailTab}
+              queryPageScope={searchScope}
+              gscRangeLabel={
+                data.gsc_performance_period.start_date && data.gsc_performance_period.end_date
+                  ? `${data.gsc_performance_period.start_date} → ${data.gsc_performance_period.end_date}`
+                  : siteCur
+                    ? `${siteCur.start_date} → ${siteCur.end_date}`
+                    : ""
+              }
+              gsc_queries={data.gsc_queries}
+              gsc_pages={data.gsc_pages}
+              countrySlice={{
+                rows: data.gsc_property_breakdowns.country.rows,
+                error: data.gsc_property_breakdowns.country.error,
+                cache: {
+                  label: data.gsc_property_breakdowns.country.cache.label,
+                  text: data.gsc_property_breakdowns.country.cache.text
+                }
+              }}
+              deviceSlice={{
+                rows: data.gsc_property_breakdowns.device.rows,
+                error: data.gsc_property_breakdowns.device.error,
+                cache: {
+                  label: data.gsc_property_breakdowns.device.cache.label,
+                  text: data.gsc_property_breakdowns.device.cache.text
+                }
+              }}
+            />
+          </div>
+        ) : null}
 
+              </details>
+            </> : <p className="overview-panel p-5 text-sm text-slate-500">Connect Search Console using the settings link above to see trends and detailed reports.</p>}
+          </TabsContent>
+          <TabsContent value="analytics">
       {/* GA4 property — same calendar windows as Search Console */}
-      <section>
+      <section className="space-y-4" aria-label="Whole-site Analytics">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 className="overview-section-title">Analytics</h2>
+            <h3 className="overview-section-title">Whole-site Analytics</h3>
+            <OverviewFreshness cache={ga4.cache} timezone={ga4.timezone} anchorDate={ga4.anchor_date} source="Analytics" />
             <p className="text-sm text-slate-600">
               {ga4.available && ga4Cur
-                ? `${ga4Cur.start_date} → ${ga4Cur.end_date} · timezone ${ga4.timezone} · reporting date ${ga4.anchor_date}`
+                ? `${ga4Cur.start_date} → ${ga4Cur.end_date} · all site traffic, unaffected by the Search URL filter`
                 : "Configure a GA4 property in Settings → Data sources to load site-wide sessions and views."}
             </p>
             <p className="mt-1 text-xs text-slate-500">
@@ -623,11 +627,10 @@ export function OverviewPage() {
         ) : (
           <>
             <div
-              className="flex flex-col gap-4"
+              className="overview-metrics"
               role="group"
               aria-label="GA4 KPIs"
             >
-              <div className="overview-metrics">
                 <KpiCard
                   className="min-w-0"
                   label="Sessions"
@@ -680,14 +683,7 @@ export function OverviewPage() {
                   }
                   hint="Simple ratio for the window"
                 />
-                <KpiCard
-                  className="min-w-0"
-                  label="Cache"
-                  value={ga4.cache.label || "—"}
-                  hint={overviewCacheHint(ga4.cache)}
-                />
-              </div>
-              <div className="overview-metrics">
+
                 <KpiCard
                   className="min-w-0"
                   label="New users"
@@ -721,11 +717,10 @@ export function OverviewPage() {
                   hint={
                     <span>
                       Session-weighted
-                      <DeltaInline pct={ga4.deltas.bounce_rate_pp ?? null} unit="points" />
+                      <DeltaInline pct={ga4.deltas.bounce_rate_pp ?? null} unit="points" lowerIsBetter />
                     </span>
                   }
                 />
-              </div>
             </div>
 
             <Card className="overview-panel mt-4 p-6">
@@ -734,9 +729,10 @@ export function OverviewPage() {
                 <p className="overview-eyebrow">Daily trend</p>
               </div>
               <h2 className="overview-section-title">Sessions &amp; views</h2>
-              <p className="mt-1 text-sm text-slate-500">Current period; % change on KPIs uses the prior window (same as GSC toggle).</p>
+              <p className="mt-1 text-sm text-slate-500">Daily totals · sessions on the left axis, views on the right.</p>
+              <PreviousPeriodComparison previous={ga4Prior} checked={comparePrevious} onChange={setComparePrevious} />
               <div
-                className="mt-6 h-[300px] w-full min-w-0"
+                className="overview-chart mt-4 h-[280px] w-full min-w-0"
                 role="img"
                 aria-label="Line chart of daily GA4 sessions and views for the current period"
               >
@@ -778,6 +774,8 @@ export function OverviewPage() {
                         ]}
                       />
                       <Legend wrapperStyle={{ color: "#475569", fontSize: 12 }} />
+                      {comparePrevious && ga4Prior && periodDays(ga4Prior) > 0 ? <ReferenceLine yAxisId="sess" y={ga4Prior.sessions / periodDays(ga4Prior)} stroke={GA4_CHART_SESSIONS} strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
+                      {comparePrevious && ga4Prior && periodDays(ga4Prior) > 0 ? <ReferenceLine yAxisId="views" y={ga4Prior.views / periodDays(ga4Prior)} stroke="#64748b" strokeDasharray="5 5" ifOverflow="extendDomain" /> : null}
                       {goals.ga4_daily_sessions != null ? (
                         <ReferenceLine
                           yAxisId="sess"
@@ -826,46 +824,17 @@ export function OverviewPage() {
           </>
         )}
 
-        {gsc.available ? (
-          <div className="mt-4 space-y-2">
-            {data.gsc_performance_error ? (
-              <p className="rounded-xl border border-[#fecaca] bg-[#fff4ef] px-3 py-2 text-sm text-[#8f3e20]">
-                {data.gsc_performance_error}
-              </p>
-            ) : null}
-            <GscPerformanceSection
-              gscRangeLabel={
-                data.gsc_performance_period.start_date && data.gsc_performance_period.end_date
-                  ? `${data.gsc_performance_period.start_date} → ${data.gsc_performance_period.end_date}`
-                  : siteCur
-                    ? `${siteCur.start_date} → ${siteCur.end_date}`
-                    : ""
-              }
-              gsc_queries={data.gsc_queries}
-              gsc_pages={data.gsc_pages}
-              countrySlice={{
-                rows: data.gsc_property_breakdowns.country.rows,
-                error: data.gsc_property_breakdowns.country.error,
-                cache: {
-                  label: data.gsc_property_breakdowns.country.cache.label,
-                  text: data.gsc_property_breakdowns.country.cache.text
-                }
-              }}
-              deviceSlice={{
-                rows: data.gsc_property_breakdowns.device.rows,
-                error: data.gsc_property_breakdowns.device.error,
-                cache: {
-                  label: data.gsc_property_breakdowns.device.cache.label,
-                  text: data.gsc_property_breakdowns.device.cache.text
-                }
-              }}
-            />
-          </div>
-        ) : null}
       </section>
 
+
+          </TabsContent>
+        </Tabs>
+      </section>
+      <section id="overview-health" className="space-y-4">
+        <div className="overview-section-heading"><h2 className="overview-section-title">Catalog health</h2><span className="overview-scope">Synced catalog · latest stored status</span></div>
+        <div className="overview-health-grid">
       {/* Indexing rollup — stored URL Inspection fields on synced entities */}
-      <section>
+      <section className="overview-panel p-5">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 className="overview-section-title">Indexing</h2>
@@ -875,12 +844,9 @@ export function OverviewPage() {
           </div>
         </div>
         <IndexingSummary {...idx} />
-        <Card className="overview-panel mt-4 p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <FileSearch className="text-[#5746d9]" size={18} />
-            <p className="overview-eyebrow">By entity type</p>
-          </div>
-          <ul className="overview-tiles mt-4 text-sm">
+        <details className="overview-disclosure mt-4">
+          <summary>Indexing by entity type</summary>
+          <ul className="overview-entity-grid mt-4 text-sm">
             {(
               [
                 ["product", "Products", "/products"],
@@ -906,31 +872,14 @@ export function OverviewPage() {
               );
             })}
           </ul>
-        </Card>
-      </section>
-
-      {/* Tracked URL rollup — local DB facts (not full property) */}
-      <section>
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h2 className="overview-section-title">Tracked URL performance</h2>
-            <p className="text-sm text-slate-600">Search Console and Analytics totals for synced catalog URLs.</p>
-          </div>
-        </div>
-        <div className="overview-metrics">
-          <KpiCard label="GSC clicks" value={formatNumber(clicks)} hint="Sum across tracked URLs" />
-          <KpiCard label="GSC impressions" value={formatNumber(impressions)} />
-          <KpiCard label="Avg CTR" value={formatPercent(ctrFraction)} hint="Clicks ÷ impressions" />
-          <KpiCard label="GA4 sessions" value={formatNumber(data.metrics.ga4_sessions)} />
-          <KpiCard label="GA4 views" value={formatNumber(data.metrics.ga4_views)} />
-        </div>
+        </details>
       </section>
 
       {/* Catalog SEO completion (plan S4) */}
-      <section>
+      <section className="min-w-0">
         <Card className="overview-panel p-6">
-          <p className="overview-eyebrow">Catalog health</p>
-          <h2 className="mt-2 overview-section-title">Metadata coverage</h2>
+
+          <h2 className="overview-section-title">Metadata coverage</h2>
           <p className="mt-1 text-sm text-slate-500">
             Synced entities with both an SEO title and description. Open a missing count to review the affected catalog.
           </p>
@@ -945,7 +894,7 @@ export function OverviewPage() {
               return <CompletionBar key={key} label={label} complete={coverage.meta_complete} total={coverage.total} missing={coverage.missing_meta} href={href} issueHref={key === "articles" ? href : `${href}?focus=missing_meta&sort=score&direction=desc`} />;
             })}
           </div>
-          <details className="mt-6 border-t border-slate-100 pt-4">
+          <details className="overview-disclosure mt-4">
             <summary className="cursor-pointer text-sm font-medium text-[#5746d9]">View coverage counts by entity type</summary>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600">
             <span className="flex items-center gap-1.5">
@@ -956,64 +905,78 @@ export function OverviewPage() {
               <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: CHART_MISSING_META }} />
               Missing title or description
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: CHART_THIN_BODY }} />
-              Thin body (products)
-            </span>
+
           </div>
           <div className="mt-4 h-[300px] w-full min-w-0">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={catalogChartData} margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
-                <CartesianGrid stroke={CHART_GRID} strokeDasharray="4 4" vertical={false} />
-                <XAxis dataKey="name" tick={{ fill: "#64748b", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "#64748b", fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
+              <BarChart layout="vertical" data={catalogChartData} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+                <CartesianGrid stroke={CHART_GRID} strokeDasharray="4 4" horizontal={false} />
+                <XAxis type="number" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
                 <Tooltip
                   cursor={{ fill: "rgba(87, 70, 217, 0.06)" }}
                   contentStyle={CHART_TOOLTIP_STYLE}
                   formatter={(value: number, name: string) => {
                     const labels: Record<string, string> = {
                       meta_complete: "Meta complete",
-                      missing_meta: "Missing meta",
-                      thin_body: "Thin body"
+                      missing_meta: "Missing meta"
                     };
                     return [formatNumber(value), labels[name] ?? name];
                   }}
                 />
-                <Bar dataKey="meta_complete" stackId="a" fill={CHART_META_COMPLETE} maxBarSize={80}>
+                <Bar dataKey="meta_complete" stackId="a" fill={CHART_META_COMPLETE} maxBarSize={24}>
                   {catalogChartData.map((entry) => (
                     <Cell
                       key={entry.name}
                       fill={CHART_META_COMPLETE}
-                      radius={(entry.missing_meta === 0 && entry.thin_body === 0 ? [6, 6, 0, 0] : [0, 0, 0, 0]) as never}
+                      radius={(entry.missing_meta === 0 ? [0, 4, 4, 0] : [0, 0, 0, 0]) as never}
                     />
                   ))}
                 </Bar>
-                <Bar dataKey="missing_meta" stackId="a" fill={CHART_MISSING_META} maxBarSize={80}>
+                <Bar dataKey="missing_meta" stackId="a" fill={CHART_MISSING_META} maxBarSize={24}>
                   {catalogChartData.map((entry) => (
                     <Cell
                       key={entry.name}
                       fill={CHART_MISSING_META}
-                      radius={(entry.thin_body === 0 ? [6, 6, 0, 0] : [0, 0, 0, 0]) as never}
+                      radius={[0, 4, 4, 0] as never}
                     />
                   ))}
                 </Bar>
-                <Bar dataKey="thin_body" stackId="a" fill={CHART_THIN_BODY} radius={[6, 6, 0, 0] as never} maxBarSize={80} />
+
               </BarChart>
             </ResponsiveContainer>
           </div>
           </details>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4 text-sm">
+            <span>Short product descriptions <strong className="ml-2 tabular-nums">{formatNumber(data.metrics.products_thin_body)}</strong></span>
+            <Link className="font-medium text-[#5746d9] hover:underline" to="/products?focus=thin_body&sort=body_length&direction=asc">Review descriptions →</Link>
+            <p className="w-full text-xs text-slate-500">Separate from metadata coverage; a product can have both issues.</p>
+          </div>
         </Card>
       </section>
 
+
+        </div>
+      </section>
+      <section id="overview-details" className="space-y-4">
+        <details className="overview-disclosure overview-panel p-5">
+          <summary>Synced catalog performance <span className="font-normal text-slate-500">· metrics &amp; top pages</span></summary>
+          <div className="mt-5 space-y-5">
+      {/* Tracked URL rollup — local DB facts (not full property) */}
       <section>
-        <NeedsAttention hasCatalog={idxTotal > 0} items={[
-          { label: "Products missing metadata", count: data.metrics.products_missing_meta, href: "/products?focus=missing_meta&sort=score&direction=desc", action: "Review products" },
-          { label: "Short product descriptions", count: data.metrics.products_thin_body, href: "/products?focus=thin_body&sort=body_length&direction=asc", action: "Improve copy" },
-          { label: "Collections missing metadata", count: data.metrics.collections_missing_meta, href: "/collections?focus=missing_meta&sort=score&direction=desc", action: "Review collections" },
-          { label: "Pages missing metadata", count: data.metrics.pages_missing_meta, href: "/pages?focus=missing_meta&sort=score&direction=desc", action: "Review pages" },
-          { label: "Articles missing metadata", count: data.catalog_completion.articles.missing_meta, href: "/articles", action: "Browse articles" }
-        ]} />
-        <p className="mt-3 text-xs text-slate-500">URLs with Search Console data: {formatNumber(data.metrics.gsc_pages)} · With Analytics data: {formatNumber(data.metrics.ga4_pages)}</p>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="overview-section-title">Synced catalog metrics</h2>
+            <p className="text-sm text-slate-600">Latest stored totals across all synced catalog URLs. These use per-URL sync windows, not the period or Search URL filter above.</p>
+          </div>
+        </div>
+        <div className="overview-metrics overview-tracked-metrics">
+          <KpiCard label="GSC clicks" value={formatNumber(clicks)} hint="Sum across tracked URLs" />
+          <KpiCard label="GSC impressions" value={formatNumber(impressions)} />
+          <KpiCard label="Avg CTR" value={formatPercent(ctrFraction)} hint="Clicks ÷ impressions" />
+          <KpiCard label="GA4 sessions" value={formatNumber(data.metrics.ga4_sessions)} />
+          <KpiCard label="GA4 views" value={formatNumber(data.metrics.ga4_views)} />
+        </div>
       </section>
 
       {/* Top organic pages by GSC clicks */}
@@ -1026,8 +989,7 @@ export function OverviewPage() {
             </div>
             <h2 className="overview-section-title">Top pages by GSC clicks</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Highest-click entities across all types from locally-synced GSC data. Click any title to open its detail
-              page.
+              Latest stored Search Console totals across all catalog types. Open any title to review its detail page.
             </p>
             <div className="mt-5">
               <Table className="overview-top-pages w-full min-w-[560px] text-sm">
@@ -1090,7 +1052,19 @@ export function OverviewPage() {
         </section>
       )}
 
+
+          </div>
+        </details>
+        <div className="overview-support-grid">
+          <SiteAuthorityCard />
+          <Card className="overview-panel p-5">
+            <h2 className="overview-section-title">Data coverage</h2>
+        <p className="mt-3 text-xs text-slate-500">URLs with Search Console data: {formatNumber(data.metrics.gsc_pages)} · With Analytics data: {formatNumber(data.metrics.ga4_pages)}</p>
+            <p className="mt-2 text-xs text-slate-500">These counts reflect the latest stored catalog signals. Individual URL reporting windows may differ from whole-site reports.</p>
+            <Link to="/settings?tab=data-sources" className="mt-3 inline-block text-sm font-medium text-[#5746d9]">Manage data sources →</Link>
+          </Card>
+        </div>
+      </section>
     </div>
   );
 }
-

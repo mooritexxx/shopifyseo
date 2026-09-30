@@ -2,6 +2,31 @@
 
 Updated: September 30, 2026. Baseline: `1bfe6b3`.
 
+## Overview redesign — September 30, 2026
+
+The eight approved Overview improvements are implemented, preserving existing metrics, reports, catalog links, goal lines, provider settings and authority refresh.
+
+1. Four compact Search metrics lead into Needs attention, before reporting charts.
+2. Search and Analytics have separate keyboard-accessible workspaces. Search query/page/country/device reports stay with Search.
+3. Scope labels distinguish whole-site Search/Analytics, URL-filtered Search, whole-site audience breakdowns, and latest stored catalog signals. The period and URL request contracts are unchanged.
+4. Phone metrics use two columns; Analytics keeps all six business metrics. Freshness is a small disclosure; authority is a supporting panel with provider and update context.
+5. Indexing and metadata share a responsive health section. Entity and coverage breakdowns expand on demand; unknown inspection status remains separate from not indexed.
+6. Charts offer previous-period average overlays from existing rollups, explicitly distinguished from daily history. A falling bounce rate is green. Metadata count bars exclude overlapping short-description counts, which have their own measure and review link.
+7. Audience summaries use readable names and shares of returned impression rows, with direct links to country/device reports and an explanation of their scope.
+8. Section links, consistent tabs, smaller cards, restrained spacing and named keyboard-scrollable report tables complete the page. The bottom sync bar remains available.
+
+### Verification
+
+- Production rebuild and local FastAPI restart completed. The final bundle was inspected at `http://127.0.0.1:8000/app/`.
+- **83 frontend tests passed across the suite, an isolated performance rerun and the final Overview checks.** The full single-worker run passed 80 tests; the large-table case exceeded its overall 5-second timeout while its sort assertion passed. Its isolated rerun used a 15-second overall timeout and passed, with an 1188ms sort against the unchanged 4-second limit. All 15 Overview tests passed after the refinements. The final route tests use real fixed-size charts and verify both reference lines in Search, CTR/position and Analytics, plus the empty-prior-history case.
+- Added regressions cover action order, audience-link destinations, keyboard report/source tabs, retained Analytics/catalog metrics, scope request parameters, bounce-rate semantics, calendar-day math and honest audience-share labels.
+- Browser checks cover 1440, 1024, 768, 390 and 320px; Search/Analytics, expanded health/catalog reports, comparison controls and report keyboard navigation. See the measurements below for exact states.
+- Checked All time and Collections filters against populated local data. Collections changes Search totals while Analytics stays whole-site. The observed All time response has an empty prior rollup; empty prior rollups omit comparison controls/copy rather than suggesting a zero baseline.
+- Baseline review measured Needs attention at y=4174 on a 1440px desktop and y=7406 on a 390px phone. The redesigned default puts it near the initial viewport, while retaining detailed reports in disclosures.
+- This is a UI-only change: no backend, schema, catalog-read or scoring implementation changed. No Shopify saves, sync jobs, paid automation or authority refresh were initiated. Physical mobile-keyboard and 200% zoom checks remain outside this pass.
+
+Evidence: [desktop](overview-redesign-evidence/desktop.png), [phone](overview-redesign-evidence/mobile.png), [Analytics on phone](overview-redesign-evidence/analytics-mobile.png), [catalog health](overview-redesign-evidence/health-desktop.png), [comparison lines](overview-redesign-evidence/comparison-desktop.png), [narrow coverage chart](overview-redesign-evidence/coverage-mobile.png), [layout measurements](overview-redesign-evidence/verification.json).
+
 ## Batch 1 implementation
 
 Shared foundations and the Keyword Research pilot are implemented. The original audit findings below remain as the baseline, with this section recording progress.

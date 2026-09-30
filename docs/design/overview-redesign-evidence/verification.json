@@ -1,0 +1,125 @@
+{
+  "baseline": {
+    "desktop": {
+      "width": 1440,
+      "height": 1000,
+      "pageHeight": 5236,
+      "attentionHeadingY": 4174
+    },
+    "phone": {
+      "width": 390,
+      "height": 844,
+      "pageHeight": 10297,
+      "attentionHeadingY": 7406
+    }
+  },
+  "checks": [
+    {
+      "attentionY": 516,
+      "documentWidth": 1440,
+      "height": 1000,
+      "pageHeight": 2748,
+      "state": "Search default",
+      "width": 1440
+    },
+    {
+      "attentionY": 681,
+      "documentWidth": 1375,
+      "height": 1000,
+      "pageHeight": 3335,
+      "state": "Search default",
+      "width": 1024
+    },
+    {
+      "attentionY": 741,
+      "documentWidth": 768,
+      "height": 1000,
+      "pageHeight": 3319,
+      "state": "Search default",
+      "width": 768
+    },
+    {
+      "attentionY": 820,
+      "documentWidth": 390,
+      "height": 1000,
+      "pageHeight": 4096,
+      "state": "Search default",
+      "width": 390
+    },
+    {
+      "attentionY": 892,
+      "documentWidth": 320,
+      "height": 600,
+      "pageHeight": 4277,
+      "state": "Search default",
+      "width": 320
+    },
+    {
+      "documentWidth": 1024,
+      "height": 1000,
+      "state": "Search default, settled resize",
+      "width": 1024
+    },
+    {
+      "lines": 2,
+      "state": "CTR comparison"
+    },
+    {
+      "lines": 2,
+      "state": "Analytics comparison"
+    }
+  ],
+  "note": "The initial 1024px resize sample caught a chart before resize settled; the following settled sample has no document overflow.",
+  "interactions": [
+    "Search and Analytics tabs",
+    "Country audience link opens Countries; ArrowRight selects Devices",
+    "Report table keyboard scroll region",
+    "Collections changes Search; Analytics remains whole-site",
+    "All time and Last 30 days selectors",
+    "Previous-period average checkbox and chart metric tabs",
+    "Expanded indexing, metadata and catalog reports"
+  ],
+  "priorAnalyticsWidths": [
+    {
+      "documentWidth": 1440,
+      "selected": [
+        "Analytics"
+      ],
+      "viewport": 1440
+    },
+    {
+      "documentWidth": 1024,
+      "selected": [
+        "Analytics"
+      ],
+      "viewport": 1024
+    },
+    {
+      "documentWidth": 768,
+      "selected": [
+        "Analytics"
+      ],
+      "viewport": 768
+    },
+    {
+      "documentWidth": 390,
+      "selected": [
+        "Analytics"
+      ],
+      "viewport": 390
+    },
+    {
+      "documentWidth": 320,
+      "selected": [
+        "Analytics"
+      ],
+      "viewport": 320
+    }
+  ],
+  "finalComparison": {
+    "searchReferenceLines": 2,
+    "ctrReferenceLines": 2,
+    "analyticsReferenceLines": 2,
+    "emptyPriorComparisonHidden": true
+  }
+}

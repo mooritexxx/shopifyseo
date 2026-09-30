@@ -1,6 +1,6 @@
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import type { ComponentPropsWithoutRef, ElementRef } from "react";
-import { forwardRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import { cn } from "../../lib/utils";
 
@@ -8,17 +8,33 @@ export const Tabs = TabsPrimitive.Root;
 
 export const TabsList = forwardRef<
   ElementRef<typeof TabsPrimitive.List>,
-  ComponentPropsWithoutRef<typeof TabsPrimitive.List>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
+  ComponentPropsWithoutRef<typeof TabsPrimitive.List> & { scrollable?: boolean }
+>(({ className, scrollable = false, ...props }, ref) => {
+  const listRef = useRef<ElementRef<typeof TabsPrimitive.List>>(null);
+  useImperativeHandle(ref, () => listRef.current!);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!scrollable || !list) return;
+    const revealActiveTab = () => {
+      list.querySelector<HTMLElement>('[data-state="active"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    };
+    revealActiveTab();
+    const selection = new MutationObserver(revealActiveTab);
+    selection.observe(list, { subtree: true, attributes: true, attributeFilter: ["data-state"] });
+    const size = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(revealActiveTab);
+    size?.observe(list);
+    return () => { selection.disconnect(); size?.disconnect(); };
+  }, [scrollable]);
+  return <TabsPrimitive.List
+    ref={listRef}
     className={cn(
       "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      scrollable && "flex h-auto min-w-0 max-w-full justify-start overflow-x-auto p-1.5 [&>button]:shrink-0",
       className
     )}
     {...props}
-  />
-));
+  />;
+});
 TabsList.displayName = TabsPrimitive.List.displayName;
 
 export const TabsTrigger = forwardRef<

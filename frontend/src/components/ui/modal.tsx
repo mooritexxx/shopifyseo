@@ -29,7 +29,7 @@ export function Modal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "w-[min(720px,92vw)] rounded-[28px] border border-white/70 bg-white p-6 shadow-panel",
+          "w-[min(720px,92vw)] rounded-[14px] border border-[#e2e7ed] bg-white p-5 shadow-lg",
           contentClassName
         )}
       >

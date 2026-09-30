@@ -410,7 +410,7 @@ export function CompetitorsPanel({
 
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="rounded-[24px] border border-line/80 bg-white p-5">
+    <div className="min-w-0 rounded-[14px] border border-line bg-white p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/60 pb-4">
         <div className="min-w-0">
           <h3 className="text-lg font-semibold text-ink">Competitors</h3>
@@ -530,7 +530,7 @@ export function CompetitorsPanel({
 
       {!query.isLoading && !query.isError ? (
         <div className="mt-4 flex flex-wrap items-end gap-2">
-          <div className="min-w-[12rem] flex-1">
+          <div className="min-w-0 flex-1">
             <label className="mb-1 block text-xs font-medium text-slate-500">Add competitor</label>
             <div className="flex gap-2">
               <Input
@@ -563,7 +563,7 @@ export function CompetitorsPanel({
         </div>
       ) : (
         <div className="mt-5">
-          <div className="flex items-stretch gap-0 border-b border-line/60" role="tablist" aria-label="Competitor status">
+          <div className="flex max-w-full items-stretch gap-0 overflow-x-auto border-b border-line/60" role="tablist" aria-label="Competitor status">
             {COMPETITOR_TABS.map((tab) => (
               <button
                 key={tab.id}

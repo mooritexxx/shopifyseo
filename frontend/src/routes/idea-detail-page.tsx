@@ -709,9 +709,9 @@ export function IdeaDetailPage() {
       ) : null}
 
       {/* Two-column layout: Brief + Sidebar info */}
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Main content — 2/3 */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="min-w-0 lg:col-span-2 space-y-6">
           {/* Brief */}
           <Card className="border-[#e2eaf4]">
             <CardHeader className="px-6 pt-6 pb-0">
@@ -972,7 +972,7 @@ export function IdeaDetailPage() {
         </div>
 
         {/* Sidebar — 1/3 */}
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           {/* Keywords */}
           <Card className="border-[#e2eaf4]">
             <CardHeader className="px-5 pt-5 pb-0">

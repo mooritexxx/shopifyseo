@@ -988,7 +988,7 @@ export function ProductDetailPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Badge variant="secondary" className="text-sm font-semibold">{tags.length} tags</Badge>
               </div>
-              <div className="mt-4 grid gap-2">
+              <div className="mt-4 grid min-w-0 grid-cols-1 gap-2">
                 <Label htmlFor="tags-input">Tags</Label>
                 <div className="rounded-[24px] border border-[#dbe5f3] bg-[linear-gradient(180deg,#fbfdff_0%,#f4f9ff_100%)] p-4">
                   <div className="flex flex-wrap gap-2">
@@ -998,10 +998,10 @@ export function ProductDetailPage() {
                         type="button"
                         variant="ghost"
                         onClick={() => removeTag(tag)}
-                        className="inline-flex items-center gap-2 h-auto rounded-full border border-[#d7e2f0] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-700 transition hover:border-[#bfd1eb] hover:bg-[#f7fbff]"
+                        className="inline-flex min-w-0 whitespace-normal items-center gap-2 h-auto rounded-full border border-[#d7e2f0] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-700 transition hover:border-[#bfd1eb] hover:bg-[#f7fbff]"
                       >
                         <Tag size={11} />
-                        <span>{tag}</span>
+                        <span className="min-w-0 [overflow-wrap:anywhere]">{tag}</span>
                         <X size={12} />
                       </Button>
                     )) : (

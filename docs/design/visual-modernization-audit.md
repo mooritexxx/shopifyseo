@@ -2,6 +2,29 @@
 
 Updated: September 30, 2026. Baseline: `1bfe6b3`.
 
+## Batch 1 implementation
+
+Shared foundations and the Keyword Research pilot are implemented. The original audit findings below remain as the baseline, with this section recording progress.
+
+- Neutral 14px shared cards, compact button corners, and an Overview-aligned application font stack.
+- Scrollable research tabs keep the active tab visible on selection and resize; the repeated description panel is removed.
+- Seeds use neutral keyword chips with accessible remove labels. Target actions wrap and their introduction is shorter. Competitor controls and review tabs remain available at narrow widths. Cluster headers, matching controls and statistics wrap; keyboard activation of Change no longer triggers the enclosing card's navigation.
+- Shared dialogs have viewport-bounded internal scrolling. The article draft dialog at 390×600 now measures 568px high, with 16px clearance above and below.
+- Targeted containment fixes cover Internal Links navigation and the Article Idea main/sidebar grid. Long product tags also wrap at 320px.
+
+### Verification
+
+- Clean production build and local FastAPI restart completed after frontend edits.
+- **67 frontend tests passed** using `npm test -- --maxWorkers=1 --testTimeout=15000`, including a new test for keyboard selection and keeping the active tab visible. Initial concurrent runs timed out under machine load; the final serial run retained the table's original 4-second sort assertion and measured 984ms.
+- Browser width checks covered 1440, 1024, 768, 390 and 320px for all four research tabs; nested competitor and target review queues were also checked. Target/cluster page overflow from the original audit is resolved in the checked populated states.
+- Seed source filtering, target search with an empty result, cluster Change via Enter, short-screen draft dialog scrolling/Escape, and sync dialog open/Escape were exercised without saving data or running automation.
+- Overview and a populated product detail were included in regression checks. The idea-detail grid and Internal Links navigation were checked at all five widths.
+- Remaining acceptance work: physical mobile keyboard, 200% browser zoom, exhaustive focus-return/contrast review, paid/running/error mutation fixtures and the rest of the per-route functional matrix. These are still open; batch implementation is not full application certification.
+
+Evidence: [desktop pilot](batch-1-evidence/keywords-desktop.png), [mobile targets](batch-1-evidence/targets-mobile.png), [short-screen dialog](batch-1-evidence/draft-dialog-mobile.png), [idea detail](batch-1-evidence/idea-mobile.png), [width measurements](batch-1-evidence/width-checks.json). Width measurements include intermediate failing observations followed by explicitly named corrected checks.
+
+**Next implementation batch: catalog lists and details**, including compact summary metrics and the blog article link correction (V06). Those page-specific changes are still pending.
+
 ## Outcome of the first pass
 
 The Overview and catalog detail pages already establish the intended direction: neutral white surfaces, compact metrics, clear hierarchy, restrained color, and layouts that respond to available width. The rest of the application mixes this with large tinted cards, oversized headings, pill controls, stacked mobile tabs, and several modal styles.
@@ -46,7 +69,7 @@ Use the existing Overview as the reference, including its restrained hierarchy. 
 
 ## Route coverage and rollout matrix
 
-All routes below are relative to `/app`. **I** = inventoried in source; **A** = initial browser audit captured; **U/V/F** = updated / visually verified / functionally verified during modernization. A does not imply all states tested. All U/V/F cells are pending at this baseline.
+All routes below are relative to `/app`. **I** = inventoried in source; **A** = initial browser audit captured; **U/V/F** = updated / visually verified / functionally verified during modernization. A does not imply all states tested. U/V/F below describe the full per-route gate, so partial batch checks do not imply exhaustive verification.
 
 | Route | Surfaces included in initial pass | Remaining states and functions to verify | Batch | I/A | U/V/F |
 |---|---|---|---|---|---|
@@ -62,7 +85,7 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | `/articles` | Populated list; Draft new article dialog at desktop/mobile and short mobile | Draft validation, slug reset, generating/resume/failure/success, list filtering | 2 + 4 | ✓/✓ | —/—/— |
 | `/articles/:blogHandle/:articleHandle` | Representative article editor/signals | Preview, metadata/body edits, draft/publish behavior, image tools, Sidekick, save states | 2 + 4 | ✓/✓ | —/—/— |
 | `/rankings` | Populated table, Add keyword dialog; one 768px tablet capture | Edit/remove/restore, history, group/sort/search, cost confirmation, running/stop, errors and budget limits | 3 | ✓/✓ | —/—/— |
-| `/keywords` | Seeds, Competitors, Targets, Clusters; Approved/New/Dismissed states for competitors and targets | Seed edits, add/discovery dialogs, filters/sorts/selections, match change, long clusters, progress/cancel/error | 1 pilot | ✓/✓ | —/—/— |
+| `/keywords` | Seeds, Competitors, Targets, Clusters; Approved/New/Dismissed states for competitors and targets | Seed edits, add/discovery dialogs, filters/sorts/selections, match change, long clusters, progress/cancel/error | 1 pilot | ✓/✓ | ✓/partial/partial |
 | `/keywords/clusters/:id` | Populated representative cluster | Coverage dialog, assigned pages, keyword actions, empty/error and long content | 3 | ✓/✓ | —/—/— |
 | `/keywords/competitors/:domain` | Populated representative competitor | Metric refresh/progress, filters/sorts/paging, drill-down, empty/error | 3 | ✓/✓ | —/—/— |
 | `/article-ideas` | Approved/New/Rejected queues | Filters, selection/bulk actions, status changes, delete confirmation, generation and failures | 4 | ✓/✓ | —/—/— |
@@ -119,5 +142,5 @@ Each batch must update this tracker and include before/after evidence. A batch i
 - Initial products, images, embeddings, clusters and competitor captures were sometimes loading; the `*-loaded` captures supersede them. The first `cluster-detail` capture retained the preceding screen during navigation; use `cluster-detail-loaded`. An observation alone does not certify all below-the-fold content.
 - Local catalog data is a stored snapshot; Google connections currently produce unavailable states. This pass does not establish current remote-production behavior or populated Google-chart appearance.
 - No Shopify saves, paid generation/ranking requests, optimizer runs, sync jobs, credential changes or internal-link writes were triggered by the audit. Their transitions need deterministic fixtures or an explicitly scoped integration check during the relevant batch.
-- Application code is unchanged in this first pass. The deliverables are this inventory, prioritized findings, evidence and implementation plan.
+- The initial audit changed no application code. The Batch 1 section above records subsequent implementation and its verification.
 - Preserve `TECHNICAL_DOC.md` Performance Invariants during implementation: narrow catalog reads, object-specific context, indexed keyword lookups, scoped GSC trends, existing client sorting and full list behavior. UI polish is not authorization to change data semantics or remove safeguards.

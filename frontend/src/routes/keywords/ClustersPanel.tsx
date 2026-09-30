@@ -152,15 +152,15 @@ export function ClustersPanel() {
   const clusters = data?.clusters ?? [];
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             type="button"
             disabled={genStatus === "running"}
             onClick={runClustering}
-            className="inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-ink/90 disabled:opacity-50"
+            size="sm"
           >
             <Sparkles className="h-4 w-4" />
             {genStatus === "running" ? "Generating…" : "Generate Clusters"}
@@ -233,17 +233,17 @@ export function ClustersPanel() {
               tabIndex={0}
               onClick={() => navigate(`/keywords/clusters/${cluster.id}`)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
                   e.preventDefault();
                   navigate(`/keywords/clusters/${cluster.id}`);
                 }
               }}
-              className="group rounded-xl border border-line bg-white p-5 space-y-3 cursor-pointer text-left outline-none transition-colors hover:bg-slate-50/90 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+              className="group min-w-0 rounded-[14px] border border-line bg-white p-4 sm:p-5 space-y-3 cursor-pointer text-left outline-none transition-colors hover:bg-slate-50/90 focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
             >
               {/* Card header */}
               <div className="flex items-start justify-between">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0 space-y-1 [overflow-wrap:anywhere]">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="text-base font-semibold text-ink group-hover:text-blue-600 group-hover:underline">
                       {cluster.name}
                     </span>
@@ -272,7 +272,7 @@ export function ClustersPanel() {
               </div>
 
               {/* Match display */}
-              <div className="flex items-center gap-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2 text-sm">
                 {cluster.suggested_match ? (
                   cluster.suggested_match.match_type === "new" ? (
                     <span className="inline-flex items-center gap-1">
@@ -282,7 +282,7 @@ export function ClustersPanel() {
                       </span>
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 flex-wrap">
+                    <span className="inline-flex min-w-0 items-center gap-1 flex-wrap [overflow-wrap:anywhere]">
                       <span className="text-slate-400">→</span>
                       <Link
                         to={suggestedMatchHref(
@@ -353,7 +353,7 @@ export function ClustersPanel() {
                   {matchOptionsQuery.isLoading ? (
                     <p className="text-xs text-slate-400">Loading options…</p>
                   ) : matchOptionsQuery.data?.options ? (
-                    <div className="space-y-1">
+                    <div className="min-w-0 space-y-1 [overflow-wrap:anywhere]">
                       {["new", "none", "collection", "page", "blog_article"].map((type) => {
                         const group = matchOptionsQuery.data!.options.filter(
                           (o) => o.match_type === type
@@ -390,7 +390,7 @@ export function ClustersPanel() {
                                     match_title: option.match_title,
                                   })
                                 }
-                                className="h-auto w-full justify-start rounded px-2 py-1 text-sm hover:bg-blue-50 disabled:opacity-50"
+                                className="h-auto w-full justify-start whitespace-normal text-left rounded px-2 py-1 text-sm hover:bg-blue-50 disabled:opacity-50"
                               >
                                 {option.match_title}
                                 {option.match_type !== "new" && option.match_type !== "none" && (
@@ -411,7 +411,7 @@ export function ClustersPanel() {
               )}
 
               {/* Stats row */}
-              <div className="flex gap-6 text-xs text-slate-500">
+              <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500">
                 <span>
                   <span className="font-medium text-ink">{cluster.keyword_count}</span> keywords
                 </span>

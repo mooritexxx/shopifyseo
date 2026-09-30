@@ -1,0 +1,427 @@
+[
+  {
+    "name": "seed",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "seed",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "seed",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "seed",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "seed",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "targets-approved",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "targets-approved",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "targets-approved",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "targets-approved",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "targets-approved",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "targets-new",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "targets-new",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "targets-new",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "targets-new",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "targets-new",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "targets-dismissed",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "targets-dismissed",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "targets-dismissed",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "targets-dismissed",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "targets-dismissed",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "clusters-loaded",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "clusters-loaded",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "clusters-loaded",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "clusters-loaded",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "clusters-loaded",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "clusters-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "clusters-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "clusters-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "clusters-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "clusters-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "competitors-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "competitors-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "competitors-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "competitors-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "competitors-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "competitors-new-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "competitors-new-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "competitors-new-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "competitors-new-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "competitors-new-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "competitors-dismissed-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "competitors-dismissed-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "competitors-dismissed-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "competitors-dismissed-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "competitors-dismissed-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "idea-detail-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "idea-detail-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "idea-detail-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "idea-detail-final",
+    "viewport": 390,
+    "width": 466
+  },
+  {
+    "name": "idea-detail-final",
+    "viewport": 320,
+    "width": 466
+  },
+  {
+    "name": "idea-fixed",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "idea-fixed",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "idea-fixed",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "idea-fixed",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "idea-fixed",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "internal-links-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "internal-links-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "internal-links-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "internal-links-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "internal-links-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "seeds-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "seeds-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "seeds-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "seeds-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "seeds-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "targets-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "targets-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "targets-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "targets-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "targets-final",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "overview-regression",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "overview-regression",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "overview-regression",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "overview-regression",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "overview-regression",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "product-detail-regression",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "product-detail-regression",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "product-detail-regression",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "product-detail-regression",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "product-detail-regression",
+    "viewport": 320,
+    "width": 345
+  },
+  {
+    "name": "product-tags-fixed",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "product-tags-fixed",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "product-tags-fixed",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "product-tags-fixed",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "product-tags-fixed",
+    "viewport": 320,
+    "width": 320
+  }
+]

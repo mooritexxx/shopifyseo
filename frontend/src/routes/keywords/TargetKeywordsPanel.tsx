@@ -515,7 +515,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
 
   return (
     <TooltipProvider delayDuration={250}>
-    <div className="rounded-[24px] border border-line/80 bg-white">
+    <div className="min-w-0 rounded-[14px] border border-line bg-white">
       {typeof document !== "undefined" &&
         (adsPlannerStatus === "running" ||
           adsPlannerStatus === "done" ||
@@ -548,9 +548,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
         <div>
           <h3 className="text-lg font-semibold text-ink">Target Keywords</h3>
           <p className="mt-1 text-sm text-slate-500">
-            Keywords from your seeds via Keywords Explorer (related, matching,
-            suggestions), merged into one list. Competitor organic keywords are
-            pulled separately from the Competitors tab.
+            Review and prioritize keywords discovered from your seeds and competitor research.
           </p>
           {lastRun && (
             <p className="mt-1 text-xs text-slate-400">
@@ -559,7 +557,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -778,7 +776,7 @@ export function TargetKeywordsPanel({ seedResearchRunning = false }: TargetKeywo
       {/* Status tabs — above column headers */}
       {items.length > 0 && (
         <div
-          className="flex items-stretch gap-0 border-b border-line/60 px-5"
+          className="flex max-w-full items-stretch gap-0 overflow-x-auto border-b border-line/60 px-5"
           role="tablist"
           aria-label="Keyword status"
         >

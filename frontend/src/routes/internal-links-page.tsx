@@ -887,7 +887,7 @@ export function InternalLinksPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-2 border-b">
+      <div className="flex max-w-full gap-2 overflow-x-auto border-b [&>button]:shrink-0 [&>button]:whitespace-nowrap">
         <button
           onClick={() => setTab("suggestions")}
           className={`px-4 py-2 text-sm font-medium transition-colors ${

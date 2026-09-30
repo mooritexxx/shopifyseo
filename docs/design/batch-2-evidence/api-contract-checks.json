@@ -1,0 +1,45 @@
+{
+  "note": "Initial before/after implementation comparison passed for all five APIs. During final verification the catalog data changed; final counts and response keys are recorded here. Backend source is unchanged. This is not a same-dataset final equality claim.",
+  "checks": [
+    {
+      "resource": "products",
+      "before_count": 830,
+      "final_count": 884,
+      "response_keys_equal": true,
+      "row_keys_equal": true,
+      "final_payload_equal": false
+    },
+    {
+      "resource": "collections",
+      "before_count": 73,
+      "final_count": 77,
+      "response_keys_equal": true,
+      "row_keys_equal": true,
+      "final_payload_equal": false
+    },
+    {
+      "resource": "pages",
+      "before_count": 16,
+      "final_count": 19,
+      "response_keys_equal": true,
+      "row_keys_equal": true,
+      "final_payload_equal": false
+    },
+    {
+      "resource": "articles",
+      "before_count": 58,
+      "final_count": 79,
+      "response_keys_equal": true,
+      "row_keys_equal": true,
+      "final_payload_equal": false
+    },
+    {
+      "resource": "blogs",
+      "before_count": 1,
+      "final_count": 1,
+      "response_keys_equal": true,
+      "row_keys_equal": true,
+      "final_payload_equal": false
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import "./catalog-page.css";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -263,11 +264,11 @@ export function ArticlesPage() {
     draftForm.blog_id.trim() && draftForm.topic.trim() && !draftGenerating;
 
   return (
-    <div className="space-y-6 pb-8">
-      <div className="flex items-start justify-between gap-4">
+    <div className="catalog-page min-w-0 space-y-5 pb-8">
+      <div className="catalog-header flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Articles</p>
-          <h2 className="mt-2 text-4xl font-bold text-ink">Shopify articles</h2>
+          <h1 className="catalog-title mt-1">Shopify articles</h1>
           <p className="mt-2 text-sm text-slate-500">
             All blog posts synced from Shopify across every blog.{" "}
             <Link to="/blogs" className="font-medium text-ocean underline-offset-4 hover:underline">
@@ -292,7 +293,7 @@ export function ArticlesPage() {
             </p>
           ) : null}
         </div>
-        <div className="shrink-0 pt-2">
+        <div className="catalog-header-actions">
           <Button
             variant="secondary"
             onClick={() => {
@@ -311,26 +312,26 @@ export function ArticlesPage() {
         </div>
       </div>
 
-      <section className="grid gap-4 xl:grid-cols-4">
-        <SummaryCard
+      <section className="catalog-summary-grid" aria-label="Catalog summary">
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="Visible rows"
           value={formatNumber(summary.visible_rows)}
           hint="Matching articles across the current filtered list."
           tone="border-[#dbe5f3] bg-[linear-gradient(135deg,#ffffff_0%,#eef6ff_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="High priority"
           value={formatNumber(summary.high_priority)}
           hint="Articles with the largest SEO upside right now."
           tone="border-[#f2d9cf] bg-[linear-gradient(135deg,#fff7f4_0%,#ffe7de_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="Index issues"
           value={formatNumber(summary.index_issues)}
           hint="Rows that likely need better indexing confidence."
           tone="border-[#efe2bf] bg-[linear-gradient(135deg,#fffdf5_0%,#fff3cf_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="Average score"
           value={formatNumber(summary.average_score)}
           hint="Average opportunity score across the visible rows."
@@ -338,8 +339,8 @@ export function ArticlesPage() {
         />
       </section>
 
-      <Card className="overflow-hidden border-[#dfe7f3] bg-[linear-gradient(180deg,_#ffffff_0%,_#fbfdff_100%)] p-0">
-        <div className="border-b border-[#e5ecf5] px-6 py-5">
+      <Card className="overflow-hidden bg-white p-0">
+        <div className="catalog-toolbar">
           <SearchInput value={queryText} onChange={setQueryText} placeholder="Filter articles…" />
         </div>
         <DataTable

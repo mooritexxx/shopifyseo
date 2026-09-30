@@ -7,7 +7,7 @@ import { LoaderCircle, MessageCircle, Send, Sparkles } from "lucide-react";
 import { z } from "zod";
 
 import { Button } from "../ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../ui/sheet";
+import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "../ui/sheet";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn, getErrorMessage } from "../../lib/utils";
 import { postJson } from "../../lib/api";
@@ -161,20 +161,20 @@ function SidekickPanel({ bindingRef }: { bindingRef: MutableRefObject<SidekickBi
 
   return (
     <>
+      <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
       <button
         type="button"
         aria-label="Open Sidekick"
-        onClick={() => setOpen(true)}
         className={cn(
-          "fixed bottom-16 right-6 z-[60] flex h-14 w-14 items-center justify-center rounded-full shadow-lg transition",
+          "fixed bottom-16 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full shadow-lg transition",
           "bg-[linear-gradient(135deg,#4f8cff_0%,#2147b8_100%)] text-white hover:brightness-110",
           routeMatchesBinding ? "ring-2 ring-white/90" : "opacity-80 ring-1 ring-white/40"
         )}
       >
         <MessageCircle size={26} strokeWidth={2} />
       </button>
-
-      <Sheet open={open} onOpenChange={setOpen}>
+      </SheetTrigger>
         <SheetContent
           side="right"
           className="flex w-full max-w-md flex-col gap-0 rounded-l-[24px] border-white/70 bg-white p-0 shadow-2xl sm:max-w-md"

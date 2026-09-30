@@ -1,3 +1,4 @@
+import "./catalog-page.css";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
@@ -64,7 +65,7 @@ export function BlogArticlesPage() {
 
   if (query.isError) {
     return (
-      <div className="rounded-[30px] border border-red-200 bg-red-50/80 p-8 text-red-900 shadow-panel">
+      <div role="alert" className="rounded-[14px] border border-red-200 bg-red-50 p-5 text-red-900">
         <p className="font-semibold">Could not load blog</p>
         <p className="mt-2 text-sm">{(query.error as Error).message}</p>
         <Link to="/blogs" className="mt-4 inline-block text-sm font-medium underline">
@@ -77,7 +78,7 @@ export function BlogArticlesPage() {
   const blogTitle = query.data?.blog.title || decoded;
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="catalog-page min-w-0 space-y-5 pb-8">
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
           <Link to="/blogs" className="text-slate-600 underline-offset-4 hover:underline">
@@ -86,14 +87,14 @@ export function BlogArticlesPage() {
           <span className="mx-2 text-slate-400">/</span>
           {decoded}
         </p>
-        <h2 className="mt-2 text-4xl font-bold text-ink">{blogTitle}</h2>
+        <h1 className="catalog-title mt-1">{blogTitle}</h1>
         <p className="mt-2 text-sm text-slate-500">
-          {query.data?.total ?? 0} article{query.data?.total === 1 ? "" : "s"} synced from Shopify (read-only list).
+          {query.isLoading ? "Loading articles…" : `${query.data?.total ?? 0} article${query.data?.total === 1 ? "" : "s"} synced from Shopify.`}
         </p>
       </div>
 
-      <Card className="overflow-hidden border-[#dfe7f3] bg-[linear-gradient(180deg,_#ffffff_0%,_#fbfdff_100%)] p-0">
-        <div className="border-b border-[#e5ecf5] px-6 py-5">
+      <Card className="overflow-hidden bg-white p-0">
+        <div className="catalog-toolbar">
           <SearchInput value={queryText} onChange={setQueryText} placeholder="Filter articles…" />
         </div>
         <DataTable
@@ -112,7 +113,7 @@ export function BlogArticlesPage() {
               );
             }
           }}
-          getRowLink={() => "/blogs"}
+          getRowLink={(row) => `/articles/${encodeURIComponent(decoded)}/${encodeURIComponent(String(row.handle))}`}
           isLoading={query.isLoading}
           error={query.error as Error | null}
         />

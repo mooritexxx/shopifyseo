@@ -1,0 +1,11 @@
+.catalog-page { container-type: inline-size; color: #172033; }
+.catalog-title { font-size: 32px; font-weight: 650; letter-spacing: -.035em; line-height: 1.2; overflow-wrap: anywhere; }
+.catalog-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.catalog-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 16px; border-bottom: 1px solid #e2e7ed; }
+.catalog-header > div:first-child { min-width: 0; flex: 1 1 300px; }
+.catalog-header-actions { flex-shrink: 0; }
+@container (max-width: 650px) {
+  .catalog-title { font-size: 28px; }
+  .catalog-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .catalog-toolbar { padding: 12px; }
+}

@@ -680,6 +680,7 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
             <ArrowLeft size={16} />
             {kind === "collections" ? "Collections" : "Pages"}
           </Link>
+          <h1 className="detail-title mt-3">{draft.title || "Untitled"}</h1>
         </div>
 
         <section className="detail-signal-grid" aria-label="Performance and indexing metrics">
@@ -697,7 +698,7 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
 
         <section className="space-y-0">
           <Card className="border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]">
-            <CardHeader className="pb-4">
+            <CardHeader className="detail-editor-heading pb-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <p className="detail-eyebrow">Main fields</p>
@@ -916,7 +917,6 @@ export function ContentDetailPage({ kind }: { kind: "collections" | "pages" }) {
 
             <CardContent className="px-6 pb-6 pt-5">
               <div className="space-y-3">
-                <p className="text-sm font-semibold text-ink">Related items</p>
                 <div className="flex flex-wrap gap-2">
                   {detail.related_items.length > 0 ? detail.related_items.map((item, index) => (
                     <Button

@@ -758,6 +758,7 @@ export function ProductDetailPage() {
             <ArrowLeft size={16} />
             Products
           </Link>
+          <h1 className="detail-title mt-3">{draft.title || "Untitled"}</h1>
         </div>
 
         <section className="detail-signal-grid" aria-label="Performance and indexing metrics">
@@ -775,7 +776,7 @@ export function ProductDetailPage() {
 
         <section className="space-y-0">
           <Card className="border-[#e2eaf4] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]">
-            <CardHeader className="pb-4">
+            <CardHeader className="detail-editor-heading pb-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="detail-eyebrow">Main fields</p>

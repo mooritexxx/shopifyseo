@@ -1,3 +1,4 @@
+import "./catalog-page.css";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -115,11 +116,11 @@ export function ProductsPage() {
   };
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="catalog-page min-w-0 space-y-5 pb-8">
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Products</p>
-        <h2 className="mt-2 text-4xl font-bold text-ink">Product overview</h2>
-        <p className="mt-2 text-sm text-slate-500">A cleaner catalog view for scanning search visibility, inspection health, and page speed at a glance.</p>
+        <h1 className="catalog-title mt-1">Product overview</h1>
+        <p className="mt-2 text-sm text-slate-500">Review search visibility, content health and page speed across your catalog.</p>
         {focus ? (
           <p className="mt-2 text-sm font-medium text-[#5746d9]">
             Filter:{" "}
@@ -136,26 +137,26 @@ export function ProductsPage() {
         ) : null}
       </div>
 
-      <section className="grid gap-4 xl:grid-cols-4">
-        <SummaryCard
+      <section className="catalog-summary-grid" aria-label="Catalog summary">
+        <SummaryCard compact loading={productsQuery.isLoading} unavailable={productsQuery.isError}
           label="Visible rows"
           value={formatNumber(summary.visible_rows)}
           hint="Matching products across the full filtered catalog."
           tone="border-[#dbe5f3] bg-[linear-gradient(135deg,#ffffff_0%,#eef6ff_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={productsQuery.isLoading} unavailable={productsQuery.isError}
           label="High priority"
           value={formatNumber(summary.high_priority)}
           hint="Products with the largest SEO upside right now."
           tone="border-[#f2d9cf] bg-[linear-gradient(135deg,#fff7f4_0%,#ffe7de_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={productsQuery.isLoading} unavailable={productsQuery.isError}
           label="Index issues"
           value={formatNumber(summary.index_issues)}
           hint="Rows that likely need better indexing confidence."
           tone="border-[#efe2bf] bg-[linear-gradient(135deg,#fffdf5_0%,#fff3cf_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={productsQuery.isLoading} unavailable={productsQuery.isError}
           label="Average score"
           value={formatNumber(summary.average_score)}
           hint="Average opportunity score across the visible rows."
@@ -163,8 +164,8 @@ export function ProductsPage() {
         />
       </section>
 
-      <Card className="overflow-hidden border-[#dfe7f3] bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)] p-0">
-        <div className="border-b border-[#e5ecf5] px-6 py-5">
+      <Card className="overflow-hidden bg-white p-0">
+        <div className="catalog-toolbar">
           <SearchInput value={query} onChange={setQuery} placeholder="Search product name or SEO title" />
         </div>
 

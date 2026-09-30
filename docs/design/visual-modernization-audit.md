@@ -23,7 +23,32 @@ Shared foundations and the Keyword Research pilot are implemented. The original 
 
 Evidence: [desktop pilot](batch-1-evidence/keywords-desktop.png), [mobile targets](batch-1-evidence/targets-mobile.png), [short-screen dialog](batch-1-evidence/draft-dialog-mobile.png), [idea detail](batch-1-evidence/idea-mobile.png), [width measurements](batch-1-evidence/width-checks.json). Width measurements include intermediate failing observations followed by explicitly named corrected checks.
 
-**Next implementation batch: catalog lists and details**, including compact summary metrics and the blog article link correction (V06). Those page-specific changes are still pending.
+Catalog implementation is recorded in Batch 2 below.
+
+## Batch 2 implementation
+
+The catalog family now follows the Overview reference: Products, Collections, Pages, Blogs, blog articles, all Articles and their detail editors.
+
+- Compact neutral summaries use four columns when space permits and two on phones; help text stays available through keyboard/touch popovers. Loading and unavailable values display an em dash instead of a misleading zero.
+- Consistent headings, rectangular search fields, wrapping action rows and restrained table panels.
+- Table cell text is 13px (previous title links were 8.67px), names wrap to two lines, and the identity column remains visible while scrolling. The scroll region is keyboard-focusable and active sorting is announced. All rows remain rendered and memoized.
+- Detail editors have clear page titles, separated action headers, consistent labels, fields and focus indicators. Phone metric grids use two columns; image/editor columns still stack by available width.
+- **V06 fixed:** blog-specific article links open the matching detail route. A regression test includes an encoded article handle.
+- Gallery checks found and corrected a Sidekick stacking issue and missing focus return. Sidekick stays below overlays; controlled modals return focus to their opener.
+
+### Verification
+
+- Production rebuild and local port-8000 restart completed after application changes.
+- **69 frontend tests passed:** the full existing suite (68) plus the new controlled-modal focus regression (1), run with one worker and a 15-second per-test timeout. The final full-suite table sort measured 1160ms against the unchanged 4-second assertion.
+- After the final build, gallery Escape restored focus to Open image preview; Sidekick Escape restored focus to Open Sidekick. The gallery controls were visually confirmed unobstructed by the floating Sidekick button.
+- All six list patterns and four detail patterns checked at 1440, 1024, 768, 390 and 320px with populated local data: document width equals viewport width. Wide catalog tables scroll inside their own region.
+- Product empty search and sorting, summary help/Escape, table keyboard scrolling with a stationary identity column, blog-to-list navigation and Enter-to-article navigation were exercised. Product gallery navigation and containment were checked at 320×600; collection fields were inspected at the same small size.
+- The initial before/after implementation JSON comparisons for `/api/products`, `/api/collections`, `/api/pages`, `/api/articles` and `/api/blogs` were equal. During final verification the local catalog data changed (products increased from 830 to 884), so final payloads differ from that initial capture. Final response/row keys remain equal; [comparison metadata](batch-2-evidence/api-contract-checks.json) records the counts and limitation. No backend/read-path changes were made, and this batch did not trigger a sync. Screenshots span these two data states.
+- Remaining acceptance work: Shopify save/regeneration/AI and failure/success transitions with deterministic fixtures; complete keyboard/contrast review; physical mobile keyboard and 200% browser zoom. Collection gallery with a present image remains untested in this local snapshot. Sidekick conversation/tool states remain in Batch 6.
+
+Evidence: [desktop products](batch-2-evidence/products-desktop.png), [mobile products](batch-2-evidence/products-mobile.png), [mobile collections](batch-2-evidence/collections-mobile.png), [desktop detail](batch-2-evidence/collection-detail-desktop.png), [small-phone editor](batch-2-evidence/collection-editor-small-phone.png), [mobile article](batch-2-evidence/article-detail-mobile.png), [gallery](batch-2-evidence/gallery-small-phone.png), [width measurements](batch-2-evidence/width-checks.json). Original audit screenshots above/below provide the before state.
+
+**Next implementation batch: Research and opportunities** — Rankings, cluster and competitor details, Opportunity Inbox and its review/task flow.
 
 ## Outcome of the first pass
 
@@ -74,16 +99,16 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | Route | Surfaces included in initial pass | Remaining states and functions to verify | Batch | I/A | U/V/F |
 |---|---|---|---|---|---|
 | `/` | Overview, unavailable Google panels, indexing and catalog sections | Loaded GSC/GA4 charts, all scopes/periods, coverage expansion, attention links, narrow layouts | Reference + final regression | ✓/✓ | —/—/— |
-| `/products` | Populated catalog, metrics, desktop/mobile | Filters, sort directions, long titles, segments/content controls, empty/error | 2 | ✓/✓ | —/—/— |
-| `/products/:handle` | Representative product signals/editor | Image gallery, preview, field validation, regeneration, save, opportunity task, Sidekick, query/segment/link panels | 2 | ✓/✓ | —/—/— |
-| `/collections` | Populated list, metrics | Filters, sorts, bulk controls, empty/error | 2 | ✓/✓ | —/—/— |
-| `/collections/:handle` | Representative collection editor/signals | Same detail states; missing/present image, related items, unsaved changes | 2 | ✓/✓ | —/—/— |
-| `/pages` | Populated list, metrics | Filters, sorts, bulk controls, empty/error | 2 | ✓/✓ | —/—/— |
-| `/pages/:handle` | Representative page editor/signals | Same detail states; empty/long body and SEO fields | 2 | ✓/✓ | —/—/— |
-| `/blogs` | Populated blog list | Sort/search, empty/error, blog navigation | 2 | ✓/✓ | —/—/— |
-| `/blogs/:blogHandle` | Populated article list, incorrect links confirmed | Correct article navigation, filter/sort, empty/error | 2 | ✓/✓ | —/—/— |
-| `/articles` | Populated list; Draft new article dialog at desktop/mobile and short mobile | Draft validation, slug reset, generating/resume/failure/success, list filtering | 2 + 4 | ✓/✓ | —/—/— |
-| `/articles/:blogHandle/:articleHandle` | Representative article editor/signals | Preview, metadata/body edits, draft/publish behavior, image tools, Sidekick, save states | 2 + 4 | ✓/✓ | —/—/— |
+| `/products` | Populated catalog, metrics, desktop/mobile | Filters, sort directions, long titles, segments/content controls, empty/error | 2 | ✓/✓ | ✓/partial/partial |
+| `/products/:handle` | Representative product signals/editor | Image gallery, preview, field validation, regeneration, save, opportunity task, Sidekick, query/segment/link panels | 2 | ✓/✓ | ✓/partial/partial |
+| `/collections` | Populated list, metrics | Filters, sorts, bulk controls, empty/error | 2 | ✓/✓ | ✓/partial/partial |
+| `/collections/:handle` | Representative collection editor/signals | Same detail states; missing/present image, related items, unsaved changes | 2 | ✓/✓ | ✓/partial/partial |
+| `/pages` | Populated list, metrics | Filters, sorts, bulk controls, empty/error | 2 | ✓/✓ | ✓/partial/partial |
+| `/pages/:handle` | Representative page editor/signals | Same detail states; empty/long body and SEO fields | 2 | ✓/✓ | ✓/partial/partial |
+| `/blogs` | Populated blog list | Sort/search, empty/error, blog navigation | 2 | ✓/✓ | ✓/partial/partial |
+| `/blogs/:blogHandle` | Populated article list, incorrect links confirmed | Correct article navigation, filter/sort, empty/error | 2 | ✓/✓ | ✓/partial/partial |
+| `/articles` | Populated list; Draft new article dialog at desktop/mobile and short mobile | Draft validation, slug reset, generating/resume/failure/success, list filtering | 2 + 4 | ✓/✓ | ✓/partial/partial |
+| `/articles/:blogHandle/:articleHandle` | Representative article editor/signals | Preview, metadata/body edits, draft/publish behavior, image tools, Sidekick, save states | 2 + 4 | ✓/✓ | ✓/partial/partial |
 | `/rankings` | Populated table, Add keyword dialog; one 768px tablet capture | Edit/remove/restore, history, group/sort/search, cost confirmation, running/stop, errors and budget limits | 3 | ✓/✓ | —/—/— |
 | `/keywords` | Seeds, Competitors, Targets, Clusters; Approved/New/Dismissed states for competitors and targets | Seed edits, add/discovery dialogs, filters/sorts/selections, match change, long clusters, progress/cancel/error | 1 pilot | ✓/✓ | ✓/partial/partial |
 | `/keywords/clusters/:id` | Populated representative cluster | Coverage dialog, assigned pages, keyword actions, empty/error and long content | 3 | ✓/✓ | —/—/— |
@@ -142,5 +167,5 @@ Each batch must update this tracker and include before/after evidence. A batch i
 - Initial products, images, embeddings, clusters and competitor captures were sometimes loading; the `*-loaded` captures supersede them. The first `cluster-detail` capture retained the preceding screen during navigation; use `cluster-detail-loaded`. An observation alone does not certify all below-the-fold content.
 - Local catalog data is a stored snapshot; Google connections currently produce unavailable states. This pass does not establish current remote-production behavior or populated Google-chart appearance.
 - No Shopify saves, paid generation/ranking requests, optimizer runs, sync jobs, credential changes or internal-link writes were triggered by the audit. Their transitions need deterministic fixtures or an explicitly scoped integration check during the relevant batch.
-- The initial audit changed no application code. The Batch 1 section above records subsequent implementation and its verification.
+- The initial audit changed no application code. The batch sections above record subsequent implementation and verification.
 - Preserve `TECHNICAL_DOC.md` Performance Invariants during implementation: narrow catalog reads, object-specific context, indexed keyword lookups, scoped GSC trends, existing client sorting and full list behavior. UI polish is not authorization to change data semantics or remove safeguards.

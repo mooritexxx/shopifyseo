@@ -40,3 +40,18 @@
 }
 
 .detail-page .detail-related-link { justify-content: flex-start; overflow-wrap: anywhere; letter-spacing: normal; text-transform: none; }
+
+.detail-title { font-size: 28px; font-weight: 650; line-height: 1.25; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.detail-editor-heading { margin-bottom: 20px; border-bottom: 1px solid #e2e7ed; }
+.detail-page label { font-size: 13px; font-weight: 600; color: #475569; }
+.detail-page input { min-height: 40px; }
+.detail-page textarea { padding: 10px 12px; line-height: 1.6; }
+.detail-page input:focus-visible, .detail-page textarea:focus-visible { outline: 2px solid #155eef; outline-offset: 2px; }
+@container (max-width: 520px) {
+  .detail-title { font-size: 24px; }
+  .detail-signal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .detail-page .detail-signal-content { padding: 12px; }
+  .detail-signal-content > div:first-child { flex-wrap: wrap; gap: 4px; }
+  .detail-signal-label { flex: 1 1 75px; }
+  .detail-signal-value { font-size: 22px; }
+}

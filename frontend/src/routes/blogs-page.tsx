@@ -1,3 +1,4 @@
+import "./catalog-page.css";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -61,23 +62,23 @@ export function BlogsPage() {
   );
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="catalog-page min-w-0 space-y-5 pb-8">
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Blogs</p>
-        <h2 className="mt-2 text-4xl font-bold text-ink">Shopify blogs</h2>
+        <h1 className="catalog-title mt-1">Shopify blogs</h1>
         <p className="mt-2 text-sm text-slate-500">
           Blogs and articles synced from Shopify. Click a blog to see its posts.
         </p>
       </div>
 
-      <section className="grid gap-4 md:grid-cols-2">
-        <SummaryCard
+      <section className="catalog-summary-grid" aria-label="Blog summary">
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="Blogs"
           value={String(summary.blogs)}
           hint="In local database"
           tone="border-[#dbe5f3] bg-[linear-gradient(135deg,_#ffffff_0%,_#eef6ff_100%)]"
         />
-        <SummaryCard
+        <SummaryCard compact loading={query.isLoading} unavailable={query.isError}
           label="Articles"
           value={String(summary.articles)}
           hint="Across visible blogs"
@@ -85,8 +86,8 @@ export function BlogsPage() {
         />
       </section>
 
-      <Card className="overflow-hidden border-[#dfe7f3] bg-[linear-gradient(180deg,_#ffffff_0%,_#fbfdff_100%)] p-0">
-        <div className="border-b border-[#e5ecf5] px-6 py-5">
+      <Card className="overflow-hidden bg-white p-0">
+        <div className="catalog-toolbar">
           <SearchInput
             value={queryText}
             onChange={setQueryText}

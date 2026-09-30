@@ -1,3 +1,4 @@
+import "./data-table.css";
 import { AlertTriangle, ArrowUpDown, Check, Eye } from "lucide-react";
 import { memo } from "react";
 import { Link } from "react-router-dom";
@@ -6,7 +7,7 @@ import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "./table"
 import { TrendCell } from "./trend-cell";
 import type { Trend } from "../../types/api";
 
-export const listTableNameLinkClassName = "text-[calc(10px-1pt)]";
+export const listTableNameLinkClassName = "text-[13px]";
 
 export type Column = {
   key: string;
@@ -18,9 +19,9 @@ export type Column = {
 
 function columnButtonClass(align: "left" | "right" | "center") {
   const base =
-    "inline-flex max-w-full min-w-0 items-center gap-0 text-[8px] uppercase tracking-[0.18em] text-slate-500 transition hover:text-ink";
+    "inline-flex max-w-full min-w-0 flex-wrap items-center gap-0 text-[11px] font-medium text-slate-500 transition hover:text-ink";
   if (align === "center") {
-    return `${base} mx-auto`;
+    return `${base} mx-auto justify-center`;
   }
   return base;
 }
@@ -69,9 +70,8 @@ const DataTableRow = memo(function DataTableRow({
 }) {
   return (
     <TableRow className="border-b border-[#e8eef6] align-middle last:border-b-0">
-      {columns.map((column, colIndex) => {
-        const isLastColumn = colIndex === columns.length - 1;
-        const cellPadding = isLastColumn ? "pl-4 pr-8" : "px-4";
+      {columns.map((column) => {
+        const cellPadding = "px-3";
         if (column.key === "title" || column.key === "article_name") {
           const label =
             column.key === "article_name"
@@ -81,7 +81,7 @@ const DataTableRow = memo(function DataTableRow({
             <TableCell
               key={column.key}
               className={cn(
-                "border-b border-[#e8eef6] bg-white py-4 text-left min-w-0",
+                "catalog-identity-cell border-b border-[#e8eef6] bg-white py-3 text-left min-w-0",
                 cellPadding,
                 column.widthClass
               )}
@@ -89,9 +89,10 @@ const DataTableRow = memo(function DataTableRow({
               <div className="flex min-w-0 max-w-full items-center gap-2">
                 <Link
                   className={cn(
-                    "block min-w-0 truncate font-semibold text-ink transition hover:text-ocean",
-                    nameLinkClassName ?? "text-[10px]"
+                    "block min-w-0 line-clamp-2 font-medium text-ink transition hover:text-ocean",
+                    nameLinkClassName ?? "text-[13px]"
                   )}
+                  title={label}
                   to={rowLink}
                 >
                   {label}
@@ -113,7 +114,7 @@ const DataTableRow = memo(function DataTableRow({
         }
         if (column.key === "content_status") {
           return (
-            <TableCell key={column.key} className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`} title={isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? "Meta title, meta description, and body are filled" : "Meta title, meta description, or body is missing"}>
+            <TableCell key={column.key} className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center min-w-0`} title={isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? "Meta title, meta description, and body are filled" : "Meta title, meta description, or body is missing"}>
               {isContentComplete(row as { seo_title?: string; seo_description?: string; body_length?: number }) ? (
                 <Check size={18} className="inline-block text-[#1c7a4b]" aria-label="Content complete" />
               ) : (
@@ -131,7 +132,7 @@ const DataTableRow = memo(function DataTableRow({
           return (
             <TableCell
               key={column.key}
-              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center min-w-0`}
               title={live ? "Published" : "Not published"}
             >
               {live ? (
@@ -148,7 +149,7 @@ const DataTableRow = memo(function DataTableRow({
           return (
             <TableCell
               key={column.key}
-              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center min-w-0`}
               title={raw}
             >
               {indexed ? (
@@ -173,7 +174,7 @@ const DataTableRow = memo(function DataTableRow({
           return (
             <TableCell
               key={column.key}
-              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center text-[10px] text-slate-600 min-w-0`}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center text-[13px] text-slate-600 min-w-0`}
               title={
                 on
                   ? "Query×segment GSC rows in cache (country, device, search appearance)"
@@ -194,7 +195,7 @@ const DataTableRow = memo(function DataTableRow({
           return (
             <TableCell
               key={column.key}
-              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-4 text-center min-w-0`}
+              className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center min-w-0`}
               title={
                 trend
                   ? `${trend.clicks_current} clicks in the last 30 days vs ${trend.clicks_previous} in the 30 before` +
@@ -218,7 +219,7 @@ const DataTableRow = memo(function DataTableRow({
           <TableCell
             key={column.key}
             className={cn(
-              "border-b border-[#e8eef6] bg-white py-4 text-[10px] text-slate-600 min-w-0",
+              "border-b border-[#e8eef6] bg-white py-3 text-[13px] text-slate-600 min-w-0",
               cellPadding,
               cellAlign,
               column.widthClass
@@ -226,7 +227,7 @@ const DataTableRow = memo(function DataTableRow({
           >
             <span
               className={cn(
-                "block min-w-0 max-w-full font-semibold text-[10px] text-ink",
+                "block min-w-0 max-w-full font-semibold text-[13px] text-ink",
                 numericCell ? "tabular-nums" : "",
                 longTextCell
                   ? "whitespace-normal break-words [overflow-wrap:anywhere] line-clamp-2"
@@ -273,10 +274,12 @@ export function DataTable({
   tableLayout?: "auto" | "fixed";
 }) {
   return (
-    <div className="w-full min-w-0 overflow-x-auto">
+    <div className={cn("catalog-table", columns.length > 8 ? "catalog-table-dense" : "catalog-table-simple")}>
+      <p className="catalog-scroll-hint">Scroll horizontally to see all columns</p>
+      <div className="catalog-table-scroll" role="region" aria-label="Catalog results" tabIndex={0}>
       <table
         className={cn(
-          "w-full min-w-0 caption-bottom text-sm border-collapse",
+          "w-full caption-bottom text-sm border-separate border-spacing-0",
           tableLayout === "fixed" ? "table-fixed" : "table-auto"
         )}
       >
@@ -288,8 +291,9 @@ export function DataTable({
                 <TableHead
                   key={column.key}
                   className={cn(
-                    "bg-[#fbfdff] py-4 h-auto min-w-0",
-                    isLastColumn ? "pl-4 pr-8" : "px-4",
+                    "bg-[#fbfdff] py-3 h-auto min-w-0",
+                    "px-3",
+                    colIndex === 0 && "catalog-identity-cell",
                     column.align === "right"
                       ? "text-right"
                       : column.align === "center"
@@ -298,25 +302,26 @@ export function DataTable({
                     column.widthClass
                   )}
                   scope="col"
+                  aria-sort={sort === column.key ? (direction === "asc" ? "ascending" : "descending") : undefined}
                 >
                   {"sortable" in column && column.sortable === false ? (
-                    <span className="inline-flex max-w-full truncate text-[8px] uppercase tracking-[0.18em] text-slate-500">
+                    <span className="inline-flex max-w-full truncate text-[11px] font-medium text-slate-500">
                       {column.label}
                     </span>
                   ) : (
                     <button
-                      className={`group max-w-full min-w-0 ${columnButtonClass(column.align)} ${isLastColumn && column.align === "right" ? "mr-0" : ""}`}
+                      className={`group rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-w-full min-w-0 ${columnButtonClass(column.align)} ${isLastColumn && column.align === "right" ? "mr-0" : ""}`}
                       onClick={() => onSortChange(column.key)}
                       type="button"
                       title={`Sort by ${column.label}`}
                     >
-                      <span className="min-w-0 truncate">{column.label}</span>
+                      <span className="min-w-0 whitespace-nowrap leading-4">{column.label}</span>
                       <ArrowUpDown
                         aria-hidden
                         size={14}
                         className={cn(
                           "inline-block shrink-0 overflow-hidden transition-[max-width,opacity,margin] duration-150",
-                          "ml-0 max-w-0 opacity-0",
+                          sort === column.key ? "ml-1 max-w-[14px] opacity-100" : "ml-0 max-w-0 opacity-0",
                           "group-hover:ml-1 group-hover:max-w-[14px] group-hover:opacity-100",
                           "group-focus-visible:ml-1 group-focus-visible:max-w-[14px] group-focus-visible:opacity-100",
                           sort === column.key ? "text-ocean" : "text-slate-300"
@@ -349,9 +354,11 @@ export function DataTable({
           ))}
         </TableBody>
       </table>
+      </div>
 
-      {isLoading ? <p className="px-6 py-4 text-sm text-slate-500">Loading…</p> : null}
-      {error ? <p className="px-6 py-4 text-sm text-[#a33f17]">{error.message}</p> : null}
+      {isLoading ? <p role="status" className="px-4 py-6 text-sm text-slate-500">Loading catalog…</p> : null}
+      {error ? <p role="alert" className="px-4 py-6 text-sm text-red-700">{error.message}</p> : null}
+      {!isLoading && !error && rows.length === 0 ? <p role="status" className="px-4 py-8 text-sm text-slate-500">No items match your search.</p> : null}
     </div>
   );
 }

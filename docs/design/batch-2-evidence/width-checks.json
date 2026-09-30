@@ -1,0 +1,252 @@
+[
+  {
+    "name": "products",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "products",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "products",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "products",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "products",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "collections",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "collections",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "collections",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "collections",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "collections",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "pages",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "pages",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "pages",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "pages",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "pages",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "articles",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "articles",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "articles",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "articles",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "articles",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "blogs",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "blogs",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "blogs",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "blogs",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "blogs",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "blog-articles",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "blog-articles",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "blog-articles",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "blog-articles",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "blog-articles",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "article-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "article-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "article-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "article-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "article-detail",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "collection-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "collection-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "collection-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "collection-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "collection-detail",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "page-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "page-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "page-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "page-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "page-detail",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "product-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "product-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "product-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "product-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "product-detail",
+    "viewport": 320,
+    "width": 320
+  }
+]

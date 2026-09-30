@@ -40,3 +40,17 @@
   .overview-top-pages td:first-child > div { flex-direction: column; gap: 6px; align-items: flex-start; }
   .overview-top-pages td:not(:first-child)::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 400; color: #64748b; }
 }
+
+.overview-indexing-legend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.overview-coverage-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 120px; gap: 24px; align-items: center; padding: 18px 0; }
+.overview-coverage-progress { display: grid; grid-template-columns: minmax(0, 1fr) 60px; align-items: center; gap: 16px; }
+.overview-coverage-status { text-align: right; }
+.overview-attention-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px 8px; }
+@container (max-width: 600px) {
+  .overview-indexing-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-coverage-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+  .overview-coverage-progress { grid-row: 2; grid-column: 1 / -1; }
+  .overview-coverage-status { grid-row: 1; grid-column: 2; }
+  .overview-attention-row { grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
+  .overview-attention-action { grid-column: 2; }
+}

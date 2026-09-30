@@ -23,6 +23,8 @@ import { summarySchema } from "../types/api";
 import { GscPerformanceSection } from "../components/gsc/gsc-performance-section";
 import {
   CompletionBar,
+  IndexingSummary,
+  NeedsAttention,
   DeltaInline,
   KpiCard,
   SegmentMixTile,
@@ -160,7 +162,6 @@ export function OverviewPage() {
 
   const idx = data.indexing_rollup;
   const idxTotal = idx.total;
-  const idxPctIndexed = idxTotal > 0 ? (idx.indexed / idxTotal) * 100 : 0;
 
   const goals = data.overview_goals;
 
@@ -867,22 +868,11 @@ export function OverviewPage() {
           <div>
             <h2 className="overview-section-title">Indexing</h2>
             <p className="text-sm text-slate-600">
-              Rollup of last-known Search Console inspection states on synced catalog URLs. Run a sync with index refresh
-              to fill gaps; open any product, collection, page, or article for detail.
+              Latest stored inspection status for synced URLs. Refresh indexing during sync to update coverage.
             </p>
           </div>
         </div>
-        <div className="overview-metrics">
-          <KpiCard
-            label="Tracked URLs"
-            value={formatNumber(idxTotal)}
-            hint={idxTotal > 0 ? `${idxPctIndexed.toFixed(1)}% look indexed` : "No synced entities"}
-          />
-          <KpiCard label="Indexed" value={formatNumber(idx.indexed)} hint="Positive coverage signals" />
-          <KpiCard label="Not indexed" value={formatNumber(idx.not_indexed)} hint="Blocked, excluded, or errors" />
-          <KpiCard label="Needs review" value={formatNumber(idx.needs_review)} hint="Ambiguous or partial data" />
-          <KpiCard label="Unknown" value={formatNumber(idx.unknown)} hint="No inspection text stored yet" />
-        </div>
+        <IndexingSummary {...idx} />
         <Card className="overview-panel mt-4 p-5">
           <div className="flex flex-wrap items-center gap-2">
             <FileSearch className="text-[#5746d9]" size={18} />
@@ -940,34 +930,18 @@ export function OverviewPage() {
           <p className="overview-eyebrow">Catalog health</p>
           <h2 className="mt-2 overview-section-title">Metadata coverage</h2>
           <p className="mt-1 text-sm text-slate-500">
-            Share of synced entities with both SEO title and description filled. Products also show thin-body count
-            (description under 200 characters).
+            Synced entities with both an SEO title and description. Open a missing count to review the affected catalog.
           </p>
-          <div className="overview-tiles mt-6">
-            <CompletionBar
-              label="Products"
-              pct={data.catalog_completion.products.pct_meta_complete}
-              href="/products"
-              sub={`${formatNumber(data.catalog_completion.products.meta_complete)} / ${formatNumber(data.catalog_completion.products.total)} with meta · ${formatNumber(data.catalog_completion.products.thin_body)} thin body`}
-            />
-            <CompletionBar
-              label="Collections"
-              pct={data.catalog_completion.collections.pct_meta_complete}
-              href="/collections"
-              sub={`${formatNumber(data.catalog_completion.collections.meta_complete)} / ${formatNumber(data.catalog_completion.collections.total)} with meta`}
-            />
-            <CompletionBar
-              label="Pages"
-              pct={data.catalog_completion.pages.pct_meta_complete}
-              href="/pages"
-              sub={`${formatNumber(data.catalog_completion.pages.meta_complete)} / ${formatNumber(data.catalog_completion.pages.total)} with meta`}
-            />
-            <CompletionBar
-              label="Articles"
-              pct={data.catalog_completion.articles.pct_meta_complete}
-              href="/articles"
-              sub={`${formatNumber(data.catalog_completion.articles.meta_complete)} / ${formatNumber(data.catalog_completion.articles.total)} with meta · all blogs`}
-            />
+          <div className="mt-5 divide-y divide-slate-100">
+            {([
+              ["products", "Products", "/products"],
+              ["collections", "Collections", "/collections"],
+              ["pages", "Pages", "/pages"],
+              ["articles", "Articles", "/articles"]
+            ] as const).map(([key, label, href]) => {
+              const coverage = data.catalog_completion[key];
+              return <CompletionBar key={key} label={label} complete={coverage.meta_complete} total={coverage.total} missing={coverage.missing_meta} href={href} issueHref={key === "articles" ? href : `${href}?focus=missing_meta&sort=score&direction=desc`} />;
+            })}
           </div>
           <details className="mt-6 border-t border-slate-100 pt-4">
             <summary className="cursor-pointer text-sm font-medium text-[#5746d9]">View coverage counts by entity type</summary>
@@ -1027,6 +1001,17 @@ export function OverviewPage() {
           </div>
           </details>
         </Card>
+      </section>
+
+      <section>
+        <NeedsAttention hasCatalog={idxTotal > 0} items={[
+          { label: "Products missing metadata", count: data.metrics.products_missing_meta, href: "/products?focus=missing_meta&sort=score&direction=desc", action: "Review products" },
+          { label: "Short product descriptions", count: data.metrics.products_thin_body, href: "/products?focus=thin_body&sort=body_length&direction=asc", action: "Improve copy" },
+          { label: "Collections missing metadata", count: data.metrics.collections_missing_meta, href: "/collections?focus=missing_meta&sort=score&direction=desc", action: "Review collections" },
+          { label: "Pages missing metadata", count: data.metrics.pages_missing_meta, href: "/pages?focus=missing_meta&sort=score&direction=desc", action: "Review pages" },
+          { label: "Articles missing metadata", count: data.catalog_completion.articles.missing_meta, href: "/articles", action: "Browse articles" }
+        ]} />
+        <p className="mt-3 text-xs text-slate-500">URLs with Search Console data: {formatNumber(data.metrics.gsc_pages)} · With Analytics data: {formatNumber(data.metrics.ga4_pages)}</p>
       </section>
 
       {/* Top organic pages by GSC clicks */}
@@ -1103,57 +1088,6 @@ export function OverviewPage() {
         </section>
       )}
 
-      {/* SEO debt (entity counts live under Catalog scale above) */}
-      <section>
-        <Card className="overview-panel p-6">
-          <h2 className="overview-section-title">SEO debt snapshot</h2>
-          <div className="overview-tiles mt-4">
-            <div>
-              <p className="text-sm text-slate-500">Products missing meta</p>
-              <Link
-                to="/products?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
-              >
-                {formatNumber(data.metrics.products_missing_meta)}
-              </Link>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Thin product copy</p>
-              <Link
-                to="/products?focus=thin_body&sort=body_length&direction=asc"
-                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
-              >
-                {formatNumber(data.metrics.products_thin_body)}
-              </Link>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Collections missing meta</p>
-              <Link
-                to="/collections?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
-              >
-                {formatNumber(data.metrics.collections_missing_meta)}
-              </Link>
-            </div>
-            <div>
-              <p className="text-sm text-slate-500">Pages missing meta</p>
-              <Link
-                to="/pages?focus=missing_meta&sort=score&direction=desc"
-                className="mt-1 block text-3xl font-semibold tabular-nums text-[#5746d9] underline-offset-4 hover:underline"
-              >
-                {formatNumber(data.metrics.pages_missing_meta)}
-              </Link>
-            </div>
-          </div>
-          <p className="mt-4 text-xs text-slate-500">
-            <Link to="/articles?focus=missing_meta" className="font-medium text-[#5746d9] underline-offset-4 hover:underline">
-              Articles missing meta: {formatNumber(data.catalog_completion.articles.missing_meta)}
-            </Link>
-            {" · "}
-            URLs with GSC: {formatNumber(data.metrics.gsc_pages)} · With GA4: {formatNumber(data.metrics.ga4_pages)}
-          </p>
-        </Card>
-      </section>
     </div>
   );
 }

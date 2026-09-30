@@ -5,7 +5,7 @@
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   line-height: 1.5;
 }
-.detail-signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+.detail-signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
 .detail-page [data-slot="card"] {
   min-width: 0;
   border: 1px solid #e2e7ed;
@@ -14,11 +14,11 @@
   box-shadow: 0 1px 2px rgb(15 23 42 / 3%);
   backdrop-filter: none;
 }
-.detail-page .detail-signal-content { display: flex; flex-direction: column; gap: 10px; height: 100%; padding: 20px; }
+.detail-page .detail-signal-content { display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 16px; }
 .detail-signal-label { padding-top: 5px; font-size: 13px; font-weight: 500; color: #526174; line-height: 1.4; }
-.detail-signal-value { font-size: 28px; font-weight: 600; line-height: 1.25; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
-.detail-signal-description { font-size: 13px; line-height: 1.6; color: #64748b; overflow-wrap: anywhere; }
-.detail-signal-updated { margin-top: auto; padding-top: 6px; font-size: 11px; line-height: 1.5; color: #64748b; }
+.detail-signal-value { font-size: 24px; font-weight: 600; line-height: 1.25; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.detail-signal-description { font-size: 12px; line-height: 1.5; color: #64748b; overflow-wrap: anywhere; }
+.detail-signal-updated { margin-top: auto; padding-top: 4px; font-size: 11px; line-height: 1.5; color: #64748b; }
 .detail-page .detail-heading, .detail-page h3 { font-size: 18px; line-height: 1.4; font-weight: 650; letter-spacing: -0.02em; }
 .detail-eyebrow { font-size: 12px; font-weight: 500; color: #64748b; }
 .detail-editor-layout { display: flex; align-items: flex-start; gap: 24px; }

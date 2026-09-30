@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .faq_content_filter import (
     filter_faq_items_by_h3_headings,
-    health_claim_reason,
+    article_health_claims,
     is_question_heading,
     filter_paa_questions,
     normalize_flavor_to_flavour,
@@ -590,11 +590,7 @@ def validate_article_draft_compliance(
         actual_products = count_distinct_approved_product_links(body_html, path_to_canonical)
         if actual_products < min_product_links:
             gaps.append(f"Article must link to at least {min_product_links} distinct approved product URLs (currently {actual_products}); collection links and repeated product URLs do not count.")
-    visible_blocks = re.split(
-        r"(?is)</?(?:p|li|h[1-6]|div|td|th|section|blockquote)\b[^>]*>",
-        _SCRIPT_RE.sub("", body_html),
-    )
-    if check_health_claims and any(health_claim_reason(strip_html_for_compliance_search(block)) for block in visible_blocks):
+    if check_health_claims and article_health_claims(body_html):
         gaps.append("Body still contains a prohibited health or quit-smoking claim; remove it before saving.")
     if require_faqpage_ld and not faqpage_ld_present(body_html):
         gaps.append("Body must include FAQPage JSON-LD in a script type application/ld+json block (PAA signals were provided).")

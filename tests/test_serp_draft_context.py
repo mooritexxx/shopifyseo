@@ -181,7 +181,7 @@ def test_paa_numbered_and_snippet_capped():
         "dominant_serp_features": "",
         "content_format_hints": "",
         "audience_questions": [
-            {"question": "Is this safe?", "snippet": "S" * 500},
+            {"question": "How do I charge this device?", "snippet": "S" * 500},
         ],
         "top_ranking_pages": [],
         "related_searches": [],
@@ -189,7 +189,7 @@ def test_paa_numbered_and_snippet_capped():
     }
     appendix, _, paa_n = build_serp_appendix_and_retrieval_boost(topic="P topic", keywords=[], idea_serp_context=ctx)
     assert paa_n == 1
-    assert "1. Is this safe?" in appendix
+    assert "1. How do I charge this device?" in appendix
     assert appendix.count("S") < 400
 
 

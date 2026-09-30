@@ -189,7 +189,7 @@ def _clean_question_row(row: Any) -> dict[str, str] | None:
     return {"question": q, "snippet": sn}
 
 
-def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None, *, target_brand: str | None = None) -> list[dict[str, Any]]:
     """Compact parent → child PAA tree for draft prompts.
 
     Parent PAA questions represent section intent. Expanded children are capped and
@@ -207,6 +207,7 @@ def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> li
     # Pre-filter audience questions using the denylist
     audience_questions = filter_paa_questions(
         [q for q in audience_questions if isinstance(q, dict)],
+        target_brand=target_brand,
         log_dropped=True,
     )
 
@@ -272,7 +273,7 @@ def build_paa_question_hierarchy(idea_serp_context: dict[str, Any] | None) -> li
             _append_parent(expansion_parent_text.get(key, ""))
 
     # Apply denylist filter to the hierarchy (filters both parents and children)
-    rows = filter_paa_hierarchy(rows, log_dropped=True)
+    rows = filter_paa_hierarchy(rows, target_brand=target_brand, log_dropped=True)
 
     return rows
 
@@ -281,9 +282,10 @@ def select_required_paa_questions_for_draft(
     idea_serp_context: dict[str, Any] | None,
     *,
     max_questions: int = MAX_REQUIRED_PAA_QUESTIONS,
+    target_brand: str | None = None,
 ) -> list[str]:
     """Select visible FAQ/schema targets from parent PAA plus useful child follow-ups."""
-    hierarchy = build_paa_question_hierarchy(idea_serp_context)
+    hierarchy = build_paa_question_hierarchy(idea_serp_context, target_brand=target_brand)
     if max_questions <= 0:
         return []
     selected: list[str] = []
@@ -358,9 +360,10 @@ def build_serp_appendix_and_retrieval_boost(
     # Filter audience questions using the denylist before building appendix
     audience_questions = filter_paa_questions(
         [q for q in audience_questions if isinstance(q, dict)],
+        target_brand=topic,
         log_dropped=True,
     )
-    paa_hierarchy = build_paa_question_hierarchy(idea_serp_context)
+    paa_hierarchy = build_paa_question_hierarchy(idea_serp_context, target_brand=topic)
 
     top_pages: list[dict[str, str]] = idea_serp_context.get("top_ranking_pages") or []
     if not isinstance(top_pages, list):

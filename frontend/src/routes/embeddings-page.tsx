@@ -1,3 +1,4 @@
+import "./workspace-tools.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Database, RefreshCw, CheckCircle2, AlertTriangle, Key } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -124,9 +125,9 @@ export default function EmbeddingsPage() {
 
   if (isLoading) {
     return (
-      <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
-        <h1 className="text-2xl font-bold text-ink">Embeddings</h1>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="workspace-tools space-y-5">
+        <h1 className="workspace-tools-title">Embeddings</h1>
+        <div className="workspace-tools-summary">
           {[...Array(4)].map((_, i) => (
             <Skeleton key={i} className="h-32 rounded-2xl border bg-muted/40" />
           ))}
@@ -138,8 +139,8 @@ export default function EmbeddingsPage() {
 
   if (error) {
     return (
-      <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
-        <h1 className="text-2xl font-bold text-ink">Embeddings</h1>
+      <div className="workspace-tools space-y-5">
+        <h1 className="workspace-tools-title">Embeddings</h1>
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
             <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-amber-500" />
@@ -155,12 +156,12 @@ export default function EmbeddingsPage() {
   const refreshRunning = sync.running || refreshMutation.isPending;
 
   return (
-    <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
+    <div className="workspace-tools space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="workspace-tools-header">
         <div className="flex items-center gap-3">
           <Database className="h-6 w-6 text-primary" />
-          <h1 className="text-2xl font-bold text-ink">Embeddings</h1>
+          <h1 className="workspace-tools-title">Embeddings</h1>
         </div>
         <Button
           variant="ocean"
@@ -174,7 +175,7 @@ export default function EmbeddingsPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="workspace-tools-summary">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-xs uppercase tracking-widest text-muted-foreground">
@@ -198,7 +199,7 @@ export default function EmbeddingsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-lg font-semibold text-ink truncate" title={status.model}>
+            <p className="break-all text-sm font-semibold text-ink" title={status.model}>
               {status.model.replace("gemini-", "")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">{status.dimensions}-dim vectors</p>
@@ -226,16 +227,16 @@ export default function EmbeddingsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {status.api_key_configured ? (
                 <>
-                  <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                  <span className="text-lg font-semibold text-ink">Configured</span>
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                  <span className="text-sm font-semibold text-ink">Configured</span>
                 </>
               ) : (
                 <>
-                  <Key className="h-5 w-5 text-amber-500" />
-                  <span className="text-lg font-semibold text-amber-600">Missing</span>
+                  <Key className="h-4 w-4 shrink-0 text-amber-500" />
+                  <span className="text-sm font-semibold text-amber-600">Missing</span>
                 </>
               )}
             </div>
@@ -250,7 +251,7 @@ export default function EmbeddingsPage() {
           <CardTitle>Coverage by Type</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Table className="w-full text-sm">
+          <Table scrollLabel="Embedding coverage" className="workspace-tools-table">
             <TableHeader>
               <TableRow className="border-b bg-muted/30 text-left text-xs uppercase tracking-widest text-muted-foreground">
                 <TableHead className="px-5 py-3 font-medium">Type</TableHead>

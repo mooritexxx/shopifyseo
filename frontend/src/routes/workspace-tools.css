@@ -1,0 +1,32 @@
+.workspace-tools { min-width: 0; container-type: inline-size; color: #172033; overflow-wrap: anywhere; }
+.workspace-tools-title { margin: 0; font-size: 32px; font-weight: 650; line-height: 1.2; letter-spacing: -.035em; overflow-wrap: anywhere; }
+.workspace-tools-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-tools-header > div { min-width: 0; }
+.workspace-tools-summary { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(170px,100%),1fr)); gap: 12px; }
+.workspace-tools-summary > [data-slot="card"] { overflow: hidden; }
+.workspace-tools-summary > [data-slot="card"] > div { padding-left: 16px; padding-right: 16px; }
+.workspace-tools-summary > [data-slot="card"] > div:first-child { padding-top: 16px; }
+.workspace-tools-summary > [data-slot="card"] > div:last-child { padding-bottom: 16px; }
+.workspace-tools-summary h3 { font-size: 13px; text-transform: none; letter-spacing: normal; color: #526177; }
+.workspace-tools-summary p.text-3xl { font-size: 28px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.workspace-tools-panel { min-width: 0; padding: 16px; border: 1px solid #e2e7ed; border-radius: 14px; background: white; }
+.workspace-tools details > summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.workspace-tools details > summary:focus-visible { outline: 2px solid #2e6be6; outline-offset: 4px; border-radius: 4px; }
+.workspace-tools [role="tabpanel"] { min-width: 0; }
+.workspace-tools-table { min-width: 640px; font-size: 13px; }
+.workspace-tools-table th { font-size: 12px; text-transform: none; letter-spacing: normal; color: #526177; background: #f7f9fc; }
+.workspace-tools-table th, .workspace-tools-table td { padding: 12px; }
+.workspace-tools-table td { overflow-wrap: anywhere; }
+.workspace-tools-table tbody tr:hover { background: #f8fafc; }
+.workspace-tools .tool-json-grid { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px; }
+.workspace-tools .tool-json-grid > div { min-width:0; }
+.workspace-tools .tool-json-grid textarea { border-radius:10px; }
+.image-review-layout { display:flex; flex-direction:column; gap:12px; }
+.image-review-visual { order:-1; }
+@container (max-width: 650px) {
+  .workspace-tools-title { font-size: 28px; }
+  .workspace-tools-summary { grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
+  .workspace-tools-summary > [data-slot="card"] > div { padding-left:12px; padding-right:12px; }
+  .workspace-tools .tool-json-grid { grid-template-columns:minmax(0,1fr); }
+}
+@media(min-width:768px) { .image-review-layout { flex-direction:row;align-items:stretch;gap:16px; } }

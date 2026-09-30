@@ -1,3 +1,4 @@
+import "./workspace-tools.css";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
@@ -226,13 +227,13 @@ export function GoogleAdsLabPage() {
 
   if (ctxQuery.isLoading) {
     return (
-      <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">Loading Google Ads lab…</div>
+      <div className="rounded-[14px] border border-white/70 bg-white/90 p-5">Loading Google Ads lab…</div>
     );
   }
 
   if (ctxQuery.error || !ctxQuery.data) {
     return (
-      <div className="rounded-[30px] border border-[#ffd2c5] bg-[#fff4ef] p-8 text-[#8f3e20] shadow-panel">
+      <div className="rounded-[14px] border border-[#ffd2c5] bg-[#fff4ef] p-5 text-[#8f3e20]">
         {(ctxQuery.error as Error)?.message || "Could not load lab context."}
       </div>
     );
@@ -242,21 +243,17 @@ export function GoogleAdsLabPage() {
   const ctxOk = ctx.google_configured && ctx.google_connected && ctx.developer_token_configured && ctx.customer_id;
 
   return (
-    <div className="space-y-6">
+    <div className="workspace-tools space-y-5">
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Experiments</p>
-        <h2 className="mt-2 text-4xl font-bold text-ink">Google Ads keyword planning lab</h2>
+        <h1 className="workspace-tools-title mt-2">Google Ads lab</h1>
         <p className="mt-2 max-w-3xl text-sm text-slate-600">
-          These requests use your saved developer token, OAuth access, and customer ID from{" "}
-          <strong>Settings → Google Ads</strong>, matching Google’s REST mapping{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">POST …/customers/&#123;id&#125;:generateKeywordIdeas</code>. If
-          your saved ID is a <strong>manager (MCC)</strong>, the server resolves a <strong>client</strong> account for the URL and sets{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">login-customer-id</code> to the manager, as in Google’s curl sample.
+          Explore keyword ideas, historical metrics and forecasts using your saved Google Ads connection.
         </p>
       </div>
 
-      <Card className="border border-blue-200 bg-[#f0f6ff] p-6">
-        <p className="text-sm font-semibold text-ink">Notes</p>
+      <details className="workspace-tools-panel">
+        <summary>Usage notes and documentation</summary>
         <ul className="mt-2 space-y-1.5 text-sm text-slate-700">
           {(ctx.lab_hints ?? []).map((h) => (
             <li key={h} className="flex gap-2">
@@ -277,10 +274,10 @@ export function GoogleAdsLabPage() {
             </span>
           ))}
         </p>
-      </Card>
+      </details>
 
-      <Card className="border-line bg-white p-6">
-        <p className="text-sm font-semibold text-ink">Connection</p>
+      <details className="workspace-tools-panel" open={!ctxOk}>
+        <summary>Connection {ctxOk ? "· ready" : "· setup needed"}</summary>
         <ul className="mt-2 list-inside list-disc text-sm text-slate-600">
           <li>Google OAuth: {ctx.google_connected ? "connected" : "not connected"}</li>
           <li>OAuth client configured: {ctx.google_configured ? "yes" : "no"}</li>
@@ -336,21 +333,17 @@ export function GoogleAdsLabPage() {
             this browser and override that default for lab requests.
           </p>
         </div>
-      </Card>
+      </details>
 
-      <Card className="border-line bg-white p-6">
-        <p className="text-sm font-semibold text-ink">KeywordPlanIdeaService</p>
-        <p className="mb-4 text-sm text-slate-600">
-          The response panel includes a short <strong>planning</strong> header (URL customer and login-customer-id) so you can see how
-          the request was sent after MCC resolution.
-        </p>
+      <Card className="workspace-tools-panel">
+        <p className="text-sm font-semibold text-ink">Planning tools</p>
         <Tabs value={active} onValueChange={(v) => setActive(v as RpcMethod)} className="space-y-4">
-          <TabsList className="flex h-auto min-h-0 flex-wrap gap-2 rounded-[20px] border border-line bg-[#f7f9fc] p-2">
+          <TabsList scrollable aria-label="Google Ads tools">
             {TAB_META.map((t) => (
               <TabsTrigger
                 key={t.id}
                 value={t.id}
-                className="rounded-[14px] px-3 py-2 text-left text-xs font-semibold data-[state=active]:bg-white md:text-sm"
+                className="text-sm"
               >
                 {t.label}
               </TabsTrigger>
@@ -360,7 +353,7 @@ export function GoogleAdsLabPage() {
           {TAB_META.map((t) => (
             <TabsContent key={t.id} value={t.id} className="mt-0 space-y-3">
               <p className="text-sm text-slate-600">{t.blurb}</p>
-              <p className="text-xs text-slate-500">
+              <p className="break-all text-xs text-slate-500">
                 REST: <span className="font-mono">POST …/customers/&#123;id&#125;:{t.id}</span>
               </p>
               <div className="flex flex-wrap gap-2">
@@ -375,10 +368,11 @@ export function GoogleAdsLabPage() {
                   {invokeMutation.isPending ? "Calling…" : "Run request"}
                 </Button>
               </div>
-              <div className="grid gap-4 xl:grid-cols-2">
+              <div className="tool-json-grid">
                 <div>
                   <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Request body (JSON)</p>
                   <Textarea
+                    aria-label={`${t.label} request body`}
                     className="min-h-[280px] rounded-2xl border border-line bg-[#fafbfd] font-mono text-xs leading-relaxed"
                     spellCheck={false}
                     value={bodies?.[t.id] ?? ""}
@@ -393,6 +387,7 @@ export function GoogleAdsLabPage() {
                 <div>
                   <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Response</p>
                   <Textarea
+                    aria-label={`${t.label} response`}
                     readOnly
                     className="min-h-[280px] rounded-2xl border border-line bg-slate-50 font-mono text-xs leading-relaxed"
                     placeholder="Response JSON appears here."

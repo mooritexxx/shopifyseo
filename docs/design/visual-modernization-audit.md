@@ -74,7 +74,19 @@ Article Ideas now shares compact status tabs, a named scrollable table with stic
 
 Evidence: [idea detail](batch-4-evidence/idea-desktop.png), [queue](batch-4-evidence/queue-desktop.png), [short draft dialog](batch-4-evidence/draft-small-phone.png), [width checks](batch-4-evidence/width-checks.json).
 
-Next: Batch 5, optimization and tools.
+## Batch 5 — optimization and tools implemented
+
+Image Optimization, Embeddings, Internal Links and Google Ads lab use compact headings, neutral summaries, named table scroll regions and contained panels. Internal Links now uses shared keyboard tabs. Ads setup and reference notes are disclosures; request/response editors stack based on available width. Image review shows the current image immediately, discloses idle pipeline steps and scrolls within the viewport.
+
+- All 71 frontend tests passed. Final clean production rebuild/restart passed after correcting narrow image-type badges, embedding labels and long Ads API-name wrapping.
+- Populated image catalog, embedding coverage and Internal Links suggestions checked at 1440/1024/768/390/320px with no document overflow. All four Ads tabs checked at those widths after the wrapping fix; expanded Ads notes also fit at 320px.
+- All six Internal Links tabs opened at 320px. Orphans is populated; Suggestions/Applied/Graph/Outcomes have empty data. Graph Map toggle works in the empty state. Existing preview/confirm/guardrail tests pass with mocked data.
+- Image review opened at 320×600: y=24 to y=576 with internal scrolling and visible current image. Closing returns to the catalog. No optimize/rebuild/embedding refresh, Ads request, save or paid run was triggered. Populated graph/suggestion states, optimization progress/results and external failures remain fixture/integration gaps.
+- API request construction and data handlers unchanged.
+
+Evidence: [image catalog](batch-5-evidence/images-desktop.png), [review dialog](batch-5-evidence/image-review-mobile.png), [embeddings](batch-5-evidence/embeddings-mobile.png), [links settings](batch-5-evidence/links-settings-mobile.png), [Ads lab](batch-5-evidence/ads-mobile.png), [width checks](batch-5-evidence/width-checks.json).
+
+Next: Batch 6, Settings, API Usage and shared interaction checks.
 
 ## Outcome of the first pass
 
@@ -142,11 +154,11 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | `/article-ideas` | Approved/New/Rejected queues | Filters, selection/bulk actions, status changes, delete confirmation, generation and failures | 4 | ✓/✓ | ✓/partial/partial |
 | `/article-ideas/:ideaId` | Populated brief, strategy/mind-map content, clipping | Draft dialog, links/coverage disclosure, generation/resume, linked articles, editable fields and errors | 4 | ✓/✓ | ✓/partial/partial |
 | `/opportunities` | Populated inbox, task controls | Filters/sorts/paging; fixture-based prepare, draft compare/load, applied/monitoring/dismiss/reopen, empty/error | 3 | ✓/✓ | ✓/partial/partial |
-| `/google-ads-lab` | Keyword ideas, Historical metrics, Forecast metrics, Ad group themes | Field validation/reset, result/error/loading views using saved fixtures; minor overflow reproduction | 5 | ✓/✓ | —/—/— |
-| `/embeddings` | Populated metrics and coverage table | Refresh/progress, unavailable key, partial/error/empty coverage | 5 | ✓/✓ | —/—/— |
-| `/image-seo` | Populated table and Review image dialog | Type/status filters, search/sort/paging, selection/batch, gallery; optimize progress/comparison/failure/success fixtures | 5 | ✓/✓ | —/—/— |
+| `/google-ads-lab` | Keyword ideas, Historical metrics, Forecast metrics, Ad group themes | Field validation/reset, result/error/loading views using saved fixtures; minor overflow reproduction | 5 | ✓/✓ | ✓/partial/partial |
+| `/embeddings` | Populated metrics and coverage table | Refresh/progress, unavailable key, partial/error/empty coverage | 5 | ✓/✓ | ✓/partial/partial |
+| `/image-seo` | Populated table and Review image dialog | Type/status filters, search/sort/paging, selection/batch, gallery; optimize progress/comparison/failure/success fixtures | 5 | ✓/✓ | ✓/partial/partial |
 | `/api-usage` | Summary and low/empty recent usage | All time ranges, populated providers/charts, errors/empty, narrow tables | 6 | ✓/✓ | —/—/— |
-| `/internal-links` | Suggestions, Applied, Orphans, Graph Stats, Outcomes, Settings | Graph Map mode; populated suggestions/applied; preview/apply/undo/reconcile, source settings, failure/conflicts | 5 | ✓/✓ | —/—/— |
+| `/internal-links` | Suggestions, Applied, Orphans, Graph Stats, Outcomes, Settings | Graph Map mode; populated suggestions/applied; preview/apply/undo/reconcile, source settings, failure/conflicts | 5 | ✓/✓ | ✓/partial/partial |
 | `/settings` | Integrations, AI Models, Runtime, Data Sources | Provider reveal/select/test/save, validation, dirty states, OAuth/selectors, errors/success and keyboard traversal | 6 | ✓/✓ | —/—/— |
 
 ### Shared surfaces

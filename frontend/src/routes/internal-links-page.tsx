@@ -1,3 +1,5 @@
+import "./workspace-tools.css";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { AiLinkTypeFields } from "../components/ai-link-types-settings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle, Settings, Save } from "lucide-react";
@@ -52,13 +54,13 @@ import {
 function StatCard({ label, value, loading }: { label: string; value: number | string; loading?: boolean }) {
   return (
     <Card>
-      <CardContent className="flex flex-col items-center justify-center py-6">
+      <CardContent className="flex flex-col items-start gap-1 p-4">
         {loading ? (
           <Skeleton className="mb-1 h-8 w-16" />
         ) : (
-          <div className="text-3xl font-bold text-ink">{value}</div>
+          <div className="text-[28px] font-semibold leading-tight text-ink tabular-nums">{value}</div>
         )}
-        <div className="text-sm text-muted-foreground">{label}</div>
+        <div className="order-first text-[13px] font-medium text-slate-600">{label}</div>
       </CardContent>
     </Card>
   );
@@ -839,9 +841,9 @@ export function InternalLinksPage() {
   const isLoading = summary.isLoading;
 
   return (
-    <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-2xl font-bold text-ink">
+    <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="workspace-tools space-y-5">
+      <div className="workspace-tools-header">
+        <h1 className="workspace-tools-title flex items-center gap-2">
           <Link2 className="h-6 w-6" />
           Internal Links
         </h1>
@@ -856,7 +858,7 @@ export function InternalLinksPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div className="workspace-tools-summary">
         <StatCard label="Total Links" value={summary.data?.total_links ?? 0} loading={isLoading} />
         <StatCard label="Orphan Pages" value={summary.data?.orphan_count ?? 0} loading={isLoading} />
         <StatCard label="Pending Suggestions" value={summary.data?.suggested ?? 0} loading={isLoading} />
@@ -886,71 +888,15 @@ export function InternalLinksPage() {
         </Card>
       )}
 
-      {/* Tabs */}
-      <div className="flex max-w-full gap-2 overflow-x-auto border-b [&>button]:shrink-0 [&>button]:whitespace-nowrap">
-        <button
-          onClick={() => setTab("suggestions")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "suggestions"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          Suggestions ({summary.data?.suggested ?? 0})
-        </button>
-        <button
-          onClick={() => setTab("applied")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "applied"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          Applied ({summary.data?.applied ?? 0})
-        </button>
-        <button
-          onClick={() => setTab("orphans")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "orphans"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          Orphans ({summary.data?.orphan_count ?? 0})
-        </button>
-        <button
-          onClick={() => setTab("graph")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "graph"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          Graph Stats
-        </button>
-        <button
-          onClick={() => setTab("outcomes")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "outcomes"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          Outcomes
-        </button>
-        <button
-          onClick={() => setTab("settings")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            tab === "settings"
-              ? "border-b-2 border-blue-600 text-blue-600"
-              : "text-muted-foreground hover:text-ink"
-          }`}
-        >
-          <Settings size={14} className="mr-1 inline" />
-          Settings
-        </button>
-      </div>
-
+      <TabsList scrollable aria-label="Internal link views">
+        <TabsTrigger value="suggestions">Suggestions ({summary.data?.suggested ?? 0})</TabsTrigger>
+        <TabsTrigger value="applied">Applied ({summary.data?.applied ?? 0})</TabsTrigger>
+        <TabsTrigger value="orphans">Orphans ({summary.data?.orphan_count ?? 0})</TabsTrigger>
+        <TabsTrigger value="graph">Graph Stats</TabsTrigger>
+        <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
+        <TabsTrigger value="settings">Settings</TabsTrigger>
+      </TabsList>
+      <TabsContent value={tab} className="mt-0 space-y-5">
       {/* Suggestions tab */}
       {tab === "suggestions" && (
         <Card>
@@ -979,7 +925,7 @@ export function InternalLinksPage() {
                 No pending suggestions. Run a Rebuild to generate new opportunities.
               </div>
             ) : (
-              <Table>
+              <Table scrollLabel="Internal link data" className="workspace-tools-table">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Source</TableHead>
@@ -1033,7 +979,7 @@ export function InternalLinksPage() {
                 No links applied yet. Apply suggestions to see them here.
               </div>
             ) : (
-              <Table>
+              <Table scrollLabel="Internal link data" className="workspace-tools-table">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Source</TableHead>
@@ -1087,7 +1033,7 @@ export function InternalLinksPage() {
                 No orphan pages found. All published content has inbound links.
               </div>
             ) : (
-              <Table>
+              <Table scrollLabel="Internal link data" className="workspace-tools-table">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Type</TableHead>
@@ -1118,7 +1064,7 @@ export function InternalLinksPage() {
       {tab === "graph" && (
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
+            <div className="workspace-tools-header">
               <CardTitle className="text-lg">Link Graph Statistics</CardTitle>
               <div className="flex items-center gap-2">
                 {focusNode && (
@@ -1172,7 +1118,7 @@ export function InternalLinksPage() {
                   No link graph data yet. Run a sync to build the link graph.
                 </div>
               ) : (
-                <Table>
+                <Table scrollLabel="Internal link data" className="workspace-tools-table">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Type</TableHead>
@@ -1320,7 +1266,7 @@ export function InternalLinksPage() {
                 {outcomes.data?.top_targets && outcomes.data.top_targets.length > 0 && (
                   <div>
                     <h4 className="mb-2 font-medium">Top Link Targets</h4>
-                    <Table>
+                    <Table scrollLabel="Internal link data" className="workspace-tools-table">
                       <TableHeader>
                         <TableRow>
                           <TableHead>Type</TableHead>
@@ -1351,6 +1297,8 @@ export function InternalLinksPage() {
       {/* Settings tab */}
       {tab === "settings" && <InternalLinkSettingsTab setToast={setToast} />}
 
+      </TabsContent>
+
       {/* Preview Dialog */}
       <PreviewDialog
         suggestionId={previewId}
@@ -1368,6 +1316,6 @@ export function InternalLinksPage() {
           {toast.message}
         </Toast>
       )}
-    </div>
+    </Tabs>
   );
 }

@@ -102,7 +102,7 @@ export function ImageSeoTableRow({ row, selected, onToggleSelect, onView }: Imag
         />
       </TableCell>
       <TableCell className="px-3 py-2 align-middle">
-        <Badge variant="secondary" className="text-[10px] font-normal">
+        <Badge variant="secondary" className="whitespace-nowrap text-[11px] font-normal">
           {RESOURCE_TYPE_LABEL[row.resource_type]}
         </Badge>
       </TableCell>

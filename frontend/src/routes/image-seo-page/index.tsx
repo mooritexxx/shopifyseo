@@ -1,3 +1,4 @@
+import "../workspace-tools.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -285,7 +286,7 @@ export function ImageSeoPage() {
     Boolean(modalComparisonNewUrl) &&
     modalComparisonNewUrl !== modalRow.url.trim();
   const showModalAltOnlySquare =
-    !!modalRow && imageModalPhase === "success" && !showModalImageComparison;
+    !!modalRow && !showModalImageComparison;
 
   const listUrl = useMemo(() => {
     const p = new URLSearchParams();
@@ -613,45 +614,41 @@ export function ImageSeoPage() {
 
   return (
     <TooltipProvider delayDuration={250}>
-    <div className="w-full min-w-0 space-y-6 p-6 lg:p-8">
+    <div className="workspace-tools space-y-5">
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-3">
           <ImageIcon className="h-7 w-7 text-primary" />
           <div>
-            <h1 className="text-2xl font-bold text-ink">Image optimization</h1>
+            <h1 className="workspace-tools-title">Image optimization</h1>
             <p className="text-sm text-muted-foreground">
-              Shopify-hosted images from products, collections, pages, and blog articles. Run{" "}
-              <strong className="font-medium text-ink/80">Shopify</strong> (or <strong className="font-medium text-ink/80">Products</strong>
-              ) sync from the left sidebar to refresh the catalog and download product gallery files for local optimization.
-              Use <span className="text-ink/80">View</span> to inspect alt text, then{" "}
-              <span className="text-ink/80">Optimize</span> to build the draft (including AI alt when configured) and apply to
-              Shopify in one run.
+              Review catalog images and their alt text. Optimize prepares improvements and saves them to Shopify.
+              Refresh the catalog from the sync bar when images are missing.
             </p>
           </div>
         </div>
       </div>
 
       {data && (
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard
+        <section className="workspace-tools-summary">
+          <SummaryCard compact
             label="Total images"
             value={formatNumber(data.summary.total_images)}
             hint="All Shopify-hosted images across products, collections, pages, and articles."
             tone="border-[#dbe5f3] bg-[linear-gradient(135deg,#ffffff_0%,#eef6ff_100%)]"
           />
-          <SummaryCard
+          <SummaryCard compact
             label="Optimized"
             value={formatNumber(data.summary.optimized)}
             hint="Images passing all checks: alt text, SEO filename, and WebP format."
             tone="border-[#d8e9e1] bg-[linear-gradient(135deg,#f8fffb_0%,#e3f7ee_100%)]"
           />
-          <SummaryCard
+          <SummaryCard compact
             label="Missing alt"
             value={formatNumber(data.summary.missing_alt)}
             hint="Images with weak or missing alt text — hurts accessibility and SEO."
             tone="border-[#efe2bf] bg-[linear-gradient(135deg,#fffdf5_0%,#fff3cf_100%)]"
           />
-          <SummaryCard
+          <SummaryCard compact
             label="Not WebP"
             value={formatNumber(data.summary.not_webp)}
             hint="Images still in JPEG or PNG — converting to WebP improves page speed."
@@ -665,6 +662,7 @@ export function ImageSeoPage() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             id="img-seo-product-q"
+            aria-label="Search images"
             placeholder="Search title or handle…"
             value={productQuery}
             onChange={(e) => {
@@ -681,7 +679,7 @@ export function ImageSeoPage() {
             setResourceTypeFilter(v);
           }}
         >
-          <SelectTrigger className="h-9 w-[140px]">
+          <SelectTrigger aria-label="Image type" className="h-9 w-[140px]">
             <SelectValue placeholder="All types" />
           </SelectTrigger>
           <SelectContent>
@@ -702,6 +700,7 @@ export function ImageSeoPage() {
           ).map(([value, label]) => (
             <button
               key={value}
+              aria-pressed={statusFilter === value}
               type="button"
               onClick={() => {
                 setPage(0);
@@ -747,7 +746,7 @@ export function ImageSeoPage() {
           />
 
           <div className="rounded-2xl border border-border bg-card">
-            <Table className="w-full min-w-[1060px] border-collapse text-left text-sm">
+            <Table scrollLabel="Catalog images" className="workspace-tools-table w-full min-w-[1060px] border-collapse text-left">
               <TableHeader className="border-b border-border bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                 <TableRow>
                   <TableHead className="w-10 px-3 py-3 text-center">
@@ -822,13 +821,16 @@ export function ImageSeoPage() {
         description={
           modalRow ? `${RESOURCE_TYPE_LABEL[modalRow.resource_type]} · ${modalRow.resource_title}` : undefined
         }
-        contentClassName="max-h-[min(92vh,880px)] w-[min(920px,94vw)] overflow-hidden p-4 sm:p-4 [&>div:first-child]:mb-2.5"
+        contentClassName="max-h-[min(92dvh,880px)] w-[min(920px,94vw)] overflow-y-auto p-4 sm:p-4 [&>div:first-child]:mb-2.5"
       >
         {modalRow &&
         (imageModalPhase === "form" || imageModalPhase === "running" || imageModalPhase === "success") ? (
           <div className="space-y-2">
-            <div className="flex flex-col gap-3 md:flex-row md:items-stretch md:gap-4">
+            <div className="image-review-layout">
               <div className="flex min-w-0 flex-1 flex-col gap-2">
+                {imageModalPhase === "form" ? (
+                  <details className="rounded-lg border border-slate-200 p-3 text-sm">
+                    <summary className="cursor-pointer font-medium">Optimization steps</summary>
                 <ImageSeoOptimizeProgressPanel
                   status={optimizeProgressStatus}
                   pipelinePhase={pipelinePhase === "shopify" ? "shopify" : "draft"}
@@ -837,14 +839,25 @@ export function ImageSeoPage() {
                   compact
                   className="p-2.5 py-2 text-[11px] leading-snug [&_li]:gap-2"
                 />
+                  </details>
+                ) : (
+                <ImageSeoOptimizeProgressPanel
+                  status={optimizeProgressStatus}
+                  pipelinePhase={pipelinePhase === "shopify" ? "shopify" : "draft"}
+                  runKey={optimizeRunKey}
+                  latestMessage={optimizeProgressLatest}
+                  compact
+                  className="p-2.5 py-2 text-[11px] leading-snug [&_li]:gap-2"
+                />
+                )}
                 {imageModalPhase !== "success" ? (
-                  <p className="line-clamp-3 rounded-md border border-dashed border-border bg-muted/10 px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
+                  <p className="rounded-md border border-dashed border-border bg-muted/10 px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
                     <strong className="font-medium text-ink/90">Optimize</strong> downloads the image, runs vision alt when
                     configured, then saves to Shopify (SEO filename / WebP when your flags require a re-upload).
                   </p>
                 ) : null}
               </div>
-              <div className="mx-auto flex w-full max-w-[240px] shrink-0 flex-col items-center gap-1 md:mx-0 md:w-60 md:max-w-none">
+              <div className="image-review-visual mx-auto flex w-full max-w-[200px] shrink-0 flex-col items-center gap-1 md:mx-0 md:w-60 md:max-w-none">
                 {showModalImageComparison ? (
                   <div className="flex w-full justify-between px-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     <span>Before</span>
@@ -872,7 +885,7 @@ export function ImageSeoPage() {
                   ) : showModalAltOnlySquare ? (
                     <img
                       src={modalRow.url}
-                      alt={optimizeDone?.opt.applied_alt?.trim() || ""}
+                      alt={optimizeDone?.opt.applied_alt?.trim() || "Current catalog image"}
                       className="h-full w-full object-cover"
                     />
                   ) : (

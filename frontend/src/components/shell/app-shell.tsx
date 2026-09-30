@@ -1,3 +1,4 @@
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -14,6 +15,7 @@ import {
   Key,
   Layers3,
   LayoutDashboard,
+  Menu,
   Lightbulb,
   Link2,
   LoaderCircle,
@@ -24,7 +26,7 @@ import {
 } from "lucide-react";
 import { SidekickProvider } from "../sidekick/sidekick-context";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import type { PropsWithChildren } from "react";
 import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
@@ -203,6 +205,9 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncErrorCopied, setSyncErrorCopied] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setMobileNavOpen(false), [location.pathname]);
   const userDrawerDismissedRef = useRef(false);
   const errStreamPushRef = useRef("");
   const prevSyncRunningForDrawerRef = useRef(false);
@@ -454,9 +459,9 @@ export function AppShell({ children }: PropsWithChildren) {
       ? `Step ${Math.max(activeStepIndex, 1)} of ${stepHintTotal}`
       : lastSyncShort(summary?.last_dashboard_sync_at);
 
-  const [mqLg, setMqLg] = useState(true);
+  const [mqLg, setMqLg] = useState(() => window.matchMedia("(min-width: 1440px)").matches);
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
+    const mq = window.matchMedia("(min-width: 1440px)");
     const fn = () => setMqLg(mq.matches);
     fn();
     mq.addEventListener("change", fn);
@@ -711,7 +716,7 @@ export function AppShell({ children }: PropsWithChildren) {
       <div
         className={cn(
           "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-0 lg:px-0 lg:py-0",
-          syncDrawerOpen
+          syncDrawerOpen && mqLg
             ? sidebarCollapsed
               ? "lg:grid-cols-[72px_380px_minmax(0,1fr)]"
               : "lg:grid-cols-[260px_380px_minmax(0,1fr)]"
@@ -720,10 +725,19 @@ export function AppShell({ children }: PropsWithChildren) {
               : "lg:grid-cols-[260px_minmax(0,1fr)]"
         )}
       >
+        <header className="flex items-center justify-between gap-3 rounded-2xl bg-[#0d172b] p-3 text-white lg:hidden">
+          <span className="min-w-0 truncate font-semibold">{shopBlock.name}</span>
+          <div className="flex shrink-0 gap-2">
+            <Button variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={() => setSyncDrawerOpen(true)} aria-label="Open sync panel"><RefreshCw size={16} /> Sync</Button>
+            <Button variant="ghost" className="text-white hover:bg-white/10 hover:text-white" aria-expanded={mobileNavOpen} aria-controls="app-navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}>{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}<span className="sr-only">Navigation menu</span></Button>
+          </div>
+        </header>
         <aside
+          id="app-navigation"
           className={cn(
             "flex w-full flex-col gap-3 rounded-[24px] border border-white/70 bg-[#0d172b] text-white shadow-[0_20px_60px_-30px_rgba(13,23,43,0.55)] transition-[padding,gap] duration-200 ease-out",
-            "max-lg:rounded-[30px] max-lg:p-5",
+            "max-lg:rounded-2xl max-lg:p-5",
+            !mobileNavOpen && "max-lg:hidden",
             sidebarCollapsed ? "lg:gap-2 lg:p-2.5 lg:py-3" : "lg:p-4",
             "lg:z-10 lg:max-h-none lg:h-[100dvh] lg:min-h-0 lg:rounded-none lg:border-0 lg:border-r lg:border-r-white/[0.1] lg:shadow-none lg:self-start lg:sticky lg:top-0 lg:overflow-x-hidden lg:overflow-y-hidden"
           )}
@@ -824,7 +838,7 @@ export function AppShell({ children }: PropsWithChildren) {
           ) : null}
 
           <div className="mt-1 flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-[120px]">
-            <nav className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+            <nav className="min-h-0 flex-1 overflow-y-auto pr-0.5" onClick={(event) => { if ((event.target as HTMLElement).closest("a")) setMobileNavOpen(false); }}>
               <div className={cn("space-y-1", sidebarCollapsed ? "lg:space-y-0" : "")}>
                 {navGroups.map(([group, groupItems], gi) => (
                   <div key={group}>
@@ -975,17 +989,15 @@ export function AppShell({ children }: PropsWithChildren) {
         <main className="min-w-0 max-lg:min-h-0 lg:min-h-screen lg:p-6">{children}</main>
       </div>
       {syncDrawerOpen && !mqLg ? (
-        <>
-          <button
-            type="button"
-            className="fixed inset-0 z-40 bg-black/45 lg:hidden"
-            aria-label="Close sync panel"
-            onClick={closeDrawerOnly}
-          />
-          <div className="fixed right-4 top-4 z-50 max-h-[calc(100vh-2rem)] w-[min(380px,calc(100vw-2rem))] overflow-hidden lg:hidden">
-            <SyncDrawer {...drawerProps} />
-          </div>
-        </>
+        <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) closeDrawerOnly(); }}>
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/45" />
+            <DialogPrimitive.Content aria-describedby={undefined} className="fixed right-4 top-4 z-50 max-h-[calc(100dvh-2rem)] w-[min(380px,calc(100vw-2rem))] overflow-y-auto rounded-2xl outline-none">
+              <DialogPrimitive.Title className="sr-only">Sync panel</DialogPrimitive.Title>
+              <SyncDrawer {...drawerProps} />
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
       ) : null}
     </div>
     </SidekickProvider>

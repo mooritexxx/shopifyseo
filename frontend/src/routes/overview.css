@@ -1,0 +1,19 @@
+.overview-page { container-type: inline-size; }
+.overview-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 16px; }
+.overview-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 20px; }
+.overview-page section { min-width: 0; }
+.overview-page button { white-space: normal; }
+@container (max-width: 600px) {
+  .overview-page .p-6 { padding: 16px; }
+  .overview-page .items-end { align-items: flex-start; }
+  .overview-page .justify-end { justify-content: flex-start; }
+  .overview-page .shrink-0 { flex-shrink: 1; }
+  .overview-top-pages { min-width: 0; }
+  .overview-top-pages thead { display: none; }
+  .overview-top-pages tbody { display: grid; gap: 12px; }
+  .overview-top-pages tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; border: 1px solid #e8e4f8; border-radius: 12px; }
+  .overview-top-pages td { display: block; padding: 8px 0; text-align: left; }
+  .overview-top-pages td:first-child { grid-column: 1 / -1; }
+  .overview-top-pages td:first-child > div { flex-direction: column; gap: 6px; align-items: flex-start; }
+  .overview-top-pages td:not(:first-child)::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 400; color: #64748b; }
+}

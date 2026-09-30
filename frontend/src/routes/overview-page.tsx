@@ -1,3 +1,4 @@
+import "./overview.css";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, FileSearch, Globe, Layers, Monitor, MousePointerClick, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -124,7 +125,7 @@ export function OverviewPage() {
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="overview-metrics">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-28 animate-pulse rounded-2xl bg-slate-100" />
           ))}
@@ -164,19 +165,11 @@ export function OverviewPage() {
   const goals = data.overview_goals;
 
   return (
-    <div className="space-y-8 pb-8">
-      {/* Site-level GSC — property totals + trend (Phase 1) */}
-      <section>
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Search Console (property)</p>
-            <p className="text-sm text-slate-600">
-              {gsc.available && siteCur
-                ? `${siteCur.start_date} → ${siteCur.end_date} · timezone ${gsc.timezone} · data through ${gsc.anchor_date}`
-                : "Connect Google and pick a Search Console property in Settings → Data sources to load site-level GSC."}
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-2">
+    <div className="overview-page space-y-8 pb-8">
+      <header className="space-y-3">
+        <h1 className="text-3xl font-semibold tracking-tight text-ink">Overview</h1>
+        <p className="mt-1 text-sm text-slate-500">Search performance and catalog health at a glance.</p>
+          <div className="overview-toolbar flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
               {OVERVIEW_GSC_PERIOD_OPTIONS.map(({ value, label }) => (
                 <Button
@@ -198,7 +191,7 @@ export function OverviewPage() {
                 </Button>
               ))}
             </div>
-            <div className="flex max-w-full flex-wrap justify-end gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
+            <div className="flex max-w-full flex-wrap gap-1 rounded-lg border border-[#e8e4f8] bg-white p-1">
               <span className="self-center px-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 URL path
               </span>
@@ -220,6 +213,19 @@ export function OverviewPage() {
               ))}
             </div>
           </div>
+      </header>
+      {/* Site-level GSC — property totals + trend (Phase 1) */}
+      <section>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Search Console (property)</p>
+            <p className="text-sm text-slate-600">
+              {gsc.available && siteCur
+                ? `${siteCur.start_date} → ${siteCur.end_date} · timezone ${gsc.timezone} · data through ${gsc.anchor_date}`
+                : "Connect Google and pick a Search Console property in Settings → Data sources to load site-level GSC."}
+            </p>
+          </div>
+
         </div>
 
         {!gsc.available ? (
@@ -236,13 +242,17 @@ export function OverviewPage() {
           </Card>
         ) : (
           <>
+            <p className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+              <span className="rounded-full bg-slate-100 px-2.5 py-1">{gsc.cache.label || "Cached data"}</span>
+              {overviewCacheHint(gsc.cache)}
+            </p>
             <div
-              className="flex gap-4 overflow-x-auto pb-1 max-sm:snap-x max-sm:snap-mandatory sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-6"
+              className="overview-metrics"
               role="group"
               aria-label="Search Console KPIs"
             >
               <KpiCard
-                className="min-w-[220px] shrink-0 sm:min-w-0"
+                className="min-w-0"
                 label="GSC clicks"
                 value={formatNumber(siteCur?.clicks ?? 0)}
                 sparkline={
@@ -260,7 +270,7 @@ export function OverviewPage() {
                 }
               />
               <KpiCard
-                className="min-w-[220px] shrink-0 sm:min-w-0"
+                className="min-w-0"
                 label="GSC impressions"
                 value={formatNumber(siteCur?.impressions ?? 0)}
                 sparkline={
@@ -278,7 +288,7 @@ export function OverviewPage() {
                 }
               />
               <KpiCard
-                className="min-w-[220px] shrink-0 sm:min-w-0"
+                className="min-w-0"
                 label="Avg CTR"
                 value={formatPercent(siteCtr)}
                 sparkline={
@@ -291,7 +301,7 @@ export function OverviewPage() {
                 hint="Clicks ÷ impressions (property)"
               />
               <KpiCard
-                className="min-w-[220px] shrink-0 sm:min-w-0"
+                className="min-w-0"
                 label="Avg position"
                 value={
                   siteCur?.position != null && siteCur.position > 0 ? siteCur.position.toFixed(1) : "—"
@@ -303,73 +313,10 @@ export function OverviewPage() {
                   </span>
                 }
               />
-              <KpiCard
-                className="min-w-[220px] shrink-0 sm:min-w-0"
-                label="Cache"
-                value={gsc.cache.label || "—"}
-                hint={overviewCacheHint(gsc.cache)}
-              />
-              <SiteAuthorityCard className="min-w-[220px] shrink-0 sm:min-w-0" />
+              <SiteAuthorityCard className="min-w-0" />
             </div>
 
-            {data.gsc_property_breakdowns.available ? (
-              <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
-                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f4f2ff] text-[#5746d9] shadow-[0_2px_8px_rgba(87,70,217,0.12)]">
-                      <Layers size={22} strokeWidth={1.75} aria-hidden />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Segment mix</p>
-                      <h3 className="mt-1 text-lg font-bold tracking-tight text-ink">Property splits</h3>
-                      <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
-                        <span className="font-medium text-slate-600">
-                          {data.gsc_property_breakdowns.window.start_date} →{" "}
-                          {data.gsc_property_breakdowns.window.end_date}
-                        </span>
-                        {data.gsc_property_breakdowns.period_mode
-                          ? ` · ${data.gsc_property_breakdowns.period_mode.replace(/_/g, " ")}`
-                          : ""}
-                        . Highest-impression bucket per country, device, and search appearance for this window. Data is
-                        loaded from your dashboard store (updated when you run a Search Console sync); this block does
-                        not call Google on every page load.
-                      </p>
-                    </div>
-                  </div>
-                  <Link
-                    className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-[#e8e4f8] bg-[#faf8ff] px-3 py-2 text-xs font-semibold text-[#5746d9] transition hover:border-[#d4ccf0] hover:bg-[#f4f2ff]"
-                    to="/settings?tab=data-sources"
-                  >
-                    Search Console settings
-                    <ArrowRight size={14} aria-hidden />
-                  </Link>
-                </div>
-                <div
-                  className="grid gap-4 sm:grid-cols-3"
-                  role="group"
-                  aria-label="Top Search Console segment buckets by dimension"
-                >
-                  <SegmentMixTile
-                    label="Country"
-                    dimension="country"
-                    slice={data.gsc_property_breakdowns.country}
-                    icon={Globe}
-                  />
-                  <SegmentMixTile
-                    label="Device"
-                    dimension="device"
-                    slice={data.gsc_property_breakdowns.device}
-                    icon={Monitor}
-                  />
-                  <SegmentMixTile
-                    label="Search appearance"
-                    dimension="appearance"
-                    slice={data.gsc_property_breakdowns.searchAppearance}
-                    icon={FileSearch}
-                  />
-                </div>
-              </Card>
-            ) : null}
+
 
             <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
@@ -573,6 +520,64 @@ export function OverviewPage() {
                 )}
               </div>
             </Card>
+            {data.gsc_property_breakdowns.available ? (
+              <Card className="mt-4 border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
+                <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f4f2ff] text-[#5746d9] shadow-[0_2px_8px_rgba(87,70,217,0.12)]">
+                      <Layers size={22} strokeWidth={1.75} aria-hidden />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Segment mix</p>
+                      <h3 className="mt-1 text-lg font-bold tracking-tight text-ink">Property splits</h3>
+                      <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
+                        <span className="font-medium text-slate-600">
+                          {data.gsc_property_breakdowns.window.start_date} →{" "}
+                          {data.gsc_property_breakdowns.window.end_date}
+                        </span>
+                        {data.gsc_property_breakdowns.period_mode
+                          ? ` · ${data.gsc_property_breakdowns.period_mode.replace(/_/g, " ")}`
+                          : ""}
+                        . Highest-impression bucket per country, device, and search appearance for this window. Data is
+                        loaded from your dashboard store (updated when you run a Search Console sync); this block does
+                        not call Google on every page load.
+                      </p>
+                    </div>
+                  </div>
+                  <Link
+                    className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg border border-[#e8e4f8] bg-[#faf8ff] px-3 py-2 text-xs font-semibold text-[#5746d9] transition hover:border-[#d4ccf0] hover:bg-[#f4f2ff]"
+                    to="/settings?tab=data-sources"
+                  >
+                    Search Console settings
+                    <ArrowRight size={14} aria-hidden />
+                  </Link>
+                </div>
+                <div
+                  className="overview-tiles"
+                  role="group"
+                  aria-label="Top Search Console segment buckets by dimension"
+                >
+                  <SegmentMixTile
+                    label="Country"
+                    dimension="country"
+                    slice={data.gsc_property_breakdowns.country}
+                    icon={Globe}
+                  />
+                  <SegmentMixTile
+                    label="Device"
+                    dimension="device"
+                    slice={data.gsc_property_breakdowns.device}
+                    icon={Monitor}
+                  />
+                  <SegmentMixTile
+                    label="Search appearance"
+                    dimension="appearance"
+                    slice={data.gsc_property_breakdowns.searchAppearance}
+                    icon={FileSearch}
+                  />
+                </div>
+              </Card>
+            ) : null}
           </>
         )}
       </section>
@@ -619,9 +624,9 @@ export function OverviewPage() {
               role="group"
               aria-label="GA4 KPIs"
             >
-              <div className="flex gap-4 overflow-x-auto pb-1 max-sm:snap-x max-sm:snap-mandatory sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-4">
+              <div className="overview-metrics">
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="Sessions"
                   value={formatNumber(ga4Cur?.sessions ?? 0)}
                   sparkline={
@@ -639,7 +644,7 @@ export function OverviewPage() {
                   }
                 />
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="Views"
                   value={formatNumber(ga4Cur?.views ?? 0)}
                   sparkline={
@@ -673,15 +678,15 @@ export function OverviewPage() {
                   hint="Simple ratio for the window"
                 />
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="Cache"
                   value={ga4.cache.label || "—"}
                   hint={overviewCacheHint(ga4.cache)}
                 />
               </div>
-              <div className="flex gap-4 overflow-x-auto pb-1 max-sm:snap-x max-sm:snap-mandatory sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-3">
+              <div className="overview-metrics">
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="New users"
                   value={formatNumber(ga4Cur?.new_users ?? 0)}
                   hint={
@@ -692,7 +697,7 @@ export function OverviewPage() {
                   }
                 />
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="Avg engagement"
                   value={formatDurationSeconds(ga4Cur?.avg_session_duration ?? 0)}
                   hint={
@@ -703,7 +708,7 @@ export function OverviewPage() {
                   }
                 />
                 <KpiCard
-                  className="min-w-[220px] shrink-0 sm:min-w-0"
+                  className="min-w-0"
                   label="Bounce rate"
                   value={
                     ga4Cur && ga4Cur.sessions > 0
@@ -867,7 +872,7 @@ export function OverviewPage() {
             </p>
           </div>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="overview-metrics">
           <KpiCard
             label="Tracked URLs"
             value={formatNumber(idxTotal)}
@@ -883,7 +888,7 @@ export function OverviewPage() {
             <FileSearch className="text-[#5746d9]" size={18} />
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">By entity type</p>
           </div>
-          <ul className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <ul className="overview-tiles mt-4 text-sm">
             {(
               [
                 ["product", "Products", "/products"],
@@ -920,7 +925,7 @@ export function OverviewPage() {
             <p className="text-sm text-slate-600">Totals from synced entities with GSC/GA4 facts—subset of the property</p>
           </div>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="overview-metrics">
           <KpiCard label="GSC clicks" value={formatNumber(clicks)} hint="Sum across tracked URLs" />
           <KpiCard label="GSC impressions" value={formatNumber(impressions)} />
           <KpiCard label="Avg CTR" value={formatPercent(ctrFraction)} hint="Clicks ÷ impressions" />
@@ -932,13 +937,13 @@ export function OverviewPage() {
       {/* Catalog SEO completion (plan S4) */}
       <section>
         <Card className="border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Catalog SEO completion</p>
-          <h2 className="mt-2 text-xl font-bold text-ink">Meta coverage</h2>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Catalog health</p>
+          <h2 className="mt-2 text-xl font-bold text-ink">Metadata coverage</h2>
           <p className="mt-1 text-sm text-slate-500">
             Share of synced entities with both SEO title and description filled. Products also show thin-body count
             (description under 200 characters).
           </p>
-          <div className="mt-6 grid gap-8 sm:grid-cols-2">
+          <div className="overview-tiles mt-6">
             <CompletionBar
               label="Products"
               pct={data.catalog_completion.products.pct_meta_complete}
@@ -964,21 +969,8 @@ export function OverviewPage() {
               sub={`${formatNumber(data.catalog_completion.articles.meta_complete)} / ${formatNumber(data.catalog_completion.articles.total)} with meta · all blogs`}
             />
           </div>
-        </Card>
-      </section>
-
-      {/* Catalog scale — meta coverage breakdown by entity type */}
-      <section>
-        <Card className="border-[#e8e4f8] bg-white p-6 shadow-[0_2px_20px_rgba(15,23,42,0.04)]">
-          <div className="mb-1 flex items-center gap-2">
-            <MousePointerClick className="text-[#5746d9]" size={18} />
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Catalog scale</p>
-          </div>
-          <h2 className="text-xl font-bold text-ink">Meta coverage by entity type</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Stacked count of entities with complete meta vs. missing title or description. Products also show thin-body
-            copy (&lt;200 chars).
-          </p>
+          <details className="mt-6 border-t border-slate-100 pt-4">
+            <summary className="cursor-pointer text-sm font-medium text-[#5746d9]">View coverage counts by entity type</summary>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600">
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: CHART_META_COMPLETE }} />
@@ -1033,6 +1025,7 @@ export function OverviewPage() {
               </BarChart>
             </ResponsiveContainer>
           </div>
+          </details>
         </Card>
       </section>
 
@@ -1050,7 +1043,7 @@ export function OverviewPage() {
               page.
             </p>
             <div className="mt-5">
-              <Table className="w-full min-w-[560px] text-sm">
+              <Table className="overview-top-pages w-full min-w-[560px] text-sm">
                 <TableHeader>
                   <TableRow className="border-b border-[#e8e4f8]">
                     <TableHead className="pb-2 text-left text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -1073,7 +1066,7 @@ export function OverviewPage() {
                 <TableBody className="divide-y divide-[#f1eeff]">
                   {data.top_pages.map((page) => (
                     <TableRow key={`${page.entity_type}:${page.handle}`} className="group">
-                      <TableCell className="py-2.5 pr-4">
+                      <TableCell className="py-2.5 pr-4" data-label="Page">
                         <div className="flex items-start gap-2.5">
                           <span
                             className="mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
@@ -1089,16 +1082,16 @@ export function OverviewPage() {
                           </Link>
                         </div>
                       </TableCell>
-                      <TableCell className="py-2.5 pl-4 text-right tabular-nums font-semibold text-ink">
+                      <TableCell className="py-2.5 pl-4 text-right tabular-nums font-semibold text-ink" data-label="Clicks">
                         {formatNumber(page.gsc_clicks)}
                       </TableCell>
-                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600">
+                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600" data-label="Impressions">
                         {formatNumber(page.gsc_impressions)}
                       </TableCell>
-                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600">
+                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600" data-label="CTR">
                         {formatPercent(page.gsc_ctr)}
                       </TableCell>
-                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600">
+                      <TableCell className="py-2.5 pl-4 text-right tabular-nums text-slate-600" data-label="Avg position">
                         {page.gsc_position != null ? page.gsc_position.toFixed(1) : "—"}
                       </TableCell>
                     </TableRow>
@@ -1114,7 +1107,7 @@ export function OverviewPage() {
       <section>
         <Card className="border-[#e8e4f8] p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">SEO debt snapshot</p>
-          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+          <div className="overview-tiles mt-4">
             <div>
               <p className="text-sm text-slate-500">Products missing meta</p>
               <Link

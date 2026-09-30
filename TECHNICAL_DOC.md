@@ -553,7 +553,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
-| OverviewPage         | `/`                                      | Dashboard overview               | `/api/summary`, sync/status                     |
+| OverviewPage         | `/`                                      | Responsive dashboard: performance, indexing, catalog health | `/api/summary`, sync/status                     |
 | InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |
@@ -576,7 +576,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | SettingsPage         | `/settings`                              | Integrations + models            | `/api/settings`, tests, `/api/google-signals`   |
 
 
-**Shell:** `frontend/src/components/shell/app-shell.tsx` wraps routes with nav, sync controls, `SidekickProvider`.
+**Shell:** `frontend/src/components/shell/app-shell.tsx` wraps routes with nav, sync controls, `SidekickProvider`. Below 1024px, a compact header toggles navigation. Sync overlays below 1440px and docks on wider screens. Overview grids follow available content width; narrow top-page rows become cards, cache freshness is a compact status, and catalog coverage counts expand within Catalog health.
 
 ---
 

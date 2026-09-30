@@ -1,0 +1,817 @@
+{
+  "date": "2026-09-30",
+  "environment": "Local FastAPI SPA on port 8000",
+  "scope": "Initial rendered states only; see report for transient captures and untested states",
+  "observations": [
+    {
+      "capture": "overview",
+      "route": "/",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "products",
+      "route": "/products",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "collections",
+      "route": "/collections",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "pages",
+      "route": "/pages",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "articles",
+      "route": "/articles",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "blogs",
+      "route": "/blogs",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "rankings",
+      "route": "/rankings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords",
+      "route": "/keywords",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "opportunities",
+      "route": "/opportunities",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "article-ideas",
+      "route": "/article-ideas",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "image-seo",
+      "route": "/image-seo",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "google-ads-lab",
+      "route": "/google-ads-lab",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "embeddings",
+      "route": "/embeddings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "api-usage",
+      "route": "/api-usage",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "settings",
+      "route": "/settings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "settings-ai-models",
+      "route": "/settings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "settings-runtime",
+      "route": "/settings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "settings-data-sources",
+      "route": "/settings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords-competitors",
+      "route": "/keywords?tab=competitors",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords-competitors-loaded",
+      "route": "/keywords?tab=competitors",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords-target",
+      "route": "/keywords?tab=target",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 650,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords-clusters",
+      "route": "/keywords?tab=clusters",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "keywords-clusters-loaded",
+      "route": "/keywords?tab=clusters",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 436,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "competitors-new",
+      "route": "/keywords?tab=competitors",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "competitors-dismissed",
+      "route": "/keywords?tab=competitors",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "targets-new",
+      "route": "/keywords?tab=target",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 650,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "targets-dismissed",
+      "route": "/keywords?tab=target",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 650,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "cluster-detail",
+      "route": "/keywords/clusters/2156",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "idea-detail",
+      "route": "/article-ideas/80",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "blog-articles",
+      "route": "/blogs/canada",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "article-detail",
+      "route": "/articles/canada/fog-formulas-collection-performance-flavour",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "collection-detail",
+      "route": "/collections/elfbar-disposable-vapes",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "page-detail",
+      "route": "/pages/elfbar",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "product-detail",
+      "route": "/products/elfbar-bc-pro-80k-blue-razz-ice-disposable-vape",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": null,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "cluster-detail-loaded",
+      "route": "/keywords/clusters/2156",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "competitor-detail",
+      "route": "/keywords/competitors/180smoke.ca",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links-applied",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 618,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links-orphans",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 618,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links-graph",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 618,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links-outcomes",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 618,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "internal-links-settings",
+      "route": "/internal-links",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 618,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ads-historical-metrics",
+      "route": "/google-ads-lab",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": true,
+      "mobile_document_width": 395,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ads-forecast-metrics",
+      "route": "/google-ads-lab",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ads-ad-group-themes",
+      "route": "/google-ads-lab",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "image-seo-loaded",
+      "route": "/image-seo",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "image-review-dialog",
+      "route": "/image-seo",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "embeddings-loaded",
+      "route": "/embeddings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "products-loaded",
+      "route": "/products",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ideas-new",
+      "route": "/article-ideas",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ideas-rejected",
+      "route": "/article-ideas",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "sync-idle-dialog",
+      "route": "/article-ideas",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "ranking-add-dialog",
+      "route": "/rankings",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    },
+    {
+      "capture": "article-draft-dialog",
+      "route": "/articles",
+      "desktop_document_overflow": false,
+      "mobile_document_overflow": false,
+      "mobile_document_width": 390,
+      "desktop_viewport": [
+        1440,
+        1000
+      ],
+      "mobile_viewport": [
+        390,
+        844
+      ]
+    }
+  ]
+}

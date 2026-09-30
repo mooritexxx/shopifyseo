@@ -72,6 +72,7 @@ class SettingsValuesPayload(BaseModel):
     dataforseo_api_password: str = ""
     open_page_rank_api_key: str = ""
     serpapi_api_key: str = ""
+    serpapi_rank_monthly_budget: str = "250"
     google_client_id: str = ""
     google_client_secret: str = ""
     search_console_site: str = ""

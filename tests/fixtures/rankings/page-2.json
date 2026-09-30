@@ -1,0 +1,47 @@
+{
+  "search_parameters": {
+    "start": 20
+  },
+  "organic_results": [
+    {
+      "position": 1,
+      "link": "https://competitor1.example/page-2"
+    },
+    {
+      "position": 2,
+      "link": "https://competitor2.example/page-2"
+    },
+    {
+      "position": 3,
+      "link": "https://competitor3.example/page-2"
+    },
+    {
+      "position": 4,
+      "link": "https://competitor4.example/page-2"
+    },
+    {
+      "position": 5,
+      "link": "https://competitor5.example/page-2"
+    },
+    {
+      "position": 6,
+      "link": "https://competitor6.example/page-2"
+    },
+    {
+      "position": 7,
+      "link": "https://competitor7.example/page-2"
+    },
+    {
+      "position": 8,
+      "link": "https://competitor8.example/page-2"
+    },
+    {
+      "position": 9,
+      "link": "https://competitor9.example/page-2"
+    },
+    {
+      "position": 10,
+      "link": "https://competitor10.example/page-2"
+    }
+  ]
+}

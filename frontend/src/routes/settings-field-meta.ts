@@ -12,6 +12,7 @@ export type SettingsFieldKey =
   | "dataforseo_api_password"
   | "open_page_rank_api_key"
   | "serpapi_api_key"
+  | "serpapi_rank_monthly_budget"
   | "ai_generation_provider"
   | "ai_generation_model"
   | "ai_sidekick_provider"
@@ -116,9 +117,13 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
     detail:
       "Used to score competitor domain authority (0–10, derived from the Common Crawl open web graph). This is a domain-level metric only — it is not keyword difficulty and is never used to derive one. Sent as a Bearer token. Save settings, then use Validate access."
   },
+  serpapi_rank_monthly_budget: {
+    label: "Monthly ranking request budget",
+    hint: "Maximum ranking search requests per calendar month (Pacific time), including retries. Default 250. This is a conservative request count, not a SerpApi billing total."
+  },
   serpapi_api_key: {
     label: "SerpAPI API Key",
-    hint: "From serpapi.com — used when generating article ideas (Google related questions for each primary keyword).",
+    hint: "From serpapi.com — used for keyword ranking checks and article idea research.",
     detail:
       "The app calls SerpAPI’s Google Search API once per primary keyword: it stores People Also Ask (question + snippet when present), the first-page organic titles and URLs, and uses that snapshot when generating ideas. Localization (google domain, country gl, language hl) follows your Primary market under Store profile. Leave blank to skip SerpAPI during idea generation. Use Test connection to verify the key with the query “black coffee”."
   },

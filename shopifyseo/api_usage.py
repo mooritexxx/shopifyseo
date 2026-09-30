@@ -162,7 +162,7 @@ def _stage_to_process_sql() -> str:
 # Summaries for the dashboard
 # ---------------------------------------------------------------------------
 
-_LLM_FILTER = "provider != 'dataforseo'"
+_LLM_FILTER = "provider NOT IN ('dataforseo', 'serpapi')"
 _SEO_FILTER = "provider = 'dataforseo'"
 
 
@@ -355,7 +355,9 @@ def get_usage_summary(conn: sqlite3.Connection, days: int = 30) -> dict:
         """
     ).fetchall()
 
+    rank_calls = conn.execute("SELECT count(*) FROM api_usage_log WHERE provider='serpapi' AND stage='rank_tracking' AND created_at>=?", (cutoff_custom,)).fetchone()[0]
     return {
+        "ranking_requests": rank_calls,
         "periods": {
             "today": summary_today,
             "last_7d": summary_7d,

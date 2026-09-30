@@ -36,6 +36,8 @@ const InternalLinksPage = lazy(() =>
   import("../routes/internal-links-page").then((m) => ({ default: m.InternalLinksPage }))
 );
 
+const RankingsPage = lazy(() => import("../routes/rankings-page").then(m => ({default: m.RankingsPage})));
+
 function PageFallback() {
   return (
     <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">
@@ -97,6 +99,10 @@ export const router = createBrowserRouter(
     {
       path: "/articles/:blogHandle/:articleHandle",
       element: shell(<ArticleDetailPage />)
+    },
+    {
+      path: "/rankings",
+      element: shell(<RankingsPage />)
     },
     {
       path: "/keywords",

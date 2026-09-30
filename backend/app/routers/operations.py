@@ -68,7 +68,13 @@ def settings():
 
 @router.post("/settings", response_model=SuccessResponse[ActionMessagePayload])
 def settings_save(payload: SettingsUpdatePayload):
-    return success_response({"message": save_settings(payload.model_dump())})
+    try:
+        values = payload.model_dump()
+        if "serpapi_rank_monthly_budget" not in payload.model_fields_set:
+            values.pop("serpapi_rank_monthly_budget", None)
+        return success_response({"message": save_settings(values)})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @router.post("/settings/ai-test", response_model=SuccessResponse[ActionMessagePayload])

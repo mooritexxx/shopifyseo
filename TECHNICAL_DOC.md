@@ -82,6 +82,56 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 **Safe settings save:** When saving settings via `POST /api/settings`, empty or null values for secret fields (API keys, passwords) are treated as "leave unchanged" rather than wiping the stored value. This prevents accidental deletion of credentials via partial POST requests. Secret keys protected: `shopify_client_secret`, `dataforseo_api_password`, `open_page_rank_api_key`, `serpapi_api_key`, `google_client_secret`, `openai_api_key`, `gemini_api_key`, `anthropic_api_key`, `openrouter_api_key`, `ollama_api_key`, `google_ads_developer_token`. See `SECRET_SETTING_KEYS` in `shopifyseo/dashboard_config.py`.
 
 
+### Keyword rankings
+
+`/app/rankings` tracks **vapely.ca** organic results for Google.ca, Toronto, English,
+desktop. This is a fixed-context snapshot, separate from GSC averages. Add/edit keywords
+(with optional group and target URL), remove them without losing history, and restore by
+adding the same normalized term. No Shopify writes.
+
+| Method | Path | Purpose |
+| ------ | ---- | ------- |
+| GET | `/api/rankings` | Active keywords, latest outcome, movement, last 12 checks, request budget and last job |
+| GET | `/api/rankings/{id}/history` | All snapshots, including errors and unverified imports |
+| POST | `/api/rankings/keywords` | Add, edit metadata, or reactivate `{term, target_url?, grp?}` |
+| DELETE | `/api/rankings/keywords/{id}` | Stop tracking; preserve history |
+| POST | `/api/rankings/estimate` | Credit check and worst-case requests for `{keyword_ids?, max_pages:1..5}` |
+| POST | `/api/rankings/check` | Reserve budget and start a background job; also requires a client `request_key` for deduplication |
+| POST | `/api/rankings/weekly-run` | All active terms; body `{max_pages:5}`; one accepted weekly run per Pacific date |
+
+Checks use page offset + provider organic position, never the number of accumulated URLs.
+Failed/incomplete/repeated pages are unknown outcomes, not proof of absence. Absence is
+shown as `>N` only after a complete check of that depth. URLs lose tracking parameters but
+retain meaningful query parameters. The current ranking URL is compared with the configured
+target URL. Error and unverified snapshots break chart lines and numeric movement comparisons.
+
+Workers use a daemon thread with at most four concurrent keywords. SQLite atomically reserves
+`keywords × pages × 2` request slots (one retry per page), allows only one active rank job,
+and records requests **before** network dispatch. Retries occur only for timeout/connection
+failures and HTTP 429. Unused slots are released after completion; startup marks interrupted
+checks unknown and releases unused reservations, retaining sent/ambiguous requests in the ledger.
+This is a conservative request count, **not provider billing**; the SerpApi account may also
+be consumed by other app features or clients. Checks explicitly bypass cache for fresh snapshots.
+
+Settings → SerpApi includes `serpapi_rank_monthly_budget` (default `250`, calendar month in
+America/Vancouver). Both the estimate dialog and execution enforce the budget and require a
+successful SerpApi credit lookup. At 16 terms/top 50, the initial reserve is 160 requests;
+reduce depth or check individual terms to fit a smaller budget. The API Usage page separately
+shows ranking requests without pretending to estimate subscription dollar cost.
+
+Scheduling is **external**: configure a scheduler for Friday 09:00 in `America/Vancouver`
+and POST JSON `{ "max_pages": 5 }` to `/api/rankings/weekly-run`. Use the deployment's existing
+access controls; do not expose the local API publicly. A second accepted call on that Pacific
+date is skipped, including after restart. A rejected estimate does not consume the daily key.
+No OS schedule is installed by this feature.
+
+To import the legacy September baseline once (repeating is safe):
+`PYTHONPATH=. python3 scripts/import-rank-baseline.py /path/to/manual-2026-09-29.csv`.
+The legacy script's ranks and coverage are unverifiable without raw results: all imported rows
+are labelled **unverified**, reported positions are retained separately, and they never enter
+verified rank charts/top-10 totals. GSC exports are rejected. Seed initialization runs once,
+so removed keywords do not reappear at app startup.
+
 ### Products
 
 
@@ -379,6 +429,8 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 ## Services
 
+Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
+
 Backend orchestration lives in `backend/app/services/` and delegates to `shopifyseo/*`.
 
 
@@ -432,6 +484,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
 | OverviewPage         | `/`                                      | Dashboard overview               | `/api/summary`, sync/status                     |
+| RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |
 | ProductDetailPage    | `/products/:handle`                      | Product SEO + signals + Sidekick + Top search queries (GSC) | `/api/products/{handle}`, AI stream, inspection |
 | ContentListPage      | `/collections`, `/pages`                 | List collections or pages        | `/api/collections`, `/api/pages`                |
@@ -457,6 +510,12 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 ---
 
 ## Database Tables
+
+Ranking tables (created through the existing schema bootstrap):
+- `tracked_keywords`: normalized unique term, optional target/group, active flag; removal is soft.
+- `rank_checks`: immutable outcome and fixed search profile, rank or unknown state, reported legacy rank, target-at-check, competitors and timestamp; indexed `(keyword_id, checked_at DESC)`, unique import identity and `(job_id, keyword_id)`.
+- `rank_jobs`: request-key and weekly-date uniqueness, progress and durable request reservation; a partial unique index permits one running job.
+- `rank_requests`: one ledger row per dispatched attempt, indexed by Pacific calendar month; remains after restart.
 
 SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/dashboard_store.py`, `shopifyseo/dashboard_google/_cache.py`. No Alembic/SQLAlchemy ORM.
 
@@ -567,6 +626,8 @@ which rows match.
 ---
 
 ## External Integrations
+
+SerpApi rank tracking uses `/search.json` (Google.ca organic results) and `/account.json` (credit availability), reusing the existing secret `serpapi_api_key`. Account checks do not spend search credits. Search response bodies and credential-bearing URLs are never stored or returned by rank tracking.
 
 
 | Service                                                 | Purpose                                            | How invoked                                                                                                                     | Sync / frequency                                 |

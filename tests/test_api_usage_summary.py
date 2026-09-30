@@ -110,3 +110,12 @@ def test_get_usage_summary_splits_llm_and_seo(conn: sqlite3.Connection) -> None:
 
     assert len(summary["seo"]["recent"]) == 2
     assert {r["provider"] for r in summary["seo"]["recent"]} == {"dataforseo"}
+
+
+def test_rank_requests_are_not_llm_calls(conn):
+    log_api_usage(provider='serpapi', model='google', call_type='rank_check',
+                  stage='rank_tracking', estimated_cost_override_usd=0, conn=conn)
+    summary = get_usage_summary(conn)
+    assert summary['ranking_requests'] == 1
+    assert summary['periods']['all_time']['total_calls'] == 0
+    assert summary['seo']['periods']['all_time']['total_calls'] == 0

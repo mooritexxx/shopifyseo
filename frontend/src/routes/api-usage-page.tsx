@@ -43,6 +43,7 @@ const recentCallRowSchema = z.object({
 });
 
 const usageSummarySchema = z.object({
+  ranking_requests: z.number().default(0),
   periods: z.object({
     today: periodSchema,
     last_7d: periodSchema,
@@ -308,6 +309,7 @@ export function ApiUsagePage() {
           </div>
         ) : (
           <div className="mt-6 space-y-10">
+            <div className="rounded-2xl border p-5"><h2 className="text-lg font-semibold">SerpApi rankings</h2><p className="mt-2">{data.ranking_requests} search requests in the selected period</p><p className="text-sm text-slate-500">Includes retries. Subscription charges are not estimated; this is a conservative request count.</p></div>
             <div className="space-y-6">
               <h2 className="text-lg font-semibold text-ink">Gemini / LLM</h2>
               {/* Period summary cards */}

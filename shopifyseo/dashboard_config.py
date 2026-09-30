@@ -36,6 +36,7 @@ RUNTIME_SETTING_KEYS = (
     "dataforseo_api_password",
     "open_page_rank_api_key",
     "serpapi_api_key",
+    "serpapi_rank_monthly_budget",
     "google_client_id",
     "google_client_secret",
     "search_console_site",

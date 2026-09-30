@@ -1,3 +1,4 @@
+import "./sync/sync-sheet.css";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -5,6 +6,7 @@ import {
   BookOpen,
   Box,
   Check,
+  ChevronUp,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -19,7 +21,6 @@ import {
   Lightbulb,
   Link2,
   LoaderCircle,
-  RefreshCw,
   Rss,
   Settings,
   X
@@ -38,7 +39,6 @@ import { getJson, postJson } from "../../lib/api";
 import { settingsSchema, statusSchema, summarySchema } from "../../types/api";
 import { SyncDrawer, type SyncDrawerMode } from "./sync/sync-drawer";
 import { selectSyncQueueView } from "./sync/select-sync-queue-view";
-import { SyncPill } from "./sync/sync-pill";
 import {
   SYNC_PIPELINE_SUBTITLE,
   SYNC_SCOPE_READY_HELP,
@@ -205,12 +205,11 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncErrorCopied, setSyncErrorCopied] = useState(false);
   const [elapsedNow, setElapsedNow] = useState(() => Date.now());
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
+  const syncBarRef = useRef<HTMLButtonElement>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const location = useLocation();
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
-  const userDrawerDismissedRef = useRef(false);
   const errStreamPushRef = useRef("");
-  const prevSyncRunningForDrawerRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("seo-sidebar-rail") === "1";
@@ -275,7 +274,6 @@ export function AppShell({ children }: PropsWithChildren) {
     },
     onMutate: () => {
       clearEventLog();
-      userDrawerDismissedRef.current = false;
     },
     onSuccess: (state) => {
       setMessage("Sync started");
@@ -293,7 +291,6 @@ export function AppShell({ children }: PropsWithChildren) {
     },
     onError: (error) => setMessage((error as Error).message)
   });
-  const hasSyncCard = Boolean(syncStatus?.running || syncStatus?.last_error || syncStatus?.last_result || message);
   const activeStageLabel = syncStatus?.stage_label || syncStageLabel(syncStatus?.stage, syncStatus?.scope);
   const activeSelectedScopes = (syncStatus?.selected_scopes?.length ? syncStatus.selected_scopes : selectedScopes) as string[];
   const effectiveActiveScope = syncStatus?.active_scope || "";
@@ -432,7 +429,6 @@ export function AppShell({ children }: PropsWithChildren) {
     !selectedScopes.some((s) => !scopeServiceReady(s));
 
   const closeDrawerOnly = () => {
-    userDrawerDismissedRef.current = true;
     setSyncDrawerOpen(false);
   };
 
@@ -458,15 +454,6 @@ export function AppShell({ children }: PropsWithChildren) {
     : showSyncErrorPanel
       ? `Step ${Math.max(activeStepIndex, 1)} of ${stepHintTotal}`
       : lastSyncShort(summary?.last_dashboard_sync_at);
-
-  const [mqLg, setMqLg] = useState(() => window.matchMedia("(min-width: 1440px)").matches);
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1440px)");
-    const fn = () => setMqLg(mq.matches);
-    fn();
-    mq.addEventListener("change", fn);
-    return () => mq.removeEventListener("change", fn);
-  }, []);
 
   const drawerProps = {
     accent: syncAccent,
@@ -622,39 +609,6 @@ export function AppShell({ children }: PropsWithChildren) {
   }, [syncRunning]);
 
   useEffect(() => {
-    if (syncRunning) {
-      userDrawerDismissedRef.current = false;
-      setSyncDrawerOpen(true);
-    }
-  }, [syncRunning]);
-
-  useEffect(() => {
-    const was = prevSyncRunningForDrawerRef.current;
-    prevSyncRunningForDrawerRef.current = syncRunning;
-    if (was && !syncRunning) {
-      userDrawerDismissedRef.current = false;
-      setSyncDrawerOpen(true);
-    }
-  }, [syncRunning]);
-
-  useEffect(() => {
-    if (!syncRunning && rawSyncError && !syncSummaryDismissed && !userDrawerDismissedRef.current) {
-      setSyncDrawerOpen(true);
-    }
-  }, [rawSyncError, syncRunning, syncSummaryDismissed]);
-
-  useEffect(() => {
-    if (
-      !syncRunning &&
-      !syncSummaryDismissed &&
-      (syncStatus?.stage === "complete" || syncStatus?.stage === "cancelled") &&
-      !userDrawerDismissedRef.current
-    ) {
-      setSyncDrawerOpen(true);
-    }
-  }, [syncRunning, syncSummaryDismissed, syncStatus?.stage]);
-
-  useEffect(() => {
     if (!syncRunning && rawSyncError && rawSyncError !== errStreamPushRef.current) {
       errStreamPushRef.current = rawSyncError;
       pushLine("error", splitSyncError(rawSyncError).summary.slice(0, 200));
@@ -678,9 +632,6 @@ export function AppShell({ children }: PropsWithChildren) {
     return () => mq.removeEventListener("change", clearRail);
   }, []);
 
-  useEffect(() => {
-    if (syncRunning) setSidebarCollapsed(false);
-  }, [syncRunning]);
 
   useEffect(() => {
     if (!syncRunning || !syncStartedAt) return undefined;
@@ -712,23 +663,16 @@ export function AppShell({ children }: PropsWithChildren) {
 
   return (
     <SidekickProvider>
-    <div className={cn("min-h-screen text-ink", (location.pathname === "/" || /^\/(products|collections|pages)\/[^/]+\/?$/.test(location.pathname) || /^\/articles\/[^/]+\/[^/]+\/?$/.test(location.pathname)) ? "bg-[#f6f7f9]" : "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)]")}>
+    <div className={cn("min-h-screen pb-11 text-ink", (location.pathname === "/" || /^\/(products|collections|pages)\/[^/]+\/?$/.test(location.pathname) || /^\/articles\/[^/]+\/[^/]+\/?$/.test(location.pathname)) ? "bg-[#f6f7f9]" : "bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.85),_transparent_28%),linear-gradient(180deg,_#f6f8fc_0%,_#ebf0f7_100%)]")}>
       <div
         className={cn(
           "mx-0 grid min-h-screen w-full max-w-none grid-cols-1 gap-4 px-4 py-4 lg:gap-0 lg:px-0 lg:py-0",
-          syncDrawerOpen && mqLg
-            ? sidebarCollapsed
-              ? "lg:grid-cols-[72px_380px_minmax(0,1fr)]"
-              : "lg:grid-cols-[260px_380px_minmax(0,1fr)]"
-            : sidebarCollapsed
-              ? "lg:grid-cols-[72px_minmax(0,1fr)]"
-              : "lg:grid-cols-[260px_minmax(0,1fr)]"
+          sidebarCollapsed ? "lg:grid-cols-[72px_minmax(0,1fr)]" : "lg:grid-cols-[260px_minmax(0,1fr)]"
         )}
       >
         <header className="flex items-center justify-between gap-3 rounded-2xl bg-[#0d172b] p-3 text-white lg:hidden">
           <span className="min-w-0 truncate font-semibold">{shopBlock.name}</span>
           <div className="flex shrink-0 gap-2">
-            <Button variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={() => setSyncDrawerOpen(true)} aria-label="Open sync panel"><RefreshCw size={16} /> Sync</Button>
             <Button variant="ghost" className="text-white hover:bg-white/10 hover:text-white" aria-expanded={mobileNavOpen} aria-controls="app-navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}>{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}<span className="sr-only">Navigation menu</span></Button>
           </div>
         </header>
@@ -739,7 +683,7 @@ export function AppShell({ children }: PropsWithChildren) {
             "max-lg:rounded-2xl max-lg:p-5",
             !mobileNavOpen && "max-lg:hidden",
             sidebarCollapsed ? "lg:gap-2 lg:p-2.5 lg:py-3" : "lg:p-4",
-            "lg:z-10 lg:max-h-none lg:h-[100dvh] lg:min-h-0 lg:rounded-none lg:border-0 lg:border-r lg:border-r-white/[0.1] lg:shadow-none lg:self-start lg:sticky lg:top-0 lg:overflow-x-hidden lg:overflow-y-hidden"
+            "lg:z-10 lg:max-h-none lg:h-[calc(100dvh-44px)] lg:min-h-0 lg:rounded-none lg:border-0 lg:border-r lg:border-r-white/[0.1] lg:shadow-none lg:self-start lg:sticky lg:top-0 lg:overflow-x-hidden lg:overflow-y-hidden"
           )}
         >
           {/* Shop header — V1 refined dark */}
@@ -790,51 +734,6 @@ export function AppShell({ children }: PropsWithChildren) {
             >
               <ChevronRight size={14} strokeWidth={2} />
             </button>
-          ) : null}
-
-          {!sidebarCollapsed ? (
-            <div id="app-sync-panel" className="scroll-mt-24 shrink-0">
-              <SyncPill
-                drawerOpen={syncDrawerOpen}
-                onToggle={() => {
-                  userDrawerDismissedRef.current = false;
-                  setSyncDrawerOpen((o) => !o);
-                }}
-                running={syncRunning}
-                hasError={showSyncErrorPanel}
-                doneVisible={drawerMode === "done"}
-                accent={syncAccent}
-                title={pillTitle}
-                subtitle={pillSubtitle}
-              />
-            </div>
-          ) : null}
-
-          {sidebarCollapsed ? (
-            <div className="relative hidden shrink-0 lg:block">
-              <button
-                type="button"
-                title="Open sync panel"
-                aria-label="Open sync panel"
-                onClick={() => {
-                  userDrawerDismissedRef.current = false;
-                  setSyncDrawerOpen(true);
-                }}
-                className={cn(
-                  "flex h-10 w-full items-center justify-center rounded-xl border-0 text-white shadow-md",
-                  syncRunning ? "bg-white/[0.05]" : showSyncErrorPanel ? "bg-[rgba(234,96,117,0.18)] text-[#ea6075]" : "bg-[oklch(0.62_0.18_262)] hover:opacity-95"
-                )}
-              >
-                {syncRunning ? (
-                  <LoaderCircle className="animate-spin" size={16} />
-                ) : (
-                  <RefreshCw size={16} strokeWidth={2.25} />
-                )}
-              </button>
-              {hasSyncCard && !syncRunning ? (
-                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_0_2px_#0d172b]" />
-              ) : null}
-            </div>
           ) : null}
 
           <div className="mt-1 flex min-h-0 flex-1 flex-col overflow-hidden lg:min-h-[120px]">
@@ -981,18 +880,20 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
           )}
         </aside>
-        {syncDrawerOpen && mqLg ? (
-          <div className="hidden h-[100dvh] min-h-0 lg:flex lg:w-[380px] lg:shrink-0 lg:self-start lg:sticky lg:top-0 lg:overflow-hidden">
-            <SyncDrawer {...drawerProps} />
-          </div>
-        ) : null}
         <main className="min-w-0 max-lg:min-h-0 lg:min-h-screen lg:p-6">{children}</main>
       </div>
-      {syncDrawerOpen && !mqLg ? (
+      <button ref={syncBarRef} type="button" id="app-sync-panel" aria-label={`Open sync details: ${pillTitle}, ${pillSubtitle}`} aria-haspopup="dialog" aria-expanded={syncDrawerOpen} onClick={() => setSyncDrawerOpen(true)} className="fixed inset-x-0 bottom-0 z-40 flex h-11 items-center gap-3 border-t border-slate-200 bg-white px-4 text-left text-xs text-slate-600 shadow-[0_-1px_6px_rgba(15,23,42,0.03)] hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#5746d9] sm:px-6">
+        {syncRunning ? <LoaderCircle size={15} className="shrink-0 animate-spin text-[#5746d9]" /> : <span className={cn("h-2 w-2 shrink-0 rounded-full", showSyncErrorPanel ? "bg-rose-500" : summary?.last_dashboard_sync_at ? "bg-emerald-500" : "bg-slate-400")} />}
+        <span className={cn("shrink-0 font-semibold", showSyncErrorPanel ? "text-rose-700" : "text-slate-800")}>{pillTitle}</span>
+        <span className="min-w-0 truncate">{syncRunning ? (progressTotal > 0 ? `${Math.min(progressDone, progressTotal)} / ${progressTotal} · ${syncPercent}%` : "Preparing…") : pillSubtitle}</span>
+        {syncRunning && <span className="hidden h-1.5 w-24 overflow-hidden rounded-full bg-slate-100 sm:block" aria-hidden><span className="block h-full bg-[#5746d9] transition-[width]" style={{width: `${syncPercent}%`}} /></span>}
+        <span className="ml-auto hidden sm:inline">View details</span><ChevronUp size={16} className="ml-auto shrink-0 sm:ml-0" />
+      </button>
+      {syncDrawerOpen ? (
         <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) closeDrawerOnly(); }}>
           <DialogPrimitive.Portal>
-            <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/45" />
-            <DialogPrimitive.Content aria-describedby={undefined} className="fixed right-4 top-4 z-50 max-h-[calc(100dvh-2rem)] w-[min(380px,calc(100vw-2rem))] overflow-y-auto rounded-2xl outline-none">
+            <DialogPrimitive.Overlay className="fixed inset-0 z-[80] bg-slate-950/35" />
+            <DialogPrimitive.Content onCloseAutoFocus={(event) => { event.preventDefault(); syncBarRef.current?.focus(); }} aria-describedby={undefined} className="sync-bottom-sheet fixed inset-x-0 bottom-0 z-[90] mx-auto w-full max-w-[640px] overflow-hidden rounded-t-2xl outline-none">
               <DialogPrimitive.Title className="sr-only">Sync panel</DialogPrimitive.Title>
               <SyncDrawer {...drawerProps} />
             </DialogPrimitive.Content>

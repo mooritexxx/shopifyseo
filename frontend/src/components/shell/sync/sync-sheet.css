@@ -1,0 +1,3 @@
+.sync-bottom-sheet { animation: sync-sheet-enter 180ms ease-out; }
+@keyframes sync-sheet-enter { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .sync-bottom-sheet { animation: none; } }

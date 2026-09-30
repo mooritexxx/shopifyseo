@@ -482,11 +482,11 @@ export function SyncDrawer(props: SyncDrawerProps) {
   return (
     <aside
       data-screen-label="Sync drawer"
-      className="flex h-full max-h-[min(100dvh-2rem,900px)] w-full flex-col overflow-hidden rounded-[24px] text-white shadow-[0_30px_80px_-40px_rgba(13,23,43,0.6)] [box-shadow:0_30px_80px_-40px_rgba(13,23,43,0.6),inset_0_0_0_1px_rgba(255,255,255,0.04)] lg:max-h-none lg:rounded-none lg:border-0 lg:border-r lg:border-r-white/[0.08] lg:shadow-none"
+      className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl text-white shadow-2xl"
       style={{
         background: "linear-gradient(180deg, #111b31 0%, #0d172b 100%)",
         width: "100%",
-        maxWidth: 380
+        maxWidth: "100%"
       }}
     >
       <div className="flex shrink-0 items-center gap-2.5 border-b border-white/[0.06] px-[18px] py-4">

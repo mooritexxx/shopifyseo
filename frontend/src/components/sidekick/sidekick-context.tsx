@@ -166,7 +166,7 @@ function SidekickPanel({ bindingRef }: { bindingRef: MutableRefObject<SidekickBi
         aria-label="Open Sidekick"
         onClick={() => setOpen(true)}
         className={cn(
-          "fixed bottom-6 right-6 z-[60] flex h-14 w-14 items-center justify-center rounded-full shadow-lg transition",
+          "fixed bottom-16 right-6 z-[60] flex h-14 w-14 items-center justify-center rounded-full shadow-lg transition",
           "bg-[linear-gradient(135deg,#4f8cff_0%,#2147b8_100%)] text-white hover:brightness-110",
           routeMatchesBinding ? "ring-2 ring-white/90" : "opacity-80 ring-1 ring-white/40"
         )}

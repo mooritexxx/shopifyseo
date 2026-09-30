@@ -1,0 +1,127 @@
+[
+  {
+    "name": "rankings",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "rankings",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "rankings",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "rankings",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "rankings",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "cluster-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "cluster-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "cluster-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "cluster-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "cluster-detail",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "competitor-detail",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "competitor-detail",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "competitor-detail",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "competitor-detail",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "competitor-detail",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "opportunities",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "opportunities",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "opportunities",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "opportunities",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "opportunities",
+    "viewport": 320,
+    "width": 320
+  },
+  {
+    "name": "opportunities-final",
+    "viewport": 1440,
+    "width": 1440
+  },
+  {
+    "name": "opportunities-final",
+    "viewport": 1024,
+    "width": 1024
+  },
+  {
+    "name": "opportunities-final",
+    "viewport": 768,
+    "width": 768
+  },
+  {
+    "name": "opportunities-final",
+    "viewport": 390,
+    "width": 390
+  },
+  {
+    "name": "opportunities-final",
+    "viewport": 320,
+    "width": 320
+  }
+]

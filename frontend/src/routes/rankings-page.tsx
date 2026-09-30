@@ -1,3 +1,4 @@
+import "./research-page.css";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -191,15 +192,15 @@ export function RankingsPage() {
     }
   }
   return (
-    <div className="space-y-6">
+    <div className="research-page space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold text-slate-900">Rankings</h1>
+          <h1 className="research-title">Rankings</h1>
           <p className="mt-2 text-sm text-slate-500">
             vapely.ca · Google.ca · Toronto · Desktop · English
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="research-actions">
           <Button
             variant="outline"
             onClick={() => {
@@ -221,20 +222,20 @@ export function RankingsPage() {
           </Button>
         </div>
       </header>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-2xl border bg-white p-5">
-          <p className="text-sm text-slate-500">In the top 10</p>
-          <p className="mt-2 text-2xl font-semibold">
-            {top10}{" "}
+      <div className="research-metrics">
+        <div className="research-panel">
+          <p className="research-metric-label">In the top 10</p>
+          <p className="research-metric-value">
+            {data ? top10 : "—"}{" "}
             <span className="text-base font-normal text-slate-400">
               of {data?.items.length || 0} keywords
             </span>
           </p>
         </div>
-        <div className="rounded-2xl border bg-white p-5">
-          <p className="text-sm text-slate-500">Requests this month · PT</p>
-          <p className="mt-2 text-2xl font-semibold">
-            {data?.month_used || 0}{" "}
+        <div className="research-panel">
+          <p className="research-metric-label">Requests this month · PT</p>
+          <p className="research-metric-value">
+            {data ? data.month_used : "—"}{" "}
             <span className="text-base font-normal text-slate-400">
               / {data?.monthly_budget ?? 250}
             </span>
@@ -246,7 +247,7 @@ export function RankingsPage() {
             </Link>
           </p>
         </div>
-        <div className="rounded-2xl border bg-white p-5">
+        <div className="research-panel research-ranking-depth">
           <Label htmlFor="rank-depth">Check depth</Label>
           <select
             id="rank-depth"
@@ -288,8 +289,8 @@ export function RankingsPage() {
           {data.job.error}
         </div>
       )}
-      <div className="rounded-2xl border bg-white p-4">
-        <div className="mb-4 flex flex-wrap gap-3">
+      <div className="research-panel">
+        <div className="research-toolbar mb-3">
           <Input
             aria-label="Search tracked keywords"
             placeholder="Find a keyword…"
@@ -319,6 +320,7 @@ export function RankingsPage() {
             <option value="change">Biggest improvement</option>
           </select>
         </div>
+        <p className="research-scroll-hint">Scroll horizontally to see all ranking details.</p>
         {query.isPending ? (
           <p className="p-8 text-center">Loading rankings…</p>
         ) : query.error ? (
@@ -326,8 +328,8 @@ export function RankingsPage() {
             {query.error.message}
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1150px] text-left text-sm">
+          <div className="research-scroll-region" role="region" aria-label="Tracked keyword results" tabIndex={0}>
+            <table className="research-table research-ranking-table w-full min-w-[1150px] text-left">
               <thead className="border-b text-xs uppercase text-slate-500">
                 <tr>
                   {[

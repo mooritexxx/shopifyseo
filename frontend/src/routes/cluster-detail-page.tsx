@@ -1,3 +1,4 @@
+import "./research-page.css";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
@@ -147,7 +148,7 @@ export function ClusterDetailPage() {
 
   if (query.isLoading) {
     return (
-      <div className="space-y-6 pb-10">
+      <div className="research-page space-y-5 pb-10">
         <Skeleton className="h-5 w-32 rounded-lg" />
         <Skeleton className="h-48 rounded-[24px]" />
         <Skeleton className="h-64 rounded-[24px]" />
@@ -161,7 +162,7 @@ export function ClusterDetailPage() {
         <Link to="/keywords" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-ink">
           <ArrowLeft className="h-4 w-4" /> Back to Keywords
         </Link>
-        <div className="rounded-[30px] border border-[#ffd2c5] bg-[#fff4ef] p-8 text-[#8f3e20] shadow-panel">
+        <div role="alert" className="rounded-[14px] border border-red-200 bg-red-50 p-5 text-red-800">
           {(query.error as Error)?.message || "Could not load cluster."}
         </div>
       </div>
@@ -177,7 +178,7 @@ export function ClusterDetailPage() {
   );
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="research-page space-y-5 pb-10">
       <Modal
         open={coverageModal !== null}
         onOpenChange={(open) => {
@@ -250,10 +251,10 @@ export function ClusterDetailPage() {
       </Link>
 
       {/* Cluster info card */}
-      <div className="rounded-xl border border-line bg-white p-6 space-y-4">
+      <div className="research-panel space-y-4 research-cluster-copy">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold text-ink">{cluster.name}</h1>
+          <div className="research-cluster-heading">
+            <h1 className="research-title">{cluster.name}</h1>
             <span
               className={`rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${contentColor}`}
               title="Recommended format from clustering — the linked Shopify URL may be a different type"
@@ -301,7 +302,7 @@ export function ClusterDetailPage() {
         </div>
 
         {/* Suggested match */}
-        <div className="flex items-center gap-2 text-sm">
+        <div className="research-cluster-match text-sm">
           {cluster.suggested_match ? (
             cluster.suggested_match.match_type === "new" ? (
               <span className="inline-flex items-center gap-1">
@@ -329,12 +330,13 @@ export function ClusterDetailPage() {
       </div>
 
       {/* Cluster keywords (metrics from target keywords list) */}
-      <div className="space-y-3">
+      <div className="min-w-0 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-ink">Keywords ({cluster.keywords.length})</h2>
           <Button
             variant="link"
             className="h-auto p-0 text-xs font-medium text-blue-600 hover:text-blue-800"
+            aria-expanded={keywordsExpanded}
             onClick={() => setKeywordsExpanded((v) => !v)}
           >
             {keywordsExpanded ? "Hide keywords ▲" : `Show ${cluster.keywords.length} keywords ▼`}
@@ -352,7 +354,7 @@ export function ClusterDetailPage() {
       </div>
 
       {/* Related URLs section */}
-      <div className="space-y-3">
+      <div className="min-w-0 space-y-3">
         <h2 className="text-lg font-semibold text-ink">Related URLs ({related_urls.length})</h2>
 
         {related_urls.length === 0 ? (
@@ -361,7 +363,7 @@ export function ClusterDetailPage() {
           </div>
         ) : (
           <div className="rounded-xl border border-line bg-white">
-            <Table className="w-full text-sm">
+            <Table scrollLabel="Related pages" className="research-table w-full">
               <TableHeader>
                 <TableRow className="border-b border-line text-left text-xs text-slate-500">
                   <TableHead className="px-4 py-3">Title</TableHead>

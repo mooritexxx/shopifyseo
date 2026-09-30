@@ -1,3 +1,4 @@
+import "./research-page.css";
 import { OpportunityTaskQueue, taskSchema, useOpportunityTasks } from "../components/seo/opportunity-task";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -112,12 +113,12 @@ function StatCard({
   description?: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
+    <div className="research-panel">
       <div className="flex items-center gap-2 text-slate-500">
-        <Icon className="h-4 w-4" />
-        <span className="text-sm">{label}</span>
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="research-metric-label">{label}</span>
       </div>
-      <div className="mt-1 text-2xl font-semibold text-slate-800">
+      <div className="research-metric-value">
         {typeof value === "number" ? value.toLocaleString() : value}
       </div>
       {description && <p className="mt-1 text-xs text-slate-400">{description}</p>}
@@ -173,7 +174,7 @@ export function OpportunitiesPage() {
   const SortHeader = ({ field, children }: { field: SortKey; children: React.ReactNode }) => (
     <button
       onClick={() => toggleSort(field)}
-      className="inline-flex items-center gap-1 hover:text-slate-900"
+      className="inline-flex items-center gap-1 rounded-sm hover:text-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600"
     >
       {children}
       {sortBy === field &&
@@ -197,14 +198,14 @@ export function OpportunitiesPage() {
   };
 
   return (
-    <div className="rounded-[30px] border border-white/70 bg-white/90 p-6 shadow-panel">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="research-page space-y-5">
+      <div className="research-header">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
             <Inbox className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-slate-800">Opportunity Inbox</h1>
+            <h1 className="research-title">Opportunity Inbox</h1>
             <p className="text-sm text-slate-500">
               GSC queries with untapped SEO potential
             </p>
@@ -213,9 +214,11 @@ export function OpportunitiesPage() {
       </div>
 
       <OpportunityTaskQueue />
+      {statsQuery.error && <p role="alert" className="text-sm text-red-700">Could not load opportunity totals: {statsQuery.error.message}</p>}
+      {opportunitiesQuery.error && <p role="alert" className="text-sm text-red-700">Could not load opportunities: {opportunitiesQuery.error.message}</p>}
       {prepare.error && <p role="alert" className="mb-4 text-red-700">{prepare.error.message}</p>}
       {stats && (
-        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="research-metrics">
           <StatCard
             label="Total Queries"
             value={stats.total_queries}
@@ -242,9 +245,9 @@ export function OpportunitiesPage() {
         </div>
       )}
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      <div className="research-panel research-toolbar">
         <Select value={pageType} onValueChange={(v) => { setPageType(v as PageTypeFilter); setOffset(0); }}>
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger aria-label="Filter opportunities by page type" className="w-[160px]">
             <SelectValue placeholder="Page Type" />
           </SelectTrigger>
           <SelectContent>
@@ -281,25 +284,26 @@ export function OpportunitiesPage() {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <Table>
+      <div className="research-panel !p-0 overflow-hidden">
+        <p className="research-scroll-hint px-3">Scroll horizontally to see metrics and actions.</p>
+        <Table scrollLabel="Opportunity results" className="research-table research-opportunity-table min-w-[1050px]">
           <TableHeader>
             <TableRow className="bg-slate-50">
               <TableHead className="w-[300px]">Query</TableHead>
               <TableHead>Page Type</TableHead>
-              <TableHead className="text-right">
+              <TableHead aria-sort={sortBy === "opportunity_score" ? (sortDir === "asc" ? "ascending" : "descending") : undefined} className="text-right">
                 <SortHeader field="opportunity_score">Score</SortHeader>
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead aria-sort={sortBy === "position" ? (sortDir === "asc" ? "ascending" : "descending") : undefined} className="text-right">
                 <SortHeader field="position">Position</SortHeader>
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead aria-sort={sortBy === "impressions" ? (sortDir === "asc" ? "ascending" : "descending") : undefined} className="text-right">
                 <SortHeader field="impressions">Impressions</SortHeader>
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead aria-sort={sortBy === "clicks" ? (sortDir === "asc" ? "ascending" : "descending") : undefined} className="text-right">
                 <SortHeader field="clicks">Clicks</SortHeader>
               </TableHead>
-              <TableHead className="text-right">
+              <TableHead aria-sort={sortBy === "ctr" ? (sortDir === "asc" ? "ascending" : "descending") : undefined} className="text-right">
                 <SortHeader field="ctr">CTR</SortHeader>
               </TableHead>
               <TableHead>Suggested Action</TableHead>
@@ -317,7 +321,7 @@ export function OpportunitiesPage() {
             {opportunities?.items.length === 0 && (
               <TableRow>
                 <TableCell colSpan={9} className="py-8 text-center text-slate-500">
-                  No opportunities found. Run a GSC sync to populate data.
+                  {pageType === "all" ? "No opportunities found. Run a GSC sync to populate data." : "No opportunities for this page type. Try All Pages."}
                 </TableCell>
               </TableRow>
             )}
@@ -327,7 +331,7 @@ export function OpportunitiesPage() {
               return (
                 <TableRow key={opp.id} className="hover:bg-slate-50/50">
                   <TableCell>
-                    <div className="max-w-[300px]">
+                    <div className="w-[220px] max-w-full">
                       <span className="font-medium text-slate-800" title={opp.query}>
                         {opp.query.length > 50 ? `${opp.query.slice(0, 50)}…` : opp.query}
                       </span>
@@ -362,7 +366,7 @@ export function OpportunitiesPage() {
                   <TableCell>
                     <span className="text-xs text-slate-600">{opp.suggested_action}</span>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="[&_button]:h-auto [&_button]:min-h-9 [&_button]:max-w-full [&_button]:whitespace-normal">
                     {existingTask ? <Link className="mr-3 whitespace-nowrap font-medium text-indigo-700" to={existingTask.detail_url}>View fix</Link> : <Button variant="secondary" disabled={prepare.isPending} onClick={()=>prepare.mutate({object_type:opp.object_type,object_handle:opp.object_handle,query:opp.query})}>{prepare.isPending ? "Preparing…" : "Prepare fix"}</Button>}
                     {detailLink && (
                       <Link
@@ -381,8 +385,8 @@ export function OpportunitiesPage() {
         </Table>
       </div>
 
-      {opportunities && opportunities.has_more && (
-        <div className="mt-4 flex justify-center gap-2">
+      {opportunities && (offset > 0 || opportunities.has_more) && (
+        <div className="research-pagination">
           <Button
             variant="outline"
             size="sm"

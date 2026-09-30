@@ -1,3 +1,4 @@
+import "../research-page.css";
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
@@ -55,7 +56,7 @@ function SortHeader({
 }) {
   const active = activeKey === sortKey;
   return (
-    <TableHead className={`px-4 py-3 ${align === "right" ? "text-right" : "text-left"}`}>
+    <TableHead aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"} className={`px-4 py-3 ${align === "right" ? "text-right" : "text-left"}`}>
       <Button
         variant="ghost"
         type="button"
@@ -63,7 +64,6 @@ function SortHeader({
         className={`h-auto p-0 inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-ink rounded ${
           align === "right" ? "flex-row-reverse" : ""
         } focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40`}
-        aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
       >
         {label}
         {active ? (
@@ -120,7 +120,7 @@ export function ClusterKeywordsTable({
 
   return (
     <div className="rounded-xl border border-line bg-white">
-      <Table className="w-full text-sm">
+      <Table scrollLabel="Cluster keyword results" className="research-table w-full">
         <TableHeader>
           <TableRow className="border-b border-line text-left text-xs text-slate-500">
             <TableHead className="px-4 py-3">Keyword</TableHead>

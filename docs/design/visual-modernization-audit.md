@@ -48,7 +48,22 @@ The catalog family now follows the Overview reference: Products, Collections, Pa
 
 Evidence: [desktop products](batch-2-evidence/products-desktop.png), [mobile products](batch-2-evidence/products-mobile.png), [mobile collections](batch-2-evidence/collections-mobile.png), [desktop detail](batch-2-evidence/collection-detail-desktop.png), [small-phone editor](batch-2-evidence/collection-editor-small-phone.png), [mobile article](batch-2-evidence/article-detail-mobile.png), [gallery](batch-2-evidence/gallery-small-phone.png), [width measurements](batch-2-evidence/width-checks.json). Original audit screenshots above/below provide the before state.
 
-**Next implementation batch: Research and opportunities** — Rankings, cluster and competitor details, Opportunity Inbox and its review/task flow.
+Research implementation is recorded in Batch 3 below.
+
+## Batch 3 implementation
+
+Rankings, cluster/competitor details and Opportunity Inbox now share compact summaries, consistent headings, neutral panels and named keyboard-scrollable tables. Identity columns are bounded to 200px so they cannot cover adjacent controls on narrow screens. Competitor secondary research metrics use a native disclosure. Opportunity task evidence, status and draft comparisons have a clearer hierarchy and wrap by available width.
+
+- Fixed Inbox pagination: Previous remains available on the last page. A regression test navigates forward and back with mocked responses.
+- Added accessible labels to competitor navigation and the Inbox type filter; sort state is on table headers. Cluster keyword disclosure announces its expanded state.
+- All **70 frontend tests passed**; the changed pagination test also passed separately. Clean production rebuild/restart completed. A test-only TypeScript option mismatch was corrected before the final build.
+- Populated Rankings, cluster details, competitor details and Inbox checked at 1440, 1024, 768, 390 and 320px with no document overflow.
+- Verified ranking empty search; Add keyword dialog at 320×600; cluster keyword collapse and coverage dialog via click/Enter; competitor metric disclosure via Enter; Inbox filter, empty result, last-page Next disabled and Previous return. Coverage dialog measured 16px top/bottom clearance and internal scrolling at 320×600.
+- Existing mocked task tests still verify explicit draft loading, edited-field review, reviewed snapshot restoration and retry errors. No ranking checks, task preparation, Shopify saves or paid generation were run live. Populated task review screenshots, every mutation state, full keyboard focus review and zoom/physical-keyboard checks remain open. No backend or API query construction changed; pagination changes only expose the existing Previous action.
+
+Evidence: [Rankings mobile](batch-3-evidence/rankings-mobile.png), [ranking dialog](batch-3-evidence/rankings-dialog-small.png), [cluster mobile](batch-3-evidence/cluster-mobile.png), [coverage dialog](batch-3-evidence/coverage-small-phone.png), [competitor mobile](batch-3-evidence/competitor-mobile.png), [Inbox desktop](batch-3-evidence/inbox-desktop.png), [Inbox mobile](batch-3-evidence/inbox-mobile.png), [width checks](batch-3-evidence/width-checks.json).
+
+Next: Batch 4, content planning and drafting.
 
 ## Outcome of the first pass
 
@@ -109,13 +124,13 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | `/blogs/:blogHandle` | Populated article list, incorrect links confirmed | Correct article navigation, filter/sort, empty/error | 2 | ✓/✓ | ✓/partial/partial |
 | `/articles` | Populated list; Draft new article dialog at desktop/mobile and short mobile | Draft validation, slug reset, generating/resume/failure/success, list filtering | 2 + 4 | ✓/✓ | ✓/partial/partial |
 | `/articles/:blogHandle/:articleHandle` | Representative article editor/signals | Preview, metadata/body edits, draft/publish behavior, image tools, Sidekick, save states | 2 + 4 | ✓/✓ | ✓/partial/partial |
-| `/rankings` | Populated table, Add keyword dialog; one 768px tablet capture | Edit/remove/restore, history, group/sort/search, cost confirmation, running/stop, errors and budget limits | 3 | ✓/✓ | —/—/— |
+| `/rankings` | Populated table, Add keyword dialog; one 768px tablet capture | Edit/remove/restore, history, group/sort/search, cost confirmation, running/stop, errors and budget limits | 3 | ✓/✓ | ✓/partial/partial |
 | `/keywords` | Seeds, Competitors, Targets, Clusters; Approved/New/Dismissed states for competitors and targets | Seed edits, add/discovery dialogs, filters/sorts/selections, match change, long clusters, progress/cancel/error | 1 pilot | ✓/✓ | ✓/partial/partial |
-| `/keywords/clusters/:id` | Populated representative cluster | Coverage dialog, assigned pages, keyword actions, empty/error and long content | 3 | ✓/✓ | —/—/— |
-| `/keywords/competitors/:domain` | Populated representative competitor | Metric refresh/progress, filters/sorts/paging, drill-down, empty/error | 3 | ✓/✓ | —/—/— |
+| `/keywords/clusters/:id` | Populated representative cluster | Coverage dialog, assigned pages, keyword actions, empty/error and long content | 3 | ✓/✓ | ✓/partial/partial |
+| `/keywords/competitors/:domain` | Populated representative competitor | Metric refresh/progress, filters/sorts/paging, drill-down, empty/error | 3 | ✓/✓ | ✓/partial/partial |
 | `/article-ideas` | Approved/New/Rejected queues | Filters, selection/bulk actions, status changes, delete confirmation, generation and failures | 4 | ✓/✓ | —/—/— |
 | `/article-ideas/:ideaId` | Populated brief, strategy/mind-map content, clipping | Draft dialog, links/coverage disclosure, generation/resume, linked articles, editable fields and errors | 4 | ✓/✓ | —/—/— |
-| `/opportunities` | Populated inbox, task controls | Filters/sorts/paging; fixture-based prepare, draft compare/load, applied/monitoring/dismiss/reopen, empty/error | 3 | ✓/✓ | —/—/— |
+| `/opportunities` | Populated inbox, task controls | Filters/sorts/paging; fixture-based prepare, draft compare/load, applied/monitoring/dismiss/reopen, empty/error | 3 | ✓/✓ | ✓/partial/partial |
 | `/google-ads-lab` | Keyword ideas, Historical metrics, Forecast metrics, Ad group themes | Field validation/reset, result/error/loading views using saved fixtures; minor overflow reproduction | 5 | ✓/✓ | —/—/— |
 | `/embeddings` | Populated metrics and coverage table | Refresh/progress, unavailable key, partial/error/empty coverage | 5 | ✓/✓ | —/—/— |
 | `/image-seo` | Populated table and Review image dialog | Type/status filters, search/sort/paging, selection/batch, gallery; optimize progress/comparison/failure/success fixtures | 5 | ✓/✓ | —/—/— |

@@ -1,3 +1,4 @@
+import "./research-page.css";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
@@ -63,9 +64,9 @@ function fmt(n: number | undefined | null): string {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border border-line bg-white p-4 text-center">
-      <div className="text-2xl font-bold tabular-nums text-ink">{typeof value === "number" ? fmt(value) : value}</div>
-      <div className="mt-1 text-xs font-medium uppercase tracking-wider text-slate-400">{label}</div>
+    <div className="research-panel">
+      <p className="research-metric-label">{label}</p>
+      <p className="research-metric-value">{typeof value === "number" ? fmt(value) : value}</p>
     </div>
   );
 }
@@ -87,13 +88,13 @@ export function CompetitorDetailPage() {
   const data = query.data;
 
   return (
-    <div className="space-y-6">
+    <div className="research-page space-y-5">
       <div className="flex items-center gap-3">
-        <Link to="/keywords" className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100">
+        <Link to="/keywords" aria-label="Back to Keyword Research" className="shrink-0 rounded-lg p-2 text-slate-400 transition hover:bg-slate-100">
           <ArrowLeft className="h-5 w-5" />
         </Link>
-        <div>
-          <h1 className="text-xl font-semibold text-ink">{decodedDomain}</h1>
+        <div className="min-w-0">
+          <h1 className="research-title">{decodedDomain}</h1>
           <p className="text-sm text-slate-500">Competitor Intelligence</p>
         </div>
       </div>
@@ -110,13 +111,15 @@ export function CompetitorDetailPage() {
       ) : data ? (
         <>
           {/* Profile stats */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="research-metrics">
             <StatCard label="Est. Traffic" value={data.profile.traffic} />
             <StatCard label="Seeds hit (Labs)" value={data.profile.keywords_common} />
             <StatCard label="Organic sample rows" value={data.profile.keywords_they_have} />
             <StatCard label="Keyword Share" value={`${(data.profile.share * 100).toFixed(1)}%`} />
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <details className="research-panel research-disclosure">
+            <summary>Research metrics</summary>
+            <div className="research-metrics">
             <StatCard label="Labs seed ETV" value={data.profile.labs_seed_etv} />
             <StatCard label="Labs bulk ETV" value={data.profile.labs_bulk_etv} />
             <StatCard label="Labs rating" value={data.profile.labs_rating} />
@@ -130,10 +133,11 @@ export function CompetitorDetailPage() {
             />
             <StatCard label="Avg position" value={data.profile.labs_avg_position} />
             <StatCard label="Median position" value={data.profile.labs_median_position} />
-          </div>
+            </div>
+          </details>
 
           {/* Top pages */}
-          <div className="rounded-[24px] border border-line/80 bg-white p-5">
+          <div className="research-panel">
             <h2 className="text-lg font-semibold text-ink">Top Pages</h2>
             <p className="mt-1 text-sm text-slate-500">
               Pages driving the most organic traffic for this competitor.
@@ -143,8 +147,9 @@ export function CompetitorDetailPage() {
                 No top pages data yet. Run keyword research to collect this data.
               </div>
             ) : (
-              <div className="mt-4">
-                <Table className="w-full text-sm">
+              <div className="mt-3 min-w-0">
+                <p className="research-scroll-hint">Scroll horizontally to see all metrics.</p>
+                <Table scrollLabel="Competitor results" className="research-table w-full">
                   <TableHeader>
                     <TableRow className="border-b border-line text-left text-xs font-medium uppercase tracking-wider text-slate-400">
                       <TableHead className="pb-2 pr-4">URL</TableHead>
@@ -175,7 +180,7 @@ export function CompetitorDetailPage() {
           </div>
 
           {/* Keyword gaps */}
-          <div className="rounded-[24px] border border-line/80 bg-white p-5">
+          <div className="research-panel">
             <h2 className="text-lg font-semibold text-ink">Keyword Gaps</h2>
             <p className="mt-1 text-sm text-slate-500">
               Keywords this competitor ranks for that you don't — sorted by search volume.
@@ -185,8 +190,9 @@ export function CompetitorDetailPage() {
                 No keyword gap data yet. Run keyword research to detect gaps.
               </div>
             ) : (
-              <div className="mt-4">
-                <Table className="w-full text-sm">
+              <div className="mt-3 min-w-0">
+                <p className="research-scroll-hint">Scroll horizontally to see all metrics.</p>
+                <Table scrollLabel="Competitor results" className="research-table w-full">
                   <TableHeader>
                     <TableRow className="border-b border-line text-left text-xs font-medium uppercase tracking-wider text-slate-400">
                       <TableHead className="pb-2 pr-4">Keyword</TableHead>

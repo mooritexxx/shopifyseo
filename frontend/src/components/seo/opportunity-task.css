@@ -1,0 +1,10 @@
+.opportunity-task, .opportunity-queue { min-width: 0; container-type: inline-size; border: 1px solid #e2e7ed; border-radius: 14px; background: #fff; padding: 16px; color: #172033; }
+.opportunity-task { border-top: 3px solid #155eef; overflow-wrap: anywhere; }
+.opportunity-task details { border: 1px solid #e2e7ed; border-radius: 10px; padding: 12px; background: #f8fafc; }
+.opportunity-task summary { font-size: 13px; }
+.opportunity-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.opportunity-compare pre { min-width: 0; max-height: 320px; overflow: auto; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.6; border: 1px solid #e2e7ed; }
+.opportunity-queue a > span:first-child { flex: 1 1 240px; overflow-wrap: anywhere; }
+.opportunity-task button { max-width: 100%; white-space: normal; height: auto; min-height: 36px; }
+.opportunity-status { display: inline-flex; align-items: center; border-radius: 6px; padding: 4px 8px; font-size: 12px; font-weight: 500; line-height: 1.4; }
+@container (max-width: 650px) { .opportunity-compare { grid-template-columns: minmax(0, 1fr); } }

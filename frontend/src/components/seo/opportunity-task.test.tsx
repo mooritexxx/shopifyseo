@@ -12,7 +12,8 @@ it('loads a prepared draft only on request and reviews the edited values',async(
   vi.stubGlobal('fetch',fetcher);
   const load=vi.fn();
   mount(<OpportunityTaskPanel kind="product" handle="test" draft={{seo_title:'edited title',seo_description:'edited description'}} onLoad={load}/>);
-  await screen.findByText('Opportunity fix · Draft ready');
+  await screen.findByRole('heading', {name:'Opportunity fix'});
+  expect(screen.getByText('Draft ready')).toBeVisible();
   expect(load).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'Load prepared draft'}));
   expect(load).toHaveBeenCalledWith(task.draft);

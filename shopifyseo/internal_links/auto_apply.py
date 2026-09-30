@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Callable
 
-from .apply import apply_suggestion, _log_suggestion_event
+from .apply import apply_suggestion, preview_suggestion
 from .anchors import is_weak_anchor
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def run_auto_apply(
     conn: sqlite3.Connection,
     base_url: str,
     push_fn: Callable | None = None,
-    sanitize_fn: Callable | None = None,
+    fetch_fn: Callable | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Run selective auto-apply for eligible suggestions.
@@ -129,7 +129,7 @@ def run_auto_apply(
         conn: Database connection
         base_url: Store base URL
         push_fn: Optional push function (for testing)
-        sanitize_fn: Optional sanitize function (for testing)
+        fetch_fn: Optional live body reader (for testing)
         dry_run: If True, don't actually apply (just return candidates)
         
     Returns:
@@ -173,12 +173,17 @@ def run_auto_apply(
             break
         
         try:
+            preview = preview_suggestion(conn, sug["id"], base_url, fetch_fn=fetch_fn)
+            if not preview["allowed"]:
+                skipped += 1
+                continue
             result = apply_suggestion(
                 conn,
                 sug["id"],
                 base_url=base_url,
                 push_fn=push_fn,
-                sanitize_fn=sanitize_fn,
+                fetch_fn=fetch_fn,
+                preview_token_value=preview["preview_token"],
             )
             
             if result.get("status") == "applied":
@@ -187,8 +192,9 @@ def run_auto_apply(
                     """
                     UPDATE link_suggestion_events 
                     SET event_type = 'auto_apply' 
-                    WHERE suggestion_id = ? AND event_type = 'apply'
-                    ORDER BY created_at DESC LIMIT 1
+                    WHERE id = (SELECT id FROM link_suggestion_events
+                                WHERE suggestion_id = ? AND event_type = 'apply'
+                                ORDER BY created_at DESC, id DESC LIMIT 1)
                     """,
                     (sug["id"],),
                 )

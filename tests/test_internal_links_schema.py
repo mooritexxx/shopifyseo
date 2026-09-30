@@ -40,3 +40,15 @@ def test_link_suggestions_unique_pair_and_status_default():
         "VALUES ('blog_article', 'news/post', 'collection', 'vapes', 'ai_woven', 9.9, 456)"
     )
     assert conn.execute("SELECT COUNT(*) AS c FROM link_suggestions").fetchone()["c"] == 1
+
+
+def test_old_ai_responses_are_retired_once_without_deleting_suggestions():
+    from shopifyseo.internal_links.store import ensure_schema
+    conn = sqlite3.connect(':memory:'); conn.row_factory = sqlite3.Row
+    conn.executescript("CREATE TABLE link_suggestions(id INTEGER PRIMARY KEY, kind TEXT, ai_anchor_html TEXT); INSERT INTO link_suggestions VALUES (1,'ai_woven','<p>Legacy whole body</p>');")
+    ensure_schema(conn)
+    row = conn.execute('SELECT * FROM link_suggestions').fetchone()
+    assert row['id'] == 1 and row['ai_anchor_html'] is None and row['ai_edit_json'] is None
+    conn.execute('UPDATE link_suggestions SET ai_edit_json=\'{"anchor_phrase":"phrase"}\'')
+    ensure_schema(conn)
+    assert conn.execute('SELECT ai_edit_json FROM link_suggestions').fetchone()[0]

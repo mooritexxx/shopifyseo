@@ -1,3 +1,5 @@
+import { useBodyDraftSync } from "../hooks/use-body-draft-sync";
+import { BodyDraftConflict } from "../components/body-draft-conflict";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink, Eye, EyeOff, LoaderCircle, RefreshCw, Save, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -258,6 +260,7 @@ export function ArticleDetailPage() {
     structuralSharing: false
   });
   const [draft, setDraft] = useState(emptyDraft);
+  const bodySync = useBodyDraftSync(`${blogHandle}/${articleHandle}`, detailQuery.data?.draft.body_html, draft, setDraft, savedDraftBaseline, setSavedDraftBaseline);
 
   /** Only reset draft from server when navigating to another page/collection — not on every detail refetch (avoids wiping AI-filled draft). */
   const lastHydratedContentKeyRef = useRef<string | null>(null);
@@ -722,12 +725,13 @@ export function ArticleDetailPage() {
                     <Sparkles className="mr-2" size={16} />
                     Regenerate article
                   </Button>
-                  <Button onClick={() => saveMutation.mutate(draft)} disabled={!isDirty || saveMutation.isPending}>
+                  <Button onClick={() => saveMutation.mutate(draft)} disabled={!isDirty || saveMutation.isPending || bodySync.conflict}>
                     <Save className="mr-2" size={16} />
                     {saveMutation.isPending ? "Saving…" : "Save to Shopify"}
                   </Button>
                 </div>
               </div>
+              {bodySync.conflict && <BodyDraftConflict body={detailQuery.data?.draft.body_html ?? ""} onUseLatest={bodySync.useLatestBody} />}
             </CardHeader>
 
             <CardContent className="space-y-6 pt-0">

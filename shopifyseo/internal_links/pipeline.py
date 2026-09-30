@@ -223,7 +223,9 @@ def generate_link_suggestions(
     try:
         if rebuild_graph:
             _run_with_db_lock_retry(lambda: rebuild_internal_link_graph(conn, base_url=base_url))
-        conn.execute("DELETE FROM link_suggestions WHERE status = 'suggested'")
+        conn.execute("DELETE FROM link_suggestions WHERE status = 'suggested' AND NOT EXISTS "
+                     "(SELECT 1 FROM link_body_snapshots b WHERE b.suggestion_id = link_suggestions.id "
+                     "AND b.status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation'))")
         existing_edges = {
             (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
             for r in conn.execute(

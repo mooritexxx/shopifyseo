@@ -1,3 +1,4 @@
+import { AiLinkTypeFields } from "../components/ai-link-types-settings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle, Settings, Save } from "lucide-react";
 
@@ -12,6 +13,7 @@ import {
   useRebuildLinks,
   useAppliedLinks,
   useUndoSuggestion,
+  useReconcileLink,
   useLinkPreview,
   useGraphMapData,
   useLinkOutcomes,
@@ -74,7 +76,7 @@ function KindBadge({ kind }: { kind: "phrase_wrap" | "ai_woven" }) {
   return (
     <Badge variant="warning" className="gap-1">
       <Sparkles size={12} />
-      Modifies copy
+      AI link suggestion
     </Badge>
   );
 }
@@ -92,13 +94,13 @@ function WeakAnchorWarning({ warning }: { warning: string | null | undefined }) 
 interface PreviewDialogProps {
   suggestionId: number | null;
   onClose: () => void;
-  onConfirmApply: () => void;
+  onConfirmApply: (token: string) => void;
   applying: boolean;
   weakAnchorWarning?: string | null;
 }
 
-function PreviewDialog({ suggestionId, onClose, onConfirmApply, applying, weakAnchorWarning }: PreviewDialogProps) {
-  const { data: preview, isLoading } = useLinkPreview(suggestionId);
+export function PreviewDialog({ suggestionId, onClose, onConfirmApply, applying, weakAnchorWarning }: PreviewDialogProps) {
+  const { data: preview, isLoading, isFetching, error } = useLinkPreview(suggestionId);
   const [acknowledged, setAcknowledged] = useState(false);
 
   useEffect(() => {
@@ -117,46 +119,20 @@ function PreviewDialog({ suggestionId, onClose, onConfirmApply, applying, weakAn
           </DialogDescription>
         </DialogHeader>
         
-        {isLoading ? (
-          <div className="space-y-4 py-4">
-            <Skeleton className="h-20" />
-            <Skeleton className="h-20" />
-          </div>
+        {isLoading ? <Skeleton className="h-32" /> : error ? (
+          <p role="alert" className="text-sm text-red-700">{(error as Error).message}</p>
+        ) : preview && !preview.allowed ? (
+          <p role="alert" className="text-sm text-red-700">{preview.reason}</p>
         ) : preview ? (
-          <div className="space-y-4 py-4">
-            {preview.kind === "phrase_wrap" && (
-              <>
-                <div>
-                  <h4 className="mb-2 text-sm font-medium">Current text:</h4>
-                  <div className="rounded border bg-muted/50 p-3 text-sm">
-                    {preview.current_body_snippet || "No snippet available"}
-                  </div>
-                </div>
-                <div>
-                  <h4 className="mb-2 text-sm font-medium">With link added:</h4>
-                  <div 
-                    className="rounded border bg-muted/50 p-3 text-sm"
-                    dangerouslySetInnerHTML={{ __html: preview.preview_body_snippet || "No preview available" }}
-                  />
-                </div>
-              </>
-            )}
-            {preview.kind === "ai_woven" && (
-              <div>
-                <h4 className="mb-2 text-sm font-medium">AI-modified content:</h4>
-                <div 
-                  className="rounded border bg-muted/50 p-3 text-sm"
-                  dangerouslySetInnerHTML={{ __html: preview.preview_body_snippet || "No preview available" }}
-                />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  This will replace the existing body content with AI-modified version.
-                </p>
-              </div>
-            )}
-            <div className="text-sm">
-              <span className="font-medium">Target URL:</span>{" "}
-              <code className="rounded bg-muted px-1">{preview.target_url}</code>
+          <div className="space-y-4 min-w-0">
+            <p className="text-sm">Link “{preview.anchor_phrase}” to <span className="break-all">{preview.target_url}</span></p>
+            <div>
+              <h4 className="text-sm font-medium">Changes to the current Shopify body</h4>
+              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded border bg-muted/50 p-3 text-xs">{preview.html_diff}</pre>
             </div>
+            {preview.text_diff ? (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border p-3 text-xs">{preview.text_diff}</pre>
+            ) : <p className="text-sm text-muted-foreground">Existing wording is unchanged. One link will be added.</p>}
           </div>
         ) : null}
 
@@ -184,12 +160,12 @@ function PreviewDialog({ suggestionId, onClose, onConfirmApply, applying, weakAn
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button 
-            onClick={onConfirmApply} 
-            disabled={applying || (requiresAck && !acknowledged)}
+            onClick={() => preview?.preview_token && onConfirmApply(preview.preview_token)}
+            disabled={applying || isLoading || isFetching || !!error || !preview?.allowed || !preview.preview_token || (requiresAck && !acknowledged)}
             className="gap-1"
           >
             <Check size={14} />
-            {applying ? "Applying…" : "Apply Link"}
+            {applying ? "Applying…" : "Confirm and apply"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -197,9 +173,9 @@ function PreviewDialog({ suggestionId, onClose, onConfirmApply, applying, weakAn
   );
 }
 
-function SuggestionRow({
+export function SuggestionRow({
   suggestion,
-  onApply,
+  onReconcile,
   onDismiss,
   onGenerate,
   onPreview,
@@ -208,7 +184,7 @@ function SuggestionRow({
   generating,
 }: {
   suggestion: LinkSuggestion;
-  onApply: () => void;
+  onReconcile: () => void;
   onDismiss: () => void;
   onGenerate: () => void;
   onPreview: () => void;
@@ -216,7 +192,8 @@ function SuggestionRow({
   dismissing: boolean;
   generating: boolean;
 }) {
-  const canApply = suggestion.kind === "phrase_wrap" || suggestion.ai_anchor_html;
+  const enabled = suggestion.kind === "phrase_wrap" || suggestion.ai_enabled;
+  const canApply = enabled && !suggestion.pending_operation && (suggestion.kind === "phrase_wrap" || suggestion.ai_edit_json);
   const hasWeakAnchorWarning = Boolean(suggestion.weak_anchor_warning);
 
   return (
@@ -239,31 +216,33 @@ function SuggestionRow({
       <TableCell className="text-right font-mono text-sm">{suggestion.score.toFixed(2)}</TableCell>
       <TableCell>
         <div className="flex items-center justify-end gap-2">
-          {suggestion.kind === "ai_woven" && !suggestion.ai_anchor_html && (
+          {suggestion.kind === "ai_woven" && !suggestion.ai_edit_json && (
             <Button
               size="sm"
               variant="outline"
               onClick={onGenerate}
-              disabled={generating}
+              disabled={generating || !enabled || !!suggestion.pending_operation}
               className="gap-1"
             >
               <Sparkles size={14} />
               {generating ? "Generating…" : "Generate"}
             </Button>
           )}
-          {suggestion.kind === "ai_woven" && suggestion.ai_anchor_html && (
+          {suggestion.kind === "ai_woven" && suggestion.ai_edit_json && (
             <Button
               size="sm"
               variant="outline"
               onClick={onGenerate}
-              disabled={generating}
+              disabled={generating || !enabled || !!suggestion.pending_operation}
               className="gap-1"
-              title="Generate new AI content (regenerate)"
+              title="Generate a new link suggestion"
             >
               <RefreshCw size={14} />
               {generating ? "Regenerating…" : "Regenerate"}
             </Button>
           )}
+          {!enabled && <span className="text-xs text-muted-foreground">AI links disabled</span>}
+          {suggestion.pending_operation && <Button size="sm" variant="outline" onClick={onReconcile}>Reconcile</Button>}
           {canApply && (
             <>
               <Button
@@ -278,12 +257,12 @@ function SuggestionRow({
               <Button
                 size="sm"
                 variant={hasWeakAnchorWarning ? "outline" : "default"}
-                onClick={hasWeakAnchorWarning ? onPreview : onApply}
+                onClick={onPreview}
                 disabled={applying}
                 className="gap-1"
               >
                 <Check size={14} />
-                {applying ? "Applying…" : "Apply"}
+                {applying ? "Applying…" : "Review"}
               </Button>
             </>
           )}
@@ -291,7 +270,7 @@ function SuggestionRow({
             size="sm"
             variant="ghost"
             onClick={onDismiss}
-            disabled={dismissing}
+            disabled={dismissing || !!suggestion.pending_operation}
             className="gap-1 text-muted-foreground hover:text-red-600"
           >
             <X size={14} />
@@ -305,11 +284,13 @@ function SuggestionRow({
 function AppliedRow({
   link,
   onUndo,
+  onReconcile,
   onRegenerate,
   undoing,
 }: {
   link: AppliedLink;
   onUndo: () => void;
+  onReconcile: () => void;
   onRegenerate: () => void;
   undoing: boolean;
 }) {
@@ -336,7 +317,7 @@ function AppliedRow({
       <TableCell className="text-center">
         {link.live_present === true && (
           <Badge variant="success" className="gap-1">
-            <Check size={12} /> Live
+            <Check size={12} /> In saved body
           </Badge>
         )}
         {link.live_present === false && (
@@ -353,6 +334,7 @@ function AppliedRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center justify-end gap-2">
+          {link.pending_operation && <Button size="sm" variant="outline" onClick={onReconcile}>Reconcile</Button>}
           {link.href && (
             <a
               href={link.href}
@@ -377,9 +359,9 @@ function AppliedRow({
             size="sm"
             variant="outline"
             onClick={onUndo}
-            disabled={undoing}
+            disabled={undoing || !link.can_undo}
             className="gap-1 text-muted-foreground hover:text-red-600"
-            title="Remove this link from the page"
+            title={link.can_undo ? "Restore the saved body if the page has not changed" : "No restorable backup is available"}
           >
             <Undo2 size={14} />
             {undoing ? "Undoing…" : "Undo"}
@@ -536,6 +518,7 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
   
   const [simThreshold, setSimThreshold] = useState<string>("");
   const [aiBodyEnabled, setAiBodyEnabled] = useState(false);
+  const [aiTypes, setAiTypes] = useState<string[]>([]);
   const [autoApplyEnabled, setAutoApplyEnabled] = useState(false);
   const [autoApplyMinScore, setAutoApplyMinScore] = useState<string>("");
   const [autoApplyMaxPerDay, setAutoApplyMaxPerDay] = useState<string>("");
@@ -545,6 +528,7 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
     if (settings.data) {
       setSimThreshold(String(settings.data.sim_threshold));
       setAiBodyEnabled(settings.data.ai_body_links_enabled);
+      setAiTypes(settings.data.ai_woven_enabled_types);
       setAutoApplyEnabled(settings.data.auto_apply_enabled);
       setAutoApplyMinScore(String(settings.data.auto_apply_min_score));
       setAutoApplyMaxPerDay(String(settings.data.auto_apply_max_per_day));
@@ -555,6 +539,7 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
     saveSettings.mutate({
       sim_threshold: parseFloat(simThreshold) || undefined,
       ai_body_links_enabled: aiBodyEnabled,
+      ai_woven_enabled_types: aiTypes,
       auto_apply_enabled: autoApplyEnabled,
       auto_apply_min_score: parseFloat(autoApplyMinScore) || undefined,
       auto_apply_max_per_day: parseInt(autoApplyMaxPerDay, 10) || undefined,
@@ -612,6 +597,8 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
           </p>
         </div>
 
+        <AiLinkTypeFields value={aiTypes} onChange={setAiTypes} />
+
         {/* AI Body Links */}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -652,7 +639,7 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
           </div>
           <p className="text-xs text-muted-foreground">
             When enabled, high-confidence phrase_wrap suggestions are automatically applied after each rebuild.
-            AI-modified copy (ai_woven) is <strong>never</strong> auto-applied.
+            AI link suggestions are <strong>never</strong> auto-applied.
           </p>
           
           <div className="grid gap-4 sm:grid-cols-2">
@@ -744,6 +731,11 @@ export function InternalLinksPage() {
   const generate = useGenerateAnchor();
   const rebuild = useRebuildLinks();
   const undo = useUndoSuggestion();
+  const reconcile = useReconcileLink();
+  const handleReconcile = async (id: number) => {
+    try { const result = await reconcile.mutateAsync(id); setToast({ message: `Reconciled: ${result.status.replaceAll("_", " ")}`, variant: "success" }); }
+    catch (e) { setToast({ message: (e as Error).message, variant: "error" }); }
+  };
   const wasRebuildRunning = useRef(false);
 
   const previewSuggestion = useMemo(() => {
@@ -764,11 +756,11 @@ export function InternalLinksPage() {
     wasRebuildRunning.current = running;
   }, [summary.data?.progress?.running, summary.data?.progress?.error]);
 
-  const handleApply = async (id: number) => {
+  const handleApply = async (id: number, previewToken: string) => {
     setProcessingId(id);
     setPreviewId(null);
     try {
-      await apply.mutateAsync(id);
+      await apply.mutateAsync({ id, previewToken });
       setToast({ message: "Link applied successfully", variant: "success" });
       // Show nudge for ai_woven to regenerate other suggestions
       const sug = suggestions.data?.find(s => s.id === id);
@@ -827,7 +819,7 @@ export function InternalLinksPage() {
       if (result.link_not_found) {
         setToast({ message: "Link was already removed from the page", variant: "info" });
       } else {
-        setToast({ message: "Link removed successfully", variant: "success" });
+        setToast({ message: "Previous body restored", variant: "success" });
       }
     } catch (e) {
       setToast({ message: `Undo failed: ${(e as Error).message}`, variant: "error" });
@@ -966,7 +958,7 @@ export function InternalLinksPage() {
             <CardTitle className="text-lg">Link Suggestions</CardTitle>
             <p className="text-sm text-muted-foreground">
               Suggestions are ranked by similarity, traffic, and target value. 
-              <strong> Prefer phrase wraps</strong> (green badge) over AI-modified copy (amber). 
+              <strong> Prefer phrase wraps</strong> (green badge) over AI link suggestions (amber).
               Weak single-word anchors like "products" or "here" are demoted automatically.
             </p>
           </CardHeader>
@@ -1002,7 +994,7 @@ export function InternalLinksPage() {
                     <SuggestionRow
                       key={s.id}
                       suggestion={s}
-                      onApply={() => handleApply(s.id)}
+                      onReconcile={() => handleReconcile(s.id)}
                       onDismiss={() => handleDismiss(s.id)}
                       onGenerate={() => handleGenerate(s.id)}
                       onPreview={() => setPreviewId(s.id)}
@@ -1058,6 +1050,7 @@ export function InternalLinksPage() {
                       key={link.id}
                       link={link}
                       onUndo={() => handleUndo(link.id)}
+                      onReconcile={() => handleReconcile(link.id)}
                       onRegenerate={() => {
                         setToast({ message: "Use Rebuild to regenerate suggestions", variant: "info" });
                       }}
@@ -1362,7 +1355,7 @@ export function InternalLinksPage() {
       <PreviewDialog
         suggestionId={previewId}
         onClose={() => setPreviewId(null)}
-        onConfirmApply={() => previewId && handleApply(previewId)}
+        onConfirmApply={(token) => previewId && handleApply(previewId, token)}
         applying={previewId !== null && processingId === previewId && apply.isPending}
         weakAnchorWarning={previewSuggestion?.weak_anchor_warning}
       />

@@ -144,6 +144,52 @@ are labelled **unverified**, reported positions are retained separately, and the
 verified rank charts/top-10 totals. GSC exports are rejected. Seed initialization runs once,
 so removed keywords do not reappear at app startup.
 
+### Internal link safety
+
+`/app/internal-links` supports products, collections and blog articles as sources;
+pages remain targets only. All manual applies require a live preview and explicit
+**Confirm and apply**. The preview displays escaped HTML changes and the visible-text
+diff, without executing source or AI HTML in the browser.
+
+| Method | Path | Contract |
+| ------ | ---- | -------- |
+| POST (GET retained) | `/api/internal-links/suggestions/{id}/preview` | Reads the current Shopify body; returns `{allowed, old_html, new_html, text_diff, html_diff, preview_token}` or a blocked reason. No database or Shopify writes. |
+| POST | `/api/internal-links/suggestions/{id}/generate-anchor` | Stores `{anchor_phrase, insert_sentence?, insert_after_text?}` as `ai_edit_json`. Full-body AI responses are rejected with 409 and a text diff. |
+| POST | `/api/internal-links/suggestions/{id}/apply` | Requires `{preview_token}`. Token binds the object identity, exact live HTML, target and edit for ten minutes. Changed or invalid approvals return 409; no write occurs. |
+| POST | `/api/internal-links/suggestions/{id}/undo` | Restores the exact saved body only if live HTML still equals the applied body. Later edits and legacy applies without backups return 409. |
+| POST | `/api/internal-links/suggestions/{id}/reconcile` | Reads Shopify to resolve an uncertain apply/undo. Updates local state only when live HTML matches the saved before/after body; never repeats a Shopify write. |
+| GET / PUT | `/api/internal-links/settings` | `ai_woven_enabled_types` is returned as an array; PUT accepts comma-separated source types. An empty value disables all AI weaving. |
+
+Server construction preserves every original HTML byte outside one anchor wrapper
+or one short sentence inserted after a uniquely identified paragraph. Existing links,
+images and attributes are preserved; the whole-body AI link sanitizer is not used.
+Only the body is sent to Shopify. Title, SEO, tags and metafields are omitted.
+Snapshot creation commits before network dispatch; a partial unique index reserves
+the source object until completion or reconciliation. Failed/ambiguous writes keep
+the backup and block another write. An interrupted `prepared` operation can be
+reconciled after 15 minutes; known uncertain outcomes can be reconciled immediately.
+Rebuild and dismissal preserve unfinished operations. Local bodies and source graph
+edges are updated together; pending sibling AI edits are invalidated.
+
+Settings → Runtime and Internal Links → Settings expose AI source-type controls.
+The stored key `internal_links_ai_woven_enabled_types` defaults to
+`product,blog_article`; collections are disabled, and pages are unsupported sources.
+Migration retires legacy `ai_anchor_html` values without deleting suggestions.
+Auto-apply remains opt-in, phrase-wrap-only, and uses the same preview, guard,
+reservation, snapshot and body-only writer.
+
+Editor drafts are browser state derived from catalog bodies, not a separate draft
+table. After apply/undo, detail caches are invalidated and open tabs are notified.
+Unedited body drafts follow the saved body while other fields remain untouched;
+divergent body drafts are preserved and saving is blocked until reconciled. AI
+recommendation history is retained.
+
+**Concurrency boundary:** the second live read closes stale-preview windows and
+object reservations serialize this feature's writes. Shopify body mutations do not
+provide a conditional body-hash argument. An independent Shopify/editor write in
+the interval between the final read and mutation can still race; no cross-system
+transaction or absolute external-write exclusion is claimed.
+
 ### Products
 
 
@@ -443,6 +489,12 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, cooperative cancellation, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
 
+Internal links: `shopifyseo/internal_links/safety.py` validates lossless edits and signs
+previews; `shopify_io.py` performs narrow live reads and body-only mutations;
+`apply.py` owns preview, apply, snapshot undo, reconciliation and local graph updates;
+`store.py` migrates edit storage and creates durable write reservations. The existing
+router and Settings surfaces expose these contracts.
+
 Backend orchestration lives in `backend/app/services/` and delegates to `shopifyseo/*`.
 
 
@@ -496,6 +548,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
 | OverviewPage         | `/`                                      | Dashboard overview               | `/api/summary`, sync/status                     |
+| InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |
 | ProductDetailPage    | `/products/:handle`                      | Product SEO + signals + Sidekick + Top search queries (GSC) | `/api/products/{handle}`, AI stream, inspection |
@@ -528,6 +581,14 @@ Ranking tables (created through the existing schema bootstrap):
 - `rank_checks`: outcome (including coverage and cancellation flags) and fixed search profile, rank or unknown state, reported legacy rank, target-at-check, competitors and timestamp; indexed `(keyword_id, checked_at DESC)`, unique import identity and `(job_id, keyword_id)`.
 - `rank_jobs`: request-key and weekly-date uniqueness, progress, durable cancellation flag and request reservation; a partial unique index permits one running job.
 - `rank_requests`: one ledger row per dispatched attempt, indexed by Pacific calendar month; remains after restart.
+
+Internal-link tables:
+- `link_suggestions`: additive AI plans in `ai_edit_json`; legacy `ai_anchor_html` is retired.
+- `internal_links`: source/target graph rebuilt for the changed object after apply/undo.
+- `link_suggestion_events`: apply, auto-apply, undo and dismiss history.
+- `link_body_snapshots`: suggestion, source identity, exact old/new HTML, timestamps,
+  operation status and error. A partial unique index on `(source_type, shopify_id)`
+  prevents overlapping or unreconciled writes. Backups are retained after undo.
 
 SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/dashboard_store.py`, `shopifyseo/dashboard_google/_cache.py`. No Alembic/SQLAlchemy ORM.
 
@@ -766,6 +827,10 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |
 
 ---
+
+`INTERNAL_LINK_PREVIEW_SECRET` optionally supplies a shared preview-signing secret
+for multiple workers. Without it, a process-local random secret invalidates existing
+previews on restart; reopening the preview obtains a new approval.
 
 ## Keeping This Doc in Sync
 

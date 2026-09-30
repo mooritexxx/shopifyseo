@@ -1,18 +1,27 @@
-"""Apply link suggestions: wrap the anchor, push to Shopify, update local state."""
+"""Preview, apply and undo lossless edits against the current Shopify body."""
 from __future__ import annotations
 
-import hashlib
+import difflib
+import json
 import logging
 import re
 import sqlite3
 import time
-from typing import Callable
 from urllib.parse import urlparse
 
-from ..dashboard_queries._urls import build_store_internal_link_allowlist, object_url_with_base
+from ..dashboard_queries._urls import object_url_with_base
+from . import shopify_io
+from .graph import extract_links, resolve_internal_target
+from .safety import (LinkConflict, body_hash, build_edit, guard_edit, preview_token,
+                     require_ai_enabled, text_diff, validate_edit, verify_token)
 
 logger = logging.getLogger(__name__)
-
+_hash_body = body_hash
+_SOURCE_META = {
+    "blog_article": ("blog_articles", "blog_handle = ? AND handle = ?", "body", "shopify_id, body"),
+    "product": ("products", "handle = ?", "description_html", "shopify_id, description_html"),
+    "collection": ("collections", "handle = ?", "description_html", "shopify_id, description_html"),
+}
 
 def _log_suggestion_event(
     conn: sqlite3.Connection,
@@ -74,190 +83,240 @@ def _log_suggestion_event(
         logger.warning("Failed to log suggestion event", exc_info=True)
 
 
-def _hash_body(body: str) -> str:
-    """SHA-256 hex digest of body text for stale detection."""
-    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
-
-# Split out regions we must not touch: existing links, headings, script/style.
-_PROTECTED_RE = re.compile(
-    r"(<a\b.*?</a>|<h[1-6]\b.*?</h[1-6]>|<script\b.*?</script>|<style\b.*?</style>)",
-    re.IGNORECASE | re.DOTALL,
-)
+def _params(source_type, source_handle):
+    return tuple(source_handle.split("/", 1)) if source_type == "blog_article" else (source_handle,)
 
 
-def wrap_phrase_in_html(html: str, phrase: str, url: str) -> str | None:
-    """Wrap the first occurrence of *phrase* outside protected regions. None if absent."""
-    if not html or not phrase:
-        return None
-    pattern = re.compile(r"\b(" + re.escape(phrase) + r")\b", re.IGNORECASE)
-    segments = _PROTECTED_RE.split(html)
-    for i, segment in enumerate(segments):
-        if _PROTECTED_RE.fullmatch(segment):
-            continue
-        # Also skip text that sits inside a tag attribute by only replacing in text nodes:
-        # split the segment on tags and substitute only in non-tag parts.
-        parts = re.split(r"(<[^>]+>)", segment)
-        for j, part in enumerate(parts):
-            if part.startswith("<"):
-                continue
-            new_part, n = pattern.subn(rf'<a href="{url}">\1</a>', part, count=1)
-            if n:
-                parts[j] = new_part
-                segments[i] = "".join(parts)
-                return "".join(segments)
-    return None
-
-
-_SOURCE_META = {
-    # source_type: (table, where_sql, body_col, select_cols)
-    "blog_article": ("blog_articles", "blog_handle = ? AND handle = ?", "body",
-                     "shopify_id, title, seo_title, seo_description, body"),
-    "product": ("products", "handle = ?", "description_html",
-                "shopify_id, title, seo_title, seo_description, description_html, tags_json"),
-    "collection": ("collections", "handle = ?", "description_html",
-                   "shopify_id, title, seo_title, seo_description, description_html"),
-}
-
-
-def _load_source_row(conn: sqlite3.Connection, source_type: str, source_handle: str) -> sqlite3.Row:
-    table, where, _body_col, cols = _SOURCE_META[source_type]
-    if source_type == "blog_article":
-        blog_h, _, article_h = source_handle.partition("/")
-        params: tuple = (blog_h, article_h)
-    else:
-        params = (source_handle,)
-    row = conn.execute(f"SELECT {cols} FROM {table} WHERE {where}", params).fetchone()
-    if not row:
-        raise ValueError(f"source not found: {source_type}/{source_handle}")
+def _load_source_row(conn, source_type, source_handle):
+    if source_type not in _SOURCE_META:
+        raise LinkConflict("This object type is not supported as a link source.")
+    table, where, _, cols = _SOURCE_META[source_type]
+    row = conn.execute(f"SELECT {cols} FROM {table} WHERE {where}", _params(source_type, source_handle)).fetchone()
+    if not row or not row["shopify_id"]:
+        raise LinkConflict("The source object has no Shopify identity. Refresh the catalog.")
     return row
 
 
-def _shopify_push(source_type: str, row: sqlite3.Row, new_body: str) -> dict:
-    import json
-
-    from ..dashboard_live_updates import (
-        live_update_article,
-        live_update_collection,
-        live_update_product,
-    )
-    from ..dashboard_store import DB_PATH
-
-    title = row["title"] or ""
-    seo_title = row["seo_title"] or ""
-    seo_description = row["seo_description"] or ""
-    if source_type == "blog_article":
-        return live_update_article(str(DB_PATH), row["shopify_id"], title, seo_title, seo_description, new_body)
-    if source_type == "collection":
-        return live_update_collection(str(DB_PATH), row["shopify_id"], title, seo_title, seo_description, new_body)
-    tags = ", ".join(json.loads(row["tags_json"] or "[]"))
-    return live_update_product(str(DB_PATH), row["shopify_id"], title, seo_title, seo_description, new_body, tags)
+def wrap_phrase_in_html(body, phrase, url):
+    try:
+        return build_edit(body, {"anchor_phrase": phrase}, url)
+    except LinkConflict:
+        return None
 
 
-def apply_suggestion(
-    conn: sqlite3.Connection,
-    suggestion_id: int,
-    base_url: str,
-    push_fn: Callable | None = None,
-    sanitize_fn: Callable | None = None,
-) -> dict:
-    """Apply one suggestion: wrap anchor, push to Shopify, then update local DB.
-
-    Raises on push failure; local state is only mutated after the push succeeds.
-    """
-    push_fn = push_fn or _shopify_push
+def _suggestion(conn, suggestion_id):
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
     if not sug:
-        raise ValueError(f"suggestion {suggestion_id} not found")
-    if sug["status"] == "applied":
-        return {"status": "applied", "already": True}
+        raise LinkConflict("Suggestion not found. Refresh the list.")
+    return sug
+
+
+def _candidate(conn, suggestion_id, base_url, fetch_fn):
+    sug = _suggestion(conn, suggestion_id)
     if sug["status"] != "suggested":
-        raise ValueError(f"suggestion {suggestion_id} is {sug['status']}")
-
-    source_type, source_handle = sug["source_type"], sug["source_handle"]
-    table, where, body_col, _cols = _SOURCE_META[source_type]
-    row = _load_source_row(conn, source_type, source_handle)
-
-    current_body = row[body_col] or ""
-    current_hash = _hash_body(current_body)
-    stored_hash = sug["source_body_hash"] or ""
-    if stored_hash and current_hash != stored_hash:
-        raise ValueError("Source body changed since suggestion was generated. Regenerate suggestion.")
-
+        raise LinkConflict(f"Suggestion is {sug['status']}. Refresh the list.")
+    if sug["kind"] == "ai_woven":
+        require_ai_enabled(conn, sug["source_type"])
+        if not sug["ai_edit_json"]:
+            raise LinkConflict("Generate a new suggestion. Legacy full-body AI responses cannot be applied.")
+        try:
+            edit = validate_edit(json.loads(sug["ai_edit_json"]))
+        except (ValueError, TypeError) as exc:
+            if isinstance(exc, LinkConflict):
+                raise
+            raise LinkConflict("Invalid AI edit. Generate a new suggestion.") from None
+    elif sug["kind"] == "phrase_wrap":
+        edit = {"anchor_phrase": sug["anchor_phrase"]}
+    else:
+        raise LinkConflict("Unsupported link edit.")
+    # Validate just this target; never sanitize or scan the entire catalog body.
+    from .pipeline import _target_exists_and_published
+    if not _target_exists_and_published(conn, sug["target_type"], sug["target_handle"]):
+        raise LinkConflict("The target is no longer eligible for linking. Refresh the catalog.")
+    row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
+    old = fetch_fn(sug["source_type"], row)
     url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
+    if check_link_present_in_body(old, url):
+        raise LinkConflict("The current Shopify body already links to this target.")
+    new = build_edit(old, edit, url)
+    guard_edit(old, new, edit, url)
+    binding = {"suggestion_id": suggestion_id, "shopify_id": row["shopify_id"],
+               "source_type": sug["source_type"], "target_url": url,
+               "old_hash": body_hash(old), "new_hash": body_hash(new),
+               "edit_hash": body_hash(json.dumps(edit, sort_keys=True))}
+    return sug, row, old, new, edit, url, binding
 
-    if sug["kind"] == "phrase_wrap":
-        new_body = wrap_phrase_in_html(current_body, sug["anchor_phrase"], url)
-        if new_body is None:
-            raise ValueError("anchor phrase no longer present in body")
-    else:
-        if not sug["ai_anchor_html"]:
-            raise ValueError("ai_woven suggestion has no generated anchor yet")
-        new_body = sug["ai_anchor_html"]  # full replacement body produced at review time
 
-    if sanitize_fn is None:
-        from urllib.parse import urlparse
+def preview_suggestion(conn, suggestion_id, base_url, fetch_fn=None):
+    # Stateless signed approval: this endpoint performs no database or Shopify writes.
+    try:
+        sug, row, old, new, edit, url, binding = _candidate(conn, suggestion_id, base_url, fetch_fn or shopify_io.fetch_body)
+    except LinkConflict as exc:
+        return {"suggestion_id": suggestion_id, "allowed": False, "reason": str(exc),
+                "old_html": None, "new_html": None, "text_diff": exc.detail["text_diff"], "preview_token": None}
+    return {"suggestion_id": suggestion_id, "kind": sug["kind"], "old_html": old, "new_html": new,
+            "text_diff": text_diff(old, new), "html_diff": "\n".join(difflib.unified_diff(
+                old.splitlines(), new.splitlines(), fromfile="Current Shopify HTML", tofile="With link", lineterm="")),
+            "anchor_phrase": edit["anchor_phrase"], "target_url": url, "allowed": True,
+            "preview_token": preview_token(binding)}
 
-        from ..dashboard_ai_engine_parts._article_draft import sanitize_article_internal_links
 
-        no_caps = {"collection": 10_000, "product": 10_000, "page": 10_000, "blog_article": 10_000}
-        targets, _, _ = build_store_internal_link_allowlist(conn, base_url, caps=no_caps)
-        path_to_canonical: dict[str, str] = {}
-        for t in targets:
-            allowlist_url = (t.get("url") or "").strip()
-            if not allowlist_url:
-                continue
-            parsed_path = urlparse(allowlist_url).path or ""
-            pk = parsed_path.rstrip("/") or "/"
-            if pk and pk not in path_to_canonical:
-                path_to_canonical[pk] = allowlist_url
-        new_body = sanitize_article_internal_links(
-            new_body, path_to_canonical=path_to_canonical, base_url=base_url
-        )
-    else:
-        new_body = sanitize_fn(new_body)
-
-    push_fn(source_type, row, new_body)  # raises on failure -> nothing below runs
-
-    if source_type == "blog_article":
-        blog_h, _, article_h = source_handle.partition("/")
-        conn.execute(
-            f"UPDATE {table} SET {body_col} = ? WHERE blog_handle = ? AND handle = ?",
-            (new_body, blog_h, article_h),
-        )
-    else:
-        conn.execute(f"UPDATE {table} SET {body_col} = ? WHERE handle = ?", (new_body, source_handle))
-    conn.execute(
-        "INSERT OR IGNORE INTO internal_links "
-        "(source_type, source_handle, target_type, target_handle, anchor_text, href) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (source_type, source_handle, sug["target_type"], sug["target_handle"],
-         sug["anchor_phrase"] or "", url),
-    )
-    conn.execute(
-        "UPDATE link_suggestions SET status = 'applied', applied_at = ? WHERE id = ?",
-        (int(time.time()), suggestion_id),
-    )
-    
-    # Phase D: Log the apply event for measurement
-    _log_suggestion_event(conn, sug, "apply")
-
-    # Update sibling suggestions for the same source: refresh source_body_hash
-    # so subsequent applies on the same page don't fail the stale body check.
-    new_body_hash = _hash_body(new_body)
-    conn.execute(
-        "UPDATE link_suggestions SET source_body_hash = ? "
-        "WHERE source_type = ? AND source_handle = ? AND status = 'suggested'",
-        (new_body_hash, source_type, source_handle),
-    )
-    # Clear ai_anchor_html for ai_woven siblings - their draft was for the old body
-    conn.execute(
-        "UPDATE link_suggestions SET ai_anchor_html = NULL "
-        "WHERE source_type = ? AND source_handle = ? AND status = 'suggested' AND kind = 'ai_woven'",
-        (source_type, source_handle),
-    )
-
+def _status(conn, snapshot_id, status, error=None):
+    conn.execute("UPDATE link_body_snapshots SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                 (status, error, int(time.time()), snapshot_id))
     conn.commit()
-    return {"status": "applied", "url": url}
+
+
+def _update_local(conn, sug, body, base_url, event):
+    table, where, body_col, _ = _SOURCE_META[sug["source_type"]]
+    conn.execute(f"UPDATE {table} SET {body_col} = ? WHERE {where}",
+                 (body, *_params(sug["source_type"], sug["source_handle"])))
+    # Reconcile every edge on this object to the actual live body, including live-only links.
+    conn.execute("DELETE FROM internal_links WHERE source_type = ? AND source_handle = ?",
+                 (sug["source_type"], sug["source_handle"]))
+    for href, anchor in extract_links(body):
+        target = resolve_internal_target(href, base_url)
+        if target:
+            conn.execute("INSERT OR IGNORE INTO internal_links "
+                         "(source_type, source_handle, target_type, target_handle, anchor_text, href) VALUES (?,?,?,?,?,?)",
+                         (sug["source_type"], sug["source_handle"], *target, anchor, href))
+    conn.execute("UPDATE link_suggestions SET status = ?, applied_at = ? WHERE id = ?",
+                 ("undone" if event == "undo" else "applied", int(time.time()), sug["id"]))
+    conn.execute("UPDATE link_suggestions SET source_body_hash = ?, ai_edit_json = NULL, ai_anchor_html = NULL "
+                 "WHERE source_type = ? AND source_handle = ? AND status = 'suggested'",
+                 (body_hash(body), sug["source_type"], sug["source_handle"]))
+    _log_suggestion_event(conn, sug, event)
+
+
+def _finish(conn, snapshot, sug, base_url, undo=False):
+    row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
+    if row["shopify_id"] != snapshot["shopify_id"]:
+        raise LinkConflict("The Shopify object identity changed. Reconciliation is required.")
+    _update_local(conn, sug, snapshot["old_body"] if undo else snapshot["new_body"], base_url, "undo" if undo else "apply")
+    _status(conn, snapshot["id"], "undone" if undo else "applied")
+
+
+def apply_suggestion(conn, suggestion_id, base_url, *, preview_token_value="", fetch_fn=None, push_fn=None):
+    fetch_fn, push_fn = fetch_fn or shopify_io.fetch_body, push_fn or shopify_io.push_body
+    sug, row, old, new, edit, url, binding = _candidate(conn, suggestion_id, base_url, fetch_fn)
+    verify_token(preview_token_value, binding)
+    now = int(time.time())
+    # Commit the backup and reservation BEFORE network dispatch. The unique partial
+    # index serializes writes to an object across threads and app processes.
+    try:
+        cursor = conn.execute("""INSERT INTO link_body_snapshots
+            (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,'prepared',?,?)""",
+            (suggestion_id, sug["source_type"], sug["source_handle"], row["shopify_id"], old, new, now, now))
+        snapshot_id = cursor.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise LinkConflict("Another write on this page is in progress or needs reconciliation.") from None
+    try:
+        live = fetch_fn(sug["source_type"], row)
+        if live != old:
+            raise LinkConflict("Shopify changed after preview. Open a fresh preview.", text_diff=text_diff(old, live))
+        fresh = _suggestion(conn, suggestion_id)
+        fields = ("kind", "source_type", "source_handle", "target_type", "target_handle", "anchor_phrase", "ai_edit_json")
+        if fresh["status"] != "suggested" or any(fresh[field] != sug[field] for field in fields):
+            raise LinkConflict("Suggestion changed after preview. Open a fresh preview.")
+        if _load_source_row(conn, sug["source_type"], sug["source_handle"])["shopify_id"] != row["shopify_id"]:
+            raise LinkConflict("The Shopify object identity changed. Open a fresh preview.")
+        if sug["kind"] == "ai_woven":
+            require_ai_enabled(conn, sug["source_type"])
+        guard_edit(old, new, edit, url)
+    except Exception:
+        _status(conn, snapshot_id, "failed", "Pre-write validation failed; no Shopify write was attempted.")
+        raise
+    snapshot = conn.execute("SELECT * FROM link_body_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+    try:
+        accepted = push_fn(sug["source_type"], row, new)
+        if accepted != new:
+            raise RuntimeError("Shopify returned different HTML. Reconcile this operation before retrying.")
+        _finish(conn, snapshot, sug, base_url)
+    except Exception:
+        conn.rollback()
+        _status(conn, snapshot_id, "needs_reconciliation", "Write outcome needs a live read before retrying.")
+        raise
+    return {"status": "applied", "url": url, "snapshot_id": snapshot_id}
+
+
+def undo_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None, push_fn=None):
+    fetch_fn, push_fn = fetch_fn or shopify_io.fetch_body, push_fn or shopify_io.push_body
+    sug = _suggestion(conn, suggestion_id)
+    if sug["status"] != "applied":
+        raise LinkConflict("Suggestion is not applied.")
+    snapshot = conn.execute("SELECT * FROM link_body_snapshots WHERE suggestion_id = ? AND status = 'applied' "
+                            "ORDER BY id DESC LIMIT 1", (suggestion_id,)).fetchone()
+    if not snapshot:
+        raise LinkConflict("This older apply has no backup. Restore it manually in Shopify.")
+    row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
+    if row["shopify_id"] != snapshot["shopify_id"]:
+        raise LinkConflict("The Shopify object identity changed. Undo is blocked.")
+    try:
+        changed = conn.execute("UPDATE link_body_snapshots SET status = 'undo_prepared', updated_at = ? "
+                               "WHERE id = ? AND status = 'applied'", (int(time.time()), snapshot["id"])).rowcount
+        if not changed:
+            raise LinkConflict("Another undo is in progress.")
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise LinkConflict("Another write on this page is in progress or needs reconciliation.") from None
+    try:
+        current = fetch_fn(sug["source_type"], row)
+        if current != snapshot["new_body"]:
+            raise LinkConflict("The page changed after Apply. Undo would overwrite newer work and was blocked.",
+                               text_diff=text_diff(snapshot["new_body"], current))
+    except Exception:
+        _status(conn, snapshot["id"], "applied")
+        raise
+    try:
+        if push_fn(sug["source_type"], row, snapshot["old_body"]) != snapshot["old_body"]:
+            raise RuntimeError("Shopify did not confirm the restored HTML. Reconciliation is required.")
+        _finish(conn, snapshot, sug, base_url, undo=True)
+    except Exception:
+        conn.rollback()
+        _status(conn, snapshot["id"], "undo_needs_reconciliation", "Undo outcome needs a live read before retrying.")
+        raise
+    return {"status": "undone", "snapshot_id": snapshot["id"]}
+
+
+def reconcile_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None):
+    """Resolve a timeout/crash by reading Shopify; never repeat a remote write."""
+    snapshot = conn.execute("SELECT * FROM link_body_snapshots WHERE suggestion_id = ? AND status IN "
+                            "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation') "
+                            "ORDER BY id DESC LIMIT 1", (suggestion_id,)).fetchone()
+    if not snapshot:
+        raise LinkConflict("There is no unfinished write to reconcile.")
+    if snapshot["status"] in ("prepared", "undo_prepared") and time.time() - snapshot["updated_at"] < 900:
+        raise LinkConflict("The write may still be running. Wait before reconciling.")
+    sug = _suggestion(conn, suggestion_id)
+    row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
+    if row["shopify_id"] != snapshot["shopify_id"]:
+        raise LinkConflict("The Shopify object identity changed. Reconciliation is blocked.")
+    undo = snapshot["status"].startswith("undo")
+    claimed = conn.execute(
+        "UPDATE link_body_snapshots SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?",
+        ("undo_prepared" if undo else "prepared", int(time.time()), snapshot["id"], snapshot["status"], snapshot["updated_at"]),
+    ).rowcount
+    conn.commit()
+    if not claimed:
+        raise LinkConflict("This operation is already being reconciled. Refresh its status.")
+    try:
+        live = (fetch_fn or shopify_io.fetch_body)(sug["source_type"], row)
+        if live == (snapshot["old_body"] if undo else snapshot["new_body"]):
+            _finish(conn, snapshot, sug, base_url, undo=undo)
+            return {"status": "undone" if undo else "applied"}
+        if live == (snapshot["new_body"] if undo else snapshot["old_body"]):
+            _status(conn, snapshot["id"], "applied" if undo else "failed")
+            return {"status": "not_written"}
+        raise LinkConflict("Live content matches neither backup. Keep the backup and reconcile the page manually.")
+    except Exception:
+        conn.rollback()
+        _status(conn, snapshot["id"], "undo_needs_reconciliation" if undo else "needs_reconciliation",
+                "Reconciliation could not confirm the live body.")
+        raise
 
 
 def remove_link_from_html(html: str, href: str) -> str | None:
@@ -295,108 +354,9 @@ def remove_link_from_html(html: str, href: str) -> str | None:
     return None
 
 
-def undo_suggestion(
-    conn: sqlite3.Connection,
-    suggestion_id: int,
-    base_url: str,
-    push_fn: Callable | None = None,
-) -> dict:
-    """Undo an applied suggestion: remove the link from live Shopify body.
-    
-    - Only works on suggestions with status='applied'
-    - Removes the specific <a href="...">...</a> from the body, keeping anchor text
-    - Pushes updated body to Shopify
-    - Removes the internal_links edge
-    - Sets suggestion status to 'undone'
-    
-    Raises on push failure; local state is only mutated after push succeeds.
-    """
-    push_fn = push_fn or _shopify_push
-    sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
-    if not sug:
-        raise ValueError(f"suggestion {suggestion_id} not found")
-    if sug["status"] != "applied":
-        raise ValueError(f"suggestion {suggestion_id} is {sug['status']}, not applied")
-
-    source_type, source_handle = sug["source_type"], sug["source_handle"]
-    table, where, body_col, _cols = _SOURCE_META[source_type]
-    row = _load_source_row(conn, source_type, source_handle)
-    
-    current_body = row[body_col] or ""
-    
-    # Build the target URL that was used when applying
-    url = object_url_with_base(base_url, sug["target_type"], sug["target_handle"])
-    
-    # Remove the link from the body
-    new_body = remove_link_from_html(current_body, url)
-    if new_body is None:
-        # Link not found in current body - it may have been manually removed
-        # Still update status but note this in the response
-        conn.execute(
-            "UPDATE link_suggestions SET status = 'undone' WHERE id = ?",
-            (suggestion_id,),
-        )
-        conn.execute(
-            "DELETE FROM internal_links WHERE source_type = ? AND source_handle = ? "
-            "AND target_type = ? AND target_handle = ?",
-            (source_type, source_handle, sug["target_type"], sug["target_handle"]),
-        )
-        # Phase D: Log the undo event even when link not found
-        _log_suggestion_event(conn, sug, "undo")
-        conn.commit()
-        return {"status": "undone", "link_not_found": True, "message": "Link not found in current body"}
-    
-    # Push to Shopify (raises on failure -> nothing below runs)
-    push_fn(source_type, row, new_body)
-    
-    # Update local body
-    if source_type == "blog_article":
-        blog_h, _, article_h = source_handle.partition("/")
-        conn.execute(
-            f"UPDATE {table} SET {body_col} = ? WHERE blog_handle = ? AND handle = ?",
-            (new_body, blog_h, article_h),
-        )
-    else:
-        conn.execute(f"UPDATE {table} SET {body_col} = ? WHERE handle = ?", (new_body, source_handle))
-    
-    # Remove the internal_links edge
-    conn.execute(
-        "DELETE FROM internal_links WHERE source_type = ? AND source_handle = ? "
-        "AND target_type = ? AND target_handle = ?",
-        (source_type, source_handle, sug["target_type"], sug["target_handle"]),
-    )
-    
-    # Update suggestion status to 'undone'
-    conn.execute(
-        "UPDATE link_suggestions SET status = 'undone' WHERE id = ?",
-        (suggestion_id,),
-    )
-    
-    # Phase D: Log the undo event for measurement
-    _log_suggestion_event(conn, sug, "undo")
-    
-    conn.commit()
-    return {"status": "undone", "url": url}
-
-
-def check_link_present_in_body(body: str | None, href: str) -> bool:
-    """Check if a link with the given href exists in the HTML body."""
-    if not body or not href:
-        return False
-    
-    parsed_href = urlparse(href)
-    href_path = parsed_href.path.rstrip("/") or "/"
-    
-    link_pattern = re.compile(
-        r'<a\s+[^>]*href=["\']([^"\']+)["\']',
-        re.IGNORECASE
-    )
-    
-    for match in link_pattern.finditer(body):
-        found_href = match.group(1)
-        found_parsed = urlparse(found_href)
-        found_path = found_parsed.path.rstrip("/") or "/"
-        if found_path == href_path:
-            return True
-    
-    return False
+def check_link_present_in_body(body, href):
+    target_path = urlparse(href).path.rstrip("/") or "/"
+    target_host = urlparse(href).netloc.lower()
+    return any((not urlparse(link).netloc or urlparse(link).netloc.lower() == target_host)
+               and (urlparse(link).path.rstrip("/") or "/") == target_path
+               for link, _ in extract_links(body or ""))

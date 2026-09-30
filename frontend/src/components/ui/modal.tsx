@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { type ReactNode } from "react";
 
 import {
   Dialog,
@@ -25,19 +25,9 @@ export function Modal({
   /** Merged onto DialogContent; use for wider layouts (e.g. image preview). */
   contentClassName?: string;
 }) {
-  const openerRef = useRef<HTMLElement | null>(null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        onOpenAutoFocus={() => {
-          openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        }}
-        onCloseAutoFocus={(event) => {
-          if (openerRef.current?.isConnected) {
-            event.preventDefault();
-            openerRef.current.focus();
-          }
-        }}
         className={cn(
           "w-[min(720px,92vw)] rounded-[14px] border border-[#e2e7ed] bg-white p-5 shadow-lg",
           contentClassName

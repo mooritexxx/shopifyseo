@@ -30,3 +30,15 @@
   .workspace-tools .tool-json-grid { grid-template-columns:minmax(0,1fr); }
 }
 @media(min-width:768px) { .image-review-layout { flex-direction:row;align-items:stretch;gap:16px; } }
+
+.settings-fields-grid { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px; }
+.settings-fields-grid > div { min-width:0; }
+.settings-workspace [role="combobox"] { max-width:100%; }
+.settings-workspace button { max-width:100%; }
+.usage-period-grid { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px; }
+.usage-period-grid strong {font-size:28px;line-height:1.2;font-weight:600;font-variant-numeric:tabular-nums;margin-top:8px;overflow-wrap:anywhere;}
+@container(max-width:800px) { .settings-fields-grid {grid-template-columns:minmax(0,1fr);} .usage-period-grid {grid-template-columns:repeat(2,minmax(0,1fr));} }
+@container(max-width:450px) { .usage-period-grid strong {font-size:23px;} }
+.settings-fields-grid .grid.gap-2 { grid-template-columns: minmax(0,1fr); }
+.settings-fields-grid .grid.gap-2 > * { min-width: 0; }
+.settings-workspace [role="combobox"] > span { min-width: 0; text-overflow: ellipsis; }

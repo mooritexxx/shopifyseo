@@ -1,3 +1,4 @@
+import "./workspace-tools.css";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, BarChart3, ChevronDown, DollarSign, Zap, Hash, TrendingUp } from "lucide-react";
 import { useState } from "react";
@@ -131,12 +132,12 @@ function DailyChart({
       {daily.map((d) => {
         const pct = Math.max(2, (d.cost / maxCost) * 100);
         return (
-          <div key={d.day} className="group relative flex flex-1 flex-col items-center justify-end" style={{ height: "100%" }}>
+          <div key={d.day} tabIndex={0} role="img" aria-label={`${d.day}: ${d.calls} calls, ${usd(d.cost)}`} className="group relative focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 flex min-w-0 flex-1 flex-col items-center justify-end" style={{ height: "100%" }}>
             <div
-              className={`w-full min-w-[4px] rounded-t-md bg-gradient-to-t transition-all ${barClassName}`}
+              className={`w-full rounded-t-md bg-gradient-to-t transition-all ${barClassName}`}
               style={{ height: `${pct}%` }}
             />
-            <div className="pointer-events-none absolute -top-16 left-1/2 z-10 hidden -translate-x-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg group-hover:block">
+            <div className="pointer-events-none absolute -top-16 left-1/2 z-10 hidden -translate-x-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg group-hover:block group-focus:block">
               <p className="font-semibold text-ink">{usd(d.cost)}</p>
               <p className="text-slate-500">{d.calls} calls</p>
               <p className="text-slate-400">{d.day}</p>
@@ -158,14 +159,14 @@ function SeoPeriodCard({
   icon: typeof DollarSign;
 }) {
   return (
-    <Card className="rounded-[26px] shadow-panel">
-      <CardContent className="p-5">
+    <Card>
+      <CardContent className="p-4">
         <div className="flex items-center gap-2">
           <Icon size={14} className="text-slate-400" />
-          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
+          <p className="text-[13px] font-medium text-slate-600">{label}</p>
         </div>
         <strong className="mt-3 block text-3xl font-bold text-ink">{usd(period.total_cost)}</strong>
-        <p className="mt-3 text-sm text-slate-600">{period.total_calls.toLocaleString()} API calls</p>
+        <p className="mt-2 text-xs text-slate-600">{period.total_calls.toLocaleString()} API calls</p>
       </CardContent>
     </Card>
   );
@@ -181,14 +182,14 @@ function PeriodCard({
   icon: typeof DollarSign;
 }) {
   return (
-    <Card className="rounded-[26px] shadow-panel">
-      <CardContent className="p-5">
+    <Card>
+      <CardContent className="p-4">
         <div className="flex items-center gap-2">
           <Icon size={14} className="text-slate-400" />
-          <p className="text-xs uppercase tracking-[0.18em] text-slate-500">{label}</p>
+          <p className="text-[13px] font-medium text-slate-600">{label}</p>
         </div>
         <strong className="mt-3 block text-3xl font-bold text-ink">{usd(period.total_cost)}</strong>
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600">
           <span>{period.total_calls.toLocaleString()} calls</span>
           <span>{shortNumber(period.total_input_tokens)} in</span>
           <span>{shortNumber(period.total_output_tokens)} out</span>
@@ -201,9 +202,10 @@ function PeriodCard({
 function StageDetail({ stages }: { stages: UsageSummary["by_stage"] }) {
   const [open, setOpen] = useState(false);
   return (
-    <Card className="rounded-[26px] shadow-panel">
+    <Card>
       <button
         type="button"
+        aria-expanded={open}
         className="flex w-full items-center justify-between px-6 py-4 text-left"
         onClick={() => setOpen((v) => !v)}
       >
@@ -215,7 +217,7 @@ function StageDetail({ stages }: { stages: UsageSummary["by_stage"] }) {
       </button>
       {open && (
         <CardContent className="px-0 pb-4 pt-0">
-          <Table>
+          <Table scrollLabel="API usage data" className="workspace-tools-table">
             <TableHeader>
               <TableRow>
                 <TableHead>Stage</TableHead>
@@ -254,27 +256,29 @@ export function ApiUsagePage() {
 
   if (error) {
     return (
-      <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">
+      <div className="workspace-tools-panel">
         <p className="text-red-600">Failed to load usage data: {(error as Error).message}</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">
-        <div className="flex items-center justify-between">
+    <div className="workspace-tools space-y-5">
+      <div>
+        <div className="workspace-tools-header">
           <div className="flex items-center gap-3">
             <Activity size={22} className="text-slate-600" />
-            <h1 className="text-2xl font-bold text-ink">API Usage</h1>
+            <h1 className="workspace-tools-title">API Usage</h1>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs uppercase tracking-wider text-slate-400">Period</span>
             {[7, 30, 90].map((d) => (
               <button
                 key={d}
+                aria-pressed={days === d}
+                aria-label={`Last ${d} days`}
                 onClick={() => setDays(d)}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                className={`rounded-lg px-3 py-2 text-xs font-medium transition ${
                   days === d
                     ? "bg-slate-800 text-white"
                     : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -290,30 +294,30 @@ export function ApiUsagePage() {
           <div className="mt-6 space-y-8">
             <div className="space-y-4">
               <Skeleton className="h-6 w-48 rounded-md" />
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="usage-period-grid">
                 {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-28 rounded-[26px]" />
+                  <Skeleton key={i} className="h-28 rounded-[14px]" />
                 ))}
               </div>
-              <Skeleton className="h-48 rounded-[26px]" />
+              <Skeleton className="h-48 rounded-[14px]" />
             </div>
             <div className="space-y-4">
               <Skeleton className="h-6 w-56 rounded-md" />
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="usage-period-grid">
                 {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={`seo-${i}`} className="h-28 rounded-[26px]" />
+                  <Skeleton key={`seo-${i}`} className="h-28 rounded-[14px]" />
                 ))}
               </div>
-              <Skeleton className="h-48 rounded-[26px]" />
+              <Skeleton className="h-48 rounded-[14px]" />
             </div>
           </div>
         ) : (
           <div className="mt-6 space-y-10">
-            <div className="rounded-2xl border p-5"><h2 className="text-lg font-semibold">SerpApi rankings</h2><p className="mt-2">{data.ranking_requests} search requests in the selected period</p><p className="text-sm text-slate-500">Includes retries. Subscription charges are not estimated; this is a conservative request count.</p></div>
+            <div className="workspace-tools-panel"><h2 className="text-lg font-semibold">SerpApi rankings</h2><p className="mt-2">{data.ranking_requests} search requests in the selected period</p><p className="text-sm text-slate-500">Includes retries. Subscription charges are not estimated; this is a conservative request count.</p></div>
             <div className="space-y-6">
               <h2 className="text-lg font-semibold text-ink">Gemini / LLM</h2>
               {/* Period summary cards */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="usage-period-grid">
                 <PeriodCard label="Today" period={data.periods.today} icon={DollarSign} />
                 <PeriodCard label="Last 7 days" period={data.periods.last_7d} icon={TrendingUp} />
                 <PeriodCard label="Last 30 days" period={data.periods.last_30d} icon={Zap} />
@@ -321,7 +325,7 @@ export function ApiUsagePage() {
               </div>
 
               {/* Daily cost chart */}
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Daily spend — Gemini / LLM (last {days} days)
@@ -341,7 +345,7 @@ export function ApiUsagePage() {
               {/* Breakdown tables */}
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               {/* By model */}
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Spend by model
@@ -351,7 +355,7 @@ export function ApiUsagePage() {
                   {data.by_model.length === 0 ? (
                     <p className="px-5 text-sm text-slate-400">No data</p>
                   ) : (
-                    <Table>
+                    <Table scrollLabel="API usage data" className="workspace-tools-table">
                       <TableHeader>
                         <TableRow>
                           <TableHead>Model</TableHead>
@@ -378,7 +382,7 @@ export function ApiUsagePage() {
               </Card>
 
               {/* By call type */}
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Spend by type
@@ -388,7 +392,7 @@ export function ApiUsagePage() {
                   {data.by_call_type.length === 0 ? (
                     <p className="px-5 text-sm text-slate-400">No data</p>
                   ) : (
-                    <Table>
+                    <Table scrollLabel="API usage data" className="workspace-tools-table">
                       <TableHeader>
                         <TableRow>
                           <TableHead>Type</TableHead>
@@ -417,14 +421,14 @@ export function ApiUsagePage() {
 
             {/* By process */}
             {data.by_process.length > 0 && (
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Spend by process
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="px-0 pb-4">
-                  <Table>
+                  <Table scrollLabel="API usage data" className="workspace-tools-table">
                     <TableHeader>
                       <TableRow>
                         <TableHead>Process</TableHead>
@@ -456,7 +460,7 @@ export function ApiUsagePage() {
             )}
 
               {/* Recent calls log */}
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Recent Gemini / LLM calls
@@ -467,7 +471,7 @@ export function ApiUsagePage() {
                     <p className="px-5 text-sm text-slate-400">No calls logged yet</p>
                   ) : (
                     <div className="max-h-[400px] overflow-auto">
-                      <Table>
+                      <Table scrollLabel="API usage data" className="workspace-tools-table">
                         <TableHeader>
                           <TableRow>
                             <TableHead>Time</TableHead>
@@ -526,14 +530,14 @@ export function ApiUsagePage() {
                 SERP, etc.).
               </p>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="usage-period-grid">
                 <SeoPeriodCard label="Today" period={data.seo.periods.today} icon={DollarSign} />
                 <SeoPeriodCard label="Last 7 days" period={data.seo.periods.last_7d} icon={TrendingUp} />
                 <SeoPeriodCard label="Last 30 days" period={data.seo.periods.last_30d} icon={Zap} />
                 <SeoPeriodCard label="All time" period={data.seo.periods.all_time} icon={Hash} />
               </div>
 
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">
                     Daily spend — DataForSEO (last {days} days)
@@ -553,7 +557,7 @@ export function ApiUsagePage() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">Spend by endpoint</CardTitle>
                 </CardHeader>
@@ -561,7 +565,7 @@ export function ApiUsagePage() {
                   {data.seo.by_endpoint.length === 0 ? (
                     <p className="px-5 text-sm text-slate-400">No DataForSEO calls logged yet</p>
                   ) : (
-                    <Table>
+                    <Table scrollLabel="API usage data" className="workspace-tools-table">
                       <TableHeader>
                         <TableRow>
                           <TableHead>Endpoint</TableHead>
@@ -585,7 +589,7 @@ export function ApiUsagePage() {
                 </CardContent>
               </Card>
 
-              <Card className="rounded-[26px] shadow-panel">
+              <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-slate-600">Recent DataForSEO calls</CardTitle>
                 </CardHeader>
@@ -594,7 +598,7 @@ export function ApiUsagePage() {
                     <p className="px-5 text-sm text-slate-400">No calls logged yet</p>
                   ) : (
                     <div className="max-h-[400px] overflow-auto">
-                      <Table>
+                      <Table scrollLabel="API usage data" className="workspace-tools-table">
                         <TableHeader>
                           <TableRow>
                             <TableHead>Time</TableHead>

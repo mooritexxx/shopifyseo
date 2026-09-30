@@ -1,3 +1,4 @@
+import "./workspace-tools.css";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -392,8 +393,8 @@ export function SettingsPage() {
     });
   }, [query.data, openrouterApiKey]);
 
-  if (query.isLoading) return <div className="rounded-[30px] border border-white/70 bg-white/90 p-8 shadow-panel">Loading settings…</div>;
-  if (query.error || !query.data) return <div className="rounded-[30px] border border-[#ffd2c5] bg-[#fff4ef] p-8 text-[#8f3e20] shadow-panel">{(query.error as Error)?.message || "Could not load settings."}</div>;
+  if (query.isLoading) return <div className="rounded-[14px] border border-white/70 bg-white/90 p-5">Loading settings…</div>;
+  if (query.error || !query.data) return <div className="rounded-[14px] border border-[#ffd2c5] bg-[#fff4ef] p-5 text-[#8f3e20]">{(query.error as Error)?.message || "Could not load settings."}</div>;
 
   const generationProvider = values.ai_generation_provider || "openrouter";
   const sidekickProvider = values.ai_sidekick_provider || values.ai_generation_provider || "openrouter";
@@ -502,37 +503,34 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="workspace-tools settings-workspace space-y-5">
       {toast ? <Toast variant={detectToastVariant(toast)}>{toast}</Toast> : null}
       <div>
         <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Settings</p>
-        <h2 className="mt-2 text-4xl font-bold text-ink">Platform configuration</h2>
+        <h1 className="workspace-tools-title mt-2">Platform configuration</h1>
         <p className="mt-2 text-sm text-slate-500">
-          Credentials and options are stored in the local service settings database on this machine. For normal setup you can
-          configure everything here — no <code className="rounded bg-slate-100 px-1 font-mono text-xs">.env</code> file is
-          required. Advanced deployments (Docker, CI) can still inject the same keys via environment variables.
+          Manage integrations, AI models and runtime options. Changes take effect when you save settings.
         </p>
       </div>
-      <Card>
-        <div className="mb-6 flex flex-wrap gap-3 text-sm text-slate-600">
+      <Card className="workspace-tools-panel">
+        <div className="mb-4 flex flex-wrap gap-3 text-sm text-slate-600">
           <span>AI configured: {query.data.ai_configured ? "yes" : "no"}</span>
         </div>
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as SettingsTabId)} className="space-y-5">
-          <TabsList className="grid h-auto w-full grid-cols-1 gap-2 rounded-[22px] border border-line bg-[#f7f9fc] p-2 md:grid-cols-2 xl:grid-cols-4">
+          <TabsList scrollable aria-label="Settings sections">
             {settingsTabs.map((tab) => (
               <TabsTrigger
                 key={tab.id}
                 value={tab.id}
-                className="justify-start rounded-[18px] px-4 py-3 text-left data-[state=active]:bg-white data-[state=active]:shadow-[0_12px_30px_rgba(13,28,64,0.08)] data-[state=inactive]:text-slate-500 data-[state=inactive]:hover:bg-white/70"
+                className="text-sm"
               >
                 <span className="text-sm font-semibold">{tab.label}</span>
               </TabsTrigger>
             ))}
           </TabsList>
           <div className="space-y-4">
-            <div className="rounded-2xl border border-line bg-[#f7f9fc] px-5 py-4">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{activeTabConfig.label}</p>
-              <p className="mt-2 text-sm text-slate-600">{activeTabConfig.description}</p>
+            <div className="px-1">
+              <p className="text-sm text-slate-600">{activeTabConfig.description}</p>
             </div>
             <TabsContent value="integrations" className="mt-0 space-y-4">
               {renderSettingsTabSections({ ...fieldsProps, tabKey: "integrations" })}

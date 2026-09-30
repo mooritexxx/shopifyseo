@@ -154,7 +154,7 @@ export function PaaMindMap({ rootLabel, branches }: { rootLabel: string; branche
   const svgW = X2 + NODE_W2 + 32;
 
   return (
-    <div className="w-full overflow-x-auto rounded-xl border border-slate-200/80 bg-slate-50/50">
+    <div role="region" aria-label="Scrollable question map" tabIndex={0} className="w-full overflow-x-auto rounded-xl border border-slate-200/80 bg-slate-50/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
       <svg
         width={svgW}
         height={totalH}

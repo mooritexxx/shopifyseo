@@ -232,7 +232,8 @@ export function OverviewPage() {
         {!gsc.available ? (
           <Card className="overview-panel p-6">
             <p className="text-sm font-medium text-ink">Site-level GSC not available</p>
-            <p className="mt-2 text-sm text-slate-600">{gsc.error || "Connect Google Search Console to see property rollups."}</p>
+            <p className="mt-2 text-sm text-slate-600">Check your Google connection and selected Search Console property in Settings.</p>
+            {gsc.error ? <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">Connection details</summary><p className="mt-2 break-words [overflow-wrap:anywhere]">{gsc.error}</p></details> : null}
             <Link
               className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#5746d9] hover:underline"
               to="/settings?tab=data-sources"
@@ -604,7 +605,8 @@ export function OverviewPage() {
         {!ga4.available ? (
           <Card className="overview-panel p-6">
             <p className="text-sm font-medium text-ink">GA4 overview not available</p>
-            <p className="mt-2 text-sm text-slate-600">{ga4.error || "Connect Google Analytics."}</p>
+            <p className="mt-2 text-sm text-slate-600">Check your Google connection and selected Analytics property in Settings.</p>
+            {ga4.error ? <details className="mt-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">Connection details</summary><p className="mt-2 break-words [overflow-wrap:anywhere]">{ga4.error}</p></details> : null}
             <p className="mt-3 text-sm text-slate-600">
               For storefront sessions and acquisition without GA4, use{" "}
               <span className="font-medium text-ink">Shopify Admin → Analytics</span> (online store

@@ -587,6 +587,9 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 
 ## Screens / Pages
 
+Settings and API Usage use the same opt-in workspace layout, compact tabs, container-responsive form/summary grids and named table scroll regions. Shared DialogContent restores the opening control on close while respecting caller focus overrides; Modal delegates to it. The shell includes a skip link and mobile-menu Escape handling. Notifications sit above the sync bar, and reduced-motion preferences apply to shared animations. Overview provider failures show recovery guidance with expandable connection details.
+
+
 Optimization tools share opt-in `routes/workspace-tools.css`: compact summaries/headings, named table regions and contained tool editors. Internal Links uses shared tabs; Ads connection/help use disclosures. Image review shows the current image before running and keeps pipeline details collapsed while idle; its existing optimize-and-save flow is unchanged.
 
 

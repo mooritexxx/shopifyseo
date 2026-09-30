@@ -207,6 +207,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
   const syncBarRef = useRef<HTMLButtonElement>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const mobileNavButtonRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
   const errStreamPushRef = useRef("");
@@ -670,14 +671,22 @@ export function AppShell({ children }: PropsWithChildren) {
           sidebarCollapsed ? "lg:grid-cols-[72px_minmax(0,1fr)]" : "lg:grid-cols-[260px_minmax(0,1fr)]"
         )}
       >
-        <header className="flex items-center justify-between gap-3 rounded-2xl bg-[#0d172b] p-3 text-white lg:hidden">
+        <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-white focus:px-4 focus:py-3 focus:text-ink focus:shadow-lg">Skip to content</a>
+        <header className="flex items-center justify-between gap-3 rounded-[14px] bg-[#0d172b] px-4 py-2 text-white lg:hidden">
           <span className="min-w-0 truncate font-semibold">{shopBlock.name}</span>
           <div className="flex shrink-0 gap-2">
-            <Button variant="ghost" className="text-white hover:bg-white/10 hover:text-white" aria-expanded={mobileNavOpen} aria-controls="app-navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}>{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}<span className="sr-only">Navigation menu</span></Button>
+            <button type="button" ref={mobileNavButtonRef} className="inline-flex items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-white h-9 w-9 rounded-lg p-0 text-white hover:bg-white/10 hover:text-white" aria-expanded={mobileNavOpen} aria-controls="app-navigation" onClick={() => setMobileNavOpen(!mobileNavOpen)}>{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}<span className="sr-only">Navigation menu</span></button>
           </div>
         </header>
         <aside
           id="app-navigation"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && mobileNavOpen) {
+              event.preventDefault();
+              setMobileNavOpen(false);
+              mobileNavButtonRef.current?.focus();
+            }
+          }}
           className={cn(
             "flex w-full flex-col gap-3 rounded-[24px] border border-white/70 bg-[#0d172b] text-white shadow-[0_20px_60px_-30px_rgba(13,23,43,0.55)] transition-[padding,gap] duration-200 ease-out",
             "max-lg:rounded-2xl max-lg:p-5",
@@ -880,7 +889,7 @@ export function AppShell({ children }: PropsWithChildren) {
             </div>
           )}
         </aside>
-        <main className="min-w-0 max-lg:min-h-0 lg:min-h-screen lg:p-6">{children}</main>
+        <main id="main-content" tabIndex={-1} className="min-w-0 max-lg:min-h-0 lg:min-h-screen lg:p-6">{children}</main>
       </div>
       <button ref={syncBarRef} type="button" id="app-sync-panel" aria-label={`Open sync details: ${pillTitle}, ${pillSubtitle}`} aria-haspopup="dialog" aria-expanded={syncDrawerOpen} onClick={() => setSyncDrawerOpen(true)} className="fixed inset-x-0 bottom-0 z-40 flex h-11 items-center gap-3 border-t border-slate-200 bg-white px-4 text-left text-xs text-slate-600 shadow-[0_-1px_6px_rgba(15,23,42,0.03)] hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#5746d9] sm:px-6">
         {syncRunning ? <LoaderCircle size={15} className="shrink-0 animate-spin text-[#5746d9]" /> : <span className={cn("h-2 w-2 shrink-0 rounded-full", showSyncErrorPanel ? "bg-rose-500" : summary?.last_dashboard_sync_at ? "bg-emerald-500" : "bg-slate-400")} />}

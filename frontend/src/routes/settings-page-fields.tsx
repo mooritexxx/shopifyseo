@@ -113,7 +113,7 @@ function openRouterModelList(openRouterModels: string[], currentValue: string): 
 }
 
 const modelInputClassName =
-  "w-full rounded-2xl border border-line bg-white px-4 py-3 font-medium text-ink outline-none placeholder:text-slate-400";
+  "w-full rounded-lg border border-line bg-white px-3 py-2 font-medium text-ink outline-none placeholder:text-slate-400";
 
 export type RenderSettingsTabSectionsProps = {
   tabKey: SettingsTabId;
@@ -318,7 +318,7 @@ export function renderSettingsTabSections({
   }
 
   return tabSections[tabKey].map((section) => (
-    <div key={section.title} className="rounded-[24px] border border-line/80 bg-white p-5">
+    <div key={section.title} className="rounded-[14px] border border-line/80 bg-white p-4">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 max-w-2xl">
           <h3 className="text-lg font-semibold text-ink">{section.title}</h3>
@@ -682,7 +682,7 @@ export function renderSettingsTabSections({
           {shopifyDetail}
         </div>
       ) : null}
-      <div className="grid gap-5 xl:grid-cols-2">
+      <div className="settings-fields-grid">
         {section.fields.map((key) => {
           const meta = metaForSettingsField(key);
           const fieldId = `setting-${key}`;
@@ -699,7 +699,7 @@ export function renderSettingsTabSections({
                     inputMode="numeric"
                     autoComplete="off"
                     aria-describedby={describeHint}
-                    className="min-w-[7rem] max-w-[12rem] rounded-2xl border border-line bg-white px-4 py-3 font-medium tabular-nums text-ink outline-none"
+                    className="min-w-[7rem] max-w-[12rem] rounded-lg border border-line bg-white px-3 py-2 font-medium tabular-nums text-ink outline-none"
                     value={displayNumericSetting(
                       values[key],
                       key === "ai_timeout_seconds" ? DEFAULT_AI_TIMEOUT_SECONDS : DEFAULT_AI_MAX_RETRIES
@@ -722,7 +722,7 @@ export function renderSettingsTabSections({
                 value={values[key] || "CA"}
                 onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
               >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                   <SelectValue placeholder="Select country" />
                 </SelectTrigger>
                 <SelectContent>
@@ -787,7 +787,7 @@ export function renderSettingsTabSections({
                     value={values[key] || "America/Vancouver"}
                     onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
                   >
-                    <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                    <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                       <SelectValue placeholder="Select timezone" />
                     </SelectTrigger>
                     <SelectContent className="max-h-72">
@@ -868,7 +868,7 @@ export function renderSettingsTabSections({
                   })
                 }
               >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -885,7 +885,7 @@ export function renderSettingsTabSections({
                   value={values[key] || undefined}
                   onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
                 >
-                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                     <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -927,7 +927,7 @@ export function renderSettingsTabSections({
                     }))
                   }
                 >
-                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                     <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -972,7 +972,7 @@ export function renderSettingsTabSections({
                   value={values[key] || undefined}
                   onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
                 >
-                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                     <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1003,7 +1003,7 @@ export function renderSettingsTabSections({
                   value={values[key] || undefined}
                   onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
                 >
-                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                     <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1038,7 +1038,7 @@ export function renderSettingsTabSections({
                   }
                   onValueChange={(next) => setValues((current) => ({ ...current, ai_vision_model: next }))}
                 >
-                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                  <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                     <SelectValue placeholder="Select model" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1077,7 +1077,7 @@ export function renderSettingsTabSections({
                 value={values[key] || undefined}
                 onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
               >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                   <SelectValue placeholder="Select a Search Console property" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1093,7 +1093,7 @@ export function renderSettingsTabSections({
                 value={values[key] || undefined}
                 onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
               >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                   <SelectValue placeholder="Select a GA4 property" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1122,7 +1122,7 @@ export function renderSettingsTabSections({
                   <Textarea
                     id={fieldId}
                     rows={3}
-                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    className="rounded-lg border border-line bg-white px-3 py-2 outline-none"
                     placeholder={placeholder}
                     aria-describedby={describeHint}
                     value={currentValue}
@@ -1132,7 +1132,7 @@ export function renderSettingsTabSections({
                   <Input
                     id={fieldId}
                     type="text"
-                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    className="rounded-lg border border-line bg-white px-3 py-2 outline-none"
                     placeholder={placeholder}
                     aria-describedby={describeHint}
                     value={currentValue}
@@ -1185,7 +1185,7 @@ export function renderSettingsTabSections({
                 value={values[key] || undefined}
                 onValueChange={(next) => setValues((current) => ({ ...current, [key]: next }))}
               >
-                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-2xl border border-line bg-white px-4 py-3 outline-none">
+                <SelectTrigger id={fieldId} aria-describedby={describeHint} className="rounded-lg border border-line bg-white px-3 py-2 outline-none">
                   <SelectValue placeholder="Select a Google Ads account" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1210,7 +1210,7 @@ export function renderSettingsTabSections({
                   <Input
                     id={fieldId}
                     type="text"
-                    className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+                    className="rounded-lg border border-line bg-white px-3 py-2 outline-none"
                     placeholder={settingsTextPlaceholder(key)}
                     aria-describedby={describeHint}
                     value={values[key] || ""}

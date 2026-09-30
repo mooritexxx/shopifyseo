@@ -28,7 +28,7 @@ export function SettingsSecretInput({ id, value, onChange, placeholder, ariaDesc
         onChange={onChange}
         placeholder={placeholder}
         aria-describedby={ariaDescribedBy}
-        className={cn("rounded-2xl border border-line bg-white px-4 py-3 pr-12 outline-none", className)}
+        className={cn("rounded-lg border border-line bg-white px-3 py-2 pr-12 outline-none", className)}
       />
       <Button
         type="button"

@@ -86,7 +86,23 @@ Image Optimization, Embeddings, Internal Links and Google Ads lab use compact he
 
 Evidence: [image catalog](batch-5-evidence/images-desktop.png), [review dialog](batch-5-evidence/image-review-mobile.png), [embeddings](batch-5-evidence/embeddings-mobile.png), [links settings](batch-5-evidence/links-settings-mobile.png), [Ads lab](batch-5-evidence/ads-mobile.png), [width checks](batch-5-evidence/width-checks.json).
 
-Next: Batch 6, Settings, API Usage and shared interaction checks.
+## Batch 6 — Settings, usage and shared interactions implemented
+
+Settings has compact shared tabs, smaller provider panels and form grids that shrink correctly around long model/property names. API Usage uses compact neutral cost cards, contained tables, accessible period selection and keyboard-readable daily bars. Shared dialogs restore opener focus and respect explicit caller focus overrides. Mobile navigation supports Escape and focus return; the shell has a skip link. Toasts are placed above the sync bar and shared animation respects reduced-motion preferences. The question map has a named keyboard-scrollable region. Overview connection failures lead with recovery guidance and disclose diagnostics.
+
+- **73 frontend tests passed**, including two new controlled-dialog focus regressions and the existing Settings save/provider/secret-field tests with mocked services. Sort performance passed at 1.53 seconds for 830 rows. A first run under heavy machine load timed out; the separate full rerun passed. An initial navigation ref typing error was corrected before the successful build.
+- All four Settings sections checked at 1440/1024/768/390/320px. AI Models and Data Sources initially overflowed at 320px because nested field grids kept their intrinsic width; the final CSS fixes were verified at all five widths.
+- API Usage 7/30/90-day periods checked at all five widths with no document overflow. Period controls update their selected state. Recent provider tables are populated; recent daily charts have sparse/empty data.
+- Final clean production rebuild/restart passed. Overview and the populated Keyword Research Clusters view remained contained at 320px; the skip link focuses main content. The Overview diagnostic disclosure is compiled but its unavailable-provider branch was not present in this final live snapshot.
+- Browser checks confirm Escape closes mobile navigation and focuses its button; sync panel closes and focuses its bar; controlled Ranking Add dialog closes and focuses Add keyword. Existing Modal focus test also passes after moving the behavior into shared DialogContent.
+- Settings credentials were kept masked. No credentials were changed, provider tests invoked, settings saved, or paid requests made in the live app. Connection/save behavior remains covered by mocked tests, not a new external integration certification.
+
+Evidence: [Settings desktop](batch-6-evidence/settings-desktop.png), [Settings mobile](batch-6-evidence/settings-mobile.png), [API Usage mobile](batch-6-evidence/usage-mobile.png), [width checks](batch-6-evidence/width-checks.json).
+
+### Rollout checkpoint
+
+All six implementation batches have now been applied. The route matrix deliberately retains **partial visual/functional verification**: physical mobile keyboards, 200% browser zoom, exhaustive focus/contrast checks, populated live Google data, paid job progress/results and live Shopify writes are not certified by these checks. The remaining-state column is the follow-up test backlog; it should not be mistaken for a list of screens left unstyled. No backend read paths or API response schemas changed in batches 3–6.
+
 
 ## Outcome of the first pass
 
@@ -157,9 +173,9 @@ All routes below are relative to `/app`. **I** = inventoried in source; **A** = 
 | `/google-ads-lab` | Keyword ideas, Historical metrics, Forecast metrics, Ad group themes | Field validation/reset, result/error/loading views using saved fixtures; minor overflow reproduction | 5 | ✓/✓ | ✓/partial/partial |
 | `/embeddings` | Populated metrics and coverage table | Refresh/progress, unavailable key, partial/error/empty coverage | 5 | ✓/✓ | ✓/partial/partial |
 | `/image-seo` | Populated table and Review image dialog | Type/status filters, search/sort/paging, selection/batch, gallery; optimize progress/comparison/failure/success fixtures | 5 | ✓/✓ | ✓/partial/partial |
-| `/api-usage` | Summary and low/empty recent usage | All time ranges, populated providers/charts, errors/empty, narrow tables | 6 | ✓/✓ | —/—/— |
+| `/api-usage` | Summary and low/empty recent usage | All time ranges, populated providers/charts, errors/empty, narrow tables | 6 | ✓/✓ | ✓/partial/partial |
 | `/internal-links` | Suggestions, Applied, Orphans, Graph Stats, Outcomes, Settings | Graph Map mode; populated suggestions/applied; preview/apply/undo/reconcile, source settings, failure/conflicts | 5 | ✓/✓ | ✓/partial/partial |
-| `/settings` | Integrations, AI Models, Runtime, Data Sources | Provider reveal/select/test/save, validation, dirty states, OAuth/selectors, errors/success and keyboard traversal | 6 | ✓/✓ | —/—/— |
+| `/settings` | Integrations, AI Models, Runtime, Data Sources | Provider reveal/select/test/save, validation, dirty states, OAuth/selectors, errors/success and keyboard traversal | 6 | ✓/✓ | ✓/partial/partial |
 
 ### Shared surfaces
 

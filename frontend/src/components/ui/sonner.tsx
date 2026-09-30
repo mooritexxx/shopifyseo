@@ -13,6 +13,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       theme="light"
+      closeButton
+      offset={{ bottom: 60, right: 24 }}
+      mobileOffset={{ bottom: 60, left: 16, right: 16 }}
       className="toaster group"
       icons={{
         success: <CircleCheck className="h-4 w-4" />,
@@ -24,7 +27,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast:
-            "group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg",
+            "group toast break-words [overflow-wrap:anywhere] group-[.toaster]:rounded-[14px] group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg",
           description: "group-[.toast]:text-muted-foreground",
           actionButton:
             "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",

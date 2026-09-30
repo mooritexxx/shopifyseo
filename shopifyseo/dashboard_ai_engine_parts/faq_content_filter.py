@@ -14,6 +14,7 @@ from __future__ import annotations
 import html as html_module
 import logging
 import re
+from html.parser import HTMLParser
 from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,120 @@ _WHOLESALE_HIGH_NICOTINE_PATTERNS = [
     re.compile(r"\bhigh(?:er)?\s+nicotine\s+(?:strength|level|content)\b", re.IGNORECASE),
 ]
 
+_REPORTED_QUESTION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE) for pattern in (
+        r"\b(?:grossest|rarest|benefits?\s+of)\b",
+        r"^(?:is|are)\s+.+\s+good\s*[?!]?$",
+        r"\bbest\s+flavo(?:u)?r\s+for\s+(?:a\s+)?(?:disposable\s+)?vape\b",
+        r"\bbest\s+(?:(?:disposable|vape)\s+)?(?:vapes?|brand)\b",
+        r"\bmost[ -]+(?:selling|sold|popular)\b",
+        r"\bbanned\s+in\s+canada\b",
+        r"\b(?:dentist|vaper['’]?s?\s+tongue|puffs?|cigarettes?)\b",
+    )
+]
+
+# Explicit product-line relationships; do not infer brands from arbitrary words.
+_PRODUCT_FOCUS_RULES = {
+    "fog pro x": [r"\bmr[ .]*fog\b", r"\bfogger\b", r"\bfog\s+vapes?\b"],
+    "stlth 60k": [r"\bstlth\s+(?:pods?|titan|nexa)\b"],
+    "beast mode": [r"\b(?:flavo(?:u)?r\s+beast\s+)?unleashed\b"],
+}
+
+# Applies to visible prose as well as questions. Keep question bait separate so
+# manufacturer capacity figures and useful product-handling advice survive.
+_HEALTH_CLAIM_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"\bharm[ -]+reduction\b", r"\bless\s+harmful\b", r"\bsafer\s+alternative\b",
+    r"\bsmoke[ -]+free\s+(?:alternatives?|experience|lifestyle|nicotine|individual|products?)\b", r"\bformer\s+smokers?\b",
+    r"\bcut(?:ting)?\s+down(?:\s+on)?\s+(?:(?:your|their)\s+)?(?:smoking|cigarettes?|nicotine|vaping|tobacco)\b",
+    r"\bhelps?\s+(?:you\s+)?cut\s+down\s*[.!?]?$", r"\b(?:nrt|nicotine\s+replacement\s+therapy)\b",
+    r"\b(?:nicotine|cigarette|tobacco|smoking)\s+cravings?\b",
+    r"\b(?:curb|manage|satisfy|satisfies|satisfying|reduce|suppress|control)(?:s|d|ing)?\s+(?:(?:your|their|the|existing)\s+)?cravings?\b",
+    r"\bkeep\s+cravings?\s+at\s+bay\b", r"\bquit(?:ting)?[ -]+(?:smoking|cigarettes?)\b",
+    r"\bstop(?:ping)?\s+smoking\b", r"\b(?:helps?\s+(?:you\s+)?quit|cessation)\b",
+    r"\b(?:switch(?:ing)?|transition(?:ing)?)\s+(?:away\s+)?from\s+(?:traditional\s+|combustible\s+)?(?:smoking|tobacco|cigarettes?)\b",
+    r"\b(?:healthier|harmless|safe\s+for\s+(?:your\s+)?lungs?)\b",
+    r"\b(?:vapes?|vaping|e[ -]?liquids?)\b.{0,40}\b(?:safe|safer|safest)\b",
+    r"\b(?:safe|safer|safest)\s+(?:vapes?|vaping|e[ -]?liquids?|vape\s+juice)\b",
+    r"\blungs?\s+(?:can\s+)?(?:heal|recover)\b",
+    r"\b(?:good\s+for\s+(?:your\s+)?health|safer\s+than)\b",
+    r"\b(?:vaping|vapes?|e[ -]?cigarettes?)\b.{0,40}\bbetter\s+for\s+you\b",
+    r"\bbetter\s+than\s+smoking\b|\b(?:smoke\s+or\s+vape|vaping\s+(?:vs\.?|or)\s+smoking)\b",
+)]
+
+ARTICLE_CONTENT_FILTER_INSTRUCTION = (
+    " Final content rules override SERP/PAA suggestions: do not generate questions framed as "
+    "'is X good', 'best vape', 'best brand', 'benefits of', 'grossest', 'rarest', 'most-selling', "
+    "'most popular', banned flavours, health/safety, cigarette equivalence, dentist, vaper's tongue, "
+    "or puff counts. Keep questions specific to the focus product, not broader or different lines. "
+    "Do not repeat questions across body headings, FAQ, or Helpful questions. Do not write health "
+    "or quit-smoking claims in answers or body copy: harm reduction, less harmful, safer alternative, "
+    "smoke-free, former smoker, cut down, NRT, or nicotine cravings. Preserve factual regulatory names "
+    "and practical battery/charging guidance without health promises. Link naturally to at least "
+    "3 DISTINCT approved product URLs; collection links and repeated product URLs do not count."
+)
+
+
+def _without_handling_safety(text: str) -> str:
+    # Exempt specific handling phrases, not whole paragraphs mentioning batteries.
+    patterns = (
+        r"\b(?:safe|safer|safest)\s+to\s+(?:charge|recharge|store)\b",
+        r"\b(?:safe|safer|safest)\s+(?:battery\s+)?(?:charging|storage|cable|charger)\b",
+        r"\b(?:charging|recharging|storing)\s+[^.!?]{0,60}\bsafe\b",
+        r"\bsafe\s+from\s+(?:heat|damage|leaks?)\b",
+        r"\bsafer\s+by\s+storing\b",
+        r"\bsafe\s+to\s+leave\b[^.!?]{0,60}\b(?:hot\s+car|sunlight)\b",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "product handling", text, flags=re.I)
+    return text
+
+
+def health_claim_reason(text: str) -> str | None:
+    text = re.sub(r"\s+", " ", html_module.unescape(text))
+    text = re.sub(r"[\u2010-\u2015]", "-", text)
+    text = _without_handling_safety(text)
+    # Exact legal name, not a general exemption for smoke-free marketing.
+    text = re.sub(r"smoke[ -]free ontario act", "Ontario Act", text, flags=re.I)
+    # Narrow factual NRT context; health promises in the same passage still match.
+    if re.search(r"\b(?:authorized|authorised|regulated)\b", text, re.I) and re.search(r"\bpharmac(?:y|ies)\b", text, re.I):
+        text = re.sub(r"nicotine replacement therapy|\bNRT\b|smoking cessation aid", "regulated product", text, flags=re.I)
+    if re.search(r"\bflavo(?:u)?r\s+cravings?\b", text, re.I):
+        text = re.sub(r"\bflavo(?:u)?r\s+cravings?\b", "flavour preference", text, flags=re.I)
+    for pattern in _HEALTH_CLAIM_PATTERNS:
+        if pattern.search(text):
+            return "health_claim"
+    return None
+
+
+# Medical question topics from the supplied Sep 29 replacement table. This is
+# intentionally question-only: ordinary addiction/misuse warnings stay intact.
+_MEDICAL_QUESTION_PATTERN = re.compile(
+    r"\b(?:healthy|rsv|diabet(?:es|ics?)|cholesterol|triglycerides?|lupus|implantation|"
+    r"creatinine|cortisol|emphysema|pregnan(?:cy|t)|poisoning|lung\s+infection|nicotine\s+replacement)\b|\b(?:hurt\s+you|bad\s+for\s+you)\b",
+    re.I,
+)
+
+
+def question_drop_reason(text: str, target_brand: str | None = None) -> str | None:
+    if _MEDICAL_QUESTION_PATTERN.search(text):
+        return "medical_question"
+    reason = health_claim_reason(text)
+    if reason:
+        return reason
+    if re.search(r"\bsafe\b", _without_handling_safety(text), re.I):
+        return "health_safety_question"
+    match = _match_denylist_category(text)
+    if match:
+        return match[0]
+    if _mentions_competitor_brand(text, target_brand):
+        return "off_brand_competitor"
+    focus = normalize_spelling_for_comparison(target_brand or "")
+    for product, patterns in _PRODUCT_FOCUS_RULES.items():
+        if product in focus and any(re.search(pattern, text, re.I) for pattern in patterns):
+            return "off_focus_product_line"
+    return None
+
+
 FAQ_DENYLIST_CATEGORIES: list[DenylistCategory] = [
     DenylistCategory(
         name="health_medical",
@@ -178,6 +293,7 @@ FAQ_DENYLIST_CATEGORIES: list[DenylistCategory] = [
     ),
 ]
 
+FAQ_DENYLIST_CATEGORIES.append(DenylistCategory("reported_question_bait", _REPORTED_QUESTION_PATTERNS, "Reported off-angle FAQ bait"))
 
 # Competitor brands that trigger off-brand filtering
 # Questions mentioning these brands will be filtered if the article is not about them
@@ -257,7 +373,8 @@ def filter_paa_questions(
             continue
 
         # Check denylist patterns
-        match = _match_denylist_category(question_text)
+        reason = question_drop_reason(question_text, target_brand)
+        match = (reason, reason) if reason else None
         if match:
             dropped_count += 1
             if log_dropped:
@@ -299,6 +416,7 @@ def filter_paa_questions(
 def filter_paa_hierarchy(
     hierarchy: list[dict[str, Any]],
     *,
+    target_brand: str | None = None,
     log_dropped: bool = True,
 ) -> list[dict[str, Any]]:
     """Filter PAA hierarchy, removing parent and child questions matching denylist.
@@ -323,7 +441,8 @@ def filter_paa_hierarchy(
         if not parent_q:
             continue
 
-        parent_match = _match_denylist_category(parent_q)
+        reason = question_drop_reason(parent_q, target_brand)
+        parent_match = (reason, reason) if reason else None
         if parent_match:
             if log_dropped:
                 category, description = parent_match
@@ -343,7 +462,8 @@ def filter_paa_hierarchy(
             child_q = str(child.get("question") or "").strip()
             if not child_q:
                 continue
-            child_match = _match_denylist_category(child_q)
+            reason = question_drop_reason(child_q, target_brand)
+            child_match = (reason, reason) if reason else None
             if child_match:
                 if log_dropped:
                     category, description = child_match
@@ -881,7 +1001,7 @@ def filter_and_dedupe_helpful_questions(
 
     existing_normalized = set()
     for q in existing_questions or []:
-        norm = _normalize_for_matching(q)
+        norm = _normalize_for_matching(normalize_spelling_for_comparison(q))
         if norm:
             existing_normalized.add(norm)
 
@@ -897,7 +1017,8 @@ def filter_and_dedupe_helpful_questions(
         q_normalized_spelling = normalize_flavor_to_flavour(q_stripped, log_changes=False)
 
         # Check denylist
-        deny_match = _match_denylist_category(q_normalized_spelling)
+        reason = question_drop_reason(q_normalized_spelling, target_brand)
+        deny_match = (reason, reason) if reason else None
         if deny_match:
             if log_dropped:
                 category, description = deny_match
@@ -922,7 +1043,7 @@ def filter_and_dedupe_helpful_questions(
             continue
 
         # Deduplication
-        q_norm_match = _normalize_for_matching(q_normalized_spelling)
+        q_norm_match = _normalize_for_matching(normalize_spelling_for_comparison(q_normalized_spelling))
         if q_norm_match in seen_normalized:
             if log_dropped:
                 logger.info(
@@ -1216,3 +1337,212 @@ def validate_and_fix_excerpt(
             )
 
     return result, was_modified
+
+
+class _ContentSpans(HTMLParser):
+    """Index balanced HTML elements without reserializing untouched markup."""
+
+    def __init__(self, source: str):
+        super().__init__(convert_charrefs=False)
+        self.source = source
+        self.lines = [0]
+        for match in re.finditer('\n', source):
+            self.lines.append(match.end())
+        self.elements: list[dict[str, Any]] = []
+        self.text_nodes: list[tuple[int, int, str]] = []
+        self.stack: list[dict[str, Any]] = []
+        self.feed(source)
+        self.close()
+
+    def source_offset(self) -> int:
+        line, column = self.getpos()
+        return self.lines[line - 1] + column
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            return
+        element = dict(tag=tag, start=self.source_offset(), inner=self.source_offset() + len(self.get_starttag_text()),
+                       stop=len(self.source), end=len(self.source), parent=self.stack[-1] if self.stack else None)
+        self.elements.append(element)
+        self.stack.append(element)
+
+    def handle_startendtag(self, tag, attrs):
+        pass
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i]['tag'] == tag:
+                end = self.source.find('>', self.source_offset()) + 1
+                for element in self.stack[i:]:
+                    element['stop'] = self.source_offset()
+                    element['end'] = end if element['tag'] == tag else self.source_offset()
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if not any(e['tag'] in {'script', 'style'} for e in self.stack):
+            start = self.source_offset()
+            self.text_nodes.append((start, start + len(data), data))
+
+    def handle_entityref(self, name):
+        self._entity('&' + name)
+
+    def handle_charref(self, name):
+        self._entity('&#' + name)
+
+    def _entity(self, prefix):
+        if any(e['tag'] in {'script', 'style'} for e in self.stack):
+            return
+        start = self.source_offset()
+        raw = prefix + (';' if self.source[start + len(prefix):].startswith(';') else '')
+        self.text_nodes.append((start, start + len(raw), html_module.unescape(raw)))
+
+
+# Both filtering and validation use these same visible units. Container text is
+# split around child blocks; inline tags remain part of their parent sentence.
+_HEALTH_BLOCK_TAGS = {
+    'address', 'article', 'aside', 'blockquote', 'caption', 'dd', 'details', 'div',
+    'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'header',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'main', 'nav', 'ol', 'p', 'pre',
+    'section', 'summary', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+}
+
+
+def _health_sentences(body: str, *, skip_faq_headings: bool = False):
+    parsed = _ContentSpans(body)
+    blocks = [e for e in parsed.elements if e['tag'] in _HEALTH_BLOCK_TAGS | {'script', 'style'}]
+    children: dict[int, list[dict[str, Any]]] = {}
+    for block in blocks:
+        parent = block['parent']
+        while parent and parent['tag'] not in _HEALTH_BLOCK_TAGS:
+            parent = parent['parent']
+        children.setdefault(id(parent) if parent else 0, []).append(block)
+    units = []
+    root = dict(inner=0, stop=len(body))
+    for block in [root] + blocks:
+        if block.get('tag') in {'script', 'style'} or (skip_faq_headings and block.get('tag') in {'h2', 'h3'}):
+            continue
+        cursor = block['inner']
+        for child in children.get(0 if block is root else id(block), []):
+            units.append((cursor, child['start']))
+            cursor = child['end']
+        units.append((cursor, block['stop']))
+    for start, end in sorted(units):
+        nodes = [(a, b, text) for a, b, text in parsed.text_nodes if start <= a and b <= end]
+        text = ''.join(node[2] for node in nodes)
+        offsets = []
+        for a, b, value in nodes:
+            if body[a:b] == value:
+                offsets.extend((i, i + 1) for i in range(a, b))
+            else:
+                offsets.extend([(a, b)] * len(value))
+        for sentence in re.finditer(r'.+?(?:[.!?](?=\s|$)|$)', text, re.S):
+            if sentence.group().strip():
+                yield sentence.group(), offsets[sentence.start():sentence.end()]
+
+
+def article_health_claims(body: str) -> list[str]:
+    """The exact sentences the final health filter can remove."""
+    return [text.strip() for text, _ in _health_sentences(body) if health_claim_reason(text)]
+
+
+def _filter_health_sentences(body: str, *, skip_faq_headings: bool = False) -> str:
+    spans: list[tuple[int, int]] = []
+    for text, offsets in _health_sentences(body, skip_faq_headings=skip_faq_headings):
+        if health_claim_reason(text):
+            logger.info('Final article filter dropped sentence (reason=health_claim): %r', text.strip()[:160])
+            spans.extend(offsets)
+    if not spans:
+        return body
+    merged: list[list[int]] = []
+    for start, end in sorted(set(spans)):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    for start, end in reversed(merged):
+        body = body[:start] + body[end:]
+    # Text-only deletion keeps inline markup balanced. Remove wrappers emptied
+    # by a rejected sentence; structural table/list containers are left intact.
+    empty = re.compile(r'(?is)<(p|h[1-6]|dd|dt|figcaption|a|span|strong|em|b|i|u)\b[^>]*>\s*</\1\s*>')
+    while True:
+        clean = empty.sub('', body)
+        if clean == body:
+            return body
+        body = clean
+
+
+def _visible_text(fragment: str) -> str:
+    fragment = re.sub(r'(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>', '', fragment)
+    return re.sub(r'\s+', ' ', html_module.unescape(_TAG_STRIP_RE.sub(' ', fragment))).strip()
+
+
+def is_question_heading(text: str) -> bool:
+    return '?' in text or bool(re.match(r'(?i)^(?:what|why|how|is|are|can|does|do|which|where|when)\b', text))
+
+
+def filter_final_article_content(body_html: str, *, target_brand: str = '') -> tuple[str, int, int]:
+    """Filter the assembled visible body, returning HTML and before/after question counts.
+
+    Remove health-claim sentences while retaining balanced inline markup.
+    Rejected question sections stop at their container or next peer heading.
+    FAQ JSON-LD must be rebuilt by the caller *after* this pass.
+    """
+    body = normalize_flavor_to_flavour(body_html, log_changes=False)
+    original_headings = [e for e in _ContentSpans(body).elements if e['tag'] in {'h2', 'h3'}]
+    original_candidate_count = sum(is_question_heading(_visible_text(body[e['inner']:e['stop']])) for e in original_headings)
+    body = _filter_health_sentences(body, skip_faq_headings=True)
+    parsed = _ContentSpans(body)
+    headings = [e for e in parsed.elements if e['tag'] in {'h2', 'h3'}]
+    removals: list[tuple[int, int]] = []
+    seen: set[str] = set()
+    candidate_starts: list[int] = []
+
+    def removed(start: int) -> bool:
+        return any(a <= start < b for a, b in removals)
+
+    def section_end(element):
+        parent = element['parent']
+        limit = parent['stop'] if parent else len(body)
+        return next((h['start'] for h in headings if element['start'] < h['start'] < limit and h['tag'] <= element['tag']), limit)
+
+    for heading in headings:
+        text = _visible_text(body[heading['inner']:heading['stop']])
+        question = is_question_heading(text)
+        if question:
+            candidate_starts.append(heading['start'])
+        if removed(heading['start']):
+            continue
+        key = _normalize_for_matching(normalize_spelling_for_comparison(text))
+        reason = question_drop_reason(text, target_brand) if question else health_claim_reason(text)
+        if not question and heading['tag'] == 'h2' and not reason:
+            legacy_match = _match_denylist_category(text)
+            if legacy_match and legacy_match[0] != 'reported_question_bait':
+                reason = legacy_match[0]
+        if question and key in seen:
+            reason = 'duplicate_question'
+        end = section_end(heading)
+        # Reject a question-answer pair when its answer contains a health claim.
+        if question and not reason:
+            answer = body[heading['end']:end]
+            if not _visible_text(answer):
+                reason = 'empty_answer_after_filtering'
+        if reason:
+            logger.info('Final article filter dropped heading (reason=%s): %r', reason, text)
+            removals.append((heading['start'], end))
+        else:
+            seen.add(key)
+
+    remaining = sum(not removed(start) for start in candidate_starts)
+    # Merge overlaps before slicing so nested removed blocks cannot corrupt HTML.
+    merged: list[list[int]] = []
+    for start, end in sorted(removals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    for start, end in reversed(merged):
+        body = body[:start] + body[end:]
+    # Remove empty FAQ section labels left after their last question was removed.
+    body = re.sub(r'(?is)<h2\b[^>]*>\s*(?:FAQ(?:s)?|Frequently asked questions|Helpful questions(?: before you choose)?)\s*</h2>\s*(?=<h2\b|</(?:div|section)>|$)', '', body)
+    return body, original_candidate_count, remaining

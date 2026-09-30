@@ -14,8 +14,10 @@ from .qa import clamp_generated_seo_field
 from .settings import ai_settings
 from .faq_content_filter import (
     filter_and_dedupe_helpful_questions,
-    filter_body_html_content,
+    filter_final_article_content,
+    ARTICLE_CONTENT_FILTER_INSTRUCTION,
     normalize_flavor_to_flavour,
+    normalize_spelling_for_comparison,
     validate_and_fix_alt_text,
 )
 
@@ -69,6 +71,8 @@ def sanitize_article_internal_links(
 
         if pk and pk in path_to_canonical:
             canon = path_to_canonical[pk]
+            if urlparse(href).netloc and urlparse(href).netloc.lower() != urlparse(canon).netloc.lower():
+                return inner
             quote = hm.group(1)
             if quote in canon:
                 quote = "'" if quote == '"' else '"'
@@ -76,11 +80,63 @@ def sanitize_article_internal_links(
             return f"<a {new_attrs}>{inner}</a>"
 
         # Unknown or external link — unwrap to plain text
-        if href.startswith("http"):
-            return inner
-        return match.group(0)
+        return inner
 
     return _A_BODY_TAG_RE.sub(_repl, body_html)
+
+
+def relevant_product_repair_targets(
+    conn: sqlite3.Connection, topic: str, primary_target: dict | None, approved_targets: list[dict],
+) -> list[dict]:
+    """Select only approved products with catalog evidence of brand/collection relevance.
+
+    Narrow reads are bounded to the existing allowlist; an unknown focus produces
+    no fallback products. Availability affects ordering, never relevance.
+    """
+    products = {t['handle']: t for t in approved_targets if t.get('type') == 'product' and t.get('handle')}
+    if not products:
+        return []
+    handles = list(products)
+    placeholders = ','.join('?' for _ in handles)
+    rows = conn.execute(
+        f"SELECT handle, title, vendor, total_inventory, status FROM products WHERE handle IN ({placeholders})",
+        handles,
+    ).fetchall()
+    primary = primary_target or {}
+    primary_vendor = ''
+    collection_ids: set[str] = set()
+    if primary.get('type') == 'product':
+        row = conn.execute("SELECT vendor, shopify_id FROM products WHERE handle = ?", (primary.get('handle'),)).fetchone()
+        if row:
+            primary_vendor = str(row[0] or '').strip()
+            collection_ids = {r[0] for r in conn.execute(
+                "SELECT collection_shopify_id FROM collection_products WHERE product_shopify_id = ?", (row[1],)
+            )}
+    elif primary.get('type') == 'collection':
+        row = conn.execute("SELECT shopify_id FROM collections WHERE handle = ?", (primary.get('handle'),)).fetchone()
+        if row and row[0]:
+            collection_ids.add(row[0])
+    collection_handles: set[str] = set()
+    if collection_ids:
+        ids = list(collection_ids)
+        collection_handles = {r[0] for r in conn.execute(
+            f"SELECT p.handle FROM products p JOIN collection_products cp ON cp.product_shopify_id = p.shopify_id "
+            f"WHERE p.handle IN ({placeholders}) AND cp.collection_shopify_id IN ({','.join('?' for _ in ids)})",
+            handles + ids,
+        )}
+    def normalized(value):
+        return re.sub(r'[^\w]+', ' ', normalize_spelling_for_comparison(value or '')).strip()
+    focus = ' ' + normalized(topic) + ' '
+    ranked = []
+    for handle, title, vendor, inventory, status in rows:
+        if status and str(status).upper() != 'ACTIVE':
+            continue
+        brand = normalized(vendor)
+        same_brand = bool(brand and (brand == normalized(primary_vendor) or ' ' + brand + ' ' in focus))
+        same_collection = handle in collection_handles
+        if same_brand or same_collection:
+            ranked.append((not (inventory and inventory > 0), str(title or '').casefold(), products[handle]))
+    return [entry[2] for entry in sorted(ranked, key=lambda entry: entry[:2])]
 
 
 def generate_article_draft(
@@ -123,6 +179,7 @@ def generate_article_draft(
         append_server_generated_faqpage_jsonld,
         build_compliance_retry_user_message,
         collect_hrefs,
+        count_distinct_approved_product_links,
         collect_tier_related_queries,
         extract_visible_faq_items,
         length_only_article_compliance_gaps,
@@ -880,13 +937,11 @@ def generate_article_draft(
     )
 
     _paa_rows = (idea_serp_context or {}).get("audience_questions") or []
-    _paa_hierarchy = build_paa_question_hierarchy(idea_serp_context or {})
-    required_questions = select_required_paa_questions_for_draft(idea_serp_context or {})
-    _has_serp_paa = bool(
-        (isinstance(_paa_rows, list) and len(_paa_rows) > 0)
-        or _paa_hierarchy
-        or required_questions
+    _paa_hierarchy = build_paa_question_hierarchy(idea_serp_context or {}, target_brand=topic)
+    required_questions = filter_and_dedupe_helpful_questions(
+        select_required_paa_questions_for_draft(idea_serp_context or {}, target_brand=topic), target_brand=topic,
     )
+    _has_serp_paa = bool(required_questions)
     _n_visible_paa_for_faq = (
         len(required_questions)
         if required_questions
@@ -976,11 +1031,6 @@ def generate_article_draft(
     except Exception:
         logger.debug("Write-time link prioritization unavailable; using default order", exc_info=True)
 
-    try:
-        conn.close()
-    except Exception:
-        logger.debug("Failed to close article draft setup DB connection", exc_info=True)
-
     # Widen allowlist with primary/secondary interlink targets so sanitizer keeps them.
     def _normalize_target_entry(t: dict) -> dict | None:
         tt = (t.get("type") or "").strip()
@@ -1023,6 +1073,18 @@ def generate_article_draft(
             continue
         pk = (urlparse(u).path or "").rstrip("/") or "/"
         path_to_canonical.setdefault(pk, u)
+
+    product_repair_targets = relevant_product_repair_targets(conn, topic, primary_normalized, link_targets)
+    product_repair_paths = {(urlparse(t['url']).path or '').rstrip('/') for t in product_repair_targets}
+    repair_path_to_canonical = {
+        path: url for path, url in path_to_canonical.items()
+        if '/products/' not in path or (len(product_repair_targets) >= 3 and path in product_repair_paths)
+    }
+
+    try:
+        conn.close()
+    except Exception:
+        logger.debug("Failed to close article draft setup DB connection", exc_info=True)
 
     _domain = ""
     if _base_url:
@@ -1249,6 +1311,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     system_outline = (
@@ -1260,6 +1323,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     system_section = (
@@ -1276,6 +1340,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         f"{_link_scope}"
         f"{_serp_system_extra}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
     )
 
     _serp_user_block = ""
@@ -1497,7 +1562,7 @@ def generate_article_draft(
         },
     }
 
-    def _run_update(**fields: object) -> None:
+    def _run_update(*, required: bool = False, **fields: object) -> None:
         if not draft_run_id:
             return
 
@@ -1516,7 +1581,9 @@ def generate_article_draft(
             from ..sqlite_retry import run_with_db_lock_retry
 
             run_with_db_lock_retry(_do_update)
-        except Exception:
+        except Exception as exc:
+            if required:
+                raise RuntimeError("Could not save the draft checkpoint; stopping before further generation or Shopify work.") from exc
             logger.debug("Failed to persist article draft run update", exc_info=True)
 
     def _emit(
@@ -1561,8 +1628,11 @@ def generate_article_draft(
 
     # Compliance enforces every required body keyword: SERP-derived primary + first manual keyword.
     primary_kw_for_compliance = list(_required_body_keywords) or None
-    require_faqpage_ld = bool(_is_faq or _has_serp_paa)
-    _tier_queries = collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3)
+    require_faqpage_ld = bool(required_questions)
+    _tier_queries = filter_and_dedupe_helpful_questions(
+        collect_tier_related_queries((idea_serp_context or {}).get("related_searches"), max_position=3),
+        target_brand=topic,
+    )
 
     def _keyword_texts(raw_keywords: list[str | dict] | None) -> list[str]:
         out: list[str] = []
@@ -1762,9 +1832,6 @@ def generate_article_draft(
         out = strip_faqpage_jsonld_blocks(out)
         # Normalize US 'flavor' spelling to Canadian 'flavour' (case-preserving)
         out = normalize_article_body_spelling(out)
-        # Filter problematic H2 sections (e.g., "Health Considerations")
-        _target_brand = (cluster_meta.get("detected_entity") or "").strip() or (topic or "").strip()
-        out = filter_body_html_content(out, target_brand=_target_brand, log_dropped=True)
         return out
 
     # Gap 11: require a minimum count of approved-target links so silent sanitizer
@@ -1780,8 +1847,8 @@ def generate_article_draft(
         else 0
     )
 
-    def _compliance_gaps(body_html: str) -> list[str]:
-        return validate_article_draft_compliance(
+    def _compliance_gaps(body_html: str, *, faq_candidates_rejected: bool = False) -> list[str]:
+        gaps = validate_article_draft_compliance(
             body_html=body_html,
             require_faqpage_ld=require_faqpage_ld,
             secondary_urls=secondary_urls_for_compliance,
@@ -1789,7 +1856,16 @@ def generate_article_draft(
             path_to_canonical=path_to_canonical,
             tier1_related_queries=_tier_queries,
             min_internal_links=_min_internal_links,
+            min_product_links=3,
+            faq_candidates_rejected=faq_candidates_rejected,
+            check_health_claims=True,
         )
+        if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
+            gaps.append(
+                f"Only {len(product_repair_targets)} relevant approved product URLs are available for repair; "
+                "at least 3 products from the post's brand or collection are needed. Unrelated products cannot fill the gap."
+            )
+        return gaps
 
     resume_checkpoints = resume_run.get("checkpoints") if isinstance(resume_run, dict) else {}
     if not isinstance(resume_checkpoints, dict):
@@ -2074,6 +2150,23 @@ def generate_article_draft(
             block += f"\n<h3>{html_module.escape(q_normalized)}</h3><p>{html_module.escape(ans_normalized)}</p>"
         return (body_html or "").rstrip() + block
 
+    def _ensure_product_links(body: str) -> str:
+        if count_distinct_approved_product_links(body, path_to_canonical) >= 3 or len(product_repair_targets) < 3:
+            return body
+        original_body = body
+        links = []
+        for target in product_repair_targets:
+            anchor = f'<a href="{html_module.escape(target["url"], quote=True)}">{html_module.escape(target.get("title") or target["handle"])}</a>'
+            # Count canonical destinations rather than string equality / query variants.
+            if count_distinct_approved_product_links(body + anchor, path_to_canonical) > count_distinct_approved_product_links(body, path_to_canonical):
+                links.append('<li>' + anchor + '</li>')
+                body += anchor  # counting only; the real block is assembled below
+            if count_distinct_approved_product_links(body, path_to_canonical) >= 3:
+                break
+        if links:
+            return original_body.rstrip() + '\n<h2>Related products from this brand or collection</h2><ul>' + ''.join(links) + '</ul>'
+        return body
+
     def _append_repair_html(body_html: str, gaps: list[str], title: str) -> str:
         deficit = max(0, _body_aim_chars - len(body_html or ""))
         min_len = max(700, min(5000, deficit + 300))
@@ -2107,7 +2200,10 @@ def generate_article_draft(
                         "Return JSON with append_html only.\n\n"
                         f"Title: {title}\n"
                         f"Gaps: {json.dumps(gaps, ensure_ascii=True)}\n"
-                        f"Current body chars: {len(body_html or '')}\n"
+                        "New product links may use ONLY these relevant catalog targets; never pad with unrelated products: "
+                        + json.dumps(product_repair_targets if len(product_repair_targets) >= 3 else [], ensure_ascii=True)
+                        + "\n"
+                        + f"Current body chars: {len(body_html or '')}\n"
                         f"Canonical SEO brief:\n{json.dumps(seo_brief, ensure_ascii=True)[:12000]}\n"
                         f"Article memory:\n{json.dumps(_article_memory(body_html), ensure_ascii=True)[:8000]}\n"
                     ),
@@ -2117,11 +2213,30 @@ def generate_article_draft(
             json_schema=schema,
             stage="article_draft_append_repair",
         )
-        return (body_html or "").rstrip() + "\n" + str(out.get("append_html") or "")
+        appended = sanitize_article_internal_links(
+            str(out.get("append_html") or ""), path_to_canonical=repair_path_to_canonical, base_url=_base_url,
+        )
+        return (body_html or "").rstrip() + "\n" + appended
+
+    def _save_validation_checkpoint(meta: dict, body: str, validation: dict, *, raw: bool = False) -> None:
+        checkpoints = dict(resume_checkpoints)
+        if raw:
+            checkpoints.setdefault('pre_validation', {'body': body, 'title': str(meta.get('title') or '')})
+        checkpoints['content'] = {'saved': True, 'validated': False, 'body_chars': len(body), 'validation': validation}
+        _run_update(
+            required=True, current_step='validate_repair', checkpoints_json=checkpoints,
+            title=str(meta.get('title') or ''), seo_title=str(meta.get('seo_title') or ''),
+            seo_description=str(meta.get('seo_description') or ''), body=body,
+            validation_summary_json=validation,
+        )
+        resume_checkpoints.update(checkpoints)
 
     def _finalize_and_repair_body(result_local: dict, body_html: str, html_parts: list[str] | None = None) -> tuple[str, dict[str, Any]]:
         title = str(result_local.get("title") or "")
         seo_desc = str(result_local.get("seo_description") or "")
+        prior_validation = (resume_run or {}).get('validation_summary') or {}
+        had_faq_candidates = bool(prior_validation.get('had_faq_candidates'))
+        _save_validation_checkpoint(result_local, body_html, {'ok': False, 'pending': True, 'had_faq_candidates': had_faq_candidates}, raw=True)
         body = _sanitize_body(body_html)
         _emit(
             "Building FAQ/schema from visible article text…",
@@ -2146,10 +2261,20 @@ def generate_article_draft(
             body = _ensure_required_links(body)
             if require_faqpage_ld:
                 body = _append_faq_answers(body)
+            _save_validation_checkpoint(result_local, body, {'ok': False, 'pending': True, 'had_faq_candidates': had_faq_candidates})
+            body = _sanitize_body(body)
+            body, candidate_count, surviving_count = filter_final_article_content(body, target_brand=topic)
+            body = _ensure_product_links(body)
+            body, _, surviving_count = filter_final_article_content(body, target_brand=topic)
+            had_faq_candidates = had_faq_candidates or candidate_count > 0
+            faq_candidates_rejected = had_faq_candidates and surviving_count == 0
+            if had_faq_candidates or require_faqpage_ld:
                 body, _faq_items = append_server_generated_faqpage_jsonld(
                     body,
                     required_questions=required_questions,
+                    filter_by_h3_headings=False,
                 )
+                faq_candidates_rejected = faq_candidates_rejected or not _faq_items
                 _emit(
                     "FAQPage schema generated from visible FAQ questions.",
                     phase="content",
@@ -2171,11 +2296,16 @@ def generate_article_draft(
                 step_total=11,
                 result_summary=f"Attempt {attempt + 1}/3 · Body {len(body):,} chars",
             )
-            gaps = _compliance_gaps(body)
+            gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
+            _save_validation_checkpoint(result_local, body, {
+                'ok': False, 'pending': False, 'gaps': gaps, 'repairs': attempt,
+                'had_faq_candidates': had_faq_candidates, 'faq_candidates_rejected': faq_candidates_rejected,
+            })
             if not gaps:
                 memory = _save_memory(body, html_parts)
                 validation = {
                     "ok": True,
+                    "had_faq_candidates": had_faq_candidates,
                     "body_chars": len(body),
                     "faq_items": len(extract_visible_faq_items(body, required_questions=required_questions)),
                     "links": len(collect_hrefs(body)),
@@ -2211,7 +2341,7 @@ def generate_article_draft(
             )
             body = _append_repair_html(body, gaps, title)
             body = _sanitize_body(body)
-        final_gaps = _compliance_gaps(body)
+        final_gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
         if final_gaps:
             raise RuntimeError(
                 "Article draft failed compliance after targeted repairs: " + " | ".join(final_gaps)
@@ -2224,6 +2354,7 @@ def generate_article_draft(
         checkpoints = dict(resume_checkpoints)
         checkpoints["content"] = {
             "saved": True,
+            "validated": True,
             "body_chars": len(body_html or ""),
             "validation": validation,
         }
@@ -2231,6 +2362,7 @@ def generate_article_draft(
             checkpoints["html_parts"] = html_parts
             checkpoints["completed_batches"] = checkpoints.get("completed_batches") or 0
         _run_update(
+            required=True,
             current_step="content_checkpoint",
             last_completed_step="content_checkpoint",
             checkpoints_json=checkpoints,
@@ -2265,7 +2397,7 @@ def generate_article_draft(
         except AIProviderRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         _emit("Article content received — validating JSON fields…", phase="content", state="done")
-        body_local = _sanitize_body(str(res.get("body") or ""))
+        body_local = str(res.get("body") or "")
         body_local, validation = _finalize_and_repair_body(res, body_local, [body_local])
         _persist_content_checkpoint(res, body_local, validation, [body_local])
         return res, body_local
@@ -2500,7 +2632,11 @@ def generate_article_draft(
         return meta, body_merged
 
     use_phased = bool(settings.get("article_draft_phased", True))
-    if use_phased:
+    if isinstance(resume_run, dict) and resume_run.get("body") and resume_run.get("title"):
+        result = {key: resume_run.get(key, "") for key in ("title", "seo_title", "seo_description")}
+        body_out, validation = _finalize_and_repair_body(result, str(resume_run["body"]))
+        _persist_content_checkpoint(result, body_out, validation)
+    elif use_phased:
         _emit("Using phased generation (outline + HTML batches)…", phase="content", state="start")
         phased_pair = _try_phased()
         if phased_pair is None:

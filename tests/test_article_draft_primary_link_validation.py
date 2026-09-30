@@ -21,7 +21,11 @@ def _disable_phased_article_draft(monkeypatch):
 
 
 @pytest.fixture
-def db_conn():
+def db_conn(monkeypatch):
+    from shopifyseo.dashboard_ai_engine_parts import config
+    monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
+    from shopifyseo.dashboard_queries import _urls
+    monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_dashboard_schema(conn)
@@ -33,9 +37,15 @@ def db_conn():
         "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
         ("disposable-vapes", "Disposable Vapes"),
     )
+    conn.executemany(
+        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
+        [(f"product-{i}", f"Product {i}") for i in range(3)],
+    )
     conn.commit()
     return conn
 
+
+PRODUCT_LINKS = ''.join(f'<a href="https://example.com/products/product-{i}">Product {i}</a>' for i in range(3))
 
 def _body_with_link(url: str) -> str:
     """Meet post-draft compliance minimum length (14k+ HTML chars) for unit tests."""
@@ -66,7 +76,7 @@ def _fake_call_factory(body: str):
                 "This is a meta description that is within the 135 to 155 character bound required "
                 "by the schema. Concrete, specific, click-worthy."
             ),
-            "body": body,
+            "body": PRODUCT_LINKS + body,
         }
     return fake_call_ai
 

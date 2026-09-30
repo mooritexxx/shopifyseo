@@ -10,7 +10,11 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def db_conn():
+def db_conn(monkeypatch):
+    from shopifyseo.dashboard_ai_engine_parts import config
+    monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
+    from shopifyseo.dashboard_queries import _urls
+    monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_dashboard_schema(conn)
@@ -18,9 +22,15 @@ def db_conn():
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",
         ("store_custom_domain", "https://example.com"),
     )
+    conn.executemany(
+        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
+        [(f"product-{i}", f"Product {i}") for i in range(3)],
+    )
     conn.commit()
     return conn
 
+
+PRODUCT_LINKS = ''.join(f'<a href="https://example.com/products/product-{i}">Product {i}</a>' for i in range(3))
 
 def _outline_payload() -> dict:
     beats = (
@@ -50,7 +60,7 @@ def _outline_payload() -> dict:
 def _html_fragment(min_chars: int) -> str:
     prefix = "widgets "
     inner_len = max(0, min_chars - 7 - len(prefix))
-    return "<p>" + prefix + ("z" * inner_len) + "</p>"
+    return PRODUCT_LINKS + "<p>" + prefix + ("z" * inner_len) + "</p>"
 
 
 def test_phased_generation_outline_then_batches(db_conn, monkeypatch):

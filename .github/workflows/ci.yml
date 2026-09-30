@@ -19,7 +19,7 @@ jobs:
           pip install -e .
           pip install -r backend/requirements-dev.txt
       - name: API smoke tests
-        run: PYTHONPATH=. python -m pytest tests/test_api.py::test_operations_contract tests/test_api.py::test_settings_shopify_test_errors_without_credentials tests/test_rank_tracking.py tests/test_api_usage_summary.py tests/test_internal_links*.py tests/test_internal_link_allowlist.py -q
+        run: PYTHONPATH=. python -m pytest tests/test_api.py::test_operations_contract tests/test_api.py::test_settings_shopify_test_errors_without_credentials tests/test_rank_tracking.py tests/test_api_usage_summary.py tests/test_internal_links*.py tests/test_internal_link_allowlist.py tests/test_article_draft*.py tests/test_faq_content_filter.py tests/test_article_final_content_filter.py tests/test_serp_draft_context.py -q
 
   frontend-typecheck:
     runs-on: ubuntu-latest

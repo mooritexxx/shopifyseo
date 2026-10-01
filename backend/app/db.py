@@ -49,6 +49,8 @@ def _bootstrap_once(conn: sqlite3.Connection, path: str) -> None:
             return
         conn.execute("PRAGMA journal_mode = WAL")
         ensure_dashboard_schema(conn)
+        from backend.app.services.team_tasks import ensure_schema as ensure_team_task_schema
+        ensure_team_task_schema(conn)
         apply_runtime_settings(conn)
         _bootstrapped_paths.add(path)
 

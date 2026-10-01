@@ -18,9 +18,9 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 | Caching            | SQLite `google_api_cache`; in-process dicts (e.g. GSC summaries in `shopifyseo/dashboard_google/_gsc.py`); HTTP `Cache-Control: no-store` on SPA shell | No Redis                                                                    |
 
 
-**Router registration** (`backend/app/main.py`): `article_ideas`, `dashboard`, `products`, `content`, `blogs`, `keywords`, `clusters`, `operations`, `status`, `sidekick`, `actions`, `ai_stream`, `auth`, `embeddings`, `image_seo`, `google_ads_lab`.
+**Router registration** (`backend/app/main.py`): `team_tasks`, `article_ideas`, `dashboard`, `products`, `content`, `blogs`, `keywords`, `clusters`, `operations`, `status`, `sidekick`, `actions`, `ai_stream`, `auth`, `embeddings`, `image_seo`, `google_ads_lab`.
 
-**Lifespan:** on startup, reconciles PageSpeed denormalized columns from SQLite cache (`refresh_pagespeed_columns_from_cache_for_all_cached_objects`). **Exception handlers:** `HTTPException` → JSON `{ ok, error }`; `sqlite3.DatabaseError` → 503 with recovery hint. **No CORS middleware** (same-origin SPA). **No API-key/JWT** on routes; **Google OAuth** only for Search Console (`/auth/google/...`).
+**Lifespan:** on startup, reconciles PageSpeed denormalized columns from SQLite cache (`refresh_pagespeed_columns_from_cache_for_all_cached_objects`). **Exception handlers:** `HTTPException` → JSON `{ ok, error }`; `sqlite3.DatabaseError` → 503 with recovery hint. **No CORS middleware** (same-origin SPA). **Task API uses per-actor `X-Task-Token` authentication**; other routes have no API-key/JWT; **Google OAuth** only for Search Console (`/auth/google/...`).
 
 ---
 
@@ -36,6 +36,24 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 ---
 
 ## API Routes (With Contracts)
+
+### Shared team task manager
+
+Independent of the SEO opportunity workflow. `backend/app/routers/team_tasks.py` exposes authenticated `/api/tasks` endpoints; full contracts and agent setup are in [docs/task-manager.md](docs/task-manager.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/tasks/actors` | Fixed identities and authenticated caller |
+| GET / POST | `/api/tasks` | Filtered paginated list / create |
+| GET / PATCH | `/api/tasks/{id}` | Detail / versioned field changes |
+| POST | `/api/tasks/{id}/status` | Owner status change; proof and review policy enforced |
+| POST | `/api/tasks/{id}/notes` | Any actor can append a versioned note |
+| POST | `/api/tasks/{id}/decision` | Salar's recorded decision; returns task to todo |
+| POST | `/api/tasks/{id}/review` | Manager approval or return; Chief of Staff cannot self-review |
+| GET | `/api/tasks/{id}/events`, `/api/tasks/events` | Immutable history and global rollup feed |
+
+Task writes require current versions (409 on conflict), stamp the token's actor, and append history atomically. Consequential classifications require Salar's prior approval and completion review. Stale means in progress with no log entry for 48 hours. No scheduler or external-tool enforcement is introduced.
+
 
 **Contract shorthand:** Most JSON routes return `**{ "ok": true, "data": … }`** or `**{ "ok": false, "error": { "code", "message" } }**` (`backend/app/schemas/common.py`). Keyword/cluster/usage routes may use `dict` responses but keep the same top-level `ok` / `data` pattern. **Exact field shapes:** matching module under `backend/app/schemas/` (e.g. `product.py`, `blog.py`). **SSE:** `text/event-stream` for AI stream, article draft stream, cluster generate, competitor research, target research, target metrics refresh.
 
@@ -537,6 +555,9 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 ## Services
 
+Team tasks: `backend/app/services/team_tasks.py` owns schema, reference checks, transaction/version enforcement, history, decisions and review rules. `task_identity.py` resolves eight fixed actors from private token files. Schemas: `backend/app/schemas/team_tasks.py`. Migration runs through `backend/app/db.py` once per database path.
+
+
 - `backend/app/services/overview_results.py`: on-demand, date-aligned comparisons of GSC history around confirmed opportunity saves.
 
 Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, cooperative cancellation, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
@@ -575,7 +596,7 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Image SEO                                   | `backend/app/services/image_seo_service/`        | List rows, alt suggest, product gallery + collection featured draft/apply. Collection image replacement clears the old featured image before attaching the SEO-named upload. Modules: `__init__`, `_catalog`, `_optimizer`       | `dashboard_ai_engine_parts`, `dashboard_store`, `product_image_seo`, `shopify_catalog_sync`, image cache                                    |
 
 
-**Middleware:** none registered; auth is OAuth-only for Google (no global API auth middleware).
+**Middleware:** none registered. Task routes use a token dependency; Google uses OAuth. No global API auth middleware.
 
 ---
 
@@ -610,6 +631,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
+| TasksPage | `/tasks` | Needs you, owner board, stale, done this week, task details/history and token login | `/api/tasks` |
 | OverviewPage         | `/`                                      | Compact Search snapshot, immediate Needs attention actions, and five SEO action/result panels; Search/Analytics workspaces, audience shares, stacked indexing/metadata health, and always-visible scoped reports. Period affects property reports; Search URL filter affects GSC metrics and query/page tables only. Catalog signals retain their stored per-URL windows. | `/api/summary`, sync/status                     |
 | InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
@@ -646,6 +668,12 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 ---
 
 ## Database Tables
+
+| Team task table | Purpose | Indexes / constraints |
+|---|---|---|
+| `team_tasks` | Current task JSON plus indexed owner/status/priority/version/timestamps | Owner/status, status/last-log, completion time |
+| `team_task_events` | Immutable actor-attributed notes and before/after changes | Task/event ID, timestamp/event ID; triggers reject UPDATE/DELETE |
+
 
 Ranking tables (created through the existing schema bootstrap):
 - `tracked_keywords`: normalized unique term, optional target/group, active flag; removal is soft.
@@ -762,6 +790,9 @@ which rows match.
 
 ## Scripts (`scripts/`)
 
+`provision-task-actors.py` creates missing private local credentials for the eight task actors; never overwrites existing tokens or prints secrets.
+
+
 
 | Script                              | Purpose                                                                                   |
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
@@ -795,7 +826,7 @@ SerpApi rank tracking uses `/search.json` (Google.ca organic results) and `/acco
 | **Platform**     | Self-hosted **Shopify** SEO operations app (single-tenant per install).                                                                                                                        |
 | **Primary goal** | Organic search visibility: catalog + content SEO workflows, GSC/GA4-informed prioritization, AI-assisted copy/meta, keyword and cluster tooling.                                               |
 | **Key metrics**  | Surfaced in-app via GSC/GA4 rollups, indexing/PageSpeed signals, overview goals (optional env `OVERVIEW_GOAL_`*).                                                                              |
-| **Constraints**  | **No built-in multi-user auth** on the API; relies on network access control for deployments. **No paid ads** requirement is a *business* constraint for some merchants, not enforced in code. |
+| **Constraints**  | **Per-actor token auth on the task API only**; other API routes have no built-in multi-user auth and the app relies on network access control for deployments. **No paid ads** requirement is a *business* constraint for some merchants, not enforced in code. |
 
 
 ---
@@ -837,7 +868,7 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 ## Tech Debt / Known Issues
 
 - **Process model:** Sync and AI state live **in-memory** in the server process (`shopifyseo/dashboard_actions`); restarts lose in-flight job UI unless persisted paths recover.
-- **Security:** API routes are **not** behind app-level JWT/API keys; treat as trusted-network or add a reverse proxy with auth for production.
+- **Security:** Task routes require per-actor tokens; other API routes are **not** behind app-level JWT/API keys; treat as trusted-network or add a reverse proxy with auth for production.
 - **AI HTTP timeouts:** Settings docs note a **fixed long timeout** for AI calls in engine code (verify `dashboard_ai_engine_parts` when tuning).
 - **Moz:** `moz_api_token` may appear in settings mapping; confirm whether Moz APIs are fully wired before relying on them.
 - **`GET /api/settings` costs ~1.7 s, all of it network.** `settings_service.get_settings_data` issues **9 sequential** provider model-listing requests (~196 ms each); profiling attributes 1.787 s of 1.791 s to `requests`. Running them concurrently would bring it to roughly one round trip (~200 ms). Left as-is because it changes external-API concurrency and per-provider error handling — the frontend masks it with `staleTime: 30_000`.
@@ -890,6 +921,9 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 ---
 
 ## Environment Configs
+
+`TASK_MANAGER_TOKEN_DIR`: optional task credential directory, default `~/.config/shopifyseo/task-actors`. Server and provisioning script must use the same path. Tokens are outside the database/repository; the browser keeps its selected credential only in tab sessionStorage.
+
 
 
 | Source                                                | Role                                                                                                                                       |

@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.routers.team_tasks import router as team_tasks_router
 from backend.app.routers.actions import router as actions_router
 from backend.app.routers.article_ideas import router as article_ideas_router
 from backend.app.routers.ai_stream import router as ai_stream_router
@@ -66,6 +67,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Shopify Agentic SEO API", version="0.1.0", lifespan=lifespan)
 # SPA is served from the same origin (port 8000); no CORS needed for local use.
 
+app.include_router(team_tasks_router)
 app.include_router(article_ideas_router)
 app.include_router(dashboard_router)
 app.include_router(products_router)

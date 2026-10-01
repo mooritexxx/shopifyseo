@@ -4,6 +4,7 @@ import { createBrowserRouter } from "react-router-dom";
 
 import { AppShell } from "../components/shell/app-shell";
 
+const TasksPage = lazy(() => import("../routes/tasks-page").then(module => ({ default: module.TasksPage })));
 const OverviewPage = lazy(() => import("../routes/overview-page").then((module) => ({ default: module.OverviewPage })));
 const ProductsPage = lazy(() => import("../routes/products-page").then((module) => ({ default: module.ProductsPage })));
 const ProductDetailPage = lazy(() => import("../routes/product-detail-page").then((module) => ({ default: module.ProductDetailPage })));
@@ -56,6 +57,7 @@ function shell(page: ReactNode) {
 
 export const router = createBrowserRouter(
   [
+    { path: "/tasks", element: shell(<TasksPage />) },
     {
       path: "/",
       element: shell(<OverviewPage />)

@@ -143,6 +143,7 @@ function syncErrorSuggestsSettings(err: string): boolean {
 
 const items: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, group: "Workspace" },
+  { to: "/tasks", label: "Tasks", icon: Check, group: "Workspace" },
   { to: "/products", label: "Products", icon: Box, group: "Catalog", countKey: "products" },
   { to: "/collections", label: "Collections", icon: Layers3, group: "Catalog", countKey: "collections" },
   { to: "/pages", label: "Pages", icon: BookOpen, group: "Catalog", countKey: "pages" },

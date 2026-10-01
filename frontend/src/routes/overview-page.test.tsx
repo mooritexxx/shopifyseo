@@ -7,6 +7,7 @@ import { renderWithProviders } from "../test/test-utils";
 import { summarySchema } from "../types/api";
 import { getJson } from "../lib/api";
 
+vi.mock("../components/overview/overview-actions", () => ({ OverviewActions: () => <div>SEO action dashboard</div> }));
 vi.mock("../lib/api", () => ({ getJson: vi.fn(), postJson: vi.fn() }));
 // Keep real chart rendering while supplying dimensions instead of a JSDOM ResizeObserver.
 vi.mock("recharts", async () => {

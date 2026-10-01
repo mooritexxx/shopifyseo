@@ -302,8 +302,7 @@ escaped draft comparison. The operator explicitly loads the prepared fields, edi
 and marks the editor values reviewed. Existing **Save to Shopify** actions mark a task
 **Applied** only after a complete successful save matching the reviewed fields. Partial
 collection saves and changed drafts do not advance it. **Monitoring** is an explicit
-tracking state; performance remains available through the existing page history, without
-a scheduled before/after evaluation. Interrupted preparation is marked failed on startup
+tracking state; performance remains available through the existing page history, with the Overview providing on-demand before/after reporting for newly recorded saves (see Overview action dashboard); no scheduled evaluation runs. Interrupted preparation is marked failed on startup
 and can be retried; provider failures remain visible in the task.
 
 | Method | Path | Purpose |
@@ -325,6 +324,14 @@ shows a warning if valid output remains below target. Full generation and single
 regeneration share this loop; overlength output is rewritten and the former separate
 length-padding path is no longer used. The policy describes app quality rules, not a
 promise of a search ranking outcome.
+
+### Overview action dashboard
+
+Overview now surfaces five read-only sections from existing research and workflow APIs: top opportunities (one query per page among the top 50 scored rows), verified rank changes, prioritized SEO tasks, unmatched/overlap-risk clusters with related ideas, and results after applied opportunity fixes. These sections use latest stored data independently of Overview period/URL filters. They do not start provider jobs or publish changes.
+
+`GET /api/overview/change-results` returns the latest ten applied/monitoring tasks with equal 14-day before/after GSC windows. The save day uses the Search Console Pacific calendar and is excluded; a three-day reporting lag is allowed. Both windows need all 14 stored dates and positive impressions; missing dates are not assumed to be zero traffic. Legacy tasks without a captured save date show `unknown_date`. Results describe association, not causation; later edits and seasonality may affect outcomes.
+
+`backend/app/services/overview_results.py` reads narrowly indexed per-object daily history. `seo_change_events` stores one immutable `applied_at` timestamp per task, in the same transaction as a confirmed matching save. Moving a task to Monitoring never changes that date. Existing task and summary response contracts remain unchanged. UI: `frontend/src/components/overview/overview-actions.tsx`.
 
 ### Article ideas
 
@@ -530,6 +537,8 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 ## Services
 
+- `backend/app/services/overview_results.py`: on-demand, date-aligned comparisons of GSC history around confirmed opportunity saves.
+
 Rank tracking: `backend/app/services/rank_tracking.py` owns keyword CRUD, estimates, reservations, background jobs, cooperative cancellation, restart recovery, history and baseline import. `shopifyseo/rank_tracking/serp.py` handles SerpApi parsing and sanitized transport; `shopifyseo/rank_tracking/store.py` defines schema and one-time seed data.
 
 Internal links: `shopifyseo/internal_links/safety.py` validates lossless edits and signs
@@ -601,7 +610,7 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 
 | Name                 | Route                                    | Purpose                          | API areas used                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | ----------------------------------------------- |
-| OverviewPage         | `/`                                      | Compact Search snapshot and immediate Needs attention actions; Search/Analytics workspaces, audience shares, stacked indexing/metadata health, and always-visible scoped reports. Period affects property reports; Search URL filter affects GSC metrics and query/page tables only. Catalog signals retain their stored per-URL windows. | `/api/summary`, sync/status                     |
+| OverviewPage         | `/`                                      | Compact Search snapshot, immediate Needs attention actions, and five SEO action/result panels; Search/Analytics workspaces, audience shares, stacked indexing/metadata health, and always-visible scoped reports. Period affects property reports; Search URL filter affects GSC metrics and query/page tables only. Catalog signals retain their stored per-URL windows. | `/api/summary`, sync/status                     |
 | InternalLinksPage | `/internal-links` | Guarded live preview/apply, snapshot undo, reconciliation, graph and source-type settings | `/api/internal-links` |
 | RankingsPage | `/rankings` | Keyword rank history, add/edit/remove, manual checks, stop control and budget confirmation | `/api/rankings` |
 | ProductsPage         | `/products`                              | Product list                     | `/api/products`                                 |
@@ -669,6 +678,7 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 | `shopify_metaobjects`                                                    | Cached metaobjects                         |                                                  |                                                  |
 | `product_image_file_cache`                                               | Local image cache metadata                 | `image_shopify_id` PK                            |                                                  |
 | `seo_opportunity_tasks` | Persistent opportunity evidence, draft, reviewed fields, status and failure reason | Unique `(object_type, object_handle)` | One task per page; no automatic publishing |
+| `seo_change_events` | Confirmed opportunity save timestamps for Overview comparisons | Primary key `task_id` | Immutable UTC timestamp; legacy dates are not backfilled |
 | `seo_workflow_states`                                                    | Per-object workflow                        | `(object_type, handle)` PK                       |                                                  |
 | `service_tokens`                                                         | OAuth tokens                               | `service`                                        |                                                  |
 | `service_settings`                                                       | App settings key/value                     | Mirrors env for runtime                          |                                                  |

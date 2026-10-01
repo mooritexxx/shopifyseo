@@ -16,3 +16,14 @@ def summary(
     return success_response(
         get_dashboard_summary(gsc_period=gsc_period, gsc_segment=gsc_segment)
     )
+
+
+@router.get("/overview/change-results", response_model=SuccessResponse[dict])
+def overview_change_results():
+    from backend.app.db import open_db_connection
+    from backend.app.services.overview_results import change_results
+    conn = open_db_connection()
+    try:
+        return success_response(change_results(conn))
+    finally:
+        conn.close()

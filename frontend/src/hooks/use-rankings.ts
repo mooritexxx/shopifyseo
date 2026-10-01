@@ -32,7 +32,7 @@ const keywordSchema = z.object({
   trend: z.array(checkSchema),
 });
 export type RankedKeyword = z.infer<typeof keywordSchema>;
-const rankingsSchema = z.object({
+export const rankingsSchema = z.object({
   items: z.array(keywordSchema),
   month_used: z.number(),
   reserved: z.number(),

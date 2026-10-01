@@ -116,3 +116,14 @@
 .overview-report-section:not(.overview-panel) { border-top: 1px solid #e2e7ed; padding-top: 14px; }
 
 .overview-page .recharts-wrapper { overflow: clip; }
+
+.overview-action-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.overview-action-list { margin-top: 12px; }
+.overview-action-list li { padding: 14px 0; border-top: 1px solid #edf0f4; overflow-wrap: anywhere; }
+.overview-action-list li > a { font-weight: 600; font-size: 14px; color: #5746d9; }
+.overview-action-list li > p, .overview-action-list li > div > p { margin-top: 5px; font-size: 12px; color: #64748b; }
+.overview-action-badge { display: inline-block; border-radius: 6px; padding: 3px 7px; background: #f4f5f8; font-size: 11px; margin: 3px 0 3px 6px; }
+.overview-result-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.overview-result-metrics strong { display: block; color: #172033; font-size: 16px; }
+@container (max-width:760px) { .overview-action-grid { grid-template-columns: minmax(0,1fr); } }
+@container (max-width:480px) { .overview-result-metrics { grid-template-columns: minmax(0,1fr); } }

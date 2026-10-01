@@ -1,3 +1,4 @@
+import { OverviewActions } from "../components/overview/overview-actions";
 import "./overview.css";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, FileSearch, Globe, Monitor, MousePointerClick, TrendingUp } from "lucide-react";
@@ -222,7 +223,7 @@ export function OverviewPage() {
           </div>
         <p className="text-xs text-slate-500">Period applies to Search and Analytics. Search URLs filters Search metrics and query/page reports only.</p>
         <nav className="overview-section-nav" aria-label="Overview sections">
-          <a href="#overview-performance">Performance</a><a href="#overview-attention">Attention</a><a href="#overview-health">Catalog health</a><a href="#overview-details">Details</a>
+          <a href="#overview-performance">Performance</a><a href="#overview-attention">Attention</a><a href="#overview-actions">SEO actions</a><a href="#overview-health">Catalog health</a><a href="#overview-details">Details</a>
         </nav>
       </header>
 
@@ -329,6 +330,7 @@ export function OverviewPage() {
       </section>
 
 
+      <OverviewActions />
       <section id="overview-performance" className="space-y-4">
         <Tabs defaultValue="search">
           <div className="overview-section-heading">

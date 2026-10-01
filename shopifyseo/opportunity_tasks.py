@@ -14,6 +14,9 @@ def ensure_schema(conn):
         error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(object_type, object_handle))''')
 
+    conn.execute('''CREATE TABLE IF NOT EXISTS seo_change_events (
+        task_id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+
 
 def task_dict(row):
     t = dict(row)
@@ -117,6 +120,7 @@ def record_applied(conn, kind, handle, payload):
         reviewed = json.loads(row['reviewed_json'])
         if reviewed and all(str(payload.get(k, '')).strip() == str(v).strip() for k, v in reviewed.items()):
             conn.execute("UPDATE seo_opportunity_tasks SET status='applied',updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
+            conn.execute('INSERT OR IGNORE INTO seo_change_events(task_id) VALUES(?)', (row['id'],))
             conn.commit()
 
 

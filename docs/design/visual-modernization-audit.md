@@ -2,6 +2,14 @@
 
 Updated: September 30, 2026. Baseline: `1bfe6b3`.
 
+## Overview action dashboard — September 30, 2026
+
+All five approved additions are implemented: top opportunity pages, verified ranking gains/losses, prioritized SEO work queue, content coverage gaps with linked ideas, and before/after results for confirmed opportunity saves. Every section has loading, error/retry and empty handling. Independent desktop columns avoid stretching empty cards; phone layouts stack. The panels use latest stored research, independent of Overview reporting filters.
+
+Comparisons use equal 14-day Pacific-calendar windows, exclude the save day and allow three reporting days. They require complete stored days and positive impressions on both sides. Older tasks retain an unknown save date; sparse history is not silently zero-filled. No provider jobs or live Shopify writes were run. A dedicated timestamp table preserves the existing task response contract.
+
+Verification: full frontend suite passed 87 tests, followed by all five action-panel tests after adding a separate failure/ready-results regression (88 total across runs). All 18 targeted backend tests passed, including matching-save capture, immutable dates, legacy tasks, incomplete/zero history, Pacific date conversion, and the HTTP response contract. Clean production build and local restart passed. Browser checks at 1440, 768 and 320px show no document overflow; opportunity links open the correct article editor and the cluster link selects the Clusters tab. Local opportunities/clusters are populated; ranking changes, tasks and results show empty states. Populated result/error states are covered by tests, not live Shopify mutations. Evidence: [desktop](overview-redesign-evidence/actions-desktop.png), [phone](overview-redesign-evidence/actions-mobile.png).
+
 ## Overview layout follow-up — September 30, 2026
 
 Report disclosures are now permanent sections: Search details, indexing by entity type, metadata counts, and synced catalog performance. Indexing and Metadata coverage stack at every width, with full-width desktop coverage rows. Help and freshness disclosures remain compact. Chart tooltip overflow is contained during viewport changes.

@@ -226,3 +226,41 @@ def test_history_is_append_only_even_at_database_layer(api):
             conn.execute(sql)
         conn.rollback()
     conn.close()
+
+
+WEB_HEADERS = {'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'X-Task-Web': '1', 'Origin': 'http://testserver'}
+
+
+def test_web_salar_access_without_token_and_agent_api_stays_protected(api):
+    client = api[2]
+    response = client.get('/api/web/tasks/actors', headers=WEB_HEADERS)
+    assert value(response)['current'] == 'salar'
+    assert client.get('/api/tasks', headers=WEB_HEADERS).status_code == 401
+    task = create(api, risks=['spending'])
+    response = client.post(f"/api/web/tasks/{task['id']}/decision", headers=WEB_HEADERS,
+                           json={'version': task['version'], 'answer': 'Approved from the web', 'approved': True})
+    updated = value(response)
+    assert updated['latest_decision']['actor'] == 'salar'
+    assert updated['approval_status'] == 'approved'
+    history = value(api[0]('GET', f"/{task['id']}/events"))
+    assert history['items'][0]['actor'] == 'salar'
+
+
+@pytest.mark.parametrize('headers', [
+    {}, {**WEB_HEADERS, 'Sec-Fetch-Site': 'cross-site'},
+    {**WEB_HEADERS, 'Sec-Fetch-Site': 'same-site'},
+    {**WEB_HEADERS, 'Sec-Fetch-Mode': 'navigate'},
+    {**WEB_HEADERS, 'Origin': 'https://unrelated.example'},
+    {**WEB_HEADERS, 'Origin': 'null'},
+    {**WEB_HEADERS, 'X-Task-Web': '0'},
+])
+def test_web_rejects_cross_site_or_missing_browser_headers(api, headers):
+    assert api[2].get('/api/web/tasks', headers=headers).status_code == 403
+    assert api[2].post('/api/web/tasks', headers=headers, json={'title': 'x', 'outcome': 'y', 'owner': 'salar'}).status_code == 403
+
+
+def test_web_trusted_tailscale_origin_and_token_cannot_select_another_actor(api):
+    headers = {**WEB_HEADERS, 'Host': 'vapely-seo-box-1.tail8bbcdb.ts.net',
+               'Origin': 'https://vapely-seo-box-1.tail8bbcdb.ts.net',
+               'X-Task-Token': 'jimmy-secret-' + 'x' * 40}
+    assert value(api[2].get('/api/web/tasks/actors', headers=headers))['current'] == 'salar'

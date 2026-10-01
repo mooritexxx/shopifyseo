@@ -1,8 +1,9 @@
 import './tasks-page.css';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Modal } from '../components/ui/modal';
 import { Button } from '../components/ui/button';
 import { actorNames, statuses, statusNames, riskNames, taskRequest, taskLinkHref, TaskApiError } from '../lib/team-tasks';
 import type { TeamTask, TaskFields, TaskLink, TaskEvent, Page } from '../lib/team-tasks';
@@ -18,31 +19,13 @@ function ErrorNotice({ error }: { error: unknown }) {
 }
 
 export function TasksPage() {
-  const [token, setToken] = useState(() => sessionStorage.getItem('task-token') || '');
-  const [candidate, setCandidate] = useState('');
-  const [loginError, setLoginError] = useState<unknown>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [session, setSession] = useState(0);
-  const client = useQueryClient();
-  const identity = useQuery({ queryKey: ['team-tasks', session, 'identity'], queryFn: () => taskRequest<{ current: string }>(token, '/actors'), enabled: !!token, retry: false, refetchOnWindowFocus: false });
-  async function connect(event: FormEvent) {
-    event.preventDefault(); setConnecting(true); setLoginError(null);
-    try {
-      await taskRequest(candidate.trim(), '/actors');
-      sessionStorage.setItem('task-token', candidate.trim());
-      setToken(candidate.trim()); setCandidate(''); setSession(value => value + 1);
-    } catch (error) { setLoginError(error); } finally { setConnecting(false); }
-  }
-  function disconnect() {
-    sessionStorage.removeItem('task-token'); setToken(''); setSession(value => value + 1);
-    client.removeQueries({ queryKey: ['team-tasks'] });
-  }
-  if (!token || identity.isError) return <main className="tasks-workspace"><header><p className="task-eyebrow">Workspace</p><h1>Tasks</h1><p>One shared place for decisions, progress, and proof.</p></header><form className="task-panel task-login" onSubmit={connect}><h2>Connect your identity</h2><p>Use your personal task token. It stays in this browser tab for this session.</p><label>Personal token<input type="password" autoComplete="off" value={candidate} onChange={event => setCandidate(event.target.value)} required /></label><label>Or load your token file<input type="file" accept=".token,.txt" onChange={async event => { const file = event.target.files?.[0]; if (file) { try { setCandidate((await file.text()).trim()); setLoginError(null); } catch { setLoginError(new Error("Could not read the token file.")); } } }} /></label><ErrorNotice error={loginError || identity.error} /><Button disabled={connecting}>{connecting ? 'Connecting…' : 'Connect'}</Button></form></main>;
-  if (!identity.data) return <p role="status">Loading your task workspace…</p>;
-  return <TaskWorkspace key={session} actor={identity.data.current} token={token} session={session} disconnect={disconnect} />;
+  useEffect(() => { sessionStorage.removeItem('task-token'); }, []);
+  return <TaskWorkspace />;
 }
 
-function TaskWorkspace({ actor, token, session, disconnect }: { actor: string; token: string; session: number; disconnect: () => void }) {
+function TaskWorkspace() {
+  const actor = 'salar';
+  const session = 'web-salar';
   const [view, setView] = useState<typeof views[number]>('Needs you');
   const [owner, setOwner] = useState('');
   const [status, setStatus] = useState('');
@@ -57,30 +40,40 @@ function TaskWorkspace({ actor, token, session, disconnect }: { actor: string; t
   else if (view === 'Stale') filters.set('stale', 'true');
   else if (view === 'Done this week') filters.set('done_this_week', 'true');
   else if (status) filters.set('status', status);
-  const listing = useQuery({ queryKey: ['team-tasks', session, 'list', filters.toString()], queryFn: () => taskRequest<Page<TeamTask>>(token, `?${filters}`), refetchInterval: 30000 });
-  const creation = useMutation({ mutationFn: (fields: TaskFields) => taskRequest<TeamTask>(token, '', 'POST', fields), onSuccess: task => { setCreating(false); setParams({ task: String(task.id) }); void client.invalidateQueries({ queryKey: ['team-tasks', session, 'list'] }); } });
+  const listing = useQuery({ queryKey: ['team-tasks', session, 'list', filters.toString()], queryFn: () => taskRequest<Page<TeamTask>>( `?${filters}`), refetchInterval: 30000 });
+  const creation = useMutation({ mutationFn: (fields: TaskFields) => taskRequest<TeamTask>( '', 'POST', fields), onSuccess: task => { setCreating(false); setParams({ task: String(task.id) }); void client.invalidateQueries({ queryKey: ['team-tasks', session, 'list'] }); } });
   const groups = view === 'By owner' ? Object.keys(actorNames).filter(id => !owner || owner === id) : ['all'];
   return <main className="tasks-workspace">
-    <header className="task-header"><div><p className="task-eyebrow">Workspace</p><h1>Tasks</h1><p>Decisions, progress, and proof — shared with your team.</p></div><div className="task-buttons"><span>{actorNames[actor]}</span><Button variant="ghost" onClick={disconnect}>Disconnect</Button><Button onClick={() => { setCreating(!creating); creation.reset(); }}>{creating ? 'Cancel new task' : 'New task'}</Button></div></header>
+    <header className="task-header"><div><p className="task-eyebrow">Workspace</p><h1>Tasks</h1><p>Decisions, progress, and proof — shared with your team.</p></div><div className="task-buttons"><span>{actorNames[actor]}</span><Button onClick={() => { setCreating(!creating); creation.reset(); }}>{creating ? 'Cancel new task' : 'New task'}</Button></div></header>
     {creating && <section className="task-panel"><h2>New task</h2><TaskEditor actor={actor} busy={creation.isPending} onSave={fields => creation.mutate(fields)} /><ErrorNotice error={creation.error} /></section>}
     <nav className="task-tabs" aria-label="Task views">{views.map(name => <button type="button" key={name} aria-pressed={view === name} onClick={() => { setView(name); setOffset(0); }}>{name}</button>)}</nav>
     <div className="task-filters"><label>Owner<select value={owner} onChange={e => { setOwner(e.target.value); setOffset(0); }}><option value="">Everyone</option>{Object.entries(actorNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>{(view === 'All tasks' || view === 'By owner') && <label>Status<select value={status} onChange={e => { setStatus(e.target.value); setOffset(0); }}><option value="">All statuses</option>{statuses.map(id => <option key={id} value={id}>{statusNames[id]}</option>)}</select></label>}<p>{listing.data?.total ?? '…'} {listing.data?.total === 1 ? 'task' : 'tasks'}{view === 'Stale' ? ' · No log entry for 48 hours' : view === 'Done this week' ? ' · Since Monday, Vancouver time' : ''}</p></div>
     <ErrorNotice error={listing.error} />
-    <div className={`task-layout ${selected ? 'has-detail' : ''}`}>
-      <section aria-label={view} className={view === 'By owner' ? 'task-board' : 'task-list'}>
-        {listing.isPending && <p role="status">Loading tasks…</p>}
+    <section className="task-table-scroll" aria-label={view} tabIndex={0}>
+      <table className="task-table">
+        <thead><tr><th scope="col">Task</th><th scope="col">Priority</th><th scope="col">Owner</th><th scope="col">Status</th><th scope="col">Due / check by</th></tr></thead>
         {groups.map(group => {
           const tasks = (listing.data?.items || []).filter(task => group === 'all' || task.owner === group);
-          return <section className={group === 'all' ? '' : 'task-owner-column'} key={group}>{group !== 'all' && <h2>{actorNames[group]} <span>{tasks.length}{listing.data && listing.data.total > 100 ? ' on this page' : ''}</span></h2>}{tasks.map(task => <button type="button" className={`task-card ${selected === task.id ? 'selected' : ''}`} key={task.id} onClick={() => setParams({ task: String(task.id) })}><div className="task-card-meta"><span>#{task.id} · {task.priority}</span><span className={`task-status status-${task.status}`}>{statusNames[task.status]}</span></div><h3>{task.title}</h3><p>{task.outcome}</p>{task.question && <div className="task-question"><strong>{task.question}</strong><p>{task.options.join(' · ')}</p></div>}{task.latest_decision && <p className="task-answer">Salar: {task.latest_decision.answer}</p>}<div className="task-card-footer"><span>{actorNames[task.owner]}</span><span>{task.due_on ? `Due ${task.due_on}` : task.check_by ? `Check ${task.check_by}` : 'No date set'}</span></div></button>)}{!tasks.length && !listing.isPending && <p className="task-empty">{view === 'Needs you' ? 'No decisions waiting on Salar.' : view === 'Stale' ? 'No stale tasks.' : 'No tasks in this view.'}</p>}</section>;
+          return <tbody key={group}>
+            {group !== 'all' && <tr className="task-group-row"><th colSpan={5} scope="rowgroup">{actorNames[group]} <span>{tasks.length}{listing.data && listing.data.total > 100 ? ' on this page' : ''}</span></th></tr>}
+            {tasks.map(task => <tr key={task.id} className="task-table-row" onClick={() => setParams({ task: String(task.id) })}>
+              <td><button type="button" className="task-row-title" aria-label={`Open task #${task.id}: ${task.title}`} onClick={() => setParams({ task: String(task.id) })}><span className="task-row-id">#{task.id}</span><span title={task.title}>{task.title}</span></button></td>
+              <td>{task.priority}</td><td>{actorNames[task.owner]}</td><td><span className={`task-status status-${task.status}`}>{statusNames[task.status]}</span></td>
+              <td>{task.due_on || (task.check_by ? `Check ${task.check_by}` : '—')}</td>
+            </tr>)}
+            {!tasks.length && <tr><td colSpan={5} className="task-empty">{listing.isPending ? 'Loading tasks…' : view === 'Needs you' ? 'No decisions waiting on Salar.' : view === 'Stale' ? 'No stale tasks.' : 'No tasks in this view.'}</td></tr>}
+          </tbody>;
         })}
-      </section>
-      {selected && <TaskDetail key={selected} id={selected} token={token} actor={actor} session={session} close={() => setParams({})} />}
-    </div>
+      </table>
+    </section>
+    <Modal open={!!selected} onOpenChange={open => { if (!open) setParams({}); }} title={`Task #${selected || ''}`} description="Task details, decisions and history" contentClassName="tasks-workspace task-dialog">
+      {selected && <TaskDetail key={selected} id={selected} actor={actor} session={session} />}
+    </Modal>
     {listing.data && listing.data.total > 100 && <div className="task-buttons"><Button variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous</Button><span>{offset + 1}–{Math.min(offset + 100, listing.data.total)} of {listing.data.total}</span><Button variant="outline" disabled={offset + 100 >= listing.data.total} onClick={() => setOffset(offset + 100)}>Next</Button></div>}
   </main>;
 }
 
-function TaskDetail({ id, token, actor, session, close }: { id: number; token: string; actor: string; session: number; close: () => void }) {
+function TaskDetail({ id, actor, session }: { id: number; actor: string; session: string }) {
   const client = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [historyOffset, setHistoryOffset] = useState(0);
@@ -88,9 +81,9 @@ function TaskDetail({ id, token, actor, session, close }: { id: number; token: s
   const [conflict, setConflict] = useState(false);
   const [feedback, setFeedback] = useState('');
   const key = ['team-tasks', session, 'detail', id];
-  const detail = useQuery({ queryKey: key, queryFn: () => taskRequest<TeamTask>(token, `/${id}`), refetchOnWindowFocus: false });
-  const history = useQuery({ queryKey: ['team-tasks', session, 'events', id, historyOffset], queryFn: () => taskRequest<Page<TaskEvent>>(token, `/${id}/events?offset=${historyOffset}&limit=30`), refetchOnWindowFocus: false });
-  const mutation = useMutation({ mutationFn: ({ endpoint, body }: { endpoint: string; body: unknown }) => taskRequest<TeamTask>(token, `/${id}${endpoint}`, endpoint ? 'POST' : 'PATCH', body), onSuccess: task => {
+  const detail = useQuery({ queryKey: key, queryFn: () => taskRequest<TeamTask>( `/${id}`), refetchOnWindowFocus: false });
+  const history = useQuery({ queryKey: ['team-tasks', session, 'events', id, historyOffset], queryFn: () => taskRequest<Page<TaskEvent>>( `/${id}/events?offset=${historyOffset}&limit=30`), refetchOnWindowFocus: false });
+  const mutation = useMutation({ mutationFn: ({ endpoint, body }: { endpoint: string; body: unknown }) => taskRequest<TeamTask>( `/${id}${endpoint}`, endpoint ? 'POST' : 'PATCH', body), onSuccess: task => {
     client.setQueryData(key, task); setEditing(false); setFeedback('Saved.'); setReset(value => value + 1); setHistoryOffset(0);
     void client.invalidateQueries({ queryKey: ['team-tasks', session, 'list'] });
     void client.invalidateQueries({ queryKey: ['team-tasks', session, 'events', id] });
@@ -98,7 +91,7 @@ function TaskDetail({ id, token, actor, session, close }: { id: number; token: s
   const task = detail.data;
   async function reload() { await detail.refetch(); await history.refetch(); setConflict(false); mutation.reset(); setFeedback('Latest task loaded. Check your input before saving again.'); }
   function save(endpoint: string, body: Record<string, unknown>) { if (task) mutation.mutate({ endpoint, body: { ...body, version: task.version } }); }
-  return <aside className="task-panel task-detail" aria-label={`Task ${id}`}><div className="task-detail-heading"><h2>Task #{id}</h2><Button variant="ghost" onClick={close}>Close</Button></div><ErrorNotice error={detail.error} />{!task ? <p>Loading task…</p> : <>
+  return <aside className="task-panel task-detail" aria-label={`Task ${id}`}><ErrorNotice error={detail.error} />{!task ? <p>Loading task…</p> : <>
     <h2>{task.title}</h2><p>{task.outcome}</p><div className="task-buttons"><span className={`task-status status-${task.status}`}>{statusNames[task.status]}</span><span>{task.priority} · {actorNames[task.owner]}</span>{task.requires_review && <span className="task-status">Review required</span>}</div>
     {task.latest_decision && <section className="task-decision"><h3>Salar’s latest decision</h3><p>{task.latest_decision.answer}</p><small>{dateTime(task.latest_decision.at)}{task.latest_decision.approved === false ? ' · Not approved' : task.latest_decision.approved ? ' · Approved' : ''}</small></section>}
     {task.question && <section className="task-question"><h3>{task.question}</h3><ul>{task.options.map((option, index) => <li key={index}>{option}</li>)}</ul></section>}

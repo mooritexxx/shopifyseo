@@ -18,21 +18,30 @@ function mockApi(actor = 'salar', task = base, conflict = false) {
       if (conflict) return { ok: false, status: 409, json: async () => ({ error: { message: 'Task changed. Reload it and retry with the current version.' } }) };
       return { ok: true, json: async () => ({ data: { ...task, version: 2, status: 'todo', latest_decision: { actor, at: task.created_at, question: task.question, answer: 'A', approved: null } } }) };
     }
-    const data = url.endsWith('/actors') ? { current: actor } : url.includes('/events') ? { items: [], total: 0 } : url === '/api/tasks/1' ? task : { items: [task], total: 1 };
+    const data = url.endsWith('/actors') ? { current: actor } : url.includes('/events') ? { items: [], total: 0 } : url === '/api/web/tasks/1' ? task : { items: [task], total: 1 };
     return { ok: true, json: async () => ({ data }) };
   });
   vi.stubGlobal('fetch', fetcher);
   return fetcher;
 }
-it('requires a personal token and never asks the browser to choose an actor', async () => {
+it('opens as Salar without a token and clears the old saved credential', async () => {
+  sessionStorage.setItem('task-token', 'old-agent-token');
   const fetcher = mockApi(); mount('/tasks');
-  expect(screen.getByRole('heading', { name: 'Connect your identity' })).toBeVisible();
-  expect(fetcher).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText('Personal token'), { target: { value: 'my-token' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'New task' });
-  expect(sessionStorage.getItem('task-token')).toBe('my-token');
-  expect(fetcher.mock.calls.every(([, options]) => (options.headers as Record<string, string>)['X-Task-Token'] === 'my-token')).toBe(true);
+  expect(screen.queryByLabelText('Personal token')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
+  expect(sessionStorage.getItem('task-token')).toBeNull();
+  expect(fetcher.mock.calls.every(([url, options]) => url.startsWith('/api/web/tasks') && !('X-Task-Token' in (options.headers as Record<string, string>)))).toBe(true);
+});
+it('opens compact rows in a detail dialog and closes back to the list', async () => {
+  mockApi(); mount('/tasks');
+  expect(await screen.findByRole('table')).toBeVisible();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole('button', { name: 'Open task #1: Choose a product' }));
+  expect(await screen.findByRole('dialog', { name: 'Task #1' })).toBeVisible();
+  expect(await screen.findByText('Product selected')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 });
 it('sends a versioned decision and displays the saved answer', async () => {
   sessionStorage.setItem('task-token', 'secret'); const fetcher = mockApi(); mount();
@@ -54,10 +63,10 @@ it('keeps a progress note on conflict and requires an explicit reload', async ()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Save update' })).not.toBeDisabled());
   expect(screen.getByLabelText('Note')).toHaveValue('Preserve this evidence');
 });
-it('does not offer Chief of Staff approval for their own work', async () => {
-  sessionStorage.setItem('task-token', 'secret'); mockApi('chief_of_staff', { ...base, owner: 'chief_of_staff', status: 'review', requires_review: true }); mount();
+it('offers Salar review of Chief of Staff work', async () => {
+  sessionStorage.setItem('task-token', 'secret'); mockApi('salar', { ...base, owner: 'chief_of_staff', status: 'review', requires_review: true }); mount();
   await screen.findByLabelText('Action');
-  expect(screen.queryByRole('option', { name: 'Approve completion' })).not.toBeInTheDocument();
+  expect(screen.getByRole('option', { name: 'Approve completion' })).toBeInTheDocument();
 });
 it('requires an explicit approve or decline choice for consequential decisions', async () => {
   sessionStorage.setItem('task-token', 'secret'); mockApi('salar', { ...base, risks: ['live_prices'], approval_status: 'pending', requires_review: true }); mount();

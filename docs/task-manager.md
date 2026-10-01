@@ -1,6 +1,6 @@
 # Team task manager
 
-The shared task board lives at **http://127.0.0.1:8000/app/tasks**. All task reads and writes use `/api/tasks`. Existing SEO opportunity tasks remain separate; use `links: [{"kind":"opportunity_task","id":"99"}]` to connect one.
+The shared task board lives at **http://127.0.0.1:8000/app/tasks**. Agents use `/api/tasks` with their individual tokens. The web screen uses `/api/web/tasks` and opens directly as Salar. Existing SEO opportunity tasks remain separate; use `links: [{"kind":"opportunity_task","id":"99"}]` to connect one.
 
 ## Identity setup
 
@@ -19,11 +19,15 @@ Tokens live outside the repository in `~/.config/shopifyseo/task-actors/` (direc
 | Price Analyst | `price_analyst` | `price_analyst.token` |
 | Code Improver | `code_improver` | `code_improver.token` |
 
-Every request sends **`X-Task-Token`**. Identity is resolved by the server; request bodies cannot supply an actor or requester. All eight actors can read all tasks. The browser accepts a pasted token or a selected local token file and retains it in sessionStorage for that tab. Disconnect clears it. The token file is read in the browser, not uploaded as a file. There is no actor picker or token-discovery API.
+Every agent API request sends **`X-Task-Token`**. Identity is resolved by the server; request bodies cannot supply an actor or requester. All eight actors can read all tasks. Agent credentials are never sent to the browser.
 
-For Salar: open Tasks, use **Or load your token file**, select `~/.config/shopifyseo/task-actors/salar.token`, then Connect. The native file picker supports Cmd+Shift+G to enter the directory.
+### Salar's web access
 
-These tokens distinguish callers at the API boundary. Processes sharing a Unix account can still read each other's files; this is not OS-level isolation between agents. Give each routine only its own token path, never copy tokens into task notes, URLs, source control, screenshots, or prompts.
+Open Tasks in the app: there is no task login, token picker or disconnect step. The web routes mirror the agent routes under `/api/web/tasks`, use the same service and data, and always stamp writes as `salar`. The UI removes old task tokens from sessionStorage. Salar's token remains available for deliberate API use but is not needed on the web.
+
+Web access inherits the deployment's trusted-network access (localhost or the existing private Tailscale deployment). Browser requests must include same-origin Fetch Metadata and `X-Task-Web: 1`; an Origin header, when supplied, must match the request Host. These checks reject cross-site browser reads/writes and form submissions. They do not authenticate a person or isolate local agents: a non-browser client on the trusted network can imitate browser headers. Restrict network access to the app accordingly. The agent API continues rejecting missing/invalid tokens even with browser headers.
+
+Tokens distinguish callers on the agent API. Processes sharing a Unix account can still read each other's files; this is not OS-level isolation between agents. Give each routine only its own token path, never copy tokens into task notes, URLs, source control, screenshots, or prompts.
 
 ## Permissions and lifecycle
 
@@ -123,8 +127,10 @@ Each routine should read its queue, inspect decisions/dependencies, post substan
 
 ## Views and follow-ups
 
+All views use compact task rows with title, priority, owner, status and due/check date. Click a row (or activate its title with the keyboard) to open the task details and history in a dialog. Escape or Close returns to the list.
+
 - **Needs you:** all `waiting_on_salar` tasks with question/options and a decision form for Salar.
-- **By owner:** task groups for the eight owners, with optional owner/status filters. Counts are explicitly page-scoped when paginated.
+- **By owner:** compact rows grouped under owner headings, with optional owner/status filters. Counts are explicitly page-scoped when paginated.
 - **Stale:** `in_progress` tasks with no log event in at least 48 hours. Notes by any actor count, as do automatic field/status-change events. Reads do not reset this clock.
 - **Done this week:** currently completed tasks with completion timestamps since Monday midnight in `America/Vancouver`.
 - **All tasks:** searchable by owner/status filters with pagination.

@@ -21,8 +21,8 @@ export type TeamTask = TaskFields & {
 export type TaskEvent = { id: number; task_id: number; actor: string; kind: string; at: string; version: number; note: string; changes: Record<string, { before: unknown; after: unknown }> };
 export type Page<T> = { items: T[]; total: number; limit: number; offset: number };
 export class TaskApiError extends Error { constructor(message: string, public status: number) { super(message); } }
-export async function taskRequest<T>(token: string, path = '', method = 'GET', body?: unknown): Promise<T> {
-  const response = await fetch(`/api/tasks${path}`, { method, headers: { 'X-Task-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+export async function taskRequest<T>(path = '', method = 'GET', body?: unknown): Promise<T> {
+  const response = await fetch(`/api/web/tasks${path}`, { method, headers: { 'X-Task-Web': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const result = await response.json();
   if (!response.ok) {
     const validation = Array.isArray(result.detail) ? result.detail.map((item: { loc: string[]; msg: string }) => `${item.loc.slice(1).join('.')}: ${item.msg}`).join('; ') : '';

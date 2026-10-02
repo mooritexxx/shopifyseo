@@ -2,7 +2,7 @@
 from pydantic import AwareDatetime
 from fastapi import APIRouter, Depends, Query
 from backend.app.db import db_conn
-from backend.app.schemas.team_tasks import Actor, Status, CreateTask, PatchTask, ChangeStatus, AddNote, Decision, Review
+from backend.app.schemas.team_tasks import Actor, Status, CreateTask, PatchTask, ChangeStatus, AddNote, Decision
 from backend.app.services import team_tasks as service
 from backend.app.services.task_identity import ACTORS, authenticate, authenticate_web
 
@@ -70,10 +70,6 @@ def build_router(prefix, identity):
     def decision(task_id: int, payload: Decision, actor: str = Depends(identity)):
         return write(task_id, actor, payload, 'decision')
 
-
-    @router.post('/{task_id}/review')
-    def review(task_id: int, payload: Review, actor: str = Depends(identity)):
-        return write(task_id, actor, payload, 'review')
 
     return router
 

@@ -46,13 +46,12 @@ Independent of the SEO opportunity workflow. `backend/app/routers/team_tasks.py`
 | GET | `/api/tasks/actors` | Fixed identities and authenticated caller |
 | GET / POST | `/api/tasks` | Filtered paginated list / create |
 | GET / PATCH | `/api/tasks/{id}` | Detail / versioned field changes |
-| POST | `/api/tasks/{id}/status` | Owner status change; proof and review policy enforced |
+| POST | `/api/tasks/{id}/status` | Owner or manager status change; risk approval, proof and dependencies enforced |
 | POST | `/api/tasks/{id}/notes` | Any actor can append a versioned note |
-| POST | `/api/tasks/{id}/decision` | Salar's recorded decision; returns task to todo |
-| POST | `/api/tasks/{id}/review` | Manager approval or return; Chief of Staff cannot self-review |
+| POST | `/api/tasks/{id}/decision` | Manager approval/decline or answer; CoS approval records Salar attribution |
 | GET | `/api/tasks/{id}/events`, `/api/tasks/events` | Immutable history and global rollup feed |
 
-Task writes require current versions (409 on conflict), stamp the token's actor for agents or Salar for the web, and append history atomically. Consequential classifications require Salar's prior approval and completion review. Stale means in progress with no log entry for 48 hours. No scheduler or external-tool enforcement is introduced.
+Task writes require current versions (409 on conflict), stamp the token's actor for agents or Salar for the web, and append history atomically. Managers are Salar and Chief of Staff; they can edit/status any task, while agents can edit/status their own and add notes anywhere. Non-empty risks require manager approval before in_progress/done; CoS approval needs a note identifying Salar's OK and displays Chief of Staff (for Salar). Completion always needs proof and done dependencies; dropping is manager-only with a reason. The review status/flag/endpoint are removed; schema initialization migrates review to done with proof, otherwise todo, preserving historical events and logging versioned migration events. Stale means in progress with no log entry for 48 hours. No scheduler or external-tool enforcement is introduced.
 
 
 **Contract shorthand:** Most JSON routes return `**{ "ok": true, "data": … }`** or `**{ "ok": false, "error": { "code", "message" } }**` (`backend/app/schemas/common.py`). Keyword/cluster/usage routes may use `dict` responses but keep the same top-level `ok` / `data` pattern. **Exact field shapes:** matching module under `backend/app/schemas/` (e.g. `product.py`, `blog.py`). **SSE:** `text/event-stream` for AI stream, article draft stream, cluster generate, competitor research, target research, target metrics refresh.

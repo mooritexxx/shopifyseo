@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Actor = Literal['salar', 'chief_of_staff', 'jimmy', 'merchandiser', 'blogger', 'social', 'price_analyst', 'code_improver']
-Status = Literal['todo', 'in_progress', 'blocked', 'waiting_on_salar', 'review', 'done', 'dropped']
+Status = Literal['todo', 'in_progress', 'blocked', 'waiting_on_salar', 'done', 'dropped']
 Risk = Literal['spending', 'external_send', 'deletion', 'live_prices']
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10000)]
 
@@ -52,7 +52,6 @@ class CreateTask(Contract):
     measurement: Measurement | None = None
     risks: list[Risk] = Field(default_factory=list, max_length=4)
     authorization: str = Field(default='', max_length=2000)
-    requires_review: bool | None = None
 
 
 class Versioned(Contract):
@@ -72,7 +71,7 @@ class PatchTask(Versioned):
     measurement: Measurement | None = None
     risks: list[Risk] | None = Field(default=None, max_length=4)
     authorization: str | None = Field(default=None, max_length=2000)
-    requires_review: bool | None = None
+    proof: str | None = Field(default=None, max_length=10000)
     note: str = Field(default='', max_length=10000)
 
     @model_validator(mode='after')
@@ -96,10 +95,6 @@ class AddNote(Versioned):
 
 
 class Decision(Versioned):
-    answer: Text
+    answer: str = Field(default='', max_length=10000)
+    note: str = Field(default='', max_length=2000)
     approved: bool | None = None
-
-
-class Review(Versioned):
-    approve: bool
-    note: Text

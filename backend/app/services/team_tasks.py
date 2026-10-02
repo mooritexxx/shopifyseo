@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
-from backend.app.services.task_identity import MANAGERS
+from backend.app.services.task_identity import ACTORS, MANAGERS
 
 
 def ensure_schema(conn):
@@ -29,7 +29,25 @@ def ensure_schema(conn):
         CREATE TRIGGER IF NOT EXISTS team_events_no_delete BEFORE DELETE ON team_task_events
         BEGIN SELECT RAISE(ABORT, 'Task history is append-only'); END;
     ''')
-    conn.commit()
+    # Idempotent, atomic conversion of the retired completion-review workflow.
+    with conn:
+        conn.execute('BEGIN IMMEDIATE')
+        for row in conn.execute('SELECT data_json FROM team_tasks').fetchall():
+            before = json.loads(row[0])
+            if 'requires_review' not in before and before['status'] != 'review' and before.get('approval_status') != 'denied':
+                continue
+            task = dict(before)
+            task.pop('requires_review', None)
+            if task['status'] == 'review':
+                task['status'] = 'done' if str(task.get('proof') or '').strip() else 'todo'
+                task['completed_at'] = (task.get('completed_at') or now()) if task['status'] == 'done' else None
+            if task.get('approval_status') == 'denied':
+                task['approval_status'] = 'declined'
+            decision = task.get('latest_decision') or {}
+            task['approval_by'] = decision.get('actor') if decision.get('approved') is not None else None
+            task['approval_at'] = decision.get('at') if decision.get('approved') is not None else None
+            persist(conn, before, task, 'system', 'workflow_migrated',
+                    'Removed completion review; legacy review tasks with proof are done, otherwise todo.')
 
 
 def now():
@@ -79,6 +97,8 @@ def events(conn, task_id=None, since=None, limit=100, offset=0):
     for row in rows:
         item = dict(zip(('id', 'task_id', 'actor', 'kind', 'at', 'version', 'note', 'changes_json'), row))
         item['changes'] = json.loads(item.pop('changes_json'))
+        decision = (item['changes'].get('latest_decision') or {}).get('after') or {}
+        item['actor_label'] = (decision.get('actor_label') if decision.get('actor') == item['actor'] else None) or ACTORS.get(item['actor'], 'System migration')
         items.append(item)
     return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
@@ -114,8 +134,9 @@ def persist(conn, before, task, actor, kind, note):
     timestamp = now()
     task['version'] = (before['version'] if before else 0) + 1
     task['last_log_at'] = timestamp
-    changes = {key: {'before': before.get(key) if before else None, 'after': value}
-               for key, value in task.items() if key not in ('version', 'last_log_at') and (before is None or before.get(key) != value)}
+    changes = {key: {'before': (before or {}).get(key), 'after': task.get(key)}
+               for key in sorted(set(task) | set(before or {}))
+               if key not in ('version', 'last_log_at') and (before is None or before.get(key) != task.get(key))}
     conn.execute('UPDATE team_tasks SET owner=?,status=?,priority=?,version=?,last_log_at=?,completed_at=?,data_json=? WHERE id=?',
                  (task['owner'], task['status'], task['priority'], task['version'], timestamp, task['completed_at'], json.dumps(task), task['id']))
     conn.execute('INSERT INTO team_task_events(task_id,actor,kind,at,version,note,changes_json) VALUES(?,?,?,?,?,?,?)',
@@ -131,10 +152,8 @@ def request_approval(task):
 
 def create(conn, actor, payload):
     task = payload.model_dump(mode='json')
-    require(task['requires_review'] is None or actor in MANAGERS, 'Only Chief of Staff or Salar can set requires_review')
-    task['requires_review'] = bool(task['risks']) or bool(task['requires_review'])
     task.update(requester=actor, status='todo', proof='', question='', options=[], latest_decision=None,
-                approval_status='not_required', completed_at=None, created_at=now())
+                approval_status='not_required', approval_by=None, approval_at=None, completed_at=None, created_at=now())
     if task['risks']:
         request_approval(task)
     with conn:
@@ -146,6 +165,18 @@ def create(conn, actor, payload):
         return persist(conn, None, task, actor, 'created', 'Task created')
 
 
+def validate_completion(conn, task):
+    require(bool(task['proof'].strip()), 'Completion requires a proof note', 422)
+    require(all(get_task(conn, dep)['status'] == 'done' for dep in task['blocked_by']),
+            'Dependencies must be done first', 409)
+
+
+def require_risk_approval(task):
+    if task['risks'] and task['status'] in ('in_progress', 'done'):
+        require(task['approval_status'] == 'approved',
+                'A manager must approve this risky task before it can move to in_progress or done.', 409)
+
+
 def mutate(conn, task_id, actor, payload, action):
     with conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -153,82 +184,70 @@ def mutate(conn, task_id, actor, payload, action):
         require(before['version'] == payload.version, 'Task changed. Reload it and retry with the current version.', 409)
         task = json.loads(json.dumps(before))
         manager, owner = actor in MANAGERS, actor == task['owner']
-        kind, note = action, getattr(payload, 'note', '')
+        kind, note = action, getattr(payload, 'note', '').strip()
         if action == 'note':
             pass
         elif action == 'patch':
+            require(owner or manager, 'Only the owner or a manager can edit this task')
             edits = payload.model_dump(mode='json', exclude_unset=True, exclude={'version', 'note'})
             require(bool(edits), 'No fields supplied', 422)
-            require(owner or manager, 'Only the owner or a manager can edit this task')
-            controlled = {'owner', 'priority', 'requires_review', 'risks', 'authorization', 'title', 'outcome'}
-            changed_keys = {key for key, value in edits.items() if task.get(key) != value}
-            require(manager or not controlled.intersection(changed_keys), 'Only Chief of Staff or Salar can change assignment, scope, priority or review policy')
-            require(owner or not (changed_keys - controlled), 'Only the owner can change task progress')
-            require(task['status'] not in ('done', 'dropped', 'review'), 'Reopen or return the task before editing it', 409)
             task.update(edits)
-            require(not task['risks'] or task['requires_review'], 'Consequential tasks require review', 422)
-            if task['risks'] and any(before.get(key) != task[key] for key in ('risks', 'authorization', 'title', 'outcome', 'owner', 'links')):
-                request_approval(task)
-            elif not task['risks']:
-                task['approval_status'] = 'not_required'
-            validate_references(conn, task)
-        elif action == 'status':
-            target = payload.status
-            if target == 'dropped':
-                require(manager, 'Only Chief of Staff or Salar can drop tasks')
-                require(bool(note.strip()), 'Dropping a task requires a reason', 422)
-            else:
-                require(owner, 'Only the owner can change task status')
-            require(target != task['status'], 'Task already has that status', 409)
-            require(task['status'] != 'review' or target == 'dropped', 'Use the review endpoint to approve or return work', 409)
-            if task['status'] in ('done', 'dropped'):
-                require(target == 'todo', 'Reopen completed or dropped tasks as todo', 409)
-                task.update(proof='', completed_at=None)
+            if before['risks'] != task['risks']:
+                task.update(approval_by=None, approval_at=None)
                 if task['risks']:
                     request_approval(task)
-                    target = 'waiting_on_salar'
-            if before['status'] == 'waiting_on_salar':
-                require(target in ('blocked', 'dropped'), 'Salar must answer the pending question before work resumes', 409)
-            if task['risks'] and target in ('in_progress', 'review', 'done'):
-                require(task['approval_status'] == 'approved', 'Salar must approve this action before work proceeds', 409)
+                    task['completed_at'] = None
+                else:
+                    task['approval_status'] = 'not_required'
+            validate_references(conn, task)
+            require_risk_approval(task)
+            if task['status'] == 'done':
+                validate_completion(conn, task)
+        elif action == 'status':
+            target = payload.status
+            require(manager or owner, 'Only the owner or a manager can change task status')
+            if target == 'dropped':
+                require(manager, 'Only managers can drop tasks')
+                require(bool(note), 'Dropping a task requires a reason', 422)
+            require(target != task['status'], 'Task already has that status', 409)
+            task['status'] = target
+            require_risk_approval(task)
+            if target == 'done':
+                task['proof'] = payload.proof.strip()
+                validate_completion(conn, task)
+                task['completed_at'] = now()
+            else:
+                task['completed_at'] = None
+                if before['status'] == 'done':
+                    task['proof'] = ''
             if target == 'blocked':
-                require(bool(note.strip()) or bool(task['blocked_by']), 'Provide a blocked reason or dependency', 422)
-                task['blocked_reason'] = note.strip() or task['blocked_reason']
+                task['blocked_reason'] = note or task['blocked_reason']
             if target == 'waiting_on_salar':
                 if task['risks'] and task['approval_status'] != 'approved':
                     request_approval(task)
                 else:
-                    require(bool(payload.question.strip()) and len(payload.options) >= 2, 'A question and at least two options are required', 422)
                     task.update(question=payload.question.strip(), options=payload.options)
-            if target in ('done', 'review'):
-                require(bool(payload.proof.strip()), 'Completion requires a proof note', 422)
-                require(all(get_task(conn, dep)['status'] == 'done' for dep in task['blocked_by']), 'Dependencies must be done first', 409)
-                task['proof'] = payload.proof.strip()
-                target = 'review' if task['requires_review'] or target == 'review' else 'done'
-            task['status'] = target
-            if target == 'done':
-                task['completed_at'] = now()
-            if target != 'waiting_on_salar':
+            else:
                 task.update(question='', options=[])
         elif action == 'decision':
-            require(actor == 'salar', 'Only Salar can answer these questions')
-            require(task['status'] == 'waiting_on_salar', 'Task is not waiting for Salar', 409)
-            consequential = task['risks'] and task['approval_status'] != 'approved'
-            require(not consequential or payload.approved is not None, 'Explicit approval or rejection is required', 422)
-            decision = {'actor': actor, 'at': now(), 'answer': payload.answer, 'question': task['question'], 'approved': payload.approved}
-            task.update(latest_decision=decision, status='todo', question='', options=[])
-            if consequential:
-                task['approval_status'] = 'approved' if payload.approved else 'denied'
-            note = payload.answer
-        elif action == 'review':
-            require(manager and (task['owner'] != 'chief_of_staff' or actor == 'salar'), 'Chief of Staff cannot approve or review their own work')
-            require(task['status'] == 'review', 'Task is not awaiting review', 409)
-            require(bool(task['proof'].strip()), 'Completion requires proof', 422)
-            if payload.approve:
-                require(all(get_task(conn, dep)['status'] == 'done' for dep in task['blocked_by']), 'Dependencies must be done first', 409)
-            task['status'] = 'done' if payload.approve else 'todo'
-            task['completed_at'] = now() if payload.approve else None
-            kind = 'approved' if payload.approve else 'changes_requested'
+            require(manager, 'Only managers can approve, decline or answer task decisions')
+            answer = payload.answer.strip()
+            require(payload.approved is not None or bool(answer), 'Provide an approval choice or an answer', 422)
+            require(not task['risks'] or payload.approved is not None, 'Explicit approval or decline is required for risky tasks', 422)
+            if actor == 'chief_of_staff' and payload.approved is True:
+                require(bool(note or answer), 'Chief of Staff approval requires a short note saying where Salar gave the OK.', 422)
+            label = 'Chief of Staff (for Salar)' if actor == 'chief_of_staff' and payload.approved is True else ACTORS[actor]
+            decision = {'actor': actor, 'actor_label': label, 'at': now(), 'answer': answer or note,
+                        'note': note, 'question': task['question'], 'approved': payload.approved}
+            task['latest_decision'] = decision
+            if payload.approved is not None:
+                task.update(approval_status='approved' if payload.approved else 'declined',
+                            approval_by=actor, approval_at=decision['at'])
+            # A declined risky task cannot remain executable or completed.
+            if task['status'] == 'waiting_on_salar' or (task['risks'] and payload.approved is False and task['status'] in ('in_progress', 'done')):
+                task.update(status='todo', completed_at=None)
+            task.update(question='', options=[])
+            note = note or answer or ('Approved' if payload.approved else 'Declined')
         else:
             raise ValueError('Unknown task action')
         return persist(conn, before, task, actor, kind, note)

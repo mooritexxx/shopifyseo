@@ -67,95 +67,140 @@ def test_no_unauthenticated_or_spoofed_access(api):
     assert api[0]('POST', json={'title': 'x', 'outcome': 'y', 'owner': 'jimmy', 'actor': 'salar'}).status_code == 422
 
 
-def test_progress_permissions_and_manager_controls(api):
-    task = create(api, owner='blogger')
-    assert update(api, task, status='in_progress').status_code == 403
-    assert update(api, task, actor='chief_of_staff', status='in_progress').status_code == 403
-    task = value(update(api, task, endpoint='notes', note='I can help'))
-    assert update(api, task, endpoint='', owner='jimmy').status_code == 403
-    assert update(api, task, endpoint='', actor='chief_of_staff', measurement={'result': 'Changed by manager'}).status_code == 403
-    assert update(api, task, endpoint='', actor='blogger', priority='P0').status_code == 403
-    task = value(update(api, task, endpoint='', actor='chief_of_staff', owner='jimmy', priority='P0', requires_review=True))
-    assert task['priority'] == 'P0' and task['owner'] == 'jimmy'
-    task = value(update(api, task, status='in_progress'))
-    assert task['status'] == 'in_progress'
-    assert update(api, task, status='dropped', note='cancel').status_code == 403
-    assert update(api, task, actor='salar', status='dropped').status_code == 422
-    assert value(update(api, task, actor='salar', status='dropped', note='No longer needed'))['status'] == 'dropped'
-
-
-def test_proof_and_review_cannot_be_bypassed(api):
-    task = create(api, actor='salar', requires_review=True)
-    assert update(api, task, status='done', proof='  ').status_code == 422
-    task = value(update(api, task, status='done', proof='PR #123, checks passed'))
-    assert task['status'] == 'review' and task['completed_at'] is None
-    assert update(api, task, status='done', proof='PR #123').status_code == 409
-    assert update(api, task, endpoint='', actor='salar', requires_review=False).status_code == 409
-    assert update(api, task, endpoint='review', approve=True, note='fine').status_code == 403
-    task = value(update(api, task, endpoint='review', actor='chief_of_staff', approve=True, note='Verified PR'))
+@pytest.mark.parametrize('manager', ['salar', 'chief_of_staff'])
+def test_managers_can_edit_finish_reopen_and_drop_any_task(api, manager):
+    task = create(api, owner='merchandiser')
+    task = value(update(api, task, endpoint='', actor=manager, title='New scope', outcome='New outcome',
+                        priority='P0', due_on='2026-10-10', check_by='2026-10-11',
+                        measurement={'result': 'Changed by manager'}, authorization='Existing OK',
+                        links=[{'kind':'url','url':'https://example.com'}], blocked_reason='Waiting'))
+    assert task['measurement']['result'] == 'Changed by manager'
+    task = value(update(api, task, actor=manager, status='in_progress'))
+    assert update(api, task, actor=manager, status='done', proof='  ').status_code == 422
+    task = value(update(api, task, actor=manager, status='done', proof='Verified report'))
     assert task['status'] == 'done' and task['completed_at']
-    assert value(api[0]('GET', f"/{task['id']}/events"))['items'][0]['actor'] == 'chief_of_staff'
-
-
-def test_chief_cannot_review_own_work(api):
-    task = create(api, actor='chief_of_staff', owner='chief_of_staff', requires_review=True)
-    task = value(update(api, task, actor='chief_of_staff', status='done', proof='Report saved'))
-    assert update(api, task, endpoint='review', actor='chief_of_staff', approve=True, note='done').status_code == 403
-    task = value(update(api, task, endpoint='review', actor='salar', approve=False, note='Please check totals'))
-    assert task['status'] == 'todo'
-    task = value(update(api, task, actor='chief_of_staff', status='done', proof='Totals checked'))
-    assert value(update(api, task, endpoint='review', actor='salar', approve=True, note='Verified'))['status'] == 'done'
-
-
-def test_regular_completion_and_reopen(api):
-    task = create(api, authorization='Salar requested this SEO edit')
-    assert task['approval_status'] == 'not_required'
-    task = value(update(api, task, status='done', proof='Product URL returns HTTP 200'))
-    assert task['status'] == 'done'
-    task = value(update(api, task, status='todo'))
+    task = value(update(api, task, endpoint='', actor=manager, title='Edited after completion', proof='New proof'))
+    task = value(update(api, task, actor=manager, status='blocked'))
     assert not task['proof'] and task['completed_at'] is None
+    assert update(api, task, actor=manager, status='dropped').status_code == 422
+    task = value(update(api, task, actor=manager, status='dropped', note='No longer needed'))
+    assert task['status'] == 'dropped'
+    assert value(update(api, task, actor=manager, status='in_progress'))['status'] == 'in_progress'
 
 
-def test_requires_review_flag_is_manager_only(api):
-    assert api[0]('POST', json={'title': 'x', 'outcome': 'y', 'owner': 'jimmy', 'requires_review': False}).status_code == 403
-    task = create(api)
-    assert update(api, task, endpoint='', requires_review=True).status_code == 403
-
-
-def test_salar_decision_is_durable(api):
-    task = create(api)
-    assert update(api, task, status='waiting_on_salar', question='Which page?').status_code == 422
-    task = value(update(api, task, status='waiting_on_salar', question='Which page?', options=['A', 'B']))
-    assert update(api, task, status='in_progress').status_code == 409
-    assert update(api, task, endpoint='decision', actor='chief_of_staff', answer='A').status_code == 403
-    task = value(update(api, task, endpoint='decision', actor='salar', answer='A'))
-    assert task['status'] == 'todo' and task['latest_decision']['answer'] == 'A'
-    assert task['latest_decision']['question'] == 'Which page?'
-    assert value(api[0]('GET', f"/{task['id']}/events"))['items'][0]['kind'] == 'decision'
+@pytest.mark.parametrize('actor', ['jimmy', 'merchandiser', 'blogger', 'social', 'price_analyst', 'code_improver'])
+def test_agents_own_tasks_and_notes_only(api, actor):
+    task = create(api, actor=actor, owner=actor)
+    task = value(update(api, task, endpoint='', actor=actor, title='Edited by owner', priority='P0',
+                        authorization='Standing instruction', measurement={'result':'Verified'}))
+    assert task['priority'] == 'P0'
+    task = value(update(api, task, actor=actor, status='in_progress'))
+    task = value(update(api, task, actor=actor, status='done', proof='Checks passed'))
+    assert task['status'] == 'done'
+    other = create(api, owner='salar')
+    assert update(api, other, endpoint='', actor=actor, title='No').status_code == 403
+    assert update(api, other, actor=actor, status='done', proof='No').status_code == 403
+    assert update(api, task, endpoint='decision', actor=actor, approved=True, note='No').status_code == 403
+    assert update(api, task, actor=actor, status='dropped', note='No').status_code == 403
+    other = value(update(api, other, endpoint='notes', actor=actor, note='I can help'))
+    assert value(api[0]('GET', f"/{other['id']}/events"))['items'][0]['actor'] == actor
 
 
 @pytest.mark.parametrize('risk', ['spending', 'external_send', 'deletion', 'live_prices'])
-def test_consequential_actions_require_salar_first(api, risk):
-    task = create(api, risks=[risk])
-    assert task['requires_review'] and task['status'] == 'waiting_on_salar'
-    assert update(api, task, status='done', proof='done').status_code == 409
-    assert update(api, task, endpoint='decision', actor='salar', answer='okay').status_code == 422
-    task = value(update(api, task, endpoint='decision', actor='salar', answer='No', approved=False))
-    assert task['status'] == 'todo' and task['approval_status'] == 'denied'
-    assert update(api, task, status='in_progress').status_code == 409
-    task = value(update(api, task, status='waiting_on_salar'))
-    task = value(update(api, task, endpoint='decision', actor='salar', answer='Approved', approved=True))
-    task = value(update(api, task, status='in_progress'))
-    task = value(update(api, task, status='done', proof='Evidence'))
-    assert task['status'] == 'review'
+@pytest.mark.parametrize('manager', ['salar', 'chief_of_staff'])
+def test_risky_tasks_require_manager_approval(api, risk, manager):
+    task = create(api, owner='merchandiser', risks=[risk])
+    assert task['status'] == 'waiting_on_salar' and 'requires_review' not in task
+    for actor in ['merchandiser', 'salar', 'chief_of_staff']:
+        for status in ['in_progress', 'done']:
+            response = update(api, task, actor=actor, status=status, proof='Evidence')
+            assert response.status_code == 409
+            assert 'manager must approve' in response.text
+    if manager == 'chief_of_staff':
+        assert update(api, task, endpoint='decision', actor=manager, approved=True).status_code == 422
+        assert update(api, task, endpoint='decision', actor=manager, approved=True, note='  ').status_code == 422
+    task = value(update(api, task, endpoint='decision', actor=manager, approved=True, note='Salar approved in chat on Oct 2'))
+    assert task['approval_status'] == 'approved' and task['approval_by'] == manager and task['approval_at']
+    event = value(api[0]('GET', f"/{task['id']}/events"))['items'][0]
+    assert event['actor_label'] == ('Chief of Staff (for Salar)' if manager == 'chief_of_staff' else 'Salar')
+    task = value(update(api, task, actor=manager, status='done', proof='URL checked'))
+    assert task['status'] == 'done'
 
 
-def test_approval_invalidated_when_scope_changes(api):
+def test_decline_and_approve_are_available_on_any_task(api):
+    task = create(api, actor='chief_of_staff', owner='chief_of_staff', risks=['spending'])
+    task = value(update(api, task, endpoint='decision', actor='chief_of_staff', approved=False, note='Budget declined'))
+    assert task['approval_status'] == 'declined' and task['approval_by'] == 'chief_of_staff'
+    assert update(api, task, actor='chief_of_staff', status='in_progress').status_code == 409
+    task = value(update(api, task, endpoint='decision', actor='chief_of_staff', approved=True, answer='Salar said OK in our chat'))
+    task = value(update(api, task, actor='chief_of_staff', status='done', proof='Receipt saved'))
+    task = value(update(api, task, endpoint='decision', actor='salar', approved=False))
+    assert task['approval_status'] == 'declined' and task['status'] == 'todo'
+    assert task['completed_at'] is None
+    regular = create(api)
+    assert value(update(api, regular, endpoint='decision', actor='salar', approved=True))['approval_status'] == 'approved'
+
+
+def test_risk_changes_need_fresh_approval_but_normal_edits_do_not(api):
     task = create(api, risks=['live_prices'])
-    task = value(update(api, task, endpoint='decision', actor='salar', answer='Approved', approved=True))
-    task = value(update(api, task, endpoint='', actor='chief_of_staff', outcome='Change another price'))
-    assert task['approval_status'] == 'pending' and task['status'] == 'waiting_on_salar'
+    task = value(update(api, task, endpoint='decision', actor='salar', approved=True))
+    task = value(update(api, task, endpoint='', title='Edited title', check_by='2026-10-10'))
+    assert task['approval_status'] == 'approved'
+    task = value(update(api, task, endpoint='', risks=['live_prices', 'spending']))
+    assert task['approval_status'] == 'pending' and task['approval_by'] is None
+    assert update(api, task, status='in_progress').status_code == 409
+
+
+def test_removed_review_contract_is_rejected(api):
+    assert api[0]('POST', json={'title':'x','outcome':'y','owner':'jimmy','requires_review':False}).status_code == 422
+    task = create(api)
     assert update(api, task, endpoint='', actor='salar', requires_review=False).status_code == 422
+    assert update(api, task, status='review', proof='Evidence').status_code == 422
+    assert api[0]('GET', '?status=review').status_code == 422
+    assert update(api, task, endpoint='review', actor='salar', approve=True, note='Legacy').status_code == 404
+
+
+def test_manager_can_answer_question_and_agent_can_resume_non_risky_work(api):
+    task = create(api)
+    task = value(update(api, task, status='waiting_on_salar', question='Which page?', options=['A','B']))
+    task = value(update(api, task, endpoint='decision', actor='chief_of_staff', answer='A'))
+    assert task['latest_decision']['question'] == 'Which page?' and task['status'] == 'todo'
+    task = value(update(api, task, status='waiting_on_salar'))
+    assert value(update(api, task, status='in_progress'))['status'] == 'in_progress'
+
+
+@pytest.mark.parametrize('actor', ['jimmy','salar','chief_of_staff'])
+def test_proof_dependencies_and_done_edits_are_enforced_for_every_role(api, actor):
+    dependency = create(api)
+    task = create(api, blocked_by=[dependency['id']])
+    assert update(api, task, actor=actor, status='done').status_code == 422
+    assert update(api, task, actor=actor, status='done', proof='Evidence').status_code == 409
+    dependency = value(update(api, dependency, status='done', proof='Verified'))
+    task = value(update(api, task, actor=actor, status='done', proof='Evidence'))
+    assert update(api, task, actor=actor, endpoint='', proof=' ').status_code == 422
+    unfinished = create(api)
+    assert update(api, task, actor=actor, endpoint='', blocked_by=[unfinished['id']]).status_code == 409
+
+
+@pytest.mark.parametrize('proof,expected', [('Report verified','done'), ('','todo'), ('   ','todo')])
+def test_review_migration_is_atomic_audited_and_idempotent(api, proof, expected):
+    task = create(api)
+    legacy = {**task, 'status':'review', 'requires_review':True, 'proof':proof}
+    with api[1]() as conn:
+        conn.execute("UPDATE team_tasks SET status='review',data_json=? WHERE id=?", (json.dumps(legacy), task['id']))
+    with api[1]() as conn:
+        old_events = [tuple(row) for row in conn.execute('SELECT * FROM team_task_events')]
+        service.ensure_schema(conn)
+        migrated = service.get_task(conn, task['id'])
+        assert migrated['status'] == expected and 'requires_review' not in migrated
+        assert bool(migrated['completed_at']) == (expected == 'done')
+        assert migrated['version'] == task['version'] + 1
+        assert conn.execute("SELECT COUNT(*) FROM team_tasks WHERE status='review'").fetchone()[0] == 0
+        assert [tuple(row) for row in conn.execute('SELECT * FROM team_task_events ORDER BY id')][:-1] == old_events
+        service.ensure_schema(conn)
+        assert service.get_task(conn, task['id']) == migrated
+        assert service.events(conn, task['id'])['total'] == 2
+    assert update(api, task, endpoint='notes', note='Stale version').status_code == 409
 
 
 def test_version_conflict_and_atomic_history(api):

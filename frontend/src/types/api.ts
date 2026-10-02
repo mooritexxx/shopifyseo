@@ -43,6 +43,10 @@ export const indexingRollupSchema = z.object({
   not_indexed: z.number(),
   needs_review: z.number(),
   unknown: z.number(),
+  stale_robots_block: z.number().default(0),
+  robots_block_current: z.number().default(0),
+  crawl_older_than_21d: z.number().default(0),
+  robots_alerts: z.array(z.string()).default([]),
   by_type: z.record(z.string(), indexingTypeBucketsSchema)
 });
 
@@ -240,6 +244,20 @@ export const trendSchema = z.object({
 
 export type Trend = z.infer<typeof trendSchema>;
 
+const indexEvidenceShape = {
+  index_last_fetched_at: z.number().nullable().optional(),
+  index_last_crawl_at: z.string().nullable().optional(),
+  index_robots_state: z.string().nullable().optional(),
+  index_page_fetch_state: z.string().nullable().optional(),
+  index_indexing_state: z.string().nullable().optional(),
+  index_verdict: z.string().nullable().optional(),
+  index_flag: z.string().nullable().optional(),
+  index_flag_reason: z.string().nullable().optional(),
+  crawl_age_days: z.number().nullable().optional(),
+  inspection_age_days: z.number().nullable().optional(),
+  index_action_type: z.string().nullable().optional()
+};
+
 export const productListItemSchema = z.object({
   handle: z.string(),
   title: z.string(),
@@ -262,6 +280,7 @@ export const productListItemSchema = z.object({
   ga4_avg_session_duration: z.number(),
   index_status: z.string(),
   index_coverage: z.string(),
+  ...indexEvidenceShape,
   google_canonical: z.string(),
   pagespeed_performance: z.number().nullable(),
   pagespeed_desktop_performance: z.number().nullable(),
@@ -369,7 +388,9 @@ export const productDetailSchema = z.object({
     updated_at: z.union([z.string(), z.number(), z.null()]).optional(),
     step: z.string(),
     action_label: z.string().nullable().optional(),
-    action_href: z.string().nullable().optional()
+    action_href: z.string().nullable().optional(),
+    badge: z.string().nullable().optional(),
+    flag_reason: z.string().nullable().optional()
   })),
   collections: z.array(z.record(z.any())),
   variants: z.array(z.record(z.any())),
@@ -411,6 +432,7 @@ export const contentListItemSchema = z.object({
   ga4_avg_session_duration: z.number(),
   index_status: z.string(),
   index_coverage: z.string(),
+  ...indexEvidenceShape,
   google_canonical: z.string(),
   pagespeed_performance: z.number().nullable(),
   pagespeed_desktop_performance: z.number().nullable(),
@@ -450,6 +472,7 @@ export const blogListSchema = z.object({
 });
 
 export const blogArticleListItemSchema = z.object({
+  ...indexEvidenceShape,
   handle: z.string(),
   title: z.string(),
   blog_handle: z.string(),
@@ -482,6 +505,7 @@ export const allArticleListItemSchema = blogArticleListItemSchema.extend({
   ga4_avg_session_duration: z.number(),
   index_status: z.string(),
   index_coverage: z.string(),
+  ...indexEvidenceShape,
   google_canonical: z.string(),
   pagespeed_performance: z.number().nullable(),
   pagespeed_desktop_performance: z.number().nullable(),
@@ -884,7 +908,9 @@ export const contentDetailSchema = z.object({
     updated_at: z.union([z.string(), z.number(), z.null()]).optional(),
     step: z.string(),
     action_label: z.string().nullable().optional(),
-    action_href: z.string().nullable().optional()
+    action_href: z.string().nullable().optional(),
+    badge: z.string().nullable().optional(),
+    flag_reason: z.string().nullable().optional()
   })),
   related_items: z.array(z.record(z.any())),
   metafields: z.array(z.record(z.any())),

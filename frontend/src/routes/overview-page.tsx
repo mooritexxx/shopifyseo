@@ -845,6 +845,8 @@ export function OverviewPage() {
           </div>
         </div>
         <IndexingSummary {...idx} />
+        <p className="mt-3 text-sm text-slate-600">{idx.stale_robots_block ?? 0} stale robots blocks · {idx.robots_block_current ?? 0} current robots blocks · {idx.crawl_older_than_21d ?? 0} crawls older than 21 days</p>
+        {idx.robots_alerts?.length ? <ul className="mt-3 rounded-lg bg-amber-50 p-4 text-sm text-amber-900" aria-label="Robots alerts">{idx.robots_alerts.map((alert) => <li key={alert}>{alert}</li>)}</ul> : null}
         <div className="overview-report-section mt-4">
           <h3 className="overview-section-title">Indexing by entity type</h3>
           <ul className="overview-entity-grid mt-4 text-sm">

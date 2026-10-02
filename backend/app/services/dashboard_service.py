@@ -276,6 +276,8 @@ def get_dashboard_summary(
         gsc_site = _gsc_site_overview_for_summary(conn, period, gsc_segment)
         ga4_site = _ga4_site_overview_for_summary(conn, period)
         indexing_rollup = build_indexing_rollup_from_counts(dq.fetch_index_status_counts(conn))
+        from shopifyseo.index_evidence import index_evidence_rollup
+        indexing_rollup.update(index_evidence_rollup(conn))
         breakdown_site = _resolve_gsc_site_url_for_breakdowns(conn)
         try:
             gsc_property_breakdowns = _gsc_property_breakdowns_for_signals(conn, breakdown_site, period)

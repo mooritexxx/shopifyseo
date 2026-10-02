@@ -129,3 +129,10 @@ describe("sortListRows", () => {
     expect(rows.map((r) => r.handle)).toEqual(before);
   });
 });
+it("sorts crawl dates with missing dates first and stable ties", () => {
+  const rows = [row({ handle: "new", index_last_crawl_at: "2026-10-01T00:00:00Z" }),
+    row({ handle: "old", index_last_crawl_at: "2026-09-15T00:00:00Z" }),
+    row({ handle: "unknown", index_last_crawl_at: null })];
+  expect(sortListRows(rows, "index_last_crawl_at", "asc").map(x => x.handle)).toEqual(["unknown", "old", "new"]);
+  expect(sortListRows(rows, "index_last_crawl_at", "desc").map(x => x.handle)).toEqual(["new", "old", "unknown"]);
+});

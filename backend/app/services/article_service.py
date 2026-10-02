@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from shopifyseo.index_evidence import index_api_fields
 
 from shopifyseo.dashboard_actions import (
     SYNC_LOCK,
@@ -75,6 +76,7 @@ def _article_list_row(ad: dict[str, Any], blog_handle_fallback: str = "") -> dic
         "seo_title": ad.get("seo_title") or "",
         "seo_description": ad.get("seo_description") or "",
         "body_preview": _blog_body_preview(preview_src or body),
+        **index_api_fields(ad),
     }
 
 
@@ -83,6 +85,7 @@ def _article_current_payload(article: dict[str, Any], blog_handle: str, article_
     return {
         **_ARTICLE_SIGNAL_DEFAULTS,
         **article,
+        **index_api_fields(article),
         "handle": composite,
         "blog_handle": blog_handle,
         "article_handle": article_slug,
@@ -169,6 +172,7 @@ def list_all_articles() -> dict[str, Any]:
                 "ga4_sessions": int(fact.get("ga4_sessions") or 0),
                 "ga4_views": int(fact.get("ga4_views") or 0),
                 "ga4_avg_session_duration": float(fact.get("ga4_avg_session_duration") or 0),
+                **index_api_fields(fact),
                 "index_status": str(fact.get("index_status") or ""),
                 "index_coverage": str(fact.get("index_coverage") or ""),
                 "google_canonical": str(fact.get("google_canonical") or ""),

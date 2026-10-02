@@ -188,6 +188,7 @@ describe("ProductsPage", () => {
       ga4_sessions: 1,
       ga4_views: 1,
       ga4_avg_session_duration: 30,
+      index_last_crawl_at: gsc_clicks === 1 ? "2026-09-15T19:00:00Z" : "2026-10-01T19:00:00Z",
       index_status: "Indexed",
       index_coverage: "",
       google_canonical: "",
@@ -219,6 +220,11 @@ describe("ProductsPage", () => {
     // Descending by clicks puts the 99-click row first.
     const links = await screen.findAllByRole("link", { name: /Clicks$/ });
     expect(links.map((el) => el.textContent)).toEqual(["High Clicks", "Low Clicks"]);
+    expect(screen.getByText("Sep 15")).toBeTruthy();
+    expect(screen.getByText("Oct 1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Last crawl/i }));
+    const crawlLinks = await screen.findAllByRole("link", { name: /Clicks$/ });
+    expect(crawlLinks.map((el) => el.textContent)).toEqual(["High Clicks", "Low Clicks"]);
     // Ordering is client-side, so no additional request was issued.
     expect(mockedGetJson.mock.calls.length).toBe(callsBefore);
   });

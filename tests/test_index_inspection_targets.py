@@ -18,10 +18,10 @@ def test_index_inspection_targets_skips_indexed_when_not_force(monkeypatch):
         _Row(handle="b", index_status="Needs Review", index_coverage=""),
         _Row(handle="c", index_status="Unknown", index_coverage=""),
     ]
-    monkeypatch.setattr(da.dq, "fetch_all_products", lambda _c: products)
-    monkeypatch.setattr(da.dq, "fetch_all_collections", lambda _c: [])
-    monkeypatch.setattr(da.dq, "fetch_all_pages", lambda _c: [])
-    monkeypatch.setattr(da.dq, "fetch_all_blog_articles", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: products)
+    monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
     targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
     assert skipped == 1
@@ -34,7 +34,11 @@ def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
         ("product", "a", "https://example.com/products/a"),
         ("collection", "c", "https://example.com/collections/c"),
     ]
-    monkeypatch.setattr(da, "_all_object_targets", lambda _c: list(all_targets))
+    monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: [_Row(handle="a", index_status="Indexed")])
+    monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [_Row(handle="c", index_status="Indexed")])
+    monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "object_url", lambda kind, handle: f"https://example.com/{kind}s/{handle}")
 
     targets, skipped = da._index_inspection_targets(conn, force_refresh=True)
     assert skipped == 0
@@ -43,14 +47,14 @@ def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
 
 def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch):
     conn = sqlite3.connect(":memory:")
-    monkeypatch.setattr(da.dq, "fetch_all_products", lambda _c: [])
-    monkeypatch.setattr(da.dq, "fetch_all_collections", lambda _c: [])
-    monkeypatch.setattr(da.dq, "fetch_all_pages", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     articles = [
         _Row(blog_handle="news", handle="post-1", index_status="Indexed", index_coverage=""),
         _Row(blog_handle="news", handle="post-2", index_status="Not Indexed", index_coverage=""),
     ]
-    monkeypatch.setattr(da.dq, "fetch_all_blog_articles", lambda _c: articles)
+    monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: articles)
 
     targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
     assert skipped == 1

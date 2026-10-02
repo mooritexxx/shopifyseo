@@ -10,15 +10,18 @@ import sqlite3
 import pytest
 
 from shopifyseo.dashboard_store import _signal_values_preserving_known
+from shopifyseo.index_evidence import INDEX_STORED_FIELDS
 
 SIGNAL_COLS = """
   gsc_clicks INTEGER, gsc_impressions INTEGER, gsc_ctr REAL, gsc_position REAL,
   gsc_last_fetched_at INTEGER, ga4_sessions INTEGER, ga4_views INTEGER,
   ga4_avg_session_duration REAL, ga4_last_fetched_at INTEGER, index_status TEXT,
-  index_coverage TEXT, google_canonical TEXT, index_last_fetched_at INTEGER
+  index_coverage TEXT, google_canonical TEXT, index_last_fetched_at INTEGER,
+  index_last_crawl_at TEXT, index_robots_state TEXT, index_page_fetch_state TEXT,
+  index_indexing_state TEXT, index_verdict TEXT, index_flag TEXT, index_flag_reason TEXT
 """
 
-STORED = (4321, 99000, 0.044, 7.5, 111, 888, 1200, 61.5, 222, "Indexed", "Submitted and indexed", "https://x/w", 333)
+STORED = (4321, 99000, 0.044, 7.5, 111, 888, 1200, 61.5, 222, "Indexed", "Submitted and indexed", "https://x/w", 333, "2026-09-15T12:00:00Z", "DISALLOWED", "BLOCKED_ROBOTS_TXT", "BLOCKED_BY_ROBOTS_TXT", "FAIL", "stale_robots_block", "Request recrawl")
 
 FULL_IDX = {"indexingState": "INDEXING_ALLOWED", "coverageState": "Submitted and indexed", "googleCanonical": "https://x/w"}
 
@@ -29,7 +32,7 @@ def conn():
     c.row_factory = sqlite3.Row
     c.execute(f"CREATE TABLE products (handle TEXT PRIMARY KEY, {SIGNAL_COLS})")
     c.execute(
-        f"INSERT INTO products VALUES ('w', {', '.join('?' * 13)})",
+        f"INSERT INTO products VALUES ('w', {', '.join('?' * len(STORED))})",
         STORED,
     )
     c.commit()
@@ -74,7 +77,7 @@ def test_missing_ga4_preserves_stored_ga4(conn) -> None:
 
 def test_missing_inspection_preserves_stored_index(conn) -> None:
     v = _values(conn, idx={}, index_label=None, index_fetched_at=None)
-    assert v[9:13] == STORED[9:13]
+    assert v[9:] == STORED[9:]
 
 
 def test_all_sources_empty_preserves_everything(conn) -> None:
@@ -135,7 +138,7 @@ def test_row_missing_from_table_falls_back_to_fresh(conn) -> None:
         index_label=None,
         index_fetched_at=None,
     )
-    assert v == (None,) * 13
+    assert v == (None,) * len(STORED)
 
 
 def test_catalog_period_window_is_constant_length_across_month_boundary() -> None:

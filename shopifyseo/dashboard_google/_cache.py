@@ -183,6 +183,10 @@ def _write_cache_payload(
             params,
         ),
     )
+    if cache_type == "url_inspection":
+        from ..index_evidence import ensure_evidence_schema, write_inspection_history
+        ensure_evidence_schema(conn)
+        write_inspection_history(conn, url, object_type, object_handle, payload, fetched_at)
     conn.commit()
     return {"exists": True, "stale": False, "fetched_at": fetched_at, "expires_at": expires_at}
 

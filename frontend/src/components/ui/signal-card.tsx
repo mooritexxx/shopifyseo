@@ -65,6 +65,8 @@ export function SignalCard({
     step: string;
     action_label?: string | null;
     action_href?: string | null;
+    badge?: string | null;
+    flag_reason?: string | null;
   };
   onRefresh?: () => void;
   isRefreshing?: boolean;
@@ -93,7 +95,8 @@ export function SignalCard({
         <strong className="detail-signal-value">{formatted.metric}</strong>
         <p className="detail-signal-description">{formatted.secondary}</p>
         {formatted.accent ? <p className="text-xs text-slate-500">{formatted.accent}</p> : null}
-        <p className="detail-signal-updated">{signal.updated_at ? `Updated: ${formatRelativeTimestamp(signal.updated_at)}` : "Score summary"}</p>
+        {signal.badge ? <span className="self-start rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900" title={signal.flag_reason || undefined}>{signal.badge}</span> : null}
+        {signal.step !== "index" ? <p className="detail-signal-updated">{signal.updated_at ? `Updated: ${formatRelativeTimestamp(signal.updated_at)}` : "Score summary"}</p> : null}
         {signal.step === "index" && (signal.action_label || actionLabel) ? (
           <button className="self-start text-left text-xs font-medium text-[#5746d9] underline-offset-4 hover:underline" type="button" onClick={onAction}>
             {actionLabel || signal.action_label}

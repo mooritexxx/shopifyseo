@@ -18,3 +18,15 @@ it("preserves an unavailable speed score instead of turning it into zero", () =>
   expect(screen.getByText("No score")).toBeTruthy();
   expect(screen.getByText("Never fetched")).toBeTruthy();
 });
+it("distinguishes crawl evidence from inspection time and retains recrawl action", () => {
+  const onAction = vi.fn();
+  render(<SignalCard signal={{ label: "Index", value: "Not Indexed", step: "index", updated_at: 1790967600,
+    sublabel: "Blocked by robots.txt · crawled Sep 15 (17d ago) · inspected Oct 2",
+    badge: "Stale: crawl predates current robots.txt", flag_reason: "The current file allows this URL.",
+    action_label: "Request indexing" }} onAction={onAction} />);
+  expect(screen.getByText(/crawled Sep 15.*inspected Oct 2/)).toBeTruthy();
+  expect(screen.getByText("Stale: crawl predates current robots.txt").title).toContain("allows this URL");
+  expect(screen.queryByText(/^Updated:/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", {name: "Request indexing"}));
+  expect(onAction).toHaveBeenCalledOnce();
+});

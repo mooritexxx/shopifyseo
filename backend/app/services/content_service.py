@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from shopifyseo.index_evidence import index_api_fields
 
 from shopifyseo.dashboard_actions import (
     SYNC_LOCK,
@@ -52,6 +53,7 @@ def _build_content_item(kind: str, fact: dict[str, Any], row: dict[str, Any]) ->
         "ga4_sessions": int(fact.get("ga4_sessions") or 0),
         "ga4_views": int(fact.get("ga4_views") or 0),
         "ga4_avg_session_duration": float(fact.get("ga4_avg_session_duration") or 0),
+        **index_api_fields(fact),
         "index_status": fact.get("index_status") or "",
         "index_coverage": fact.get("index_coverage") or "",
         "google_canonical": fact.get("google_canonical") or "",
@@ -150,6 +152,7 @@ def get_content_detail(kind: str, handle: str, gsc_period: str = GSC_CATALOG_PER
             fact = dq.build_seo_fact("page", detail["page"], detail.get("workflow"), detail.get("recommendation"))
             body_key = "body"
 
+        current.update(index_api_fields(current))
         parts = _detail_envelope(detail, current, body_key=body_key)
         dim_rows = dq.fetch_gsc_query_dimension_rows(conn, kind, handle)
         gsc_segment_summary = dq.build_gsc_segment_summary_from_rows(dim_rows)

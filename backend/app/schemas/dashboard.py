@@ -164,6 +164,10 @@ class IndexingRollup(BaseModel):
     not_indexed: int
     needs_review: int
     unknown: int
+    stale_robots_block: int = 0
+    robots_block_current: int = 0
+    crawl_older_than_21d: int = 0
+    robots_alerts: list[str] = Field(default_factory=list)
     by_type: dict[str, IndexingTypeBuckets]
 
 

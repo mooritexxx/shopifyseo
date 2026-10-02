@@ -25,6 +25,7 @@ from backend.app.routers.content import router as content_router
 from backend.app.routers.dashboard import router as dashboard_router
 from backend.app.routers.operations import router as operations_router
 from backend.app.routers.sidekick import router as sidekick_router
+from backend.app.routers.index_evidence import router as index_evidence_router
 from backend.app.routers.products import router as products_router
 from backend.app.routers.keywords import router as keywords_router
 from backend.app.routers.clusters import router as clusters_router
@@ -55,6 +56,8 @@ async def lifespan(app: FastAPI):
             recover_jobs(conn)
             from shopifyseo.opportunity_tasks import recover
             recover(conn)
+            from shopifyseo.index_evidence import reconcile_index_cache
+            log.info("Index catalog reconciled from cache (%s observations)", reconcile_index_cache(conn))
             n = refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn)
             log.info("PageSpeed catalog reconciled from cache (%s object(s))", n)
         finally:
@@ -72,6 +75,7 @@ app.include_router(web_tasks_router)
 app.include_router(article_ideas_router)
 app.include_router(dashboard_router)
 app.include_router(products_router)
+app.include_router(index_evidence_router)
 app.include_router(content_router)
 app.include_router(blogs_router)
 app.include_router(keywords_router)

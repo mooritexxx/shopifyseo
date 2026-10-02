@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from shopifyseo.index_evidence import index_api_fields
 
 from shopifyseo.dashboard_actions import (
     SYNC_LOCK,
@@ -81,6 +82,7 @@ def list_products(
                 "ga4_sessions": int(fact.get("ga4_sessions") or 0),
                 "ga4_views": int(fact.get("ga4_views") or 0),
                 "ga4_avg_session_duration": float(fact.get("ga4_avg_session_duration") or 0),
+                **index_api_fields(fact),
                 "index_status": fact.get("index_status") or "",
                 "index_coverage": fact.get("index_coverage") or "",
                 "google_canonical": fact.get("google_canonical") or "",
@@ -140,6 +142,7 @@ def get_product_detail(handle: str, gsc_period: str = GSC_CATALOG_PERIOD_MODE) -
         if not detail:
             return None
         product = dict(detail["product"])
+        product.update(index_api_fields(product))
         parts = _detail_envelope(
             detail,
             product,

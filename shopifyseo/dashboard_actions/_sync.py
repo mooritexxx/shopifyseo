@@ -597,36 +597,23 @@ def _catalog_row_index_bucket(index_status: str | None, index_coverage: str | No
 
 def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool) -> tuple[list[tuple[str, str, str]], int]:
     """URLs to run URL Inspection on, and how many were skipped as already indexed (only when not force_refresh)."""
-    if force_refresh:
-        # Resolve via package namespace so tests can monkeypatch da._all_object_targets.
-        import sys as _sys
-        _pkg = _sys.modules.get("shopifyseo.dashboard_actions")
-        _aot = getattr(_pkg, "_all_object_targets", None) if _pkg else None
-        return (_aot or _all_object_targets)(conn), 0
+    from ..index_evidence import timestamp
     skipped_indexed = 0
-    out: list[tuple[str, str, str]] = []
-    for row in dq.fetch_all_products(conn):
-        if _catalog_row_index_bucket(row["index_status"], row["index_coverage"]) == "indexed":
-            skipped_indexed += 1
-            continue
-        out.append(("product", row["handle"], dq.object_url("product", row["handle"])))
-    for row in dq.fetch_all_collections(conn):
-        if _catalog_row_index_bucket(row["index_status"], row["index_coverage"]) == "indexed":
-            skipped_indexed += 1
-            continue
-        out.append(("collection", row["handle"], dq.object_url("collection", row["handle"])))
-    for row in dq.fetch_all_pages(conn):
-        if _catalog_row_index_bucket(row["index_status"], row["index_coverage"]) == "indexed":
-            skipped_indexed += 1
-            continue
-        out.append(("page", row["handle"], dq.object_url("page", row["handle"])))
-    for row in dq.fetch_all_blog_articles(conn):
-        if _catalog_row_index_bucket(row["index_status"], row["index_coverage"]) == "indexed":
-            skipped_indexed += 1
-            continue
-        ch = dq.blog_article_composite_handle(row["blog_handle"], row["handle"])
-        out.append(("blog_article", ch, dq.object_url("blog_article", ch)))
-    return out, skipped_indexed
+    ranked = []
+    for kind, fetch in (
+        ('product', dq.fetch_products_for_facts), ('collection', dq.fetch_collections_for_facts),
+        ('page', dq.fetch_pages_for_facts), ('blog_article', dq.fetch_blog_articles_for_facts),
+    ):
+        for raw in fetch(conn):
+            row = dict(raw)
+            if not force_refresh and _catalog_row_index_bucket(row.get('index_status'), row.get('index_coverage')) == 'indexed':
+                skipped_indexed += 1
+                continue
+            handle = dq.blog_article_composite_handle(row['blog_handle'], row['handle']) if kind == 'blog_article' else row['handle']
+            priority = {'stale_robots_block': 0, 'robots_block_current': 1}.get(row.get('index_flag'), 2)
+            ranked.append(((priority, timestamp(row.get('index_last_crawl_at')) or 0), (kind, handle, dq.object_url(kind, handle))))
+    ranked.sort(key=lambda item: item[0])
+    return [target for _, target in ranked], skipped_indexed
 
 
 # ---------------------------------------------------------------------------
@@ -953,6 +940,9 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         "skipped_indexed": 0,
     }
     try:
+        from ..index_evidence import fetch_robots_snapshot, reconcile_index_cache, index_evidence_rollup
+        fetch_robots_snapshot(conn, dq.object_url('product', ''))
+        summary['cache_reconciled'] = reconcile_index_cache(conn)
         targets, skipped_indexed = _index_inspection_targets(conn, force_refresh=force_refresh)
         summary["skipped_indexed"] = skipped_indexed
         SYNC_STATE["index_skipped"] = skipped_indexed
@@ -1034,6 +1024,7 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         _raise_if_sync_cancelled()
         if touched_targets:
             _retry_on_db_lock(refresh_index_signal_data_for_objects, conn, touched_targets)
+        summary.update(index_evidence_rollup(conn))
     finally:
         conn.close()
     return summary

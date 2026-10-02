@@ -36,6 +36,7 @@ const SORT_KEYS: Record<string, (row: ListRow) => number | string> = {
       : 0,
   gsc_segments: (row) =>
     (row.gsc_segment_flags as { has_dimensional?: boolean } | undefined)?.has_dimensional ? 1 : 0,
+  index_last_crawl_at: (row) => str(row.index_last_crawl_at),
   index_status: (row) => str(row.index_status).toLowerCase(),
   gsc_impressions: (row) => num(row.gsc_impressions),
   gsc_clicks: (row) => num(row.gsc_clicks),

@@ -208,6 +208,12 @@ provide a conditional body-hash argument. An independent Shopify/editor write in
 the interval between the final read and mutation can still race; no cross-system
 transaction or absolute external-write exclusion is claimed.
 
+### Index evidence and recrawl worklist
+
+`GET /api/index/recrawl-candidates?flag=stale_robots_block` returns a read-only success envelope with a list of URLs, handles, vendors, stock status, coverage, Google crawl time, local inspection time, cached inspection links and flag reasons. Allowed flags are `stale_robots_block`, `robots_block_current`, and `stale_crawl`. Ordering is in-stock first, then descending GSC impressions, then oldest crawl (unknown first). No inspection requests are made by this endpoint.
+
+The dashboard indexing rollup includes `stale_robots_block`, `robots_block_current`, `crawl_older_than_21d`, and `robots_alerts`. Alerts cover failed/non-200 robots fetches, bare `Disallow: /`, files under 500 bytes, size changes exceeding 50%, and currently blocked catalog URLs. These are evidence alerts, not automatic storefront edits.
+
 ### Products
 
 
@@ -555,6 +561,9 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 
 ## Services
 
+Index evidence: `shopifyseo/index_evidence.py` centralizes payload extraction, Googlebot robots matching, snapshots, flags, cache reconciliation and daily observations. `backend/app/services/index_evidence.py` builds the recrawl worklist using narrow catalog reads and cached inspection links. On each index sync, fetch storefront robots.txt once (Googlebot UA, 10-second timeout), reconcile cached inspections without API calls, then order targets by stale robots block, current block, and oldest crawl. Fetch failure is logged, retained as status 0 for alerting, and does not stop inspection sync. Startup also reconciles cached index evidence without network calls. No scheduler, publishing, robots edits or automatic indexing submissions are added.
+
+
 Team tasks: `backend/app/services/team_tasks.py` owns schema, reference checks, transaction/version enforcement, history, decisions and review rules. `task_identity.py` resolves eight fixed agent identities from private token files and enforces same-origin request checks on the trusted-network Salar web surface. Schemas: `backend/app/schemas/team_tasks.py`. Migration runs through `backend/app/db.py` once per database path.
 
 
@@ -617,6 +626,9 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 
 ## Screens / Pages
 
+Index signal cards distinguish Google crawl dates/ages from local inspection dates, show stale/current robots badges with evidence reasons, and retain Request indexing. Products have a client/server-consistent sortable Last crawl column (PT display). Overview displays technical indexing counts and robots alerts. Robots flags replace generic not-indexed scoring with technical recrawl/fix actions; current blocks get High priority (P1). AI signal guidance excludes copy-quality diagnoses for both robots flags.
+
+
 Settings and API Usage use the same opt-in workspace layout, compact tabs, container-responsive form/summary grids and named table scroll regions. Shared DialogContent restores the opening control on close while respecting caller focus overrides; Modal delegates to it. The shell includes a skip link and mobile-menu Escape handling. Notifications sit above the sync bar, and reduced-motion preferences apply to shared animations. Overview provider failures show recovery guidance with expandable connection details.
 
 
@@ -668,6 +680,12 @@ Router: `frontend/src/app/router.tsx` — `basename: "/app"`. Full browser paths
 ---
 
 ## Database Tables
+
+Index diagnostics are TEXT columns on products, collections, pages and blog_articles: `index_last_crawl_at`, `index_robots_state`, `index_page_fetch_state`, `index_indexing_state`, `index_verdict`, `index_flag`, `index_flag_reason`. They migrate with existing signal columns and are preserved with the index group when a cache payload is empty. `index_last_fetched_at` remains an integer local inspection timestamp; crawl/inspection ages are computed on read.
+
+- `robots_snapshots`: `id`, `url`, `status_code`, `byte_size`, `sha256`, `etag`, `body`, `first_seen_at`, `last_seen_at`. Consecutive identical status/hash observations update the last-seen time; changed responses store a new body. Observations cannot prove uninterrupted availability or reconstruct the September incident retroactively.
+- `index_status_history`: URL, object type/handle, PT observed date, all extracted index fields, `index_flag`, `robots_snapshot_id`, unique `(url, observed_date)`. Written in the inspection cache transaction, retaining the last observation per URL/day. Startup/cache reconciliation does not invent daily history for unobserved dates. Compare consecutive dates by URL to investigate observed index drops; crawl dates remain separate.
+
 
 | Team task table | Purpose | Indexes / constraints |
 |---|---|---|

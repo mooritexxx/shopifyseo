@@ -1043,7 +1043,10 @@ def build_signal_narrative(context: dict, *, primary_object: dict | None = None,
     if seg_sentence:
         lines.append(seg_sentence)
     index_status = str(fact.get("index_status") or "").strip()
-    if index_status and "indexed" not in index_status.lower():
+    if fact.get('index_flag') in {'stale_robots_block', 'robots_block_current'}:
+        lines.append('Index evidence indicates a technical robots/recrawl action, not a copy-quality diagnosis: '
+                     + str(fact.get('index_flag_reason') or fact['index_flag']))
+    elif index_status and "indexed" not in index_status.lower():
         lines.append(f"Index coverage is not fully healthy ({index_status}), so the page needs clearer answer-first copy and stronger trust signals rather than thin or vague text.")
     pagespeed = fact.get("pagespeed_performance")
     if pagespeed not in (None, ""):

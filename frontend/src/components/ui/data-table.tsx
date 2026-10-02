@@ -143,6 +143,14 @@ const DataTableRow = memo(function DataTableRow({
             </TableCell>
           );
         }
+        if (column.key === "index_last_crawl_at") {
+          const raw = row.index_last_crawl_at ? String(row.index_last_crawl_at) : "";
+          const date = raw ? new Date(raw) : null;
+          const label = date && !Number.isNaN(date.getTime())
+            ? new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", timeZone: "America/Vancouver" }).format(date)
+            : "—";
+          return <TableCell key={column.key} className={`border-b border-[#e8eef6] bg-white ${cellPadding} py-3 text-center text-xs`} title={String(row.index_flag_reason || raw || "No Google crawl recorded")}>{label}</TableCell>;
+        }
         if (column.key === "index_status") {
           const raw = String(row.index_status ?? "").trim() || "Unknown";
           const indexed = raw.toLowerCase() === "indexed";

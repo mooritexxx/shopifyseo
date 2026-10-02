@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from ..index_evidence import index_api_fields
 from ..dashboard_insights import opportunity_priority
 from ..dashboard_status import index_status_bucket_from_strings
 
@@ -71,7 +72,12 @@ def _seo_base_score(object_type: str, obj: dict[str, Any], product_count: int = 
     index_bucket = index_status_bucket_from_strings(
         obj.get("index_status") or "", obj.get("index_coverage") or ""
     )
-    if index_bucket == "not_indexed":
+    flag = obj.get('index_flag')
+    if flag in {'stale_robots_block', 'robots_block_current'}:
+        deductions += 20
+        reasons.append('stale robots block: request recrawl' if flag == 'stale_robots_block'
+                       else 'current robots block: P1 technical fix')
+    elif index_bucket == "not_indexed":
         deductions += 20
         reasons.append("not indexed")
 
@@ -107,7 +113,7 @@ def build_seo_fact(
         "url": object_url(object_type, handle),
         "title": obj.get("title") or "",
         "score": base_score,
-        "priority": opportunity_priority(base_score),
+        "priority": "High" if obj.get("index_flag") == "robots_block_current" else opportunity_priority(base_score),
         "reasons": reasons,
         "body_length": len((obj.get("description_html") or obj.get("body") or "")),
         "gsc_clicks": int(obj.get("gsc_clicks") or 0),
@@ -117,6 +123,7 @@ def build_seo_fact(
         "ga4_sessions": int(obj.get("ga4_sessions") or 0),
         "ga4_views": int(obj.get("ga4_views") or 0),
         "ga4_avg_session_duration": float(obj.get("ga4_avg_session_duration") or 0),
+        **index_api_fields(obj),
         "index_status": obj.get("index_status") or "",
         "index_coverage": obj.get("index_coverage") or "",
         "google_canonical": obj.get("google_canonical") or "",

@@ -20,7 +20,10 @@ from backend.app.services.index_status import index_status_info, inspection_for_
 from backend.app.services.object_signals import load_object_signals
 
 
+from shopifyseo.index_evidence import index_api_fields, index_sublabel
+
 PRODUCT_SORTERS: dict[str, Any] = {
+    "index_last_crawl_at": lambda item: item.get("index_last_crawl_at") or "",
     "score": lambda item: item["score"],
     "title": lambda item: item["title"].lower(),
     "updated_at": lambda item: item["updated_at"] or "",
@@ -169,6 +172,7 @@ def _detail_envelope(
 
 def serialize_opportunity(item: dict[str, Any]) -> dict[str, Any]:
     return {
+        **index_api_fields(item),
         "object_type": item["object_type"],
         "handle": item["handle"],
         "title": item["title"],
@@ -272,7 +276,10 @@ def _signal_cards_for(
         {
             "label": "Index",
             "value": index_label,
-            "sublabel": index_reason or "No index detail",
+            "sublabel": index_sublabel(current),
+            "badge": ("Stale: crawl predates current robots.txt" if current.get('index_flag') == 'stale_robots_block'
+                      else "P1: current robots.txt block" if current.get('index_flag') == 'robots_block_current' else None),
+            "flag_reason": current.get('index_flag_reason'),
             "updated_at": current["index_last_fetched_at"],
             "step": "index",
             "action_label": "Request indexing",

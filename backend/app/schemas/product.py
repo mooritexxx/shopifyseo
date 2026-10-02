@@ -1,12 +1,13 @@
 from typing import Any
 
 from pydantic import BaseModel, Field
+from .index_evidence import IndexEvidenceFields
 
 from backend.app.schemas.gsc_segments import GscSegmentFlagsPayload, GscSegmentSummaryPayload
 from backend.app.schemas.trend import TrendPayload
 
 
-class OpportunityPayload(BaseModel):
+class OpportunityPayload(IndexEvidenceFields):
     object_type: str
     handle: str
     title: str
@@ -21,7 +22,7 @@ class OpportunityPayload(BaseModel):
     pagespeed_desktop_performance: int | None = None
 
 
-class ProductListItem(BaseModel):
+class ProductListItem(IndexEvidenceFields):
     handle: str
     title: str
     vendor: str = ""
@@ -100,6 +101,8 @@ class ProductSignalMetric(BaseModel):
     step: str
     action_label: str | None = None
     action_href: str | None = None
+    badge: str | None = None
+    flag_reason: str | None = None
 
 
 class ProductRecommendation(BaseModel):

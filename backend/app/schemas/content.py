@@ -1,13 +1,14 @@
 from typing import Any
 
 from pydantic import BaseModel, Field
+from .index_evidence import IndexEvidenceFields
 
 from backend.app.schemas.gsc_segments import GscSegmentFlagsPayload, GscSegmentSummaryPayload
 from backend.app.schemas.product import MetafieldPayload, OpportunityPayload, RecommendationHistoryPayload
 from backend.app.schemas.trend import TrendPayload
 
 
-class ContentListItem(BaseModel):
+class ContentListItem(IndexEvidenceFields):
     handle: str
     title: str
     updated_at: str | None = None

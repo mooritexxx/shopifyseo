@@ -12,6 +12,8 @@ from . import dashboard_google as dg
 from . import dashboard_queries as dq
 from .dashboard_config import apply_runtime_settings
 from .dashboard_status import index_status_info
+from .index_evidence import (INDEX_FIELDS, INDEX_STORED_FIELDS, extract_inspection_fields,
+                             with_index_flag, update_catalog_inspection, ensure_evidence_schema)
 from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
 from .sqlite_utf8 import configure_sqlite_text_decode
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
@@ -56,6 +58,7 @@ SEO_SIGNAL_COLUMNS = {
     "index_coverage": "TEXT",
     "google_canonical": "TEXT",
     "index_last_fetched_at": "INTEGER",
+    **{key: "TEXT" for key in INDEX_STORED_FIELDS[4:]},
     "pagespeed_performance": "INTEGER",
     "pagespeed_seo": "INTEGER",
     "pagespeed_status": "TEXT",
@@ -177,6 +180,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     from .opportunity_tasks import ensure_schema as ensure_opportunity_tasks
     ensure_opportunity_tasks(conn)
     dg.ensure_google_cache_schema(conn)
+    ensure_evidence_schema(conn)
     _ensure_columns(conn, "products", SEO_SIGNAL_COLUMNS)
     _ensure_columns(conn, "collections", SEO_SIGNAL_COLUMNS)
     # Phase A: api_unreachable flag for ghost/API-invisible collections
@@ -1070,6 +1074,7 @@ _SIGNAL_COLUMNS = (
     "index_coverage",
     "google_canonical",
     "index_last_fetched_at",
+    *INDEX_STORED_FIELDS[4:],
 )
 
 
@@ -1088,6 +1093,7 @@ def _signal_values_preserving_known(
     idx: dict,
     index_label: object,
     index_fetched_at: object,
+    url: str = "",
 ) -> tuple:
     """Build the signal-column values, keeping stored data for any signal with nothing fresh.
 
@@ -1102,7 +1108,10 @@ def _signal_values_preserving_known(
     """
     has_gsc = gsc_row is not None
     has_ga4 = ga4_sessions is not None or ga4_views is not None or ga4_avg_dur is not None
-    has_index = bool(idx.get("indexingState") or idx.get("coverageState"))
+    has_index = bool(idx)
+    inspection_fields = extract_inspection_fields({'inspectionResult': {'indexStatusResult': idx}}, index_fetched_at)
+    if url:
+        inspection_fields = with_index_flag(conn, inspection_fields, url)
 
     fresh = (
         int(gsc_row.get("clicks", 0)) if gsc_row else None,
@@ -1114,10 +1123,7 @@ def _signal_values_preserving_known(
         ga4_views,
         ga4_avg_dur,
         ga4_fetched_at,
-        index_label,
-        idx.get("coverageState"),
-        idx.get("googleCanonical"),
-        index_fetched_at,
+        *(inspection_fields.get(key) for key in INDEX_STORED_FIELDS),
     )
     if has_gsc and has_ga4 and has_index:
         return fresh
@@ -1137,7 +1143,7 @@ def _signal_values_preserving_known(
     if not has_ga4:
         merged[5:9] = stored[5:9]
     if not has_index:
-        merged[9:13] = stored[9:13]
+        merged[9:] = stored[9:]
     return tuple(merged)
 
 
@@ -1183,6 +1189,7 @@ def _refresh_object_signals_into_table(
         idx=idx,
         index_label=index_label,
         index_fetched_at=inspection_meta.get("fetched_at"),
+        url=url,
     )
 
     conn.execute(
@@ -1201,6 +1208,13 @@ def _refresh_object_signals_into_table(
             index_coverage = ?,
             google_canonical = ?,
             index_last_fetched_at = ?,
+            index_last_crawl_at = ?,
+            index_robots_state = ?,
+            index_page_fetch_state = ?,
+            index_indexing_state = ?,
+            index_verdict = ?,
+            index_flag = ?,
+            index_flag_reason = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE handle = ?
         """,
@@ -1456,27 +1470,7 @@ def _refresh_object_gsc_into_table(conn: sqlite3.Connection, table: str, object_
 def _refresh_object_index_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
     url = dq.object_url(object_type, handle)
     inspection_detail = dg.get_url_inspection(conn, url, refresh=False, object_type=object_type, object_handle=handle)
-    inspection_meta = (inspection_detail or {}).get("_cache") or {}
-    idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
-    index_label, _, _ = index_status_info(inspection_detail)
-    conn.execute(
-        f"""
-        UPDATE {table}
-        SET index_status = ?,
-            index_coverage = ?,
-            google_canonical = ?,
-            index_last_fetched_at = ?,
-            seo_signal_updated_at = CURRENT_TIMESTAMP
-        WHERE handle = ?
-        """,
-        (
-            index_label,
-            idx.get("coverageState"),
-            idx.get("googleCanonical"),
-            inspection_meta.get("fetched_at"),
-            handle,
-        ),
-    )
+    update_catalog_inspection(conn, object_type, handle, inspection_detail, url=url)
 
 
 def _refresh_object_index_into_blog_article(conn: sqlite3.Connection, composite_handle: str) -> None:
@@ -1488,28 +1482,7 @@ def _refresh_object_index_into_blog_article(conn: sqlite3.Connection, composite_
     handle = composite_handle
     url = dq.object_url(object_type, handle)
     inspection_detail = dg.get_url_inspection(conn, url, refresh=False, object_type=object_type, object_handle=handle)
-    inspection_meta = (inspection_detail or {}).get("_cache") or {}
-    idx = (inspection_detail or {}).get("inspectionResult", {}).get("indexStatusResult", {}) or {}
-    index_label, _, _ = index_status_info(inspection_detail)
-    conn.execute(
-        """
-        UPDATE blog_articles
-        SET index_status = ?,
-            index_coverage = ?,
-            google_canonical = ?,
-            index_last_fetched_at = ?,
-            seo_signal_updated_at = CURRENT_TIMESTAMP
-        WHERE blog_handle = ? AND handle = ?
-        """,
-        (
-            index_label,
-            idx.get("coverageState"),
-            idx.get("googleCanonical"),
-            inspection_meta.get("fetched_at"),
-            blog_h,
-            art_h,
-        ),
-    )
+    update_catalog_inspection(conn, object_type, handle, inspection_detail, url=url)
 
 
 def _refresh_object_ga4_into_table(
@@ -1620,6 +1593,7 @@ def _refresh_blog_article_signals_into_table(
         idx=idx,
         index_label=index_label,
         index_fetched_at=inspection_meta.get("fetched_at"),
+        url=url,
     )
 
     conn.execute(
@@ -1638,6 +1612,13 @@ def _refresh_blog_article_signals_into_table(
             index_coverage = ?,
             google_canonical = ?,
             index_last_fetched_at = ?,
+            index_last_crawl_at = ?,
+            index_robots_state = ?,
+            index_page_fetch_state = ?,
+            index_indexing_state = ?,
+            index_verdict = ?,
+            index_flag = ?,
+            index_flag_reason = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE blog_handle = ? AND handle = ?
         """,

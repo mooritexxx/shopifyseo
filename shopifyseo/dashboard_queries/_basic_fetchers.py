@@ -10,6 +10,7 @@ import sqlite3
 from typing import Any
 
 from ._urls import object_url
+from ..index_evidence import INDEX_STORED_FIELDS
 
 
 # Tables that carry SEO signal columns (gsc_*, ga4_*, index_*, pagespeed_*).
@@ -45,6 +46,7 @@ _FACT_COLUMNS_COMMON: tuple[str, ...] = (
     "index_status",
     "index_coverage",
     "google_canonical",
+    *INDEX_STORED_FIELDS[3:],
     "pagespeed_performance",
     "pagespeed_status",
     "pagespeed_desktop_performance",

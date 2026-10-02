@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from .index_evidence import IndexEvidenceFields
 
 from backend.app.schemas.trend import TrendPayload
 
@@ -15,7 +16,7 @@ class BlogListPayload(BaseModel):
     total: int
 
 
-class BlogArticleListItem(BaseModel):
+class BlogArticleListItem(IndexEvidenceFields):
     handle: str
     title: str
     blog_handle: str

@@ -158,6 +158,35 @@ _REPORTED_QUESTION_PATTERNS = [
     )
 ]
 
+# Question-only rules: never apply these to ordinary headings or body prose.
+_QUESTION_BAIT_PATTERNS = [
+    (reason, re.compile(pattern, re.I)) for reason, pattern in (
+        ("is_good_question", r"^(?:is|are)\s+.+\s+(?:a\s+)?good(?:\s+(?:vapes?|brands?|quality|or\s+bad))?\s*[?!]?$"),
+        ("best_brand_question", r"(?<!\w)(?:best|no\.?\s*1|number\s+(?:one|1)|#\s*1|top[ -]+(?:selling|rated))\s+"
+         r"(?:(?:refillable|disposable|pod|nicotine|salt|\d+)\s+)*"
+         r"(?:vapes?|brands?|disposables?|pods?|e-?liquids?|juice)(?:\s+systems?)?\b|"
+         r"\b(?:vapes?|brands?|disposables?|pods?)\s+(?:is|are)\s+(?:the\s+)?best\b"),
+        ("benefits_question", r"\b(?:benefits|advantages|beneficial)\b|\bbenefit\s+of\b"),
+        ("longest_lasting_question", r"\blongest[ -]+lasting\b|\blasts?\s+(?:the\s+)?longest\b|\blongest\s+battery\s+life\b"),
+    )
+]
+
+
+def normalize_question(text: str) -> str:
+    """Normalize only for matching; preserve the caller's original question."""
+    text = html_module.unescape(text).translate(str.maketrans({
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+    }))
+    text = re.sub(r"[\u2010-\u2015\u2212]", "-", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    while True:
+        stripped = text.strip("\"' ")
+        stripped = re.sub(r"^(?:(?:FAQ|Q)\s*(?:\d+\s*)?[.:)]|\d+\s*[.)])\s*", "", stripped, flags=re.I)
+        if stripped == text:
+            return text
+        text = stripped
+
+
 # Explicit product-line relationships; do not infer brands from arbitrary words.
 _PRODUCT_FOCUS_RULES = {
     "fog pro x": [r"\bmr[ .]*fog\b", r"\bfogger\b", r"\bfog\s+vapes?\b"],
@@ -188,11 +217,12 @@ _HEALTH_CLAIM_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in (
 
 ARTICLE_CONTENT_FILTER_INSTRUCTION = (
     " Final content rules override SERP/PAA suggestions: do not generate questions framed as "
-    "'is X good', 'best vape', 'best brand', 'benefits of', 'grossest', 'rarest', 'most-selling', "
+    "'is X good', 'best vape', 'best brand', 'benefits/advantages', 'longest-lasting', "
+    "'top rated/selling vape', 'No. 1 vape', 'grossest', 'rarest', 'most-selling', "
     "'most popular', banned flavours, health/safety, cigarette equivalence, dentist, vaper's tongue, "
     "or puff counts. Keep questions specific to the focus product, not broader or different lines. "
     "Do not repeat questions across body headings, FAQ, or Helpful questions. Do not write health "
-    "or quit-smoking claims in answers or body copy: harm reduction, less harmful, safer alternative, "
+    "or quit-smoking/quit-vaping claims in answers or body copy: harm reduction, less harmful, safer alternative, "
     "smoke-free, former smoker, cut down, NRT, or nicotine cravings. Preserve factual regulatory names "
     "and practical battery/charging guidance without health promises. Link naturally to at least "
     "3 DISTINCT approved product URLs; collection links and repeated product URLs do not count."
@@ -235,12 +265,13 @@ def health_claim_reason(text: str) -> str | None:
 # intentionally question-only: ordinary addiction/misuse warnings stay intact.
 _MEDICAL_QUESTION_PATTERN = re.compile(
     r"\b(?:healthy|rsv|diabet(?:es|ics?)|cholesterol|triglycerides?|lupus|implantation|"
-    r"creatinine|cortisol|emphysema|pregnan(?:cy|t)|poisoning|lung\s+infection|nicotine\s+replacement)\b|\b(?:hurt\s+you|bad\s+for\s+you)\b",
+    r"quit(?:ting)?\s+vaping|creatinine|cortisol|emphysema|pregnan(?:cy|t)|poisoning|lung\s+infection|nicotine\s+replacement)\b|\b(?:hurt\s+you|bad\s+for\s+you)\b",
     re.I,
 )
 
 
 def question_drop_reason(text: str, target_brand: str | None = None) -> str | None:
+    text = normalize_question(text)
     if _MEDICAL_QUESTION_PATTERN.search(text):
         return "medical_question"
     reason = health_claim_reason(text)
@@ -248,6 +279,9 @@ def question_drop_reason(text: str, target_brand: str | None = None) -> str | No
         return reason
     if re.search(r"\bsafe\b", _without_handling_safety(text), re.I):
         return "health_safety_question"
+    for reason, pattern in _QUESTION_BAIT_PATTERNS:
+        if pattern.search(text):
+            return reason
     match = _match_denylist_category(text)
     if match:
         return match[0]
@@ -1400,6 +1434,8 @@ class _ContentSpans(HTMLParser):
 
 # Both filtering and validation use these same visible units. Container text is
 # split around child blocks; inline tags remain part of their parent sentence.
+_FAQ_QUESTION_HEADING_TAGS = {'h2', 'h3', 'h4'}
+
 _HEALTH_BLOCK_TAGS = {
     'address', 'article', 'aside', 'blockquote', 'caption', 'dd', 'details', 'div',
     'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'header',
@@ -1420,7 +1456,7 @@ def _health_sentences(body: str, *, skip_faq_headings: bool = False):
     units = []
     root = dict(inner=0, stop=len(body))
     for block in [root] + blocks:
-        if block.get('tag') in {'script', 'style'} or (skip_faq_headings and block.get('tag') in {'h2', 'h3'}):
+        if block.get('tag') in {'script', 'style'} or (skip_faq_headings and block.get('tag') in _FAQ_QUESTION_HEADING_TAGS):
             continue
         cursor = block['inner']
         for child in children.get(0 if block is root else id(block), []):
@@ -1478,7 +1514,20 @@ def _visible_text(fragment: str) -> str:
 
 
 def is_question_heading(text: str) -> bool:
+    text = normalize_question(text)
     return '?' in text or bool(re.match(r'(?i)^(?:what|why|how|is|are|can|does|do|which|where|when)\b', text))
+
+
+def article_denied_question_headings(body: str, *, target_brand: str = '') -> list[str]:
+    """Visible H2–H4 questions rejected by the final filter's question rules."""
+    questions = []
+    for heading in _ContentSpans(body).elements:
+        if heading['tag'] not in _FAQ_QUESTION_HEADING_TAGS:
+            continue
+        text = _visible_text(body[heading['inner']:heading['stop']])
+        if is_question_heading(text) and question_drop_reason(text, target_brand):
+            questions.append(text)
+    return questions
 
 
 def filter_final_article_content(body_html: str, *, target_brand: str = '') -> tuple[str, int, int]:
@@ -1489,11 +1538,11 @@ def filter_final_article_content(body_html: str, *, target_brand: str = '') -> t
     FAQ JSON-LD must be rebuilt by the caller *after* this pass.
     """
     body = normalize_flavor_to_flavour(body_html, log_changes=False)
-    original_headings = [e for e in _ContentSpans(body).elements if e['tag'] in {'h2', 'h3'}]
+    original_headings = [e for e in _ContentSpans(body).elements if e['tag'] in _FAQ_QUESTION_HEADING_TAGS]
     original_candidate_count = sum(is_question_heading(_visible_text(body[e['inner']:e['stop']])) for e in original_headings)
     body = _filter_health_sentences(body, skip_faq_headings=True)
     parsed = _ContentSpans(body)
-    headings = [e for e in parsed.elements if e['tag'] in {'h2', 'h3'}]
+    headings = [e for e in parsed.elements if e['tag'] in _FAQ_QUESTION_HEADING_TAGS]
     removals: list[tuple[int, int]] = []
     seen: set[str] = set()
     candidate_starts: list[int] = []

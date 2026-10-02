@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from .faq_content_filter import (
     filter_faq_items_by_h3_headings,
     article_health_claims,
+    article_denied_question_headings,
     is_question_heading,
     filter_paa_questions,
     normalize_flavor_to_flavour,
@@ -570,6 +571,8 @@ def validate_article_draft_compliance(
     min_product_links: int = 0,
     faq_candidates_rejected: bool = False,
     check_health_claims: bool = False,
+    check_faq_questions: bool = False,
+    target_brand: str = "",
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
@@ -586,6 +589,9 @@ def validate_article_draft_compliance(
     gaps: list[str] = []
     if faq_candidates_rejected:
         gaps.append("All FAQ candidates were rejected by the final content filters; provide useful on-topic questions and answers.")
+    if check_faq_questions:
+        for question in article_denied_question_headings(body_html, target_brand=target_brand):
+            gaps.append(f"Visible FAQ question still matches the FAQ denylist: '{question}'.")
     if min_product_links:
         actual_products = count_distinct_approved_product_links(body_html, path_to_canonical)
         if actual_products < min_product_links:

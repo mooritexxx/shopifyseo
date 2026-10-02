@@ -1859,6 +1859,8 @@ def generate_article_draft(
             min_product_links=3,
             faq_candidates_rejected=faq_candidates_rejected,
             check_health_claims=True,
+            check_faq_questions=True,
+            target_brand=topic,
         )
         if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
             gaps.append(
@@ -2168,6 +2170,16 @@ def generate_article_draft(
         return body
 
     def _append_repair_html(body_html: str, gaps: list[str], title: str) -> str:
+        faq_repair_hint = ""
+        if any("All FAQ candidates were rejected" in gap for gap in gaps):
+            faq_repair_hint = (
+                "Repair the rejected FAQ with on-topic <h3> question + <p> answer pairs. "
+                "Use the approved PAA questions below if any; otherwise cover the topic's specs, "
+                "flavours, nicotine strength, charging, compatibility or storage, grounded in the brief. "
+                "Never frame questions as 'is X good', best vape/brand, benefits/advantages, "
+                "longest-lasting, health or cigarettes. Approved PAA questions: "
+                + json.dumps(required_questions, ensure_ascii=True) + "\n"
+            )
         deficit = max(0, _body_aim_chars - len(body_html or ""))
         min_len = max(700, min(5000, deficit + 300))
         schema = {
@@ -2203,6 +2215,7 @@ def generate_article_draft(
                         "New product links may use ONLY these relevant catalog targets; never pad with unrelated products: "
                         + json.dumps(product_repair_targets if len(product_repair_targets) >= 3 else [], ensure_ascii=True)
                         + "\n"
+                        + faq_repair_hint
                         + f"Current body chars: {len(body_html or '')}\n"
                         f"Canonical SEO brief:\n{json.dumps(seo_brief, ensure_ascii=True)[:12000]}\n"
                         f"Article memory:\n{json.dumps(_article_memory(body_html), ensure_ascii=True)[:8000]}\n"

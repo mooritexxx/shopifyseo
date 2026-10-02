@@ -622,3 +622,148 @@ def test_repair_selection_does_not_mutate_catalog_or_allowlist_contract(conn):
     assert conn.total_changes == changes
     assert len(selected) == 3
     assert all(set(t) == {'type', 'handle', 'title', 'url'} for t in selected)
+
+
+BAIT_QUESTION_FAMILIES = {
+    'is_good_question': [
+        'Is beast mode a good vape?', 'Is Flavour Beast a good brand?',
+        'Are Beast Mode vapes good quality?', 'Is Beast Mode vape good or bad?',
+        'Is STLTH a good vape?', '1. Is beast mode vape good?',
+        'Q: Is beast mode vape good?', '“Is beast mode vape good?”',
+    ],
+    'best_brand_question': [
+        'What is the best pod vape in the world?', 'What is the No. 1 vape in Canada?',
+        'Which pod brand is best?', 'What is the best disposable in Canada?',
+        'What is the best pod vape in 2026?',
+        'What is the best refillable pod vape system in Canada?',
+        'What is the best 6000 vape?', 'What are the best nicotine salt brands in Canada?',
+        'What is the top selling vape?', 'What is the top rated vape?',
+        'What is the #1 vape?', 'What is the top–rated vape?',
+    ],
+    'benefits_question': [
+        'What benefits does Beast Mode Max 2 offer?',
+        'What are the advantages of Beast Mode Max 2?', 'Why is Beast Mode Max 2 beneficial?',
+    ],
+    'longest_lasting_question': [
+        'What is the longest lasting disposable vape in Canada?',
+        'What is the longest-lasting disposable vape?', 'Which disposable vape lasts the longest?',
+        'What is the longest‑lasting disposable vape?',
+        'What disposable vape has the longest battery life?',
+    ],
+    'medical_question': [
+        'What is a good device to quit vaping?', 'How hard is it to quit vaping?',
+        'How hard is quitting vaping?',
+    ],
+}
+
+
+@pytest.mark.parametrize('tag', ['h2', 'h3', 'h4'])
+@pytest.mark.parametrize('reason,question', [
+    (reason, q) for reason, questions in BAIT_QUESTION_FAMILIES.items() for q in questions
+])
+def test_bait_families_across_all_filters_and_validator(reason, question, tag, caplog):
+    from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import (
+        article_denied_question_headings, filter_and_dedupe_helpful_questions, question_drop_reason,
+    )
+    assert question_drop_reason(question) == reason
+    with caplog.at_level(logging.INFO):
+        assert filter_paa_questions([{'question': question}]) == []
+        assert reason in caplog.text
+        caplog.clear()
+        assert filter_and_dedupe_helpful_questions([question]) == []
+        assert reason in caplog.text
+        caplog.clear()
+        body = f'<{tag}>{html.escape(question)}</{tag}><p>Reject answer.</p>'
+        assert article_denied_question_headings(body) == [question]
+        result, before, after = filter_final_article_content(body)
+        assert (result, before, after) == ('', 1, 0)
+        assert reason in caplog.text
+    kwargs = dict(require_faqpage_ld=False, secondary_urls=[], primary_keyword_for_body=None,
+                  path_to_canonical={})
+    gap = f"Visible FAQ question still matches the FAQ denylist: '{question}'."
+    assert gap in validate_article_draft_compliance(body_html=FILLER + body, check_faq_questions=True, **kwargs)
+    assert gap not in validate_article_draft_compliance(body_html=FILLER + body, **kwargs)
+    assert not article_denied_question_headings(result)
+    assert not validate_article_draft_compliance(body_html=FILLER + result, check_faq_questions=True, **kwargs)
+
+
+MUST_KEEP_QUESTIONS = [
+    'Can the STLTH 60K help me cut down on refills?', 'Which flavour helps with dessert cravings?',
+    'Are STLTH 60K flavours good for beginners?', 'Is it safe to leave my vape in a hot car?',
+    'Which vape has the best battery?', 'Is the STLTH 60K good for travel?',
+    'What are the best flavours of STLTH 60K?', 'Is 20mg a good nicotine strength?',
+    'What is the best nicotine strength for the STLTH 60K?',
+    'What is the best way to store a disposable vape?', 'Which brands make 50K disposables?',
+    'How long does a STLTH 60K last?', 'Which STLTH 60K mode lasts longer?',
+    'Does the Max 2 benefit from a mesh coil?', 'Is the Beast Mode Max 2 rechargeable?',
+    'Is the Beast Mode Max 2 good value compared with the Max 1?',
+]
+
+
+@pytest.mark.parametrize('question', MUST_KEEP_QUESTIONS)
+@pytest.mark.parametrize('tag', ['h2', 'h3', 'h4'])
+def test_useful_questions_survive_byte_identical(question, tag):
+    from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import (
+        article_denied_question_headings, filter_and_dedupe_helpful_questions, question_drop_reason,
+    )
+    assert question_drop_reason(question) is None
+    item = {'question': question}
+    assert filter_paa_questions([item]) == [item]
+    assert filter_and_dedupe_helpful_questions([question]) == [question]
+    body = f'<{tag}>{question}</{tag}><p>Product details.</p>'
+    assert filter_final_article_content(body) == (body, 1, 1)
+    assert article_denied_question_headings(body) == []
+
+
+@pytest.mark.parametrize('question', [
+    'FAQ 1. “Is beast mode vape good?”', '2) Is beast mode vape good?',
+    'Q: &ldquo;Is beast mode vape good?&rdquo;', '1. Q: Is  beast\nmode vape good',
+])
+def test_question_prefixes_are_normalized_for_matching_only(question):
+    from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import question_drop_reason
+    assert question_drop_reason(question) == 'is_good_question'
+    assert filter_final_article_content(f'<h4>{question}</h4><p>Reject.</p>') == ('', 1, 0)
+
+
+def test_bait_rules_do_not_touch_non_question_headings_or_prose():
+    body = ('<h2>Longest-lasting battery in the Max 2 line</h2>'
+            '<p>This device offers benefits like USB-C.</p>'
+            '<h2>Advantages of the Max 2</h2><p>Good quality. Longest-lasting battery.</p>')
+    assert filter_final_article_content(body) == (body, 0, 0)
+
+
+@pytest.mark.parametrize('reason', BAIT_QUESTION_FAMILIES)
+def test_new_bait_only_paa_does_not_require_faq(conn, monkeypatch, reason):
+    def ai(*args, stage='', **kwargs):
+        assert stage == 'article_draft'
+        return payload(PRODUCT_LINKS + FILLER)
+    monkeypatch.setattr(_article_draft, '_call_ai', ai)
+    result = _article_draft.generate_article_draft(conn, 'Fog Pro X', idea_serp_context={
+        'audience_questions': [{'question': q} for q in BAIT_QUESTION_FAMILIES[reason]]})
+    assert not extract_faqpage_question_names_from_body(result['body'])
+
+
+@pytest.mark.parametrize('approved_paa', [False, True])
+def test_bait_only_faq_repairs_with_explicit_hint(conn, monkeypatch, approved_paa):
+    useful = 'How do I charge Fog Pro X?'
+    stages = []
+    def ai(*args, stage='', **kwargs):
+        stages.append(stage)
+        if stage == 'article_draft':
+            return payload(PRODUCT_LINKS + FILLER + '<h4>What benefits does Beast Mode Max 2 offer?</h4><p>Reject.</p>')
+        if stage == 'article_draft_faq_repair':
+            return {'answers': ['Vaping is safe.']}  # Force the existing all-rejected repair path.
+        assert stage == 'article_draft_append_repair'
+        prompt = args[3][-1]['content']
+        assert 'on-topic <h3> question + <p> answer pairs' in prompt
+        assert 'specs, flavours, nicotine strength, charging, compatibility or storage' in prompt
+        assert 'best vape/brand, benefits/advantages, longest-lasting, health or cigarettes' in prompt
+        approved_hint = f'Approved PAA questions: ["{useful}"]' if approved_paa else 'Approved PAA questions: []'
+        assert approved_hint in prompt
+        return {'append_html': f'<h3>{useful}</h3><p>Use the supplied cable.</p>'}
+    monkeypatch.setattr(_article_draft, '_call_ai', ai)
+    result = _article_draft.generate_article_draft(conn, 'Fog Pro X', idea_serp_context={
+        'audience_questions': [{'question': useful}] if approved_paa else []})
+    assert 'article_draft_append_repair' in stages
+    assert extract_faqpage_question_names_from_body(result['body']) == [useful]
+    assert 'Reject.' not in result['body']

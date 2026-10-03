@@ -779,20 +779,15 @@ def generate_recommendation(
             flavor_labels = product_specs_data.get("e_liquid_flavor_labels") or []
             if isinstance(flavor_labels, list):
                 tvpa_allowed_names.extend(str(lbl) for lbl in flavor_labels if lbl)
-            # Also allowlist variant option values and titles
-            variants = primary.get("variants") or []
+            # Allowlist variant titles (variants live at detail_payload, not primary)
+            variants = detail_payload.get("variants") or []
             for var in variants:
-                if isinstance(var, dict):
-                    if var.get("title"):
-                        var_title = str(var["title"])
-                        tvpa_allowed_names.append(var_title)
-                        var_flavour = extract_flavour_from_title(var_title)
-                        if var_flavour:
-                            tvpa_allowed_names.append(var_flavour)
-                    for opt_key in ("option1", "option2", "option3"):
-                        opt_val = var.get(opt_key)
-                        if opt_val and isinstance(opt_val, str):
-                            tvpa_allowed_names.append(opt_val)
+                if isinstance(var, dict) and var.get("title"):
+                    var_title = str(var["title"])
+                    tvpa_allowed_names.append(var_title)
+                    var_flavour = extract_flavour_from_title(var_title)
+                    if var_flavour:
+                        tvpa_allowed_names.append(var_flavour)
         elif object_type == "collection":
             collection = detail_payload.get("collection") or {}
             if collection.get("title"):

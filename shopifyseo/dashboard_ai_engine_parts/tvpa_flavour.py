@@ -152,22 +152,59 @@ def _visible_text(html_text: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(h)).strip()
 
 
+_COMPARE_BEFORE = re.compile(
+    r"(?:\blike(?:\s+(?:a|an|the))?|reminiscent of|evok(?:e|es|ing)|notes? of|inspired by|tastes? of)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_trigger_only(name: str) -> bool:
+    """Check if a name consists only of trigger words (no non-trigger words >= 3 chars)."""
+    # Remove all trigger words from the name
+    cleaned = _ALL_TRIGGERS.sub(" ", name)
+    # Check if any remaining words are >= 3 characters
+    return not any(len(w) >= 3 for w in re.findall(r"[A-Za-z]+", cleaned))
+
+
 def _mask_allowed(text: str, allowed_names: Iterable[str]) -> str:
-    """Mask allowed names with placeholder characters to prevent false positives."""
+    """Mask allowed names with placeholder characters to prevent false positives.
+    
+    Rules:
+    1. Only mask whole-word matches, ignore names under 3 characters
+    2. Never mask part of a longer trigger phrase (e.g. "Ice" inside "ice cream")
+    3. For names made only of trigger words: mask only exact-case matches, and not
+       in comparison contexts (after like/reminiscent of/etc. or before -like/-inspired/-style)
+    """
     low = text.lower()
-    # Sort by length descending so longer names are masked first
-    names_in_text = sorted(
-        {n for n in allowed_names if n and n.lower() in low},
+    # Filter: at least 3 chars, and present in text
+    names = sorted(
+        {n.strip() for n in allowed_names if n and len(n.strip()) >= 3 and n.strip().lower() in low},
         key=len,
         reverse=True,
     )
-    for name in names_in_text:
-        text = re.sub(
-            re.escape(name),
-            lambda m: "\u2588" * len(m.group(0)),
-            text,
-            flags=re.IGNORECASE,
-        )
+    # Pre-compute trigger spans in the text
+    trig_spans = [m.span() for m in _ALL_TRIGGERS.finditer(text)]
+    
+    for name in names:
+        trigger_only = _is_trigger_only(name)  # e.g. "Candy", "Dessert", "Bubblegum", "Ice Cream"
+        flags = 0 if trigger_only else re.IGNORECASE  # trigger-only names: exact catalog casing only
+        
+        def repl(m: re.Match) -> str:
+            s, e = m.span()
+            # Never mask part of a larger trigger phrase ("Ice" inside "ice cream")
+            if any(ts <= s and e <= te and (te - ts) > (e - s) for ts, te in trig_spans):
+                return m.group(0)
+            # A trigger-only name used as a comparison is still flagged
+            # ("tastes like Candy", "Candy-like")
+            if trigger_only:
+                before_context = text[max(0, s - 40):s]
+                after_context = text[e:]
+                if _COMPARE_BEFORE.search(before_context) or re.match(r"-(?:like|inspired|style)", after_context):
+                    return m.group(0)
+            return "\u2588" * (e - s)
+        
+        text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", repl, text, flags=flags)
+    
     return text
 
 

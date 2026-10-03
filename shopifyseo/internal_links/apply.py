@@ -147,12 +147,49 @@ def _candidate(conn, suggestion_id, base_url, fetch_fn):
     return sug, row, old, new, edit, url, binding
 
 
+def _check_page_write_pending(conn, source_type: str, source_handle: str) -> bool:
+    """Check if the source page has a pending or needs_reconciliation snapshot.
+    
+    Returns True if there's an open write lock on this page.
+    """
+    pending = conn.execute(
+        """SELECT 1 FROM link_body_snapshots 
+           WHERE source_type = ? AND source_handle = ? 
+           AND status IN ('prepared', 'needs_reconciliation', 'undo_prepared', 'undo_needs_reconciliation')
+           LIMIT 1""",
+        (source_type, source_handle),
+    ).fetchone()
+    return pending is not None
+
+
 def preview_suggestion(conn, suggestion_id, base_url, fetch_fn=None):
+    """Generate a preview for applying a link suggestion.
+    
+    Returns allowed=false with code 'page_write_pending' if the page has an
+    open write lock (pending or needs_reconciliation snapshot).
+    """
+    # First check if the suggestion exists and get source info for lock check
+    sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+    if sug:
+        # Check for open write lock on the page BEFORE doing the full candidate check
+        if _check_page_write_pending(conn, sug["source_type"], sug["source_handle"]):
+            return {
+                "suggestion_id": suggestion_id,
+                "allowed": False,
+                "reason": "Another write on this page is in progress or needs reconciliation.",
+                "code": "page_write_pending",
+                "old_html": None,
+                "new_html": None,
+                "text_diff": "",
+                "preview_token": None,
+            }
+    
     # Stateless signed approval: this endpoint performs no database or Shopify writes.
     try:
         sug, row, old, new, edit, url, binding = _candidate(conn, suggestion_id, base_url, fetch_fn or shopify_io.fetch_body)
     except LinkConflict as exc:
         return {"suggestion_id": suggestion_id, "allowed": False, "reason": str(exc),
+                "code": getattr(exc, 'code', 'link_conflict'),
                 "old_html": None, "new_html": None, "text_diff": exc.detail["text_diff"], "preview_token": None}
     return {"suggestion_id": suggestion_id, "kind": sug["kind"], "old_html": old, "new_html": new,
             "text_diff": text_diff(old, new), "html_diff": "\n".join(difflib.unified_diff(

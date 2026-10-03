@@ -213,12 +213,71 @@ def _strip_inter_block_whitespace(html: str) -> str:
     return _strip_html_whitespace("".join(output))
 
 
+def _normalize_text_entities(text: str) -> str:
+    """Normalize entity-encoded characters in text content to their plain equivalents.
+    
+    This handles the case where we send &#x27; but Shopify returns ' (and similar).
+    Only affects text content; tag structures and attributes are unchanged.
+    
+    Normalizes:
+    - &#x27; / &#39; / &apos; → '
+    - &#x22; / &#34; / &quot; → "
+    
+    Does NOT normalize:
+    - &amp; (always escaped by html.escape, mismatch indicates real issue)
+    - &nbsp; (significant per #117 rule)
+    """
+    # Normalize apostrophe entities
+    text = re.sub(r'&#x27;|&#39;|&apos;', "'", text, flags=re.IGNORECASE)
+    # Normalize quote entities
+    text = re.sub(r'&#x22;|&#34;|&quot;', '"', text, flags=re.IGNORECASE)
+    return text
+
+
+def _normalize_for_entity_comparison(html_str: str) -> str:
+    """Normalize HTML for entity-tolerant comparison.
+    
+    Applies _normalize_text_entities to text nodes only (not inside tags/attributes).
+    """
+    if not html_str:
+        return ""
+    
+    result: list[str] = []
+    i = 0
+    
+    while i < len(html_str):
+        if html_str[i] == '<':
+            # Find end of tag
+            tag_end = _find_tag_end(html_str, i)
+            if tag_end == -1:
+                # Malformed: treat rest as text
+                result.append(_normalize_text_entities(html_str[i:]))
+                break
+            # Preserve tag as-is (including attribute entities)
+            result.append(html_str[i:tag_end + 1])
+            i = tag_end + 1
+        else:
+            # Find next tag
+            next_tag = html_str.find('<', i)
+            if next_tag == -1:
+                # Rest is text
+                result.append(_normalize_text_entities(html_str[i:]))
+                break
+            # Text before next tag - normalize entities
+            result.append(_normalize_text_entities(html_str[i:next_tag]))
+            i = next_tag
+    
+    return "".join(result)
+
+
 def html_equivalent(a: str, b: str) -> bool:
-    """Check if two HTML strings are equivalent, tolerating inter-block whitespace.
+    """Check if two HTML strings are equivalent, tolerating inter-block whitespace
+    and text-node entity encoding differences.
     
     Returns True when the strings are identical after:
     - Removing whitespace-only runs between two block-level tags
     - Stripping leading/trailing document whitespace
+    - Normalizing text-node entity encoding (&#x27;/' and &quot;/" treated as equal)
     
     Block-level tags: p, div, h1-h6, ul, ol, li, table, thead, tbody, tfoot,
     tr, td, th, blockquote, section, article, header, footer, aside, nav,
@@ -230,11 +289,18 @@ def html_equivalent(a: str, b: str) -> bool:
     - Inside text nodes
     - Inside tags/attributes
     
-    Any other difference (text, attributes, entity encoding, tag names) fails.
+    NBSP (&nbsp; / \xa0) differences remain significant per #117.
+    Tag, attribute, and structural differences fail.
     """
     if a == b:
         return True
-    return _strip_inter_block_whitespace(a) == _strip_inter_block_whitespace(b)
+    # First try whitespace normalization only
+    a_ws = _strip_inter_block_whitespace(a)
+    b_ws = _strip_inter_block_whitespace(b)
+    if a_ws == b_ws:
+        return True
+    # Then try entity normalization on the whitespace-normalized versions
+    return _normalize_for_entity_comparison(a_ws) == _normalize_for_entity_comparison(b_ws)
 
 
 def ai_enabled_types(conn) -> list[str]:
@@ -252,6 +318,72 @@ def require_ai_enabled(conn, source_type: str) -> None:
 _PROTECTED = {"a", "script", "style", "textarea", "title", "code", "pre", "button", "svg", "template",
               "h1", "h2", "h3", "h4", "h5", "h6"}
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+# Regex to detect escaped anchor start: &lt;a followed by whitespace or &gt;
+_ESCAPED_ANCHOR_START_RE = re.compile(r'&lt;a(?:\s|&gt;)', re.IGNORECASE)
+# Regex to detect escaped anchor end: &lt;/a&gt;
+_ESCAPED_ANCHOR_END_RE = re.compile(r'&lt;/a&gt;', re.IGNORECASE)
+
+
+def _find_escaped_anchor_regions(text: str) -> list[tuple[int, int]]:
+    """Find regions of escaped anchor markup in text: &lt;a ...&gt;...&lt;/a&gt;.
+    
+    Returns list of (start, end) tuples marking escaped anchor regions.
+    These regions should be protected from phrase wrapping.
+    """
+    regions: list[tuple[int, int]] = []
+    
+    # Find all escaped anchor starts
+    starts = [(m.start(), m.group()) for m in _ESCAPED_ANCHOR_START_RE.finditer(text)]
+    if not starts:
+        return regions
+    
+    # For each start, find the matching end
+    for start_pos, _ in starts:
+        # Find the closing &lt;/a&gt; after this start
+        end_match = _ESCAPED_ANCHOR_END_RE.search(text, start_pos)
+        if end_match:
+            # Region includes the closing tag
+            regions.append((start_pos, end_match.end()))
+    
+    return regions
+
+
+def _is_inside_escaped_anchor(text: str, offset: int) -> bool:
+    """Check if offset is inside an escaped anchor region (&lt;a ...&gt;...&lt;/a&gt;)."""
+    for start, end in _find_escaped_anchor_regions(text):
+        if start <= offset < end:
+            return True
+    return False
+
+
+def _has_nested_anchors(html_str: str) -> bool:
+    """Check if HTML contains nested <a> tags (real nesting, not escaped).
+    
+    Returns True if any <a> tag opens while another <a> is already open.
+    """
+    class _AnchorNestChecker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.anchor_depth = 0
+            self.has_nesting = False
+        
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                if self.anchor_depth > 0:
+                    self.has_nesting = True
+                self.anchor_depth += 1
+        
+        def handle_endtag(self, tag):
+            if tag == 'a':
+                self.anchor_depth = max(0, self.anchor_depth - 1)
+    
+    checker = _AnchorNestChecker()
+    try:
+        checker.feed(html_str)
+    except Exception:
+        pass
+    return checker.has_nesting
 
 
 class BodyParser(HTMLParser):
@@ -772,10 +904,20 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         if insert_offset == -2:
             raise LinkConflict("Insert point would be inside a heading or link. Choose a different sentence.")
         
+        # Check if insertion point is inside an escaped anchor region
+        if _is_inside_escaped_anchor(old, insert_offset):
+            raise LinkConflict(
+                "The insertion point is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;). "
+                "Choose a different sentence or fix the source content.",
+                code="insert_inside_existing_anchor"
+            )
+        
         # Build the insertion: space + append_text with anchor linked
-        linked_text = html.escape(append_text).replace(
-            html.escape(phrase),
-            f'<a href="{href}">{html.escape(phrase)}</a>',
+        # Use quote=False: apostrophes and quotes in text nodes don't need escaping
+        # (Shopify stores them as plain characters; escaping causes verify mismatches)
+        linked_text = html.escape(append_text, quote=False).replace(
+            html.escape(phrase, quote=False),
+            f'<a href="{href}">{html.escape(phrase, quote=False)}</a>',
             1
         )
         insertion = " " + linked_text
@@ -835,7 +977,9 @@ def build_edit(old: str, raw: dict, url: str) -> str:
                 extra={"insert_after_text": locator_preview, "match_count": len(matches)}
             )
         
-        linked = html.escape(sentence).replace(html.escape(phrase), f'<a href="{href}">{html.escape(phrase)}</a>', 1)
+        # Use quote=False: apostrophes and quotes in text nodes don't need escaping
+        # (Shopify stores them as plain characters; escaping causes verify mismatches)
+        linked = html.escape(sentence, quote=False).replace(html.escape(phrase, quote=False), f'<a href="{href}">{html.escape(phrase, quote=False)}</a>', 1)
         offset = matches[0]
         # Match the body's block separator style: if it uses newlines between blocks, preserve that
         if "</p>\n<p>" in old or (offset < len(old) and old[offset:offset + 1] == "\n"):
@@ -847,16 +991,38 @@ def build_edit(old: str, raw: dict, url: str) -> str:
     for offset, text in parser.text_spans:
         match = pattern.search(text)
         if match:
-            start, end = offset + match.start(), offset + match.end()
+            # Check if match is inside an escaped anchor region
+            # The offset is into the original body, and the match is within the text span
+            abs_match_start = offset + match.start()
+            if _is_inside_escaped_anchor(old, abs_match_start):
+                raise LinkConflict(
+                    "The anchor phrase is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;). "
+                    "Generate a new suggestion or fix the source content.",
+                    code="insert_inside_existing_anchor"
+                )
+            start, end = abs_match_start, offset + match.end()
             return old[:start] + f'<a href="{href}">' + old[start:end] + "</a>" + old[end:]
     raise LinkConflict("The anchor phrase is no longer present in eligible live text. Generate a new suggestion.")
 
 
 def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
+    """Guard against unauthorized changes and structural problems in the edit result.
+    
+    Checks:
+    1. Exact reconstruction: new must equal build_edit(old, edit, url)
+    2. No nested anchors: result must not contain <a> inside <a>
+    """
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):
         raise LinkConflict("Changes outside the approved link insertion are blocked.", text_diff=text_diff(old, new))
+    
+    # Check for nested anchors in the result
+    if _has_nested_anchors(new):
+        raise LinkConflict(
+            "The edit would create nested anchor tags (<a> inside <a>), which is invalid HTML.",
+            code="insert_inside_existing_anchor"
+        )
 
 
 def preview_token(binding: dict) -> str:

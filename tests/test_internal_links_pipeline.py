@@ -12,7 +12,7 @@ def _conn() -> sqlite3.Connection:
         """
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0,
-            seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]');
+            seo_title TEXT, seo_description TEXT, tags_json TEXT DEFAULT '[]', online_store_url TEXT);
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0,
             seo_title TEXT, seo_description TEXT, api_unreachable INTEGER DEFAULT 0);

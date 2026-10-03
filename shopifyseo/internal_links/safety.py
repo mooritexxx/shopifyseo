@@ -498,6 +498,84 @@ def _find_inserted_anchor_offset(old: str, new: str) -> int | None:
     return diff_start if diff_start < len(new) else None
 
 
+def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
+    """Verify the inserted anchor at anchor_start is well-formed.
+    
+    Raises LinkConflict if:
+    - The anchor contains other tags (e.g., <a>...<strong>...</a>)
+    - The anchor is nested inside another anchor
+    - The anchor is not properly closed before another anchor opens
+    """
+    class _AnchorChecker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.in_our_anchor = False
+            self.our_anchor_depth = 0
+            self.found_other_tag = False
+            self.found_nested_anchor = False
+            self.anchor_depth = 0
+            self.target_pos = anchor_start
+            self._lines = [0]
+            self.our_anchor_found = False
+        
+        def feed(self, data):
+            self._lines = [0] + [m.end() for m in re.finditer("\n", data)]
+            super().feed(data)
+        
+        def _pos(self):
+            line, col = self.getpos()
+            return self._lines[line - 1] + col
+        
+        def handle_starttag(self, tag, attrs):
+            pos = self._pos()
+            if tag == 'a':
+                if pos == self.target_pos:
+                    # This is our inserted anchor
+                    self.in_our_anchor = True
+                    self.our_anchor_found = True
+                    if self.anchor_depth > 0:
+                        # We're inside an existing anchor - bad!
+                        self.found_nested_anchor = True
+                self.anchor_depth += 1
+                if self.in_our_anchor and self.our_anchor_depth > 0:
+                    # Another <a> inside our anchor - bad!
+                    self.found_nested_anchor = True
+                if self.in_our_anchor:
+                    self.our_anchor_depth += 1
+            elif self.in_our_anchor and tag not in ('br',):
+                # Found a non-anchor tag inside our anchor
+                self.found_other_tag = True
+        
+        def handle_endtag(self, tag):
+            if tag == 'a':
+                self.anchor_depth -= 1
+                if self.in_our_anchor:
+                    self.our_anchor_depth -= 1
+                    if self.our_anchor_depth == 0:
+                        self.in_our_anchor = False
+    
+    checker = _AnchorChecker()
+    try:
+        checker.feed(html_str)
+    except Exception:
+        raise LinkConflict("Malformed HTML after link insertion.", code="malformed_anchor")
+    
+    if not checker.our_anchor_found:
+        raise LinkConflict("Could not find inserted anchor at expected position.", code="anchor_not_found")
+    
+    if checker.found_nested_anchor:
+        raise LinkConflict(
+            "Link insertion would create nested anchors. Generate a new suggestion.",
+            code="nested_anchor_created"
+        )
+    
+    if checker.found_other_tag:
+        raise LinkConflict(
+            "Link would span across other tags. Generate a new suggestion.",
+            code="anchor_spans_tags"
+        )
+
+
 def _has_nested_anchors(html_str: str) -> bool:
     """Check if HTML contains nested <a> tags (real nesting, not escaped).
     
@@ -581,9 +659,11 @@ class BodyParser(HTMLParser):
     def handle_charref(self, name):
         if not any(t in _PROTECTED for t in self.stack):
             # Character references have the form &#digits; or &#xhex;
+            # The 'name' includes 'x' for hex refs (e.g., name='x27' for &#x27;)
+            # So prefix is always '&#' (2 chars), and name contains the rest
             offset = self.source_offset()
             # Check if there's a semicolon
-            prefix_len = 3 if name.startswith('x') or name.startswith('X') else 2  # &# or &#x
+            prefix_len = 2  # Always '&#', the 'x' is part of name for hex refs
             end_pos = offset + prefix_len + len(name)
             if end_pos < len(self.body) and self.body[end_pos] == ';':
                 self.text_spans.append((offset, f"&#{name};"))
@@ -1152,78 +1232,128 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
     
     # phrase_wrap mode: find first safe occurrence (not inside an escaped anchor)
-    # Build a combined text from spans with position mapping for cross-span matches
-    # (entity references like &amp; create separate spans, so phrase "Q&A" spans multiple)
-    #
-    # Two-stage mapping: combined_text → html_offset, then unescaped_text → combined_text
-    # This handles phrases like "Q&A guide" matching "Q&amp;A guide" in HTML
-    combined_text = ""
-    combined_to_html: list[int] = []  # combined_text[i] came from HTML offset combined_to_html[i]
-    for html_offset, span_text in parser.text_spans:
-        for i, ch in enumerate(span_text):
-            combined_text += ch
-            combined_to_html.append(html_offset + i)
+    # CRITICAL: Match must be entirely within ONE contiguous text run.
+    # Entity refs are allowed within a text run, but tags are not.
+    # Group contiguous spans (no gap between end of one and start of next).
     
-    # Unescape the combined text for matching (Q&amp;A → Q&A)
-    # Build mapping from unescaped position to combined position
-    unescaped_text = ""
-    unescaped_to_combined: list[int] = []
-    i = 0
-    while i < len(combined_text):
-        # Check if this is the start of an entity reference
-        if combined_text[i] == '&':
-            # Find the end of the entity (semicolon or non-entity char)
-            j = i + 1
-            while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
-                j += 1
-            if j < len(combined_text) and combined_text[j] == ';':
-                j += 1  # Include the semicolon
-            entity = combined_text[i:j]
-            decoded = html.unescape(entity)
-            for k, ch in enumerate(decoded):
-                unescaped_text += ch
-                # Map each decoded char to the start of the entity in combined text
-                unescaped_to_combined.append(i)
-            i = j
-        else:
-            unescaped_text += combined_text[i]
-            unescaped_to_combined.append(i)
-            i += 1
+    # Build text runs: groups of spans with no gaps between them
+    text_runs: list[list[tuple[int, str]]] = []
+    current_run: list[tuple[int, str]] = []
+    prev_end = -1
+    
+    for html_offset, span_text in parser.text_spans:
+        if prev_end != -1 and html_offset != prev_end:
+            # Gap detected - start new run
+            if current_run:
+                text_runs.append(current_run)
+            current_run = []
+        current_run.append((html_offset, span_text))
+        prev_end = html_offset + len(span_text)
+    
+    if current_run:
+        text_runs.append(current_run)
     
     pattern = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
     found_inside_escaped_anchor = False
-    search_start = 0
-    while True:
-        match = pattern.search(unescaped_text, search_start)
-        if not match:
-            break
-        # Map unescaped position → combined position → HTML offset
-        combined_start = unescaped_to_combined[match.start()] if match.start() < len(unescaped_to_combined) else 0
-        abs_match_start = combined_to_html[combined_start] if combined_start < len(combined_to_html) else 0
-        # Skip matches inside escaped anchor regions - keep searching for safe occurrence
-        if _is_inside_escaped_anchor(old, abs_match_start):
-            found_inside_escaped_anchor = True
-            search_start = match.start() + 1
-            continue
-        # Calculate end position: find the last char of the match and map it
-        last_unescaped_idx = match.end() - 1
-        combined_end = unescaped_to_combined[last_unescaped_idx] if last_unescaped_idx < len(unescaped_to_combined) else len(combined_text) - 1
-        # For the end position, we need to find where this entity/char ends in HTML
-        # Walk forward in combined_text to find the end of the current entity or char
-        j = combined_end
-        if combined_text[j] == '&':
-            # This is an entity - find its end
-            j += 1
-            while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
-                j += 1
-            if j < len(combined_text) and combined_text[j] == ';':
-                j += 1
-        else:
-            j += 1  # Regular char, just move past it
-        abs_match_end = combined_to_html[j - 1] + 1 if j > 0 and j - 1 < len(combined_to_html) else len(old)
-        return old[:abs_match_start] + f'<a href="{href}">' + old[abs_match_start:abs_match_end] + "</a>" + old[abs_match_end:]
+    found_inside_real_anchor = False
     
-    # If we found the phrase but only inside escaped anchors, report that specific error
+    for run in text_runs:
+        # Build combined text for this run only
+        combined_text = ""
+        combined_to_html: list[int] = []
+        for html_offset, span_text in run:
+            for i, ch in enumerate(span_text):
+                combined_text += ch
+                combined_to_html.append(html_offset + i)
+        
+        # Unescape for matching (Q&amp;A → Q&A)
+        unescaped_text = ""
+        unescaped_to_combined: list[int] = []
+        i = 0
+        while i < len(combined_text):
+            if combined_text[i] == '&':
+                j = i + 1
+                while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
+                    j += 1
+                if j < len(combined_text) and combined_text[j] == ';':
+                    j += 1
+                entity = combined_text[i:j]
+                decoded = html.unescape(entity)
+                for ch in decoded:
+                    unescaped_text += ch
+                    unescaped_to_combined.append(i)
+                i = j
+            else:
+                unescaped_text += combined_text[i]
+                unescaped_to_combined.append(i)
+                i += 1
+        
+        # Search within this run
+        search_start = 0
+        while True:
+            match = pattern.search(unescaped_text, search_start)
+            if not match:
+                break
+            
+            # Map positions back to HTML
+            combined_start = unescaped_to_combined[match.start()] if match.start() < len(unescaped_to_combined) else 0
+            abs_match_start = combined_to_html[combined_start] if combined_start < len(combined_to_html) else 0
+            
+            last_unescaped_idx = match.end() - 1
+            combined_end = unescaped_to_combined[last_unescaped_idx] if last_unescaped_idx < len(unescaped_to_combined) else len(combined_text) - 1
+            
+            # Find end of the entity/char at match end
+            j = combined_end
+            if j < len(combined_text) and combined_text[j] == '&':
+                j += 1
+                while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
+                    j += 1
+                if j < len(combined_text) and combined_text[j] == ';':
+                    j += 1
+            else:
+                j += 1
+            abs_match_end = combined_to_html[j - 1] + 1 if j > 0 and j - 1 < len(combined_to_html) else len(old)
+            
+            # Skip if inside escaped anchor
+            if _is_inside_escaped_anchor(old, abs_match_start):
+                found_inside_escaped_anchor = True
+                search_start = match.start() + 1
+                continue
+            
+            # Skip if inside real anchor
+            if _is_inside_real_anchor(old, abs_match_start):
+                found_inside_real_anchor = True
+                search_start = match.start() + 1
+                continue
+            
+            # Verify match doesn't start/end inside an entity
+            # Check if abs_match_start is in the middle of an entity
+            if abs_match_start > 0 and old[abs_match_start - 1] == '&':
+                search_start = match.start() + 1
+                continue
+            # Check if we're inside an entity by looking backwards for '&' without ';'
+            look_back = abs_match_start - 1
+            while look_back >= 0 and old[look_back] not in ';&<> \t\n':
+                look_back -= 1
+            if look_back >= 0 and old[look_back] == '&':
+                search_start = match.start() + 1
+                continue
+            
+            # Build the result
+            result = old[:abs_match_start] + f'<a href="{href}">' + old[abs_match_start:abs_match_end] + "</a>" + old[abs_match_end:]
+            
+            # Final guard: verify the new anchor is well-formed
+            _verify_anchor_wellformed(result, abs_match_start)
+            
+            return result
+    
+    # If we found the phrase but only inside anchors, report that specific error
+    if found_inside_real_anchor:
+        raise LinkConflict(
+            "The anchor phrase appears only inside existing links. "
+            "No safe occurrence found. Generate a new suggestion.",
+            code="insert_inside_existing_anchor"
+        )
     if found_inside_escaped_anchor:
         raise LinkConflict(
             "The anchor phrase appears only inside escaped anchor regions (&lt;a&gt;...&lt;/a&gt;). "

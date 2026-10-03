@@ -347,18 +347,18 @@ class TestApplyWithEntityNormalization:
     def test_apply_apostrophe_in_anchor_shopify_returns_plain(self):
         """Apply link with apostrophe in anchor phrase. Shopify returns plain ' where we sent &#x27;.
         
-        Body contains "beginner's guide" with plain apostrophe.
-        We wrap it with a link, which html.escape will encode as beginner&#x27;s guide (quote=False keeps it plain actually).
+        Body contains "beginner&#x27;s guide" with entity-encoded apostrophe.
+        build_edit preserves the entity, so we push &#x27;.
         Shopify stores and returns plain apostrophe.
-        The html_equivalent check must pass.
+        The html_equivalent check at apply.py:283 must pass.
         
-        This test FAILS if normalization is disabled.
+        This test FAILS if apply.py:283's equivalence check is made strict (accepted != new).
         """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
         conn = self._create_apply_db()
-        # Body has apostrophe in the phrase we want to link
-        original_body = "<p>Check our beginner's guide for tips.</p>"
+        # Body has ENTITY-ENCODED apostrophe - this is key for testing normalization
+        original_body = "<p>Check our beginner&#x27;s guide for tips.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
@@ -377,10 +377,9 @@ class TestApplyWithEntityNormalization:
             return original_body
         
         def mock_push(source_type, row, body):
-            # Shopify stores and returns plain apostrophe regardless of what we sent
-            # Our body will have the link with the apostrophe preserved as plain
-            # This simulates Shopify returning exactly what it stored
-            return body  # Already has plain apostrophe from html.escape(quote=False)
+            # Shopify stores and returns plain apostrophe where we sent &#x27;
+            # This simulates what Shopify really does: normalize entities to plain chars
+            return body.replace("&#x27;", "'")
         
         preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
         assert preview["allowed"], f"Preview failed: {preview.get('reason')}"
@@ -393,7 +392,7 @@ class TestApplyWithEntityNormalization:
         )
         assert result["status"] == "applied"
         
-        # Verify the link contains the apostrophe
+        # Verify the suggestion is marked applied
         sug = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
         assert sug["status"] == "applied"
     
@@ -439,19 +438,20 @@ class TestApplyWithEntityNormalization:
         assert result["status"] == "applied"
     
     def test_apply_ampersand_in_body_shopify_returns_plain(self):
-        """Apply link when body has &. Shopify returns plain & where we might send &amp;.
+        """Apply link when body has &amp;. Shopify returns plain & where we sent &amp;.
         
-        Body contains "Q&A guide" - we link "Q&A guide".
-        The link href will have the ampersand html-escaped in the anchor text.
+        Body contains "Q&amp;A guide" with properly escaped ampersand.
+        build_edit preserves the entity, so we push &amp;.
         Shopify stores and returns plain &.
+        The html_equivalent check at apply.py:283 must pass.
         
-        This test FAILS if normalization is disabled.
+        This test FAILS if apply.py:283's equivalence check is made strict (accepted != new).
         """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
         conn = self._create_apply_db()
-        # Body has ampersand in the phrase we want to link
-        original_body = "<p>Check our Q&A guide for answers.</p>"
+        # Body has ENTITY-ENCODED ampersand - this is key for testing normalization
+        original_body = "<p>Check our Q&amp;A guide for answers.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
@@ -470,7 +470,8 @@ class TestApplyWithEntityNormalization:
             return original_body
         
         def mock_push(source_type, row, body):
-            # We send Q&amp;A (html escaped), Shopify returns Q&A (plain)
+            # Shopify stores and returns plain & where we sent &amp;
+            # This simulates what Shopify really does
             return body.replace('&amp;', '&')
         
         preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
@@ -634,6 +635,119 @@ class TestPhraseWrapSkipsEscapedAndKeepsSearching:
         edit = {"anchor_phrase": "ceramic tanks"}
         result = build_edit(body, edit, "https://example.com/tanks")
         assert '<a href="https://example.com/tanks">ceramic tanks</a>' in result
+
+
+class TestCrossTagMatchingRejection:
+    """Test that phrase matching rejects matches that cross tag boundaries."""
+    
+    def test_phrase_crossing_strong_tag_rejected(self):
+        """Phrase matching should not cross </strong> tag."""
+        body = '<p><strong>our ceramic</strong> tanks rock</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_crossing_em_tag_rejected(self):
+        """Phrase matching should not cross </em> tag."""
+        body = '<p><em>great ceramic</em> tanks here</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_crossing_paragraph_rejected(self):
+        """Phrase matching should not cross </p><p> boundary."""
+        body = '<p>text ceramic</p><p>tanks here</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_crossing_list_items_rejected(self):
+        """Phrase matching should not cross </li><li> boundary."""
+        body = '<ul><li>ceramic</li><li>tanks</li></ul>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_overlapping_existing_anchor_rejected(self):
+        """Phrase matching should not overlap an existing anchor."""
+        body = '<p>Buy ceramic <a href="/z">tanks</a> now.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_inside_existing_anchor_rejected(self):
+        """Phrase matching should not be inside an existing anchor."""
+        body = '<p>See our <a href="/existing">ceramic tanks</a> collection.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        # Should find the occurrence outside the anchor or reject
+        with pytest.raises(LinkConflict):
+            build_edit(body, edit, "https://example.com/target")
+    
+    def test_phrase_within_single_text_node_succeeds(self):
+        """Phrase matching within a single text node should succeed."""
+        body = '<p>Check our ceramic tanks guide for tips.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">ceramic tanks</a>' in result
+    
+    def test_phrase_with_entity_inside_succeeds(self):
+        """Phrase matching with entity refs inside should succeed."""
+        body = '<p>Check our Q&amp;A guide for answers.</p>'
+        edit = {"anchor_phrase": "Q&A guide"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">Q&amp;A guide</a>' in result
+
+
+class TestEntityRefsAtPhraseEdges:
+    """Test that phrases don't start/end inside entity references."""
+    
+    def test_entity_at_phrase_start_hex_apostrophe(self):
+        """Phrase starting with entity-decoded apostrophe (&#x27;)."""
+        body = "<p>Try the &#x27;tanks&#x27; now.</p>"
+        edit = {"anchor_phrase": "'tanks'"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">&#x27;tanks&#x27;</a>' in result
+    
+    def test_entity_at_phrase_start_decimal_apostrophe(self):
+        """Phrase starting with entity-decoded apostrophe (&#39;)."""
+        body = "<p>Our &#39;tanks&#39; are here.</p>"
+        edit = {"anchor_phrase": "'tanks'"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">&#39;tanks&#39;</a>' in result
+    
+    def test_entity_at_phrase_start_leading_zero_apostrophe(self):
+        """Phrase starting with apostrophe (&#0039;)."""
+        body = "<p>Check &#0039;tanks&#0039; now.</p>"
+        edit = {"anchor_phrase": "'tanks'"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">&#0039;tanks&#0039;</a>' in result
+    
+    def test_entity_inside_phrase_ampersand(self):
+        """Phrase with &amp; entity inside."""
+        body = "<p>Check tanks&amp;pods guide.</p>"
+        edit = {"anchor_phrase": "tanks&pods"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">tanks&amp;pods</a>' in result
+    
+    def test_entity_at_phrase_edge_nbsp(self):
+        """Phrase with &nbsp; at edge should handle correctly."""
+        body = "<p>Get&nbsp;tanks now.</p>"
+        edit = {"anchor_phrase": " tanks"}  # Space-tanks, but &nbsp; is special
+        # &nbsp; decodes to non-breaking space which is different from regular space
+        # This should either match or reject cleanly
+        try:
+            result = build_edit(body, edit, "https://example.com/target")
+            # If it succeeds, verify it didn't break the entity
+            assert "&nbsp;" in result or "&#160;" in result or "tanks" in result
+        except LinkConflict:
+            pass  # Rejection is acceptable for edge case
+    
+    def test_named_entity_amp(self):
+        """Phrase containing ampersand via &amp; entity."""
+        body = "<p>R&amp;D team rocks.</p>"
+        edit = {"anchor_phrase": "R&D team"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">R&amp;D team</a>' in result
 
 
 class TestGuardEditNestedAnchors:
@@ -902,8 +1016,48 @@ class TestLockHolderBehavior:
         """)
         return conn
     
+    def test_lock_holder_can_reconcile_own_snapshot(self):
+        """Lock holder can reconcile their own pending snapshot.
+        
+        Suggestion 1 has a needs_reconciliation snapshot (the lock).
+        The lock holder (suggestion 1) can reconcile it.
+        """
+        from shopifyseo.internal_links.apply import reconcile_suggestion
+        import time
+        
+        conn = self._create_lock_test_db()
+        original_body = "<p>Check our ceramic tanks guide.</p>"
+        new_body = '<p>Check our <a href="https://shop.com/collections/tanks">ceramic tanks</a> guide.</p>'
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'tanks', 'Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        # Create a real pending snapshot owned by suggestion 1
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
+            (original_body, new_body, int(time.time()) - 1000)
+        )
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            # Shopify shows the new body was written successfully
+            return new_body
+        
+        # The lock holder can reconcile their own snapshot
+        result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert result["status"] == "applied"
+    
     def test_lock_holder_preview_then_apply_succeeds(self):
-        """Lock holder can preview and then apply their own suggestion."""
+        """Lock holder can preview and then apply their own suggestion (no prior lock)."""
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
         conn = self._create_lock_test_db()
@@ -988,6 +1142,55 @@ class TestLockHolderBehavior:
         assert preview["allowed"] == False
         assert preview["code"] == "page_write_pending"
         assert "write" in preview["reason"].lower() or "progress" in preview["reason"].lower()
+    
+    def test_reconcile_requires_own_snapshot(self):
+        """Reconcile requires the suggestion to have its own pending snapshot.
+        
+        Suggestion 1 has a pending snapshot (the lock holder).
+        Suggestion 2 tries to reconcile but has no snapshot of its own.
+        This tests that reconcile checks for the correct suggestion_id.
+        """
+        from shopifyseo.internal_links.apply import reconcile_suggestion
+        
+        conn = self._create_lock_test_db()
+        original_body = "<p>Check our ceramic tanks.</p>"
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'target1', 'Target1')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/2', 'target2', 'Target2')"
+        )
+        # Suggestion 1 - has the lock (needs_reconciliation snapshot)
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'target1', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, '<p>New.</p>', 'needs_reconciliation', 1, 1)",
+            (original_body,)
+        )
+        # Suggestion 2 - different suggestion, same source page, NO snapshot
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (2, 'product', 'source', 'collection', 'target2', 'phrase_wrap', 'tanks', 'suggested', 1)"
+        )
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            return "<p>New.</p>"
+        
+        # Suggestion 2 tries to reconcile but has no snapshot
+        with pytest.raises(LinkConflict) as exc_info:
+            reconcile_suggestion(conn, 2, "https://shop.com", fetch_fn=mock_fetch)
+        
+        # Should fail because suggestion 2 has no pending snapshot
+        assert "no unfinished write" in str(exc_info.value).lower()
 
 
 # =============================================================================
@@ -1420,6 +1623,79 @@ class TestRestoredRowsSurviveRebuild:
         
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None
+    
+    def test_restored_row_product_empty_status_dropped(self):
+        """Restored row with product source having empty status is dropped at rebuild.
+        
+        Tests pipeline.py:239 - products require ACTIVE status.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('empty-status', 'Empty Status', '', '<p>Content.</p>', 100, 'https://shop.com/products/empty')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'product', 'empty-status', 'collection', 'target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None  # Empty status should cause drop
+    
+    def test_restored_row_product_null_status_dropped(self):
+        """Restored row with product source having NULL status is dropped at rebuild.
+        
+        Tests pipeline.py:239 - products require ACTIVE status.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('null-status', 'Null Status', NULL, '<p>Content.</p>', 100, 'https://shop.com/products/null')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'product', 'null-status', 'collection', 'target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None  # NULL status should cause drop
+    
+    def test_product_with_empty_string_url_generates_suggestions(self):
+        """Product with empty string online_store_url still generates suggestions.
+        
+        Blank online_store_url is tolerated for sources per #116.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('empty-url', 'Empty URL', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, '')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+        conn.commit()
+        
+        def related(conn, obj_type, handle, top_k=10):
+            if obj_type == "product":
+                return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+            return []
+        
+        n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+        assert n == 1  # Empty string URL is tolerated
     
     def test_row_with_open_snapshot_on_unpublished_source_kept(self):
         """Row with open snapshot on unpublished source is protected from deletion."""

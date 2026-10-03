@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Overview missing-meta counts now only include items live on the Online Store.** Products with `status != 'ACTIVE'` or empty `online_store_url`, collections with `api_unreachable = 1`, pages with `is_published = 0`, and articles with `is_published = 0` are now excluded from the "Needs attention" counters on the Overview. The pages sync now stores `is_published` and `published_at` from the Admin API; existing pages remain counted (NULL treated as "unknown/live") until the next pages sync fills the column.
+
 - **Trend column was empty on every catalog table.** `trend` was populated by `gsc_page_trend_map` and read correctly by the frontend, but no Pydantic response model declared it — and FastAPI's `response_model` drops undeclared keys silently, so every row arrived without a trend. Added `TrendPayload` (`backend/app/schemas/trend.py`) to `ProductListItem`, `ProductDetailPayload`, `ContentListItem`, `ContentDetailPayload` (also serves article detail), and `AllArticleListItem`. This also restores sorting by the Trend column, which had nothing to sort on. Carriers default to an empty trend rather than `null`, because the frontend's `trendSchema.optional()` accepts `undefined` but rejects `null`.
 - Added `tests/test_trend_response_contract.py`, which asserts the field survives the HTTP boundary rather than the service call — a service-level assertion passed for the entire time the bug was live.
 

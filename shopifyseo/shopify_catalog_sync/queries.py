@@ -325,6 +325,8 @@ query PagesPage($first: Int!, $after: String) {
         updatedAt
         templateSuffix
         body
+        isPublished
+        publishedAt
         titleTag: metafield(namespace: "global", key: "title_tag") {
           id
           namespace
@@ -355,6 +357,8 @@ query PageById($id: ID!) {
     updatedAt
     templateSuffix
     body
+    isPublished
+    publishedAt
     titleTag: metafield(namespace: "global", key: "title_tag") {
       id
       namespace

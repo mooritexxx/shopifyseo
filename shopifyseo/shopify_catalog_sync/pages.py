@@ -14,6 +14,12 @@ from .page_template_enrichment import enrich_pages_template_images
 
 
 def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
+    is_published_raw = page.get("isPublished")
+    if is_published_raw is None:
+        is_published = None
+    else:
+        is_published = 1 if is_published_raw else 0
+    published_at = page.get("publishedAt") or ""
     conn.execute(
         """
         INSERT INTO pages (
@@ -26,9 +32,11 @@ def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
           seo_title,
           seo_description,
           template_images_json,
+          is_published,
+          published_at,
           raw_json,
           synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(shopify_id) DO UPDATE SET
           title = excluded.title,
           handle = excluded.handle,
@@ -37,6 +45,8 @@ def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
           body = excluded.body,
           seo_title = excluded.seo_title,
           seo_description = excluded.seo_description,
+          is_published = excluded.is_published,
+          published_at = excluded.published_at,
           raw_json = excluded.raw_json,
           synced_at = excluded.synced_at
         """,
@@ -50,6 +60,8 @@ def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
             ((page.get("titleTag") or {}).get("value")) or "",
             ((page.get("descriptionTag") or {}).get("value")) or "",
             None,
+            is_published,
+            published_at,
             json_dumps(page),
             synced_at,
         ),

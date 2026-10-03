@@ -11,6 +11,7 @@ from typing import Any
 
 from ._urls import object_url
 from ..index_evidence import INDEX_STORED_FIELDS
+from ..product_linkability import linkable_product_sql
 
 
 # Tables that carry SEO signal columns (gsc_*, ga4_*, index_*, pagespeed_*).
@@ -20,6 +21,80 @@ _SEO_SIGNAL_TABLES: tuple[str, ...] = ("products", "collections", "pages", "blog
 def _row_factory(conn: sqlite3.Connection) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True if *column* exists in *table*."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    names = {r[1] if isinstance(r, (list, tuple)) else r["name"] for r in rows}
+    return column in names
+
+
+def _live_where(conn: sqlite3.Connection, table: str) -> str:
+    """Return a SQL predicate for items live on the Online Store.
+
+    The returned string has **no leading AND**. Tables without the requisite
+    columns fall back to ``1=1`` (count all rows).
+
+    Definitions per table (all require a non-blank handle):
+    - products: reuses ``linkable_product_sql`` (ACTIVE status, non-empty
+      online_store_url, tolerates NULL for backwards compat).
+    - collections: ``COALESCE(api_unreachable, 0) = 0``.
+    - pages: ``is_published IS NULL OR is_published = 1``.
+    - blog_articles: ``is_published = 1`` (column is NOT NULL DEFAULT 0).
+    """
+    if table == "products":
+        return linkable_product_sql(conn, alias="")
+
+    handle_clause = "(handle IS NOT NULL AND TRIM(handle) != '')"
+
+    if table == "collections":
+        if _column_exists(conn, "collections", "api_unreachable"):
+            return f"{handle_clause} AND COALESCE(api_unreachable, 0) = 0"
+        return handle_clause
+
+    if table == "pages":
+        if _column_exists(conn, "pages", "is_published"):
+            return f"{handle_clause} AND (is_published IS NULL OR is_published = 1)"
+        return handle_clause
+
+    if table == "blog_articles":
+        if _column_exists(conn, "blog_articles", "is_published"):
+            return f"{handle_clause} AND is_published = 1"
+        return handle_clause
+
+    return "1=1"
+
+
+def _catalog_meta_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Shared missing-meta / thin-body counters used by overview and list views.
+
+    Counts only items that are live on the Online Store (per ``_live_where``).
+    """
+    products_live = _live_where(conn, "products")
+    products_missing_meta = conn.execute(
+        f"SELECT COUNT(*) FROM products WHERE ((seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')) AND ({products_live})"
+    ).fetchone()[0]
+    products_thin_body = conn.execute(
+        f"SELECT COUNT(*) FROM products WHERE (description_html IS NULL OR LENGTH(description_html) < 200) AND ({products_live})"
+    ).fetchone()[0]
+
+    collections_live = _live_where(conn, "collections")
+    collections_missing_meta = conn.execute(
+        f"SELECT COUNT(*) FROM collections WHERE ((seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')) AND ({collections_live})"
+    ).fetchone()[0]
+
+    pages_live = _live_where(conn, "pages")
+    pages_missing_meta = conn.execute(
+        f"SELECT COUNT(*) FROM pages WHERE ((seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')) AND ({pages_live})"
+    ).fetchone()[0]
+
+    return {
+        "products_missing_meta": int(products_missing_meta),
+        "products_thin_body": int(products_thin_body),
+        "collections_missing_meta": int(collections_missing_meta),
+        "pages_missing_meta": int(pages_missing_meta),
+    }
 
 
 # Columns the SEO-fact and list-row builders actually read. Kept narrow on
@@ -140,12 +215,17 @@ def fetch_articles_by_blog_handle(conn: sqlite3.Connection, blog_handle: str) ->
 
 
 def count_blog_articles_missing_meta(conn: sqlite3.Connection) -> int:
-    """Articles missing SEO title or description (either field absent counts as incomplete)."""
+    """Published articles missing SEO title or description (either field absent counts as incomplete).
+
+    Only counts articles live on the Online Store (``is_published = 1``).
+    """
+    articles_live = _live_where(conn, "blog_articles")
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM blog_articles
-        WHERE (seo_title IS NULL OR seo_title = '')
-           OR (seo_description IS NULL OR seo_description = '')
+        WHERE ((seo_title IS NULL OR seo_title = '')
+           OR (seo_description IS NULL OR seo_description = ''))
+          AND ({articles_live})
         """
     ).fetchone()
     return int(row[0]) if row else 0
@@ -177,19 +257,12 @@ def fetch_recent_runs(conn: sqlite3.Connection, limit: int = 5) -> list[sqlite3.
 
 
 def fetch_overview_metrics(conn: sqlite3.Connection) -> dict[str, int]:
-    """Return aggregated metrics matching the OverviewMetrics schema."""
-    products_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM products WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
-    products_thin_body = conn.execute(
-        "SELECT COUNT(*) FROM products WHERE description_html IS NULL OR LENGTH(description_html) < 200"
-    ).fetchone()[0]
-    collections_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM collections WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
-    pages_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM pages WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
+    """Return aggregated metrics matching the OverviewMetrics schema.
+
+    Missing-meta and thin-body counts only include items live on the Online
+    Store (per ``_live_where``).
+    """
+    meta_counts = _catalog_meta_counts(conn)
 
     try:
         gsc_pages = conn.execute(
@@ -220,10 +293,7 @@ def fetch_overview_metrics(conn: sqlite3.Connection) -> dict[str, int]:
         ga4_pages = ga4_sessions = ga4_views = 0
 
     return {
-        "products_missing_meta": int(products_missing_meta),
-        "products_thin_body": int(products_thin_body),
-        "collections_missing_meta": int(collections_missing_meta),
-        "pages_missing_meta": int(pages_missing_meta),
+        **meta_counts,
         "gsc_pages": int(gsc_pages),
         "gsc_clicks": int(gsc_clicks),
         "gsc_impressions": int(gsc_impressions),
@@ -239,25 +309,10 @@ def fetch_catalog_meta_metrics(conn: sqlite3.Connection) -> dict[str, int]:
     The dashboard's GSC/GA4 keys are recomputed from signal aggregates and
     overwrite the ones ``fetch_overview_metrics`` derives, so callers that only
     need the meta counters can skip that work.
+
+    Counts only items that are live on the Online Store (per ``_live_where``).
     """
-    products_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM products WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
-    products_thin_body = conn.execute(
-        "SELECT COUNT(*) FROM products WHERE description_html IS NULL OR LENGTH(description_html) < 200"
-    ).fetchone()[0]
-    collections_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM collections WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
-    pages_missing_meta = conn.execute(
-        "SELECT COUNT(*) FROM pages WHERE (seo_title IS NULL OR seo_title = '') OR (seo_description IS NULL OR seo_description = '')"
-    ).fetchone()[0]
-    return {
-        "products_missing_meta": int(products_missing_meta),
-        "products_thin_body": int(products_thin_body),
-        "collections_missing_meta": int(collections_missing_meta),
-        "pages_missing_meta": int(pages_missing_meta),
-    }
+    return _catalog_meta_counts(conn)
 
 
 def fetch_signal_totals(conn: sqlite3.Connection) -> dict[str, int]:

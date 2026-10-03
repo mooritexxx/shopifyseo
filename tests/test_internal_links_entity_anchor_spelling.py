@@ -140,6 +140,25 @@ class TestEntityEquivalence:
         a = '<p>One</p><p>Two</p>'
         b = '<p>One</p>\n<p>Two</p>'
         assert html_equivalent(a, b)
+    
+    def test_amp_lt_not_equivalent_to_lt(self):
+        """&amp;lt;b&amp;gt; should NOT be equivalent to &lt;b&gt;.
+        
+        The first displays as literal '<b>' text, the second is an HTML entity
+        that could be interpreted as a tag. They are semantically different.
+        """
+        a = '<p>Use &amp;lt;b&amp;gt; for bold</p>'
+        b = '<p>Use &lt;b&gt; for bold</p>'
+        assert not html_equivalent(a, b)
+    
+    def test_amp_nbsp_not_equivalent_to_nbsp(self):
+        """&amp;nbsp; should NOT be equivalent to &nbsp;.
+        
+        &amp;nbsp; displays as literal '&nbsp;' text, while &nbsp; is a non-breaking space.
+        """
+        a = '<p>hello&amp;nbsp;world</p>'
+        b = '<p>hello&nbsp;world</p>'
+        assert not html_equivalent(a, b)
 
 
 class TestNormalizeTextEntities:
@@ -158,8 +177,8 @@ class TestNormalizeTextEntities:
     def test_normalize_quote_entity(self):
         assert _normalize_text_entities('the &quot;best&quot;') == 'the "best"'
     
-    def test_normalize_ampersand_entity(self):
-        """&amp; should normalize to &."""
+    def test_normalize_standalone_ampersand_entity(self):
+        """&amp; should normalize to & when standalone (not part of another entity)."""
         assert _normalize_text_entities("Tom &amp; Jerry") == "Tom & Jerry"
     
     def test_normalize_preserves_nbsp(self):
@@ -171,6 +190,38 @@ class TestNormalizeTextEntities:
         result = _normalize_for_entity_comparison(html)
         assert "text's" in result
         assert "&amp;" in result
+    
+    def test_x39_is_digit_not_apostrophe(self):
+        """&#x39; is hex 39 = decimal 57 = digit '9', NOT apostrophe.
+        
+        This is a critical distinction: &#x27; is apostrophe (hex 27 = decimal 39),
+        but &#x39; is the digit 9 (hex 39 = decimal 57). We must NOT normalize it.
+        """
+        text = "number&#x39;s"  # This should remain as 9, not become apostrophe
+        result = _normalize_text_entities(text)
+        assert result == "number&#x39;s" or result == "number9s"  # Either unchanged or correctly decoded as '9'
+        assert result != "number's"  # MUST NOT become apostrophe
+    
+    def test_amp_lt_not_converted_to_lt(self):
+        """&amp;lt; should NOT be converted to &lt; (they render differently).
+        
+        &amp;lt; renders as literal '<' in text, while &lt; renders as '<' tag-like.
+        Single-pass replacement prevents this cascade.
+        """
+        # &amp;lt; should stay as &amp;lt; or become &lt; only from the amp part
+        text = "use &amp;lt;b&amp;gt; for bold"
+        result = _normalize_text_entities(text)
+        # The &amp; before lt is followed by 'l', so it should NOT be converted
+        assert "&lt;" not in result or "&amp;" in result  # Either kept or only amp converted correctly
+        # More specifically: standalone &amp; (not followed by # or letter) converts, but &amp;lt; does not
+        assert result == "use &amp;lt;b&amp;gt; for bold"  # Should be unchanged
+    
+    def test_amp_hash_not_converted(self):
+        """&amp;#39; should NOT be converted (it's an escaped entity reference)."""
+        text = "typed &amp;#39; by user"
+        result = _normalize_text_entities(text)
+        # &amp; followed by # should NOT be converted
+        assert result == "typed &amp;#39; by user"  # Should be unchanged
 
 
 class TestApplyRoundTrip:
@@ -199,6 +250,169 @@ class TestApplyRoundTrip:
         sent = "<p>The beginner&#x27;s guide is here.</p>"
         shopify_returned = "<p>The beginner's guide is here.</p>"
         assert html_equivalent(sent, shopify_returned)
+
+
+class TestRealApplyReconcileIntegration:
+    """Integration tests using real apply_suggestion and reconcile_suggestion with stubbed Shopify."""
+    
+    def _create_apply_db(self):
+        """Create database with required schema for apply/reconcile tests.
+        
+        This schema matches the real production schema from ensure_schema().
+        """
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+                description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
+            CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
+                description_html TEXT, api_unreachable INTEGER DEFAULT 0);
+            CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
+                body TEXT, is_published INTEGER DEFAULT 1, gsc_clicks INTEGER DEFAULT 0);
+            CREATE TABLE link_suggestions (
+                id INTEGER PRIMARY KEY, source_type TEXT, source_handle TEXT, 
+                target_type TEXT, target_handle TEXT, kind TEXT, anchor_phrase TEXT,
+                ai_edit_json TEXT, ai_anchor_html TEXT, source_body_hash TEXT, score REAL DEFAULT 0, 
+                status TEXT DEFAULT 'suggested', created_at INTEGER, weak_anchor INTEGER DEFAULT 0, applied_at INTEGER,
+                UNIQUE (source_type, source_handle, target_type, target_handle)
+            );
+            CREATE TABLE link_body_snapshots (
+                id INTEGER PRIMARY KEY, suggestion_id INTEGER, source_type TEXT, source_handle TEXT,
+                shopify_id TEXT, old_body TEXT, new_body TEXT, status TEXT, created_at INTEGER, updated_at INTEGER, error TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_pending ON link_body_snapshots (source_type, source_handle)
+                WHERE status IN ('prepared', 'needs_reconciliation', 'undo_prepared', 'undo_needs_reconciliation');
+            CREATE TABLE internal_links (source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, href TEXT, anchor_text TEXT);
+            CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE link_suggestion_events (id INTEGER PRIMARY KEY, suggestion_id INTEGER, event_type TEXT, source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, kind TEXT, score REAL, gsc_clicks_at_event INTEGER, created_at INTEGER);
+        """)
+        return conn
+    
+    def test_apply_with_apostrophe_shopify_normalizes(self):
+        """Apply a link with apostrophe, Shopify returns plain ' → status=applied."""
+        from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
+        
+        conn = self._create_apply_db()
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
+            "'<p>Check the ceramic tanks guide here.</p>', 'https://shop.com/products/source')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'ceramic-tanks', 'Ceramic Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        conn.commit()
+        
+        original_body = '<p>Check the ceramic tanks guide here.</p>'
+        
+        # Simulate Shopify returning body with normalized entities
+        def mock_fetch(source_type, row):
+            return original_body
+        
+        def mock_push(source_type, row, body):
+            # Shopify normalizes: returns body as-is (it's already using plain chars)
+            return body
+        
+        # Get preview token first
+        preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview["allowed"]
+        
+        # Apply
+        result = apply_suggestion(
+            conn, 1, "https://shop.com",
+            preview_token_value=preview["preview_token"],
+            fetch_fn=mock_fetch,
+            push_fn=mock_push
+        )
+        assert result["status"] == "applied"
+        
+        # Verify suggestion status changed
+        sug = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
+        assert sug["status"] == "applied"
+    
+    def test_reconcile_with_entity_normalized_response(self):
+        """Reconcile succeeds when Shopify returned entity-normalized HTML."""
+        from shopifyseo.internal_links.apply import reconcile_suggestion
+        
+        conn = self._create_apply_db()
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
+            "'<p>Content.</p>', 'https://shop.com/products/source')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'target', 'Target')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'target', 'phrase_wrap', 'test', 'suggested', 1)"
+        )
+        
+        # Create a snapshot in needs_reconciliation state
+        # We sent body with &#x27; but Shopify stored '
+        sent_body = "<p>The beginner&#x27;s guide is here.</p>"
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old body.</p>', ?, 'needs_reconciliation', 1, 1)",
+            (sent_body,)
+        )
+        conn.commit()
+        
+        # Simulate Shopify returning the entity-normalized version
+        def mock_fetch(source_type, row):
+            return "<p>The beginner's guide is here.</p>"  # Plain apostrophe
+        
+        result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert result["status"] == "applied"
+        
+        # Verify snapshot and suggestion status
+        snapshot = conn.execute("SELECT status FROM link_body_snapshots WHERE id = 1").fetchone()
+        assert snapshot["status"] == "applied"
+    
+    def test_apply_ampersand_entity_normalized(self):
+        """Apply a link, Shopify returns &amp; normalized to & → status=applied."""
+        from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
+        
+        conn = self._create_apply_db()
+        # Body has a phrase we can link, and also has Tom & Jerry elsewhere
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
+            "'<p>Check our ceramic tanks guide. Tom & Jerry is here.</p>', 'https://shop.com/products/source')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'ceramic-tanks', 'Ceramic Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        conn.commit()
+        
+        original_body = '<p>Check our ceramic tanks guide. Tom & Jerry is here.</p>'
+        
+        def mock_fetch(source_type, row):
+            return original_body
+        
+        def mock_push(source_type, row, body):
+            # We send Tom &amp; Jerry in our link, Shopify might normalize &amp; to &
+            # This tests the html_equivalent check passes
+            return body.replace('&amp;', '&')
+        
+        preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview["allowed"], f"Preview failed: {preview.get('reason')}"
+        
+        result = apply_suggestion(
+            conn, 1, "https://shop.com",
+            preview_token_value=preview["preview_token"],
+            fetch_fn=mock_fetch,
+            push_fn=mock_push
+        )
+        assert result["status"] == "applied"
 
 
 # =============================================================================
@@ -237,6 +451,26 @@ class TestEscapedAnchorDetection:
         text = '<p>Para 1 with &lt;a href="#"&gt;unclosed</p><p>Para 2</p><p>Para 3 with test phrase&lt;/a&gt;</p>'
         regions = _find_escaped_anchor_regions(text)
         assert len(regions) == 0
+    
+    def test_numeric_escaped_anchor_decimal_detected(self):
+        """&#60;a ...&#62; (decimal numeric entities) should be detected."""
+        text = 'Our &#60;a href="https://example.com"&#62;products&#60;/a&#62; are great.'
+        regions = _find_escaped_anchor_regions(text)
+        assert len(regions) == 1
+        assert _is_inside_escaped_anchor(text, text.find("products"))
+    
+    def test_numeric_escaped_anchor_hex_detected(self):
+        """&#x3c;a ...&#x3e; (hex numeric entities) should be detected."""
+        text = 'Our &#x3c;a href="https://example.com"&#x3e;products&#x3c;/a&#x3e; are great.'
+        regions = _find_escaped_anchor_regions(text)
+        assert len(regions) == 1
+        assert _is_inside_escaped_anchor(text, text.find("products"))
+    
+    def test_mixed_numeric_named_escaped_anchor(self):
+        """Mixed numeric and named entity escaping should still be detected."""
+        text = 'Our &#60;a href="#"&gt;products&lt;/a&#62; are great.'
+        regions = _find_escaped_anchor_regions(text)
+        assert len(regions) == 1
 
 
 class TestNestedAnchorDetection:
@@ -315,6 +549,51 @@ class TestGuardEditNestedAnchors:
         edit = {"anchor_phrase": "New phrase"}
         new = build_edit(old, edit, "https://example.com/target")
         guard_edit(old, new, edit, "https://example.com/target")
+
+
+class TestNestedAnchorEdgeCases:
+    """Test edge cases where pre-existing nesting shouldn't disable insertion check."""
+    
+    def test_nested_para1_unclosed_para2_phrase_para3_rejected(self):
+        """Repro: nested pair in para 1, unclosed anchor in para 2, phrase in para 3.
+        
+        Pre-existing nesting in para 1 must NOT disable the check for para 3.
+        The unclosed anchor in para 2 extends into para 3, so wrapping "test phrase"
+        would create new nesting. This should be rejected.
+        """
+        body = (
+            '<p>Para 1 with <a href="/outer"><a href="/inner">nested</a></a> anchors.</p>'
+            '<p>Para 2 with <a href="/unclosed">unclosed anchor'
+            '</p><p>Para 3 with test phrase here.</p>'
+        )
+        edit = {"anchor_phrase": "test phrase"}
+        
+        # The unclosed anchor in para 2 means "test phrase" in para 3 is inside an anchor
+        # even though there's pre-existing nesting in para 1.
+        # The fix ensures we check the insertion point specifically.
+        with pytest.raises(LinkConflict) as exc_info:
+            result = build_edit(body, edit, "https://example.com/target")
+            # If build_edit doesn't catch it, guard_edit should
+            guard_edit(body, result, edit, "https://example.com/target")
+        
+        # Should be caught as insert_inside_existing_anchor
+        assert exc_info.value.code == "insert_inside_existing_anchor"
+    
+    def test_edit_creating_nesting_rejected_even_with_preexisting(self):
+        """An edit that creates NEW nesting should be rejected even if page has pre-existing nesting."""
+        # Page already has nested anchors in para 1
+        old = (
+            '<p>Para 1 with <a href="/outer"><a href="/inner">nested</a></a> anchors.</p>'
+            '<p>Para 2 with clean content and test phrase here.</p>'
+        )
+        edit = {"anchor_phrase": "test phrase"}
+        
+        # This should work - the phrase is NOT inside any anchor
+        result = build_edit(old, edit, "https://example.com/target")
+        
+        # guard_edit should pass since we didn't insert inside an anchor
+        guard_edit(old, result, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">test phrase</a>' in result
 
 
 class TestRealWorldAnchorGuardCases:
@@ -710,8 +989,12 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1
     
-    def test_active_product_without_online_store_url_skipped(self):
-        """Active product WITHOUT online_store_url should not generate suggestions."""
+    def test_active_product_without_online_store_url_generates_suggestions(self):
+        """Active product WITHOUT online_store_url should still generate suggestions.
+        
+        Product SOURCES tolerate blank online_store_url (like targets per #48).
+        Only the ACTIVE status check is enforced for sources.
+        """
         conn = _pipeline_db()
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
@@ -726,7 +1009,7 @@ class TestSkipUnpublishedSources:
             return []
         
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
-        assert n == 0
+        assert n == 1  # Product sources tolerate blank online_store_url
     
     def test_existing_applied_rows_for_unpublished_source_untouched(self):
         """Existing applied rows for unpublished sources should not be deleted."""
@@ -910,12 +1193,15 @@ class TestSourceExistsWithBodyPublished:
         conn.commit()
         assert _source_exists_with_body(conn, "product", "active")
     
-    def test_active_product_without_url_returns_false(self):
-        """Active product without online_store_url should return False."""
+    def test_active_product_without_url_returns_true(self):
+        """Active product without online_store_url should still return True.
+        
+        Product SOURCES tolerate blank online_store_url (like targets per #48).
+        """
         conn = _pipeline_db()
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, online_store_url) "
             "VALUES ('no-url', 'No URL', 'ACTIVE', '<p>Content.</p>', NULL)"
         )
         conn.commit()
-        assert not _source_exists_with_body(conn, "product", "no-url")
+        assert _source_exists_with_body(conn, "product", "no-url")  # Sources tolerate blank URL

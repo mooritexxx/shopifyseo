@@ -219,21 +219,40 @@ def _normalize_text_entities(text: str) -> str:
     This handles the case where we send &#x27; but Shopify returns ' (and similar).
     Only affects text content; tag structures and attributes are unchanged.
     
-    Normalizes:
-    - &#x27; / &#x39; / &#39; / &#039; / &apos; → '
-    - &#x22; / &#34; / &quot; → "
-    - &amp; → & (Shopify may normalize this in text nodes)
+    Normalizes (single-pass to avoid cascading):
+    - &#x27; / &#39; / &#039; / &apos; → '  (apostrophe: hex 27 = decimal 39)
+    - &#x22; / &#34; / &quot; → "  (quote: hex 22 = decimal 34)
+    - &amp; → & ONLY when standalone (not part of &amp;lt; &amp;#39; etc.)
     
     Does NOT normalize:
     - &nbsp; (significant per #117 rule)
+    - &#x39; (that's hex 39 = decimal 57 = digit '9', NOT apostrophe)
+    - &amp;lt; &amp;gt; &amp;#... (these are escaped entities, not bare ampersands)
+    
+    Uses single-pass replacement to prevent &amp;lt; from incorrectly becoming &lt;.
     """
-    # Normalize apostrophe entities (hex and decimal forms)
-    text = re.sub(r'&#x27;|&#x39;|&#39;|&#039;|&apos;', "'", text, flags=re.IGNORECASE)
-    # Normalize quote entities
-    text = re.sub(r'&#x22;|&#34;|&quot;', '"', text, flags=re.IGNORECASE)
-    # Normalize ampersand entity (Shopify may return plain & where we sent &amp;)
-    text = text.replace('&amp;', '&')
-    return text
+    # Single-pass replacement using a function
+    # Pattern matches entities we want to normalize, in precedence order
+    # Note: &#39; without x is decimal 39 = apostrophe (correct)
+    #       &#x39; with x is hex 39 = decimal 57 = '9' (NOT apostrophe, so excluded)
+    _ENTITY_PATTERN = re.compile(
+        r'&#x27;|&#39;|&#039;|&apos;'  # apostrophe entities (hex 27, decimal 39)
+        r'|&#x22;|&#34;|&quot;'  # quote entities (hex 22, decimal 34)
+        r'|&amp;(?![#a-zA-Z])',  # standalone &amp; (not followed by # or letter)
+        re.IGNORECASE
+    )
+    
+    def _replace_entity(match: re.Match) -> str:
+        entity = match.group(0).lower()
+        if entity in ('&#x27;', '&#39;', '&#039;', '&apos;'):
+            return "'"
+        if entity in ('&#x22;', '&#34;', '&quot;'):
+            return '"'
+        if entity.startswith('&amp;'):
+            return '&'
+        return match.group(0)  # no change
+    
+    return _ENTITY_PATTERN.sub(_replace_entity, text)
 
 
 def _normalize_for_entity_comparison(html_str: str) -> str:
@@ -321,10 +340,17 @@ _PROTECTED = {"a", "script", "style", "textarea", "title", "code", "pre", "butto
               "h1", "h2", "h3", "h4", "h5", "h6"}
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
-# Regex to detect escaped anchor start: &lt;a followed by whitespace or &gt;
-_ESCAPED_ANCHOR_START_RE = re.compile(r'&lt;a(?:\s|&gt;)', re.IGNORECASE)
-# Regex to detect escaped anchor end: &lt;/a&gt;
-_ESCAPED_ANCHOR_END_RE = re.compile(r'&lt;/a&gt;', re.IGNORECASE)
+# Regex to detect escaped anchor start: &lt;a or numeric equivalents (&#60; &#x3c;)
+# followed by whitespace or &gt;/&#62;/&#x3e;
+_ESCAPED_ANCHOR_START_RE = re.compile(
+    r'(?:&lt;|&#60;|&#x3[cC];)a(?:\s|&gt;|&#62;|&#x3[eE];)',
+    re.IGNORECASE
+)
+# Regex to detect escaped anchor end: &lt;/a&gt; or numeric equivalents
+_ESCAPED_ANCHOR_END_RE = re.compile(
+    r'(?:&lt;|&#60;|&#x3[cC];)/a(?:&gt;|&#62;|&#x3[eE];)',
+    re.IGNORECASE
+)
 
 
 def _find_escaped_anchor_regions(text: str) -> list[tuple[int, int]]:
@@ -367,6 +393,80 @@ def _is_inside_escaped_anchor(text: str, offset: int) -> bool:
         if start <= offset < end:
             return True
     return False
+
+
+def _is_inside_real_anchor(html_str: str, offset: int) -> bool:
+    """Check if offset is inside a real <a> tag (not escaped).
+    
+    Parses the HTML and tracks anchor depth. Returns True if the given offset
+    is inside an open anchor (depth > 0). Handles unclosed anchors that extend
+    to end of document.
+    """
+    class _AnchorDepthAtOffset(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.anchor_depth = 0
+            self.depth_at_offset: int | None = None
+            self.target_offset = offset
+            self._lines = [0]
+        
+        def feed(self, data):
+            self._lines = [0] + [m.end() for m in re.finditer("\n", data)]
+            super().feed(data)
+        
+        def _current_offset(self):
+            line, col = self.getpos()
+            return self._lines[line - 1] + col
+        
+        def handle_starttag(self, tag, attrs):
+            current = self._current_offset()
+            if self.depth_at_offset is None and current >= self.target_offset:
+                self.depth_at_offset = self.anchor_depth
+            if tag == 'a':
+                self.anchor_depth += 1
+        
+        def handle_endtag(self, tag):
+            current = self._current_offset()
+            if self.depth_at_offset is None and current >= self.target_offset:
+                self.depth_at_offset = self.anchor_depth
+            if tag == 'a':
+                self.anchor_depth = max(0, self.anchor_depth - 1)
+        
+        def handle_data(self, data):
+            current = self._current_offset()
+            end = current + len(data)
+            if self.depth_at_offset is None and current <= self.target_offset < end:
+                self.depth_at_offset = self.anchor_depth
+    
+    checker = _AnchorDepthAtOffset()
+    try:
+        checker.feed(html_str)
+    except Exception:
+        pass
+    
+    # If we never reached the offset, use final depth (for unclosed anchors)
+    depth = checker.depth_at_offset if checker.depth_at_offset is not None else checker.anchor_depth
+    return depth > 0
+
+
+def _find_inserted_anchor_offset(old: str, new: str) -> int | None:
+    """Find the offset in old where our new anchor was inserted.
+    
+    Compares old and new to find where the new <a href="..."> was added.
+    Returns the offset in `old` where content was inserted, or None if not found.
+    """
+    # Find the first difference between old and new
+    min_len = min(len(old), len(new))
+    diff_start = 0
+    for i in range(min_len):
+        if old[i] != new[i]:
+            diff_start = i
+            break
+    else:
+        diff_start = min_len
+    
+    # The insertion point in old is at diff_start
+    return diff_start if diff_start < len(new) else None
 
 
 def _has_nested_anchors(html_str: str) -> bool:
@@ -1027,21 +1127,31 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     
     Checks:
     1. Exact reconstruction: new must equal build_edit(old, edit, url)
-    2. No NEW nested anchors: if old had nested anchors, that's pre-existing; we only
-       reject if the edit created NEW nesting (comparing anchor depth changes)
+    2. Insertion point check: verify our anchor wasn't inserted inside an existing
+       anchor (real or escaped). Pre-existing nesting elsewhere is irrelevant.
     """
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):
         raise LinkConflict("Changes outside the approved link insertion are blocked.", text_diff=text_diff(old, new))
     
-    # Check for nested anchors: only reject if we CREATED new nesting
-    # (pre-existing nesting in the source body is not our fault)
-    if _has_nested_anchors(new) and not _has_nested_anchors(old):
-        raise LinkConflict(
-            "The edit would create nested anchor tags (<a> inside <a>), which is invalid HTML.",
-            code="insert_inside_existing_anchor"
-        )
+    # Check if our insertion point is inside an existing anchor.
+    # This is the second line of defense - build_edit should prevent this,
+    # but we verify here to catch edge cases.
+    # Pre-existing nesting elsewhere must NOT disable this check.
+    insert_offset = _find_inserted_anchor_offset(old, new)
+    if insert_offset is not None:
+        # Check both real anchors and escaped anchors at the insertion point
+        if _is_inside_real_anchor(old, insert_offset):
+            raise LinkConflict(
+                "The edit would create nested anchor tags (<a> inside <a>), which is invalid HTML.",
+                code="insert_inside_existing_anchor"
+            )
+        if _is_inside_escaped_anchor(old, insert_offset):
+            raise LinkConflict(
+                "The insertion point is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;).",
+                code="insert_inside_existing_anchor"
+            )
 
 
 def preview_token(binding: dict) -> str:

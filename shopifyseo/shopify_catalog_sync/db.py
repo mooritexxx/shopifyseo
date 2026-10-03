@@ -443,6 +443,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "collections", "image_json", "TEXT")
     ensure_column(conn, "pages", "template_suffix", "TEXT")
     ensure_column(conn, "pages", "template_images_json", "TEXT")
+    ensure_column(conn, "pages", "is_published", "INTEGER")
+    ensure_column(conn, "pages", "published_at", "TEXT")
     conn.commit()
 
 

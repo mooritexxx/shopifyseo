@@ -121,14 +121,24 @@ def test_same_policy_for_publish_and_advisory_targets():
 def test_generation_retries_same_policy_without_truncation():
     from shopifyseo.dashboard_ai_engine_parts import generation as gen
     from shopifyseo.dashboard_ai_engine_parts.qa import RecommendationValidationError
-    with patch.object(gen,'_generate_single_field_attempt', side_effect=[RecommendationValidationError('too long'), {'value':'x'*140}, {'value':'x'*150}]) as attempt:
+    # Test 1: RecommendationValidationError triggers retry, then warning (140 chars) is returned without retry
+    # Because warnings (140 chars for seo_description) do NOT trigger retries
+    with patch.object(gen,'_generate_single_field_attempt', side_effect=[RecommendationValidationError('too long'), {'value':'x'*140}]) as attempt:
         result=gen._generate_single_field_core(object_type='product',field='seo_description')
-        assert result['value']=='x'*150
-        assert result['quality_retry_count']==2
-        assert attempt.call_count==3
+        assert result['value']=='x'*140  # Warning-level content is returned
+        assert result['quality_retry_count']==1  # One retry after RecommendationValidationError
+        assert attempt.call_count==2  # Initial + 1 retry
+    # Test 2: error-severity content (100 chars) should trigger retry
+    with patch.object(gen,'_generate_single_field_attempt', side_effect=[{'value':'x'*100}, {'value':'x'*150}]) as attempt:
+        result=gen._generate_single_field_core(object_type='product',field='seo_description')
+        assert result['value']=='x'*150  # Error triggered retry, got passing content
+        assert result['quality_retry_count']==1
+        assert attempt.call_count==2
+    # Test 3: Repeated RecommendationValidationError exhausts retries
     with patch.object(gen,'_generate_single_field_attempt',side_effect=RecommendationValidationError('too long')) as attempt:
         with pytest.raises(RecommendationValidationError): gen._generate_single_field_core(object_type='product',field='seo_description')
         assert attempt.call_count==3
+    # Test 4: warning-severity content (140 chars) is accepted without retry
     with patch.object(gen,'_generate_single_field_attempt',return_value={'value':'x'*140}):
         result=gen._generate_single_field_core(object_type='product',field='seo_description')
         assert result['quality_issues'][0]['severity']=='warning'

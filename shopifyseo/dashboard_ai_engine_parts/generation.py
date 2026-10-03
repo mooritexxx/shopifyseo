@@ -298,10 +298,12 @@ def _generate_single_field_core(**kwargs) -> dict:
             feedback = f"{feedback}\nCorrect this validation failure: {exc}. Rewrite naturally using only confirmed facts."
             continue
         issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
-        if not issues or attempt == 2:
+        # Only retry on errors, not warnings (e.g. product seo_title >60 chars is a warning)
+        errors = [i for i in issues if i.get("severity") == "error"]
+        if not errors or attempt == 2:
             return {**result, "quality_issues": issues, "quality_retry_count": attempt}
         # Don't overwrite original feedback (e.g. TVPA feedback) — append metadata issues
-        metadata_feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        metadata_feedback = "\n".join(i["message"] for i in errors) + " Rewrite naturally using only confirmed facts; do not pad with filler."
         feedback = f"{original_feedback}\n{metadata_feedback}" if original_feedback else metadata_feedback
     raise RuntimeError("Quality correction did not complete")
 
@@ -1070,6 +1072,17 @@ def generate_recommendation(
     # passed is False if: score below floor, spec claim issues, or TVPA category-group issues
     # Style-group TVPA issues are warnings only and do not flip passed
     qa_passed = qa_score >= qa_floor and not spec_claim_issues and not tvpa_category_issues
+    
+    # Collect warnings (non-blocking issues)
+    from .qa import get_product_seo_title_warnings, get_field_warnings
+    title_warnings: list[str] = []
+    meta_strength_warnings: list[str] = []
+    if object_type == "product":
+        title_warnings = get_product_seo_title_warnings(recommendation["seo_title"])
+        _, meta_strength_warnings = get_field_warnings(
+            object_type, "seo_description", recommendation["seo_description"], context
+        )
+    
     recommendation["_qa"] = {
         "score": round(qa_score, 2),
         "floor": qa_floor,
@@ -1082,6 +1095,9 @@ def generate_recommendation(
         "description_retry_count": description_retry_count,
         "description_length_repaired": description_length_repaired,
         "body_retried": body_retried,
+        "warnings": title_warnings + meta_strength_warnings,
+        "title_length_warnings": title_warnings,
+        "meta_strength_warnings": meta_strength_warnings,
     }
     priority = context["fact"]["priority"]
     insert_recommendation_record(

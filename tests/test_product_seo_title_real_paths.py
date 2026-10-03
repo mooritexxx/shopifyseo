@@ -70,6 +70,22 @@ def _insert_test_page(conn, handle, title, seo_title="", seo_description=""):
     return shopify_id
 
 
+def _insert_test_collection(conn, handle, title, seo_title="", seo_description="", description_html=""):
+    """Insert a test collection into the database."""
+    shopify_id = f"gid://shopify/Collection/{hash(handle) % 10000000}"
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO collections (
+            shopify_id, handle, title, seo_title, seo_description, description_html,
+            raw_json, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, '{}', datetime('now'))
+        """,
+        (shopify_id, handle, title, seo_title, seo_description, description_html),
+    )
+    conn.commit()
+    return shopify_id
+
+
 def _insert_ai_settings(conn):
     """Insert required AI settings for generation."""
     settings = [
@@ -194,32 +210,35 @@ def mock_ai_client(monkeypatch):
 
 @pytest.fixture
 def mock_shopify_writes(monkeypatch):
-    """Mock all Shopify write endpoints to raise on unexpected calls."""
-    write_log = []
+    """Mock all Shopify write endpoints to raise AssertionError on unexpected calls.
     
-    def raise_on_write(*args, **kwargs):
-        write_log.append({"args": args, "kwargs": kwargs})
-        raise AssertionError(f"Unexpected Shopify write called with args={args}, kwargs={kwargs}")
+    Patches at the locations where functions are USED, not just where they're defined.
+    Tests should assert call_count == 0 to prove no writes occurred.
+    """
+    call_counts = {"live_update_product": 0, "graphql_request": 0}
     
-    # Patch live_update_product
+    def raise_on_live_update_product(*args, **kwargs):
+        call_counts["live_update_product"] += 1
+        raise AssertionError(f"Unexpected live_update_product called with args={args}, kwargs={kwargs}")
+    
+    def raise_on_graphql_request(*args, **kwargs):
+        call_counts["graphql_request"] += 1
+        raise AssertionError(f"Unexpected graphql_request called with args={args}, kwargs={kwargs}")
+    
+    # Patch where the functions are USED (imported into other modules)
+    from backend.app.services import product_service
     from shopifyseo import dashboard_live_updates
-    monkeypatch.setattr(dashboard_live_updates, "live_update_product", raise_on_write)
+    from shopifyseo import shopify_admin
     
-    # Patch shopify_admin if it exists
-    try:
-        from shopifyseo import shopify_admin
-        monkeypatch.setattr(shopify_admin, "graphql_request", raise_on_write)
-    except (ImportError, AttributeError):
-        pass
+    # live_update_product is imported into product_service and used in dashboard_live_updates
+    monkeypatch.setattr(product_service, "live_update_product", raise_on_live_update_product)
+    monkeypatch.setattr(dashboard_live_updates, "live_update_product", raise_on_live_update_product)
     
-    # Patch push_body if it exists
-    try:
-        from shopifyseo.dashboard_live_updates import push_body
-        monkeypatch.setattr(dashboard_live_updates, "push_body", raise_on_write)
-    except (ImportError, AttributeError):
-        pass
+    # graphql_request is the lowest-level Shopify call
+    monkeypatch.setattr(shopify_admin, "graphql_request", raise_on_graphql_request)
+    monkeypatch.setattr(dashboard_live_updates, "graphql_request", raise_on_graphql_request)
     
-    return write_log
+    return call_counts
 
 
 # ---------------------------------------------------------------------------
@@ -346,54 +365,65 @@ class TestNameNeverWritten:
         assert before_dict["handle"] == after_dict["handle"]
         # seo_title in products table should NOT be updated by generation
         assert before_dict["seo_title"] == after_dict["seo_title"]
-        # No Shopify writes should have occurred
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes should have occurred - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
     
     def test_regenerate_field_seo_description_preserves_product_name(
         self, test_db, mock_store_identity, mock_ai_client, mock_shopify_writes
     ):
-        """Regenerate seo_description preserves product name in DB."""
+        """Regenerate seo_description preserves product name and seo_title in DB."""
         conn, db_path = test_db
         shopify_id = _insert_test_product(conn, self.PRODUCT_HANDLE, self.PRODUCT_NAME)
         
+        # Snapshot before - include seo_title for complete comparison
         before = conn.execute(
-            "SELECT title, handle FROM products WHERE shopify_id = ?",
+            "SELECT title, handle, seo_title FROM products WHERE shopify_id = ?",
             (shopify_id,)
         ).fetchone()
         
         from shopifyseo.dashboard_ai_engine_parts.generation import generate_field_recommendation
         generate_field_recommendation(conn, "product", self.PRODUCT_HANDLE, "seo_description", {})
         
+        # Snapshot after
         after = conn.execute(
-            "SELECT title, handle FROM products WHERE shopify_id = ?",
+            "SELECT title, handle, seo_title FROM products WHERE shopify_id = ?",
             (shopify_id,)
         ).fetchone()
         
+        # All fields must be byte-identical (title, handle, and seo_title)
         assert dict(before) == dict(after)
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes should have occurred - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
     
     def test_regenerate_field_body_preserves_product_name(
         self, test_db, mock_store_identity, mock_ai_client, mock_shopify_writes
     ):
-        """Regenerate body preserves product name in DB."""
+        """Regenerate body preserves product name and seo_title in DB."""
         conn, db_path = test_db
         shopify_id = _insert_test_product(conn, self.PRODUCT_HANDLE, self.PRODUCT_NAME)
         
+        # Snapshot before - include seo_title for complete comparison
         before = conn.execute(
-            "SELECT title, handle FROM products WHERE shopify_id = ?",
+            "SELECT title, handle, seo_title FROM products WHERE shopify_id = ?",
             (shopify_id,)
         ).fetchone()
         
         from shopifyseo.dashboard_ai_engine_parts.generation import generate_field_recommendation
         generate_field_recommendation(conn, "product", self.PRODUCT_HANDLE, "body", {})
         
+        # Snapshot after
         after = conn.execute(
-            "SELECT title, handle FROM products WHERE shopify_id = ?",
+            "SELECT title, handle, seo_title FROM products WHERE shopify_id = ?",
             (shopify_id,)
         ).fetchone()
         
+        # All fields must be byte-identical (title, handle, and seo_title)
         assert dict(before) == dict(after)
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes should have occurred - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
     
     def test_full_generation_preserves_product_name(
         self, test_db, mock_store_identity, mock_ai_client, mock_shopify_writes
@@ -422,8 +452,9 @@ class TestNameNeverWritten:
         assert before_dict["handle"] == after_dict["handle"]
         assert before_dict["seo_title"] == after_dict["seo_title"]
         assert before_dict["seo_description"] == after_dict["seo_description"]
-        # No Shopify writes
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -539,10 +570,86 @@ class TestTVPAEndToEnd:
             conn, "product", self.PRODUCT_HANDLE, "body", {}
         )
         
-        # Should succeed (nostalgic is style, not category)
+        # Should succeed (nostalgic is style, not category) - no exception raised
         assert "nostalgic" in result["value"].lower()
-        # TVPA warnings should be present
-        assert "tvpa_flavour_warnings" in result or len(result.get("tvpa_flavour_warnings", [])) >= 0
+        # TVPA style warnings should be present (not empty)
+        assert "tvpa_flavour_warnings" in result
+        assert len(result["tvpa_flavour_warnings"]) >= 1, "Expected style warning for 'nostalgic'"
+        # At least one warning should mention nostalgic
+        assert any("nostalgic" in w.lower() for w in result["tvpa_flavour_warnings"])
+    
+    @pytest.fixture
+    def tvpa_meta_banned_ai(self, monkeypatch):
+        """Mock AI that returns TVPA-violating content in meta description only."""
+        def fake_call_ai(settings, provider, model, messages, timeout, json_schema=None, stage=None):
+            if stage and "seo_description" in stage:
+                # TVPA violation in meta: "candy" is a category violation
+                # Must include Blue Razz Ice flavour AND be 115-160 chars to pass length validation
+                return {"seo_description": "Shop Blue Razz Ice vape that tastes just like candy at Vapely Canada. This sweet candy-like flavour is perfect for Canadian vapers."}
+            return {}
+        
+        monkeypatch.setattr(providers_module, "_call_ai", fake_call_ai)
+        monkeypatch.setattr(gen_module, "_call_ai", fake_call_ai)
+        monkeypatch.setattr(providers_module, "_require_provider_credentials", lambda s, p: None)
+        monkeypatch.setattr(gen_module, "_require_provider_credentials", lambda s, p: None)
+    
+    def test_meta_banned_rejected(
+        self, test_db, mock_store_identity, tvpa_meta_banned_ai, mock_shopify_writes
+    ):
+        """Meta description with TVPA banned word (candy) is rejected."""
+        conn, db_path = test_db
+        _insert_test_product(conn, self.PRODUCT_HANDLE, self.PRODUCT_NAME)
+        
+        from shopifyseo.dashboard_ai_engine_parts.generation import generate_field_recommendation
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            generate_field_recommendation(
+                conn, "product", self.PRODUCT_HANDLE, "seo_description", {}
+            )
+        
+        # Error should mention TVPA or the banned term
+        error_str = str(exc_info.value).lower()
+        assert "tvpa" in error_str or "candy" in error_str or "flavour" in error_str
+
+
+class TestCollectionTVPA:
+    """Test TVPA compliance for collections."""
+    
+    COLLECTION_TITLE = "Blue Razz Ice Vapes Collection"
+    COLLECTION_HANDLE = "blue-razz-ice-vapes"
+    
+    @pytest.fixture
+    def tvpa_collection_seo_title_banned_ai(self, monkeypatch):
+        """Mock AI that returns TVPA-violating content in collection seo_title."""
+        def fake_call_ai(settings, provider, model, messages, timeout, json_schema=None, stage=None):
+            if stage and "seo_title" in stage:
+                # Collection seo_title with TVPA category violation: "candy"
+                # Must be 40-65 chars for collections (this is 46 chars)
+                return {"seo_title": "Candy-Flavoured Blue Razz Ice Vapes Collection"}
+            return {}
+        
+        monkeypatch.setattr(providers_module, "_call_ai", fake_call_ai)
+        monkeypatch.setattr(gen_module, "_call_ai", fake_call_ai)
+        monkeypatch.setattr(providers_module, "_require_provider_credentials", lambda s, p: None)
+        monkeypatch.setattr(gen_module, "_require_provider_credentials", lambda s, p: None)
+    
+    def test_collection_title_banned_rejected(
+        self, test_db, mock_store_identity, tvpa_collection_seo_title_banned_ai, mock_shopify_writes
+    ):
+        """Collection seo_title with TVPA banned word (candy) is rejected."""
+        conn, db_path = test_db
+        _insert_test_collection(conn, self.COLLECTION_HANDLE, self.COLLECTION_TITLE)
+        
+        from shopifyseo.dashboard_ai_engine_parts.generation import generate_field_recommendation
+        
+        with pytest.raises(RuntimeError) as exc_info:
+            generate_field_recommendation(
+                conn, "collection", self.COLLECTION_HANDLE, "seo_title", {}
+            )
+        
+        # Error should mention TVPA or the banned term
+        error_str = str(exc_info.value).lower()
+        assert "tvpa" in error_str or "candy" in error_str or "flavour" in error_str
 
 
 # ---------------------------------------------------------------------------
@@ -586,8 +693,9 @@ class TestNoAutoApply:
         ).fetchone()
         assert after["seo_title"] == self.EXISTING_SEO_TITLE
         
-        # No Shopify writes
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
     
     def test_regenerate_field_does_not_update_live_seo_title(
         self, test_db, mock_store_identity, mock_ai_client, mock_shopify_writes
@@ -615,8 +723,9 @@ class TestNoAutoApply:
         ).fetchone()
         assert after["seo_title"] == self.EXISTING_SEO_TITLE
         
-        # No Shopify writes
-        assert len(mock_shopify_writes) == 0
+        # No Shopify writes - assert call count is 0
+        assert mock_shopify_writes["live_update_product"] == 0
+        assert mock_shopify_writes["graphql_request"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +793,49 @@ class TestAPIWarnings:
         assert "warnings" in data
         assert len(data["warnings"]) >= 1
         assert any("60" in w or "exceed" in w.lower() for w in data["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Full generation _qa.warnings test
+# ---------------------------------------------------------------------------
+
+class TestFullGenerationQAWarnings:
+    """Test that full generation result carries _qa.warnings and meta_strength_warnings."""
+    
+    # 57-char product name (produces 73-char title, >60 char warning)
+    LONG_PRODUCT_NAME = "ELFBAR GH20000 - Straw Watermelon Glubble Disposable Vape"
+    LONG_HANDLE = "glubble-qa-warnings"
+    
+    def test_full_generation_result_has_qa_warnings(
+        self, test_db, mock_store_identity, mock_ai_client, mock_shopify_writes
+    ):
+        """Full generation result carries _qa.warnings and title_length_warnings."""
+        conn, db_path = test_db
+        _insert_test_product(conn, self.LONG_HANDLE, self.LONG_PRODUCT_NAME)
+        
+        from shopifyseo.dashboard_ai_engine_parts.generation import generate_recommendation
+        result = generate_recommendation(conn, "product", self.LONG_HANDLE)
+        
+        # Result should have _qa key
+        assert "_qa" in result
+        qa = result["_qa"]
+        
+        # _qa should have warnings and title_length_warnings
+        assert "warnings" in qa
+        assert "title_length_warnings" in qa
+        assert "meta_strength_warnings" in qa
+        
+        # Title is 73 chars (>60), so should have title length warning
+        expected_title = f"{self.LONG_PRODUCT_NAME} | Vapely Canada"
+        assert result["seo_title"] == expected_title
+        assert len(result["seo_title"]) == 73
+        
+        # title_length_warnings should have the >60 char warning
+        assert len(qa["title_length_warnings"]) >= 1
+        assert any("60" in w or "exceed" in w.lower() for w in qa["title_length_warnings"])
+        
+        # warnings should include title_length_warnings
+        assert len(qa["warnings"]) >= 1
 
 
 # ---------------------------------------------------------------------------

@@ -289,6 +289,8 @@ def _generate_single_field_core(**kwargs) -> dict:
     from shopifyseo.seo_quality import metadata_issues
     original_feedback = kwargs.get("retry_feedback") or ""
     feedback = original_feedback
+    object_type = kwargs["object_type"]
+    field = kwargs["field"]
     for attempt in range(3):
         try:
             result = _generate_single_field_attempt(**{**kwargs, "retry_feedback": feedback})
@@ -297,13 +299,17 @@ def _generate_single_field_core(**kwargs) -> dict:
                 raise
             feedback = f"{feedback}\nCorrect this validation failure: {exc}. Rewrite naturally using only confirmed facts."
             continue
-        issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
-        # Only retry on errors, not warnings (e.g. product seo_title >60 chars is a warning)
-        errors = [i for i in issues if i.get("severity") == "error"]
-        if not errors or attempt == 2:
+        issues = metadata_issues(object_type, {field: result["value"]})
+        # Product seo_title: only retry on errors (warnings like >60 chars don't trigger retry)
+        # All other types/fields: retry on any issue (preserves original behavior)
+        if object_type == "product" and field == "seo_title":
+            retry_issues = [i for i in issues if i.get("severity") == "error"]
+        else:
+            retry_issues = issues
+        if not retry_issues or attempt == 2:
             return {**result, "quality_issues": issues, "quality_retry_count": attempt}
         # Don't overwrite original feedback (e.g. TVPA feedback) — append metadata issues
-        metadata_feedback = "\n".join(i["message"] for i in errors) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        metadata_feedback = "\n".join(i["message"] for i in retry_issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
         feedback = f"{original_feedback}\n{metadata_feedback}" if original_feedback else metadata_feedback
     raise RuntimeError("Quality correction did not complete")
 
@@ -912,7 +918,7 @@ def generate_recommendation(
         meta_tvpa_passed, meta_tvpa_issues = validate_tvpa_flavour_claims(
             meta_text, allowed_names=tvpa_allowed_names
         )
-        tvpa_flavour_issues = body_tvpa_issues + meta_tvpa_issues
+        tvpa_flavour_issues = list(dict.fromkeys(body_tvpa_issues + meta_tvpa_issues))
         
         # Separate category issues (trigger retry/fail) from style issues (warnings only)
         tvpa_category_issues = _tvpa_category_issues(recommendation["body"], tvpa_allowed_names)
@@ -998,7 +1004,7 @@ def generate_recommendation(
                 if object_type in ("product", "collection", "blog_article"):
                     tvpa_category_issues = retry_tvpa_category_issues
                     # Preserve meta_tvpa_issues (from seo_title/seo_description), update body portion
-                    tvpa_flavour_issues = retry_body_tvpa_issues + meta_tvpa_issues
+                    tvpa_flavour_issues = list(dict.fromkeys(retry_body_tvpa_issues + meta_tvpa_issues))
                 generated_fields["body"]["value"] = retry_body
                 review_actions["body"] = retry_result.get("review_action", "")
                 body_retried = True

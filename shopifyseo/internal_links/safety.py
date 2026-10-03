@@ -19,6 +19,7 @@ SOURCE_TYPES = ("product", "collection", "blog_article")
 # A restart invalidates previews. Multi-worker deployments must share this secret.
 _SECRET = os.environ.get("INTERNAL_LINK_PREVIEW_SECRET", "").encode() or secrets.token_bytes(32)
 PREVIEW_TTL = 600
+MANUAL_LINK_CAP = 8
 
 
 class LinkConflict(ValueError):
@@ -122,9 +123,17 @@ def text_diff(old: str, new: str) -> str:
 
 
 def validate_edit(raw: dict) -> dict:
-    keys = {"anchor_phrase", "insert_sentence", "insert_after_text"}
+    """Validate and normalize an edit descriptor.
+    
+    Supports three modes:
+    - phrase_wrap: just anchor_phrase, wrap existing text
+    - insert_sentence: AI-generated sentence insertion after a paragraph
+    - manual_append: manual mode with origin="manual", after_sentence, append_text
+    """
+    keys = {"anchor_phrase", "insert_sentence", "insert_after_text", "origin", "after_sentence", "append_text"}
     if not isinstance(raw, dict) or set(raw) - keys:
         raise LinkConflict("Full-body AI responses and unsupported edit fields are blocked. Generate a new suggestion.")
+    # Drop empty string values first (AI path may send empty strings for unused fields)
     edit = {k: v.strip() for k, v in raw.items() if isinstance(v, str) and v.strip()}
     if any(v is not None and not isinstance(v, str) for v in raw.values()):
         raise LinkConflict("Link edits must contain plain text.")
@@ -133,6 +142,46 @@ def validate_edit(raw: dict) -> dict:
         raise LinkConflict("A short, exact anchor phrase is required.")
     if any("<" in v or ">" in v for v in edit.values()):
         raise LinkConflict("AI edits must contain plain text, never HTML.")
+    
+    # Check for manual mode
+    is_manual = edit.get("origin") == "manual"
+    has_after_sentence = bool(edit.get("after_sentence"))
+    has_append_text = bool(edit.get("append_text"))
+    has_insert_sentence = bool(edit.get("insert_sentence"))
+    has_insert_after_text = bool(edit.get("insert_after_text"))
+    
+    if is_manual:
+        # Manual mode: requires after_sentence and append_text, mutually exclusive with insert_sentence
+        if has_insert_sentence or has_insert_after_text:
+            raise LinkConflict("Manual mode cannot be combined with insert_sentence or insert_after_text.")
+        if not has_after_sentence:
+            raise LinkConflict("Manual mode requires after_sentence (the sentence to append to).")
+        if not has_append_text:
+            raise LinkConflict("Manual mode requires append_text (the text to add).")
+        
+        append_text = edit["append_text"]
+        
+        # Validate append_text: no newlines, plain text, at most 300 characters
+        if "\n" in append_text:
+            raise LinkConflict("Appended text must not contain newlines.")
+        if len(append_text) > 300:
+            raise LinkConflict("Appended text exceeds 300 characters.")
+        
+        # At most 2 sentences: count sentence boundaries ([.!?] + whitespace + non-space)
+        sentence_boundaries = len(re.findall(r"[.!?]\s+\S", append_text))
+        if sentence_boundaries >= 2:
+            raise LinkConflict("Appended text may contain at most 2 sentences.")
+        
+        # Anchor must appear exactly once in append_text
+        if append_text.count(phrase) != 1:
+            raise LinkConflict("The anchor phrase must appear exactly once in the appended text.")
+        
+        return edit
+    
+    # Non-manual modes: after_sentence/append_text not allowed
+    if has_after_sentence or has_append_text:
+        raise LinkConflict("after_sentence and append_text require origin='manual'.")
+    
     sentence = edit.get("insert_sentence")
     if sentence:
         if len(sentence) > 300 or "\n" in sentence or re.search(r"[.!?]\s+\S", sentence):
@@ -144,11 +193,273 @@ def validate_edit(raw: dict) -> dict:
     return edit
 
 
+def _normalize_for_matching(text: str) -> str:
+    """Normalize text for sentence matching: unescape HTML entities and normalize whitespace."""
+    import html as html_mod
+    text = html_mod.unescape(text)
+    # Normalize various dashes, quotes, and special spaces
+    text = text.replace("\u00a0", " ")  # nbsp
+    text = text.replace("\u2019", "'")  # right single quote
+    text = text.replace("\u2018", "'")  # left single quote
+    text = text.replace("\u201c", '"')  # left double quote
+    text = text.replace("\u201d", '"')  # right double quote
+    text = text.replace("\u2014", "-")  # em dash
+    text = text.replace("\u2013", "-")  # en dash
+    return " ".join(text.split())
+
+
+def _count_links_in_body(body: str) -> int:
+    """Count links with non-empty href in body HTML."""
+    from .graph import extract_links
+    return len([href for href, _ in extract_links(body) if href.strip()])
+
+
+def _find_sentence_in_body(body: str, sentence: str) -> list[tuple[int, int]]:
+    """Find all occurrences of a sentence in the eligible visible text of a body.
+    
+    Returns list of (start_offset, end_offset) tuples in the source HTML.
+    Matches are within eligible text spans (not in _PROTECTED tags).
+    The match must sit on sentence boundaries: block start or [.!?] + whitespace
+    before it, and a sentence terminator after it.
+    """
+    parser = BodyParser(body)
+    sentence_norm = _normalize_for_matching(sentence)
+    if not sentence_norm:
+        return []
+    
+    matches: list[tuple[int, int]] = []
+    
+    # Build a map of normalized text to source offsets
+    for span_offset, span_text in parser.text_spans:
+        span_norm = _normalize_for_matching(span_text)
+        
+        # Try to find the sentence in this span
+        search_pos = 0
+        while True:
+            idx = span_norm.find(sentence_norm, search_pos)
+            if idx < 0:
+                break
+            
+            # Check sentence boundaries
+            # Before: must be start of span or preceded by [.!?] and whitespace
+            before_ok = False
+            if idx == 0:
+                before_ok = True
+            else:
+                before_text = span_norm[:idx].rstrip()
+                if before_text and before_text[-1] in ".!?":
+                    before_ok = True
+            
+            # After: must end with a sentence terminator
+            end_idx = idx + len(sentence_norm)
+            after_ok = False
+            if end_idx >= len(span_norm):
+                after_ok = True
+            else:
+                # Check if followed by whitespace (sentence boundary)
+                remainder = span_norm[end_idx:]
+                if remainder and (remainder[0].isspace() or remainder[0] in ".!?"):
+                    after_ok = True
+            
+            # Also check sentence ends with terminator
+            if sentence_norm and sentence_norm[-1] in ".!?":
+                after_ok = True
+            
+            if before_ok and after_ok:
+                # Map back to source offsets - approximate by character ratio
+                # This is a simplification; proper handling would track char-by-char
+                ratio = len(span_text) / len(span_norm) if span_norm else 1
+                approx_start = span_offset + int(idx * ratio)
+                approx_end = span_offset + int(end_idx * ratio)
+                matches.append((approx_start, approx_end))
+            
+            search_pos = idx + 1
+    
+    return matches
+
+
+class _FullTextExtractor(HTMLParser):
+    """Extract all text from HTML including text inside links, with position mapping.
+    
+    Creates a mapping from text positions to HTML positions for sentence matching.
+    Excludes text in script/style/textarea elements.
+    """
+    _SKIP_TAGS = {"script", "style", "textarea", "template"}
+    
+    def __init__(self, html_str: str):
+        super().__init__(convert_charrefs=True)
+        self.html = html_str
+        self.text_parts: list[str] = []
+        self.text_to_html_pos: list[int] = []
+        self.skip_depth = 0
+        self._lines = [0] + [m.end() for m in re.finditer("\n", html_str)]
+        self.feed(html_str)
+        self.close()
+    
+    def _source_offset(self) -> int:
+        line, col = self.getpos()
+        return self._lines[line - 1] + col
+    
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS:
+            self.skip_depth += 1
+    
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS and self.skip_depth > 0:
+            self.skip_depth -= 1
+    
+    def handle_data(self, data):
+        if self.skip_depth == 0:
+            offset = self._source_offset()
+            for i, char in enumerate(data):
+                self.text_parts.append(char)
+                self.text_to_html_pos.append(offset + i)
+    
+    def get_text(self) -> str:
+        return "".join(self.text_parts)
+    
+    def html_pos_for_text_pos(self, text_pos: int) -> int:
+        """Get the HTML position after the character at text_pos."""
+        if text_pos < 0 or text_pos >= len(self.text_to_html_pos):
+            return len(self.html)
+        return self.text_to_html_pos[text_pos] + 1
+
+
+def _find_sentence_end_in_html(html_str: str, sentence: str) -> int | None:
+    """Find the HTML offset where a sentence ends, handling text inside links.
+    
+    Returns:
+        int: HTML offset to insert after (right after the sentence's period)
+        None: If sentence not found
+        -1: If sentence appears multiple times (ambiguous)
+    """
+    extractor = _FullTextExtractor(html_str)
+    full_text = extractor.get_text()
+    
+    sentence_norm = _normalize_for_matching(sentence)
+    text_norm = _normalize_for_matching(full_text)
+    
+    if not sentence_norm:
+        return None
+    
+    matches: list[int] = []
+    search_start = 0
+    
+    while True:
+        pos = text_norm.find(sentence_norm, search_start)
+        if pos < 0:
+            break
+        
+        end_pos = pos + len(sentence_norm)
+        
+        before_ok = pos == 0 or text_norm[pos - 1] in " .!?\n"
+        after_ok = sentence_norm[-1] in ".!?"
+        
+        if before_ok and after_ok:
+            norm_end = end_pos - 1
+            text_char_idx = _map_norm_to_text_pos(full_text, norm_end)
+            if text_char_idx is not None:
+                html_pos = extractor.html_pos_for_text_pos(text_char_idx)
+                matches.append(html_pos)
+        
+        search_start = pos + 1
+    
+    if len(matches) == 0:
+        return None
+    if len(matches) > 1:
+        return -1
+    return matches[0]
+
+
+def _map_norm_to_text_pos(full_text: str, norm_pos: int) -> int | None:
+    """Map a position in normalized text back to position in original full text.
+    
+    Accounts for whitespace collapsing and dash normalization.
+    """
+    if not full_text:
+        return None
+    
+    normalized = _normalize_for_matching(full_text)
+    if norm_pos < 0 or norm_pos >= len(normalized):
+        return None
+    
+    target_char = normalized[norm_pos]
+    
+    norm_idx = 0
+    in_whitespace = False
+    
+    for text_idx, char in enumerate(full_text):
+        if char.isspace() or char in "\u00a0":
+            if not in_whitespace:
+                if norm_idx == norm_pos:
+                    return text_idx
+                in_whitespace = True
+                norm_idx += 1
+        else:
+            in_whitespace = False
+            norm_char = char
+            if char == "\u2014" or char == "\u2013":
+                norm_char = "-"
+            elif char == "\u2019" or char == "\u2018":
+                norm_char = "'"
+            elif char == "\u201c" or char == "\u201d":
+                norm_char = '"'
+            
+            if norm_idx == norm_pos:
+                return text_idx
+            norm_idx += 1
+    
+    if norm_idx == norm_pos + 1:
+        return len(full_text) - 1
+    
+    return None
+
+
 def build_edit(old: str, raw: dict, url: str) -> str:
+    """Build the new HTML body with the link inserted.
+    
+    Supports three modes:
+    - phrase_wrap: wrap existing phrase with a link
+    - insert_sentence: insert a new paragraph after a matched paragraph
+    - manual_append: append text after an existing sentence
+    """
     edit = validate_edit(raw)
     phrase = edit["anchor_phrase"]
     parser = BodyParser(old)
     href = html.escape(url, quote=True)
+    
+    # Manual append mode
+    if edit.get("origin") == "manual":
+        after_sentence = edit["after_sentence"]
+        append_text = edit["append_text"]
+        
+        # Check 8-link cap
+        existing_links = _count_links_in_body(old)
+        if existing_links + 1 > MANUAL_LINK_CAP:
+            raise LinkConflict(
+                f"Link cap reached: {existing_links} existing links (max {MANUAL_LINK_CAP} including this one)."
+            )
+        
+        # Find the sentence in the body, including text inside links
+        # Use _find_sentence_end_in_html which handles sentences spanning links
+        insert_offset = _find_sentence_end_in_html(old, after_sentence)
+        
+        if insert_offset is None:
+            raise LinkConflict("Sentence not found in live body. The page may have changed (drift).")
+        if insert_offset == -1:
+            raise LinkConflict("Sentence appears multiple times in the body (ambiguous). Use a more specific sentence.")
+        
+        # Build the insertion: space + append_text with anchor linked
+        linked_text = html.escape(append_text).replace(
+            html.escape(phrase),
+            f'<a href="{href}">{html.escape(phrase)}</a>',
+            1
+        )
+        insertion = " " + linked_text
+        
+        return old[:insert_offset] + insertion + old[insert_offset:]
+    
+    # AI insert_sentence mode
     sentence = edit.get("insert_sentence")
     if sentence:
         location = " ".join(edit["insert_after_text"].split())
@@ -158,6 +469,8 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         linked = html.escape(sentence).replace(html.escape(phrase), f'<a href="{href}">{html.escape(phrase)}</a>', 1)
         offset = matches[0]
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
+    
+    # phrase_wrap mode
     pattern = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
     for offset, text in parser.text_spans:
         match = pattern.search(text)

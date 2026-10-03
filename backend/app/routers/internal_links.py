@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 
 from shopifyseo.internal_links.safety import LinkConflict, AI_TYPES_KEY, SOURCE_TYPES, ai_enabled_types
+from shopifyseo.internal_links.manual_weave import ManualWeaveRejected
 
 from backend.app.db import open_db_connection
 from backend.app.schemas.common import PaginatedSuccessResponse, SuccessResponse, success_response, paginated_response
@@ -247,6 +248,53 @@ def generate_anchor(suggestion_id: int):
 
 class ApplyRequest(BaseModel):
     preview_token: str = ""
+
+
+class ManualWeaveRequest(BaseModel):
+    original_sentence: str
+    replacement_sentence: str
+
+
+@router.post("/suggestions/{suggestion_id}/manual-weave", response_model=SuccessResponse[dict])
+def manual_weave(suggestion_id: int, payload: ManualWeaveRequest):
+    """Submit a hand-written sentence addition for an ai_woven suggestion.
+    
+    This endpoint allows manually providing the edit text without running AI generation.
+    The replacement_sentence must start with the original_sentence verbatim (append-only),
+    and must contain exactly one <a> link pointing to the suggestion's target.
+    
+    Returns:
+        - On success: preview data including preview_token, plus edit, existing_link_count, link_cap
+        - 400: Content validation failed (ManualWeaveRejected with gaps)
+        - 409: State/drift conflict (LinkConflict)
+        - 500: Internal error
+    """
+    conn = open_db_connection()
+    try:
+        from shopifyseo.internal_links.manual_weave import submit_manual_weave
+        
+        result = submit_manual_weave(
+            conn,
+            suggestion_id,
+            base_url=_base_url(conn),
+            original_sentence=payload.original_sentence,
+            replacement_sentence=payload.replacement_sentence,
+        )
+        return success_response(result)
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+    except ManualWeaveRejected as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": {"code": "manual_weave_rejected", "message": str(exc), "gaps": exc.gaps}},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.warning("Manual weave failed", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    finally:
+        conn.close()
 
 
 @router.post("/suggestions/{suggestion_id}/apply", response_model=SuccessResponse[dict])

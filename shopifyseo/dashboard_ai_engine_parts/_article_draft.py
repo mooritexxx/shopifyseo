@@ -1265,6 +1265,12 @@ def generate_article_draft(
         if '/products/' not in path or (len(product_repair_targets) >= 3 and path in product_repair_paths)
     }
 
+    _domain = ""
+    if _base_url:
+        _domain = urlparse(_base_url).netloc or ""
+    if not _domain and (_store_domain or "").strip():
+        _domain = (_store_domain or "").strip()
+
     _linkable_product_snapshot: frozenset[str] = frozenset()
     _store_hosts: tuple[str, ...] = ()
     try:
@@ -1285,9 +1291,6 @@ def generate_article_draft(
     except Exception:
         logger.debug("Failed to close article draft setup DB connection", exc_info=True)
 
-    _domain = ""
-    if _base_url:
-        _domain = urlparse(_base_url).netloc or ""
     if not _domain and (_store_domain or "").strip():
         _domain = (_store_domain or "").strip()
 

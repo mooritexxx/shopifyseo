@@ -244,8 +244,7 @@ def repair_commerce_headings(body_html: str) -> tuple[str, list[str]]:
     if not h2_matches:
         return result, changes
 
-    to_remove: list[tuple[int, int, list[str]]] = []
-    to_rewrite: list[tuple[int, int, str, str, str]] = []
+    edits: list[tuple[int, int, str, str]] = []
 
     for i, m in enumerate(h2_matches):
         attrs = m.group(1) or ""
@@ -259,28 +258,28 @@ def repair_commerce_headings(body_html: str) -> tuple[str, list[str]]:
             end_pos = h2_matches[i + 1].start() if i + 1 < len(h2_matches) else len(result)
             section_html = result[m.start() : end_pos]
             scripts = _SCRIPT_RE.findall(section_html)
-            to_remove.append((m.start(), end_pos, scripts))
-            changes.append(f"Removed bulk/wholesale section: '{plain[:60]}'")
+            replacement = "\n".join(scripts)
+            edits.append((m.start(), end_pos, replacement, f"Removed bulk/wholesale section: '{plain[:60]}'"))
         else:
             rewritten = rewrite_stock_status_heading(plain)
             if rewritten:
-                to_rewrite.append((m.start(), m.end(), attrs, plain, rewritten))
-                changes.append(f"Rewrote heading: '{plain[:40]}' → '{rewritten[:40]}'")
+                new_inner = html_module.escape(rewritten)
+                new_h2 = f"<h2{attrs}>{new_inner}</h2>"
+                edits.append((m.start(), m.end(), new_h2, f"Rewrote heading: '{plain[:40]}' → '{rewritten[:40]}'"))
             else:
                 end_pos = h2_matches[i + 1].start() if i + 1 < len(h2_matches) else len(result)
                 section_html = result[m.start() : end_pos]
                 scripts = _SCRIPT_RE.findall(section_html)
-                to_remove.append((m.start(), end_pos, scripts))
-                changes.append(f"Removed unrewritable stock-status section: '{plain[:60]}'")
+                replacement = "\n".join(scripts)
+                edits.append((m.start(), end_pos, replacement, f"Removed unrewritable stock-status section: '{plain[:60]}'"))
 
-    for start, end, attrs, old_plain, new_plain in reversed(to_rewrite):
-        new_inner = html_module.escape(new_plain)
-        new_h2 = f"<h2{attrs}>{new_inner}</h2>"
-        result = result[:start] + new_h2 + result[end:]
+    edits.sort(key=lambda x: x[0], reverse=True)
 
-    for start, end, scripts in reversed(to_remove):
-        replacement = "\n".join(scripts)
+    for start, end, replacement, change_desc in edits:
         result = result[:start] + replacement + result[end:]
+        changes.append(change_desc)
+
+    changes.reverse()
 
     result = re.sub(r"\n{3,}", "\n\n", result)
 

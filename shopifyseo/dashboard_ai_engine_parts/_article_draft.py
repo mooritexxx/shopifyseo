@@ -20,6 +20,10 @@ from .faq_content_filter import (
     normalize_spelling_for_comparison,
     validate_and_fix_alt_text,
 )
+from .commerce_heading_gate import (
+    COMMERCE_HEADING_PROMPT_RULE,
+    repair_commerce_headings,
+)
 
 _A_BODY_TAG_RE = re.compile(r"(?is)<a\s+([^>]+)>(.*?)</a>")
 
@@ -85,37 +89,175 @@ def sanitize_article_internal_links(
     return _A_BODY_TAG_RE.sub(_repl, body_html)
 
 
+def _normalized_relevance_text(value: str) -> str:
+    """Normalize text for relevance matching (lower, collapse whitespace, strip punctuation)."""
+    return re.sub(r'[^\w]+', ' ', normalize_spelling_for_comparison(value or '')).strip()
+
+
+def _relevance_context(
+    conn: sqlite3.Connection, topic: str, primary_target: dict | None
+) -> tuple[str, str, set[str]]:
+    """Extract relevance context for brand/collection matching.
+
+    Returns (focus, primary_vendor, collection_ids) where:
+    - focus: normalized topic text with surrounding spaces for word matching
+    - primary_vendor: normalized vendor of primary product target (empty if none)
+    - collection_ids: Shopify IDs of collections associated with primary target
+    """
+    primary = primary_target or {}
+    primary_vendor = ''
+    collection_ids: set[str] = set()
+    if primary.get('type') == 'product':
+        row = conn.execute(
+            "SELECT vendor, shopify_id FROM products WHERE handle = ?",
+            (primary.get('handle'),)
+        ).fetchone()
+        if row:
+            primary_vendor = _normalized_relevance_text(str(row[0] or ''))
+            collection_ids = {r[0] for r in conn.execute(
+                "SELECT collection_shopify_id FROM collection_products WHERE product_shopify_id = ?",
+                (row[1],)
+            )}
+    elif primary.get('type') == 'collection':
+        row = conn.execute(
+            "SELECT shopify_id FROM collections WHERE handle = ?",
+            (primary.get('handle'),)
+        ).fetchone()
+        if row and row[0]:
+            collection_ids.add(row[0])
+    focus = ' ' + _normalized_relevance_text(topic) + ' '
+    return focus, primary_vendor, collection_ids
+
+
+def _same_brand(vendor: str, focus: str, primary_vendor: str) -> bool:
+    """Check if vendor matches the focus topic or primary product's vendor."""
+    brand = _normalized_relevance_text(vendor)
+    if not brand:
+        return False
+    return brand == primary_vendor or (' ' + brand + ' ') in focus
+
+
+_TOPIC_STOP_WORDS = frozenset({
+    'best', 'top', 'guide', 'flavours', 'flavors', 'flavour', 'flavor',
+    'canada', 'canadian', 'vape', 'vapes', 'vaping', 'review', 'reviews',
+    'in', 'at', 'the', 'a', 'an', 'for', 'to', 'of', 'and', 'or', 'with',
+})
+
+
+def _topic_relevance_score(title: str, topic: str, brand: str) -> int:
+    """Score how many topic tokens appear in the product title.
+
+    Higher score = more relevant. Excludes brand name and common stop words
+    from the topic tokens.
+    """
+    title_norm = _normalized_relevance_text(title).lower()
+    topic_norm = _normalized_relevance_text(topic).lower()
+    brand_norm = _normalized_relevance_text(brand).lower()
+    brand_words = set(brand_norm.split()) if brand_norm else set()
+    topic_tokens = [
+        t for t in topic_norm.split()
+        if t not in _TOPIC_STOP_WORDS and t not in brand_words and len(t) > 1
+    ]
+    return sum(1 for token in topic_tokens if token in title_norm.split())
+
+
+def focus_product_handles(
+    conn: sqlite3.Connection,
+    topic: str,
+    primary_target: dict | None,
+    *,
+    limit: int = 20,
+) -> list[str]:
+    """Return linkable product handles relevant to the topic.
+
+    Searches the **whole catalog** (not limited to the allowlist) for linkable
+    products that match the post's brand (vendor matches the primary product's
+    vendor, or the vendor name appears as a word in the normalized topic) or
+    that belong to the primary collection.
+
+    Products are ordered by topic relevance (number of normalized topic tokens
+    found in the product title, descending), then by title. An unknown brand
+    or collection returns an empty list with no fallback.
+
+    Stock/inventory is **never** checked. Out-of-stock products are included.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Database connection.
+    topic : str
+        The article topic (e.g. "Best STLTH 60K Flavours in Canada").
+    primary_target : dict or None
+        Primary link target dict with keys ``type`` and ``handle``.
+    limit : int
+        Maximum number of handles to return.
+
+    Returns
+    -------
+    list[str]
+        Product handles ordered by relevance, up to *limit*.
+    """
+    from ..product_linkability import linkable_product_sql
+
+    focus, primary_vendor, collection_ids = _relevance_context(conn, topic, primary_target)
+
+    linkable_expr = linkable_product_sql(conn, alias="p")
+
+    rows = conn.execute(
+        f"SELECT p.handle, p.title, p.vendor FROM products p WHERE {linkable_expr}"
+    ).fetchall()
+
+    collection_handles: set[str] = set()
+    if collection_ids:
+        ids = list(collection_ids)
+        placeholders = ','.join('?' for _ in ids)
+        collection_handles = {
+            r[0] for r in conn.execute(
+                f"SELECT p.handle FROM products p "
+                f"JOIN collection_products cp ON cp.product_shopify_id = p.shopify_id "
+                f"WHERE cp.collection_shopify_id IN ({placeholders})",
+                ids,
+            )
+        }
+
+    ranked: list[tuple[int, str, str]] = []
+    for handle, title, vendor in rows:
+        same_brand = _same_brand(vendor, focus, primary_vendor)
+        same_collection = handle in collection_handles
+        if not (same_brand or same_collection):
+            continue
+        score = _topic_relevance_score(title, topic, vendor)
+        ranked.append((-score, str(title or '').casefold(), handle))
+
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return [h for _, _, h in ranked[:limit]]
+
+
 def relevant_product_repair_targets(
     conn: sqlite3.Connection, topic: str, primary_target: dict | None, approved_targets: list[dict],
 ) -> list[dict]:
     """Select only approved products with catalog evidence of brand/collection relevance.
 
     Narrow reads are bounded to the existing allowlist; an unknown focus produces
-    no fallback products. Availability affects ordering, never relevance.
+    no fallback products. Stock/inventory does **not** affect ordering or selection.
     """
+    from ..product_linkability import linkable_product_handles
+
     products = {t['handle']: t for t in approved_targets if t.get('type') == 'product' and t.get('handle')}
     if not products:
         return []
+
     handles = list(products)
+    linkable = linkable_product_handles(conn, handles)
+
     placeholders = ','.join('?' for _ in handles)
     rows = conn.execute(
-        f"SELECT handle, title, vendor, total_inventory, status FROM products WHERE handle IN ({placeholders})",
+        f"SELECT handle, title, vendor FROM products WHERE handle IN ({placeholders})",
         handles,
     ).fetchall()
-    primary = primary_target or {}
-    primary_vendor = ''
-    collection_ids: set[str] = set()
-    if primary.get('type') == 'product':
-        row = conn.execute("SELECT vendor, shopify_id FROM products WHERE handle = ?", (primary.get('handle'),)).fetchone()
-        if row:
-            primary_vendor = str(row[0] or '').strip()
-            collection_ids = {r[0] for r in conn.execute(
-                "SELECT collection_shopify_id FROM collection_products WHERE product_shopify_id = ?", (row[1],)
-            )}
-    elif primary.get('type') == 'collection':
-        row = conn.execute("SELECT shopify_id FROM collections WHERE handle = ?", (primary.get('handle'),)).fetchone()
-        if row and row[0]:
-            collection_ids.add(row[0])
+
+    focus, primary_vendor, collection_ids = _relevance_context(conn, topic, primary_target)
+
     collection_handles: set[str] = set()
     if collection_ids:
         ids = list(collection_ids)
@@ -124,19 +266,20 @@ def relevant_product_repair_targets(
             f"WHERE p.handle IN ({placeholders}) AND cp.collection_shopify_id IN ({','.join('?' for _ in ids)})",
             handles + ids,
         )}
-    def normalized(value):
-        return re.sub(r'[^\w]+', ' ', normalize_spelling_for_comparison(value or '')).strip()
-    focus = ' ' + normalized(topic) + ' '
-    ranked = []
-    for handle, title, vendor, inventory, status in rows:
-        if status and str(status).upper() != 'ACTIVE':
+
+    ranked: list[tuple[int, str, dict]] = []
+    for handle, title, vendor in rows:
+        if handle not in linkable:
             continue
-        brand = normalized(vendor)
-        same_brand = bool(brand and (brand == normalized(primary_vendor) or ' ' + brand + ' ' in focus))
+        same_brand = _same_brand(vendor, focus, primary_vendor)
         same_collection = handle in collection_handles
-        if same_brand or same_collection:
-            ranked.append((not (inventory and inventory > 0), str(title or '').casefold(), products[handle]))
-    return [entry[2] for entry in sorted(ranked, key=lambda entry: entry[:2])]
+        if not (same_brand or same_collection):
+            continue
+        score = _topic_relevance_score(title, topic, vendor)
+        ranked.append((-score, str(title or '').casefold(), products[handle]))
+
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return [entry[2] for entry in ranked]
 
 
 def generate_article_draft(
@@ -988,7 +1131,7 @@ def generate_article_draft(
                     f"- [{r['object_type']}] {r['object_handle']} — {(r.get('source_text_preview') or '')[:100]}"
                 )
     except Exception:
-        logger.debug("RAG retrieval for article draft internal links failed", exc_info=True)
+        logger.warning("RAG retrieval for article draft internal links failed", exc_info=True)
 
     _rag_reference_block = ""
     if _rag_reference_lines:
@@ -1022,7 +1165,18 @@ def generate_article_draft(
     else:
         _author_ld = f"\"author\":{{\"@type\":\"Organization\",\"name\":\"{_brand}\"}}"
 
-    link_targets, _, _ = _dq.build_store_internal_link_allowlist(conn, _base_url, rag_results=rag_results)
+    from ..product_linkability import is_product_linkable, linkable_product_handles as get_linkable_handles
+
+    _focus_handles: list[str] = []
+    try:
+        _focus_handles = focus_product_handles(conn, topic, primary_target, limit=20)
+    except Exception:
+        logger.warning("Failed to compute focus product handles", exc_info=True)
+
+    link_targets, _, _ = _dq.build_store_internal_link_allowlist(
+        conn, _base_url, rag_results=rag_results,
+        priority_handles={"product": _focus_handles} if _focus_handles else None,
+    )
 
     # Phase C: Reorder targets using internal-link pipeline scoring philosophy (orphan priority).
     try:
@@ -1045,6 +1199,31 @@ def generate_article_draft(
 
     _existing_keys = {(t.get("type"), t.get("handle")) for t in link_targets}
     primary_normalized = _normalize_target_entry(primary_target) if primary_target else None
+
+    if primary_normalized and primary_normalized["type"] == "product":
+        if not is_product_linkable(conn, primary_normalized["handle"]):
+            logger.warning(
+                "Primary product target %r is not linkable (inactive or not on Online Store)",
+                primary_normalized["handle"],
+            )
+            if _focus_handles:
+                substitute_handle = _focus_handles[0]
+                substitute_url = _dq.object_url_with_base(_base_url, "product", substitute_handle)
+                row = conn.execute(
+                    "SELECT title FROM products WHERE handle = ?", (substitute_handle,)
+                ).fetchone()
+                substitute_title = (row[0] if row else substitute_handle) if row else substitute_handle
+                logger.warning(
+                    "Swapping unlinkable primary product %r with focus product %r",
+                    primary_normalized["handle"], substitute_handle,
+                )
+                primary_normalized = {
+                    "type": "product",
+                    "handle": substitute_handle,
+                    "title": substitute_title,
+                    "url": substitute_url,
+                }
+
     if primary_normalized and (primary_normalized["type"], primary_normalized["handle"]) not in _existing_keys:
         link_targets.insert(0, primary_normalized)
         _existing_keys.add((primary_normalized["type"], primary_normalized["handle"]))
@@ -1054,8 +1233,13 @@ def generate_article_draft(
         n = _normalize_target_entry(s)
         if not n:
             continue
+        if n["type"] == "product" and not is_product_linkable(conn, n["handle"]):
+            logger.warning(
+                "Dropping secondary product target %r (not linkable: inactive or not on Online Store)",
+                n["handle"],
+            )
+            continue
         if (n["type"], n["handle"]) in _existing_keys:
-            # Preserve anchor_keyword for the prompt even if already in allowlist.
             n_with_anchor = dict(n)
             n_with_anchor["anchor_keyword"] = (s.get("anchor_keyword") or "").strip()
             secondary_normalized.append(n_with_anchor)
@@ -1080,6 +1264,21 @@ def generate_article_draft(
         path: url for path, url in path_to_canonical.items()
         if '/products/' not in path or (len(product_repair_targets) >= 3 and path in product_repair_paths)
     }
+
+    _linkable_product_snapshot: frozenset[str] = frozenset()
+    _store_hosts: tuple[str, ...] = ()
+    try:
+        _linkable_product_snapshot = frozenset(get_linkable_handles(conn))
+        hosts = []
+        if _domain:
+            hosts.append(_domain.lower())
+        if _base_url:
+            netloc = urlparse(_base_url).netloc
+            if netloc and netloc.lower() not in [h.lower() for h in hosts]:
+                hosts.append(netloc.lower())
+        _store_hosts = tuple(hosts)
+    except Exception:
+        logger.debug("Failed to snapshot linkable handles for compliance", exc_info=True)
 
     try:
         conn.close()
@@ -1312,6 +1511,7 @@ def generate_article_draft(
         f"{_link_scope}"
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
+        + COMMERCE_HEADING_PROMPT_RULE
     )
 
     system_outline = (
@@ -1324,6 +1524,7 @@ def generate_article_draft(
         f"{_link_scope}"
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
+        + COMMERCE_HEADING_PROMPT_RULE
     )
 
     system_section = (
@@ -1341,6 +1542,7 @@ def generate_article_draft(
         f"{_link_scope}"
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
+        + COMMERCE_HEADING_PROMPT_RULE
     )
 
     _serp_user_block = ""
@@ -1861,6 +2063,9 @@ def generate_article_draft(
             check_health_claims=True,
             check_faq_questions=True,
             target_brand=topic,
+            linkable_product_handles=_linkable_product_snapshot if _linkable_product_snapshot else None,
+            store_hosts=_store_hosts,
+            check_commerce_headings=True,
         )
         if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
             gaps.append(
@@ -2209,7 +2414,9 @@ def generate_article_draft(
                     "content": (
                         "Append only new HTML that fixes these validation gaps. Do not repeat existing sections. "
                         "Use the canonical SEO brief, the locked article title, and the current article memory. "
-                        "Return JSON with append_html only.\n\n"
+                        "Return JSON with append_html only."
+                        + COMMERCE_HEADING_PROMPT_RULE
+                        + "\n\n"
                         f"Title: {title}\n"
                         f"Gaps: {json.dumps(gaps, ensure_ascii=True)}\n"
                         "New product links may use ONLY these relevant catalog targets; never pad with unrelated products: "
@@ -2279,6 +2486,9 @@ def generate_article_draft(
             body, candidate_count, surviving_count = filter_final_article_content(body, target_brand=topic)
             body = _ensure_product_links(body)
             body, _, surviving_count = filter_final_article_content(body, target_brand=topic)
+            body, _commerce_changes = repair_commerce_headings(body)
+            if _commerce_changes:
+                logger.info("Commerce heading repairs: %s", _commerce_changes)
             had_faq_candidates = had_faq_candidates or candidate_count > 0
             faq_candidates_rejected = had_faq_candidates and surviving_count == 0
             if had_faq_candidates or require_faqpage_ld:

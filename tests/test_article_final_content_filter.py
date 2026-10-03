@@ -347,7 +347,12 @@ def test_bait_only_source_does_not_require_faq(conn, monkeypatch):
     assert extract_faqpage_question_names_from_body(result['body']) == []
 
 
-def test_product_repair_uses_same_brand_and_stock_order(conn, monkeypatch):
+def test_product_repair_uses_same_brand_and_ignores_stock(conn, monkeypatch):
+    """Test that product repair selects same-brand products, ignoring stock status.
+
+    The OOS product (p0) should be included in repair targets. Products are ordered
+    by title, not by stock level. Stock/inventory must never affect linkability.
+    """
     conn.execute("UPDATE products SET vendor = 'Fog', total_inventory = 5, status = 'ACTIVE'")
     conn.execute("UPDATE products SET total_inventory = 0 WHERE handle = 'p0'")
     conn.execute("INSERT INTO products (handle,title,vendor,status,tags_json,options_json,raw_json,synced_at) VALUES ('unrelated','Unrelated','Other','ACTIVE','[]','[]','{}','')")
@@ -363,7 +368,7 @@ def test_product_repair_uses_same_brand_and_stock_order(conn, monkeypatch):
     assert calls == ['article_draft']
     assert '/products/unrelated' not in body
     assert count_distinct_approved_product_links(body, PRODUCT_MAP) == 3
-    assert body.index('/products/p1') < body.index('/products/p0')
+    assert '/products/p0' in body
 
 
 def test_collection_evidence_is_required_for_collection_repair(conn):

@@ -224,11 +224,15 @@ def update_idea_targets(idea_id: int, body: UpdateIdeaTargetsRequest):
     Only ideas in status ``idea`` or ``approved`` are editable — published ideas
     are frozen. Every submitted (type, handle) is validated against the store
     internal-link allowlist to prevent invented URLs from reaching the drafter.
+
+    Uses uncapped limits so every linkable target is accepted, including
+    late-alphabet brands and out-of-stock products.
     """
     conn = open_db_connection()
     try:
         base = (dq._base_store_url(conn) or "").strip().rstrip("/")
-        allow_targets, _full, _paths = dq.build_store_internal_link_allowlist(conn, base)
+        uncapped = {"collection": 10**9, "product": 10**9, "page": 10**9, "blog_article": 10**9}
+        allow_targets, _full, _paths = dq.build_store_internal_link_allowlist(conn, base, caps=uncapped)
         allowed_keys = {
             (str(t.get("type") or ""), str(t.get("handle") or "")) for t in allow_targets
         }

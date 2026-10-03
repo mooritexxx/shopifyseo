@@ -77,6 +77,8 @@ function Harness() {
 }
 
 describe(`DataTable with ${ROW_COUNT} rows`, () => {
+  // CI runners are slower; give the full test up to 15 s while keeping the
+  // re-sort assertion at < 4000 ms.
   it("re-sorts without rebuilding cell contents, and keeps every row in the DOM", async () => {
     render(
       <MemoryRouter>
@@ -103,5 +105,5 @@ describe(`DataTable with ${ROW_COUNT} rows`, () => {
     // eslint-disable-next-line no-console
     console.log(`  [perf] re-sort of ${ROW_COUNT} rows: ${resortMs.toFixed(0)} ms`);
     expect(resortMs).toBeLessThan(4000);
-  });
+  }, 15000);
 });

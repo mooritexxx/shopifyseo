@@ -24,6 +24,7 @@ from .commerce_heading_gate import (
     COMMERCE_HEADING_PROMPT_RULE,
     repair_commerce_headings,
 )
+from .tvpa_flavour import TVPA_FLAVOUR_RULE, split_tvpa_gaps
 
 _A_BODY_TAG_RE = re.compile(r"(?is)<a\s+([^>]+)>(.*?)</a>")
 
@@ -1515,6 +1516,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     system_outline = (
@@ -1528,6 +1530,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     system_section = (
@@ -1546,6 +1549,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     _serp_user_block = ""
@@ -2052,6 +2056,24 @@ def generate_article_draft(
         else 0
     )
 
+    # Build tvpa_allowed_names from link_targets titles and focus product titles
+    from .tvpa_flavour import extract_flavour_from_title
+    _tvpa_allowed_names: list[str] = []
+    for target in link_targets:
+        if target.get("title"):
+            target_title = str(target["title"])
+            _tvpa_allowed_names.append(target_title)
+            # Also extract flavour from link target titles
+            target_flavour = extract_flavour_from_title(target_title)
+            if target_flavour:
+                _tvpa_allowed_names.append(target_flavour)
+    if primary_normalized and primary_normalized.get("title"):
+        primary_title = str(primary_normalized["title"])
+        _tvpa_allowed_names.append(primary_title)
+        primary_flavour = extract_flavour_from_title(primary_title)
+        if primary_flavour:
+            _tvpa_allowed_names.append(primary_flavour)
+
     def _compliance_gaps(body_html: str, *, faq_candidates_rejected: bool = False) -> list[str]:
         gaps = validate_article_draft_compliance(
             body_html=body_html,
@@ -2069,6 +2091,8 @@ def generate_article_draft(
             linkable_product_handles=_linkable_product_snapshot if _linkable_product_snapshot else None,
             store_hosts=_store_hosts,
             check_commerce_headings=True,
+            check_tvpa_flavour=True,
+            tvpa_allowed_names=_tvpa_allowed_names,
         )
         if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
             gaps.append(
@@ -2417,7 +2441,8 @@ def generate_article_draft(
                     "content": (
                         "Append only new HTML that fixes these validation gaps. Do not repeat existing sections. "
                         "Use the canonical SEO brief, the locked article title, and the current article memory. "
-                        "Return JSON with append_html only."
+                        "Return JSON with append_html only. "
+                        "Do not add flavour comparisons to candy, dessert, soda, energy drinks, or cannabis."
                         + COMMERCE_HEADING_PROMPT_RULE
                         + "\n\n"
                         f"Title: {title}\n"
@@ -2523,11 +2548,16 @@ def generate_article_draft(
                 result_summary=f"Attempt {attempt + 1}/3 · Body {len(body):,} chars",
             )
             gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
+            # Split TVPA gaps from hard-fail gaps inside the loop. TVPA gaps are warnings
+            # only — repairs can't remove an offending sentence (they are append-only),
+            # so burning repair calls on TVPA-only articles is wasteful.
+            tvpa_w, hard = split_tvpa_gaps(gaps)
             _save_validation_checkpoint(result_local, body, {
                 'ok': False, 'pending': False, 'gaps': gaps, 'repairs': attempt,
                 'had_faq_candidates': had_faq_candidates, 'faq_candidates_rejected': faq_candidates_rejected,
             })
-            if not gaps:
+            if not hard:
+                # Pass: no hard gaps. TVPA warnings are recorded but don't block.
                 memory = _save_memory(body, html_parts)
                 validation = {
                     "ok": True,
@@ -2537,6 +2567,7 @@ def generate_article_draft(
                     "links": len(collect_hrefs(body)),
                     "covered_keywords": len(memory.get("covered_keywords") or []),
                     "repairs": attempt,
+                    "tvpa_flavour_warnings": tvpa_w,
                 }
                 _run_update(validation_summary_json=validation)
                 _emit(
@@ -2563,16 +2594,19 @@ def generate_article_draft(
                 step_label="Validate and repair",
                 step_index=5,
                 step_total=11,
-                result_summary=f"{len(gaps)} gap{'s' if len(gaps) != 1 else ''} found",
+                result_summary=f"{len(hard)} gap{'s' if len(hard) != 1 else ''} found",
             )
-            body = _append_repair_html(body, gaps, title)
+            # Only pass hard gaps to repair — TVPA warnings are not repairable
+            body = _append_repair_html(body, hard, title)
             body = _sanitize_body(body)
         final_gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
-        if final_gaps:
+        # Split TVPA flavour gaps from hard-fail gaps at exit too.
+        tvpa_flavour_warnings, hard_fail_gaps = split_tvpa_gaps(final_gaps)
+        if hard_fail_gaps:
             raise RuntimeError(
-                "Article draft failed compliance after targeted repairs: " + " | ".join(final_gaps)
+                "Article draft failed compliance after targeted repairs: " + " | ".join(hard_fail_gaps)
             )
-        validation = {"ok": True, "body_chars": len(body), "repairs": 3}
+        validation = {"ok": True, "body_chars": len(body), "repairs": 3, "tvpa_flavour_warnings": tvpa_flavour_warnings}
         _run_update(validation_summary_json=validation)
         return body, validation
 

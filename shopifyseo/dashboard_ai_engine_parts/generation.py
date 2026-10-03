@@ -53,6 +53,28 @@ from ._article_draft import (
 )
 
 
+def _body_retry_acceptable(
+    body_score: float,
+    retry_body_score: float,
+    spec_claim_issues: list,
+    retry_spec_issues: list,
+    tvpa_category_issues: list,
+    retry_tvpa_category_issues: list,
+) -> bool:
+    """Determine if a body retry should be accepted.
+    
+    Accept only if neither TVPA hit count nor spec issues get worse,
+    AND at least one metric improves (score, spec issues, or TVPA issues).
+    """
+    tvpa_not_worse = len(retry_tvpa_category_issues) <= len(tvpa_category_issues)
+    spec_not_worse = len(retry_spec_issues) <= len(spec_claim_issues)
+    something_improved = (
+        (retry_body_score > body_score) or
+        (len(retry_spec_issues) < len(spec_claim_issues)) or
+        (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
+    )
+    return tvpa_not_worse and spec_not_worse and something_improved
+
 
 def _emit_progress(progress_callback: ProgressCallback | None, **payload) -> None:
     if progress_callback is not None:
@@ -180,7 +202,8 @@ def _context_with_accepted_fields(context: dict, accepted_fields: dict[str, str]
 def _generate_single_field_core(**kwargs) -> dict:
     """Use the same bounded quality correction loop for full and single-field AI."""
     from shopifyseo.seo_quality import metadata_issues
-    feedback = kwargs.get("retry_feedback") or ""
+    original_feedback = kwargs.get("retry_feedback") or ""
+    feedback = original_feedback
     for attempt in range(3):
         try:
             result = _generate_single_field_attempt(**{**kwargs, "retry_feedback": feedback})
@@ -192,7 +215,9 @@ def _generate_single_field_core(**kwargs) -> dict:
         issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
         if not issues or attempt == 2:
             return {**result, "quality_issues": issues, "quality_retry_count": attempt}
-        feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        # Don't overwrite original feedback (e.g. TVPA feedback) — append metadata issues
+        metadata_feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        feedback = f"{original_feedback}\n{metadata_feedback}" if original_feedback else metadata_feedback
     raise RuntimeError("Quality correction did not complete")
 
 
@@ -663,7 +688,7 @@ def generate_recommendation(
             recommendation["title"] = title_val
 
     # Run QA validation
-    from .qa import _score_body, _score_description, validate_body_spec_claims
+    from .qa import _score_body, _score_description, validate_body_spec_claims, validate_tvpa_flavour_claims
     from .config import QA_SCORE_FLOOR, BODY_MIN_LENGTH
     from .context import product_specs as _extract_product_specs
     qa_score, qa_issues = validate_output(object_type, recommendation)
@@ -751,10 +776,96 @@ def generate_recommendation(
         if spec_claim_issues:
             logger.info(f"Body has unsupported spec claims for {object_type}/{handle}: {spec_claim_issues}")
 
-    # Retry body if it fails QA floor OR has unsupported spec claims
-    should_retry_body = body_issues or body_score < 0.7 or spec_claim_issues
+    # TVPA flavour compliance check (products, collections, blog_articles)
+    tvpa_flavour_issues: list[str] = []
+    tvpa_category_issues: list[str] = []
+    tvpa_retry_feedback: str = ""
+    if object_type in ("product", "collection", "blog_article"):
+        # Build allowed names from context for the TVPA detector
+        from .tvpa_flavour import extract_flavour_from_title
+        detail_payload = context.get("detail") or {}
+        tvpa_allowed_names: list[str] = []
+        if object_type == "product":
+            primary = detail_payload.get("product") or {}
+            # Product title, vendor, and e_liquid_flavor_labels
+            if primary.get("title"):
+                title_str = str(primary["title"])
+                tvpa_allowed_names.append(title_str)
+                # Also extract flavour from title (text after " - ", stripped)
+                flavour = extract_flavour_from_title(title_str)
+                if flavour:
+                    tvpa_allowed_names.append(flavour)
+            if primary.get("vendor"):
+                tvpa_allowed_names.append(str(primary["vendor"]))
+            product_specs_data = _extract_product_specs(primary, detail_payload)
+            flavor_labels = product_specs_data.get("e_liquid_flavor_labels") or []
+            if isinstance(flavor_labels, list):
+                tvpa_allowed_names.extend(str(lbl) for lbl in flavor_labels if lbl)
+            # Allowlist variant titles (variants live at detail_payload, not primary)
+            variants = detail_payload.get("variants") or []
+            for var in variants:
+                if isinstance(var, dict) and var.get("title"):
+                    var_title = str(var["title"])
+                    tvpa_allowed_names.append(var_title)
+                    var_flavour = extract_flavour_from_title(var_title)
+                    if var_flavour:
+                        tvpa_allowed_names.append(var_flavour)
+        elif object_type == "collection":
+            collection = detail_payload.get("collection") or {}
+            if collection.get("title"):
+                tvpa_allowed_names.append(str(collection["title"]))
+        # Add titles from approved_internal_link_targets
+        link_targets = context.get("approved_internal_link_targets") or []
+        if not link_targets:
+            prompt_ctx_data = context.get("prompt_context") or {}
+            link_targets = prompt_ctx_data.get("approved_internal_link_targets") or []
+        for target in link_targets:
+            if target.get("title"):
+                target_title = str(target["title"])
+                tvpa_allowed_names.append(target_title)
+                # Also extract flavour from link target titles
+                target_flavour = extract_flavour_from_title(target_title)
+                if target_flavour:
+                    tvpa_allowed_names.append(target_flavour)
+
+        # Check body and seo fields for TVPA violations
+        body_tvpa_passed, body_tvpa_issues = validate_tvpa_flavour_claims(
+            recommendation["body"], allowed_names=tvpa_allowed_names
+        )
+        meta_text = recommendation["seo_title"] + " " + recommendation["seo_description"]
+        meta_tvpa_passed, meta_tvpa_issues = validate_tvpa_flavour_claims(
+            meta_text, allowed_names=tvpa_allowed_names
+        )
+        tvpa_flavour_issues = body_tvpa_issues + meta_tvpa_issues
+        
+        # Separate category issues (trigger retry/fail) from style issues (warnings only)
+        from .tvpa_flavour import tvpa_flavour_matches
+        body_matches = tvpa_flavour_matches(recommendation["body"], allowed_names=tvpa_allowed_names)
+        tvpa_category_issues = [
+            f"TVPA flavour wording: '{m['term']}' ({m['key']})"
+            for m in body_matches if m["group"] == "category"
+        ]
+        if tvpa_flavour_issues:
+            logger.info(f"Body has TVPA flavour issues for {object_type}/{handle}: {tvpa_flavour_issues}")
+            # Build retry feedback for category issues only
+            if tvpa_category_issues:
+                from .tvpa_flavour import TVPA_FLAVOUR_RULE
+                offending_terms = [m['term'] for m in body_matches if m["group"] == "category"]
+                tvpa_retry_feedback = (
+                    f"The previous body contains prohibited TVPA flavour wording that must be removed: "
+                    f"{', '.join(repr(t) for t in offending_terms)}. "
+                    f"Rewrite the body without these phrases. {TVPA_FLAVOUR_RULE}"
+                )
+
+    # Retry body if it fails QA floor OR has unsupported spec claims OR has TVPA category issues
+    should_retry_body = body_issues or body_score < 0.7 or spec_claim_issues or tvpa_category_issues
     if should_retry_body:
-        retry_reason = "spec claims" if spec_claim_issues else f"QA score={body_score:.2f}"
+        if tvpa_category_issues:
+            retry_reason = "TVPA flavour wording"
+        elif spec_claim_issues:
+            retry_reason = "spec claims"
+        else:
+            retry_reason = f"QA score={body_score:.2f}"
         logger.info(f"Body QA failed ({retry_reason}), attempting retry for {object_type}/{handle}")
         _emit_progress(
             progress_callback,
@@ -772,7 +883,7 @@ def generate_recommendation(
             # Build fresh prompt context with accepted fields
             retry_context = _context_with_accepted_fields(context, retry_accepted)
             retry_prompt_ctx = prompt_context(retry_context)
-            # Retry body generation
+            # Retry body generation with TVPA feedback if applicable
             retry_result = _generate_single_field_core(
                 settings=settings,
                 context=context,
@@ -781,6 +892,7 @@ def generate_recommendation(
                 accepted_fields=retry_accepted,
                 prompt_context_precomputed=retry_prompt_ctx,
                 signal_narrative_precomputed=None,
+                retry_feedback=tvpa_retry_feedback if tvpa_retry_feedback else None,
                 progress_callback=progress_callback,
                 cancel_callback=cancel_callback,
                 step_index=step_total - 1,
@@ -795,22 +907,41 @@ def generate_recommendation(
             if object_type == "product" and specs:
                 _, retry_spec_issues = validate_body_spec_claims(retry_body, specs)
 
-            # Accept retry if it's better (better score or fewer spec issues)
-            retry_is_better = (
-                (retry_body_score > body_score) or
-                (len(retry_spec_issues) < len(spec_claim_issues))
+            # Check TVPA issues on retry
+            retry_tvpa_category_issues: list[str] = []
+            if object_type in ("product", "collection", "blog_article"):
+                retry_body_tvpa_passed, retry_body_tvpa_issues = validate_tvpa_flavour_claims(
+                    retry_body, allowed_names=tvpa_allowed_names
+                )
+                retry_body_matches = tvpa_flavour_matches(retry_body, allowed_names=tvpa_allowed_names)
+                retry_tvpa_category_issues = [
+                    f"TVPA flavour wording: '{m['term']}' ({m['key']})"
+                    for m in retry_body_matches if m["group"] == "category"
+                ]
+
+            # Accept retry only if neither TVPA hit count nor spec issues get worse,
+            # AND at least one metric improves (score, spec issues, or TVPA issues)
+            retry_is_better = _body_retry_acceptable(
+                body_score, retry_body_score,
+                spec_claim_issues, retry_spec_issues,
+                tvpa_category_issues, retry_tvpa_category_issues,
             )
             if retry_is_better:
                 recommendation["body"] = retry_body
                 body_score = retry_body_score
                 body_issues = retry_body_issues
                 spec_claim_issues = retry_spec_issues
+                # Update TVPA issues if applicable — keep SEO title/description issues
+                if object_type in ("product", "collection", "blog_article"):
+                    tvpa_category_issues = retry_tvpa_category_issues
+                    # Preserve meta_tvpa_issues (from seo_title/seo_description), update body portion
+                    tvpa_flavour_issues = retry_body_tvpa_issues + meta_tvpa_issues
                 generated_fields["body"]["value"] = retry_body
                 review_actions["body"] = retry_result.get("review_action", "")
                 body_retried = True
-                logger.info(f"Body retry improved (score={body_score:.2f}, spec_issues={len(spec_claim_issues)}) for {object_type}/{handle}")
+                logger.info(f"Body retry improved (score={body_score:.2f}, spec_issues={len(spec_claim_issues)}, tvpa_issues={len(tvpa_category_issues)}) for {object_type}/{handle}")
             else:
-                logger.info(f"Body retry did not improve (retry_score={retry_body_score:.2f}, retry_spec_issues={len(retry_spec_issues)}) for {object_type}/{handle}")
+                logger.info(f"Body retry did not improve (retry_score={retry_body_score:.2f}, retry_spec_issues={len(retry_spec_issues)}, retry_tvpa_issues={len(retry_tvpa_category_issues)}) for {object_type}/{handle}")
         except Exception as e:
             logger.warning(f"Body retry failed for {object_type}/{handle}: {e}")
 
@@ -846,12 +977,18 @@ def generate_recommendation(
     all_issues = list(qa_issues)
     if spec_claim_issues:
         all_issues.extend(spec_claim_issues)
+    if tvpa_flavour_issues:
+        all_issues.extend(tvpa_flavour_issues)
+    # passed is False if: score below floor, spec claim issues, or TVPA category-group issues
+    # Style-group TVPA issues are warnings only and do not flip passed
+    qa_passed = qa_score >= qa_floor and not spec_claim_issues and not tvpa_category_issues
     recommendation["_qa"] = {
         "score": round(qa_score, 2),
         "floor": qa_floor,
-        "passed": qa_score >= qa_floor and not spec_claim_issues,
+        "passed": qa_passed,
         "issues": all_issues,
         "spec_claim_issues": spec_claim_issues,
+        "tvpa_flavour_issues": tvpa_flavour_issues,
         "title_retried": title_retried,
         "description_retried": description_retried,
         "description_retry_count": description_retry_count,

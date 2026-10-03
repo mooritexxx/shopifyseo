@@ -91,10 +91,6 @@ def _tvpa_allowed_names(context: dict, object_type: str) -> list[str]:
         collection = detail_payload.get("collection") or {}
         if collection.get("title"):
             tvpa_allowed_names.append(str(collection["title"]))
-    elif object_type == "blog_article":
-        article = detail_payload.get("article") or {}
-        if article.get("title"):
-            tvpa_allowed_names.append(str(article["title"]))
     
     link_targets = context.get("approved_internal_link_targets") or []
     if not link_targets:
@@ -686,8 +682,8 @@ def generate_recommendation(
 
             # Save partial recommendation after each field completes for real-time updates
             partial_recommendation = {
-                "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", "")),
-                "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", "")),
+                "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", ""), object_type),
+                "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", ""), object_type),
                 "body": generated_fields.get("body", {}).get("value", ""),
             }
             if object_type == "product":
@@ -742,8 +738,8 @@ def generate_recommendation(
             }
         )
         partial = {
-            "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", "")),
-            "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", "")),
+            "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", ""), object_type),
+            "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", ""), object_type),
             "body": generated_fields.get("body", {}).get("value", ""),
             "_meta": {
                 "review_actions": review_actions,
@@ -796,8 +792,8 @@ def generate_recommendation(
     body_html = generated_fields["body"]["value"]
     body_html = ensure_link_titles(body_html, conn)
     recommendation = {
-        "seo_title": clamp_generated_seo_field("seo_title", generated_fields["seo_title"]["value"]),
-        "seo_description": clamp_generated_seo_field("seo_description", generated_fields["seo_description"]["value"]),
+        "seo_title": clamp_generated_seo_field("seo_title", generated_fields["seo_title"]["value"], object_type),
+        "seo_description": clamp_generated_seo_field("seo_description", generated_fields["seo_description"]["value"], object_type),
         "body": body_html,
     }
     if object_type == "product":
@@ -856,7 +852,7 @@ def generate_recommendation(
                     step_total=step_total,
                     conn=conn,
                 )
-                retry_title = clamp_generated_seo_field("seo_title", retry_result["value"])
+                retry_title = clamp_generated_seo_field("seo_title", retry_result["value"], object_type)
                 retry_puff_ok, retry_puff_issues = check_title_puff_redundancy(product_title, retry_title)
                 _, retry_title_spelling = validate_commonwealth_spelling(retry_title)
 
@@ -1024,7 +1020,34 @@ def generate_recommendation(
     )
 
     from shopifyseo.seo_quality import validate_metadata
-    validate_metadata(object_type, recommendation)
+    try:
+        validate_metadata(object_type, recommendation)
+    except ValueError as exc:
+        # Validation failed - save as error status, not stuck in 'generating'
+        logger.error(f"Final validation failed for {object_type}/{handle}: {exc}")
+        error_details = _build_error_details(
+            recommendation,
+            _provider_display(generation_provider, generation_model),
+            prompt_version,
+            requested_prompt_version,
+            prompt_profile,
+            str(exc),
+            context,
+        )
+        insert_recommendation_record(
+            conn,
+            object_type=object_type,
+            handle=handle,
+            status="error",
+            priority=context["fact"]["priority"],
+            summary=recommendation.get("seo_title") or f"Validation failed for {handle}",
+            details=error_details,
+            source="dashboard_ai",
+            model=f"{_provider_display(generation_provider, generation_model)}+{_provider_display(review_provider, review_model)}",
+            prompt_version=prompt_version,
+            error_message=str(exc),
+        )
+        raise RuntimeError(str(exc)) from exc
 
     recommendation["_meta"] = {
         "generation_model": _provider_display(generation_provider, generation_model),
@@ -1306,6 +1329,11 @@ def generate_field_recommendation(
         )
         raise RuntimeError(error_message) from exc
 
+    # Collect warnings (not errors)
+    from .qa import get_field_warnings
+    general_warnings, strength_warnings = get_field_warnings(object_type, field, final_value, context)
+    flavour_strength_warnings = strength_warnings
+
     _emit_progress(
         progress_callback,
         stage=f"field_complete_{field}",
@@ -1320,6 +1348,7 @@ def generate_field_recommendation(
     return {
         **result,
         "value": final_value,
+        "warnings": general_warnings,
         "tvpa_flavour_warnings": tvpa_flavour_warnings,
         "flavour_strength_warnings": flavour_strength_warnings,
     }

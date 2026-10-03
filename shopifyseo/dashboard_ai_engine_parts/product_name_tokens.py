@@ -3,7 +3,7 @@
 This module provides:
 - `RequiredTokens`: frozen dataclass with flavour, strength and sources
 - `required_product_name_tokens`: extract tokens from product context
-- `build_deterministic_seo_title`: build SEO title as `<product name> | <store suffix>`
+- `build_deterministic_seo_title`: build SEO title as `<product name> | Vapely Canada`
 - `check_seo_title_format`: validate SEO title matches deterministic format
 - `check_meta_description_tokens`: validate meta has full flavour (strength is warning)
 """
@@ -13,23 +13,16 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from .config import get_store_identity
-
 __all__ = [
     "RequiredTokens",
     "required_product_name_tokens",
     "build_deterministic_seo_title",
     "check_seo_title_format",
     "check_meta_description_tokens",
-    "TitleTokenOverflowError",
 ]
 
 SEO_TITLE_WARNING_THRESHOLD = 60
-
-
-class TitleTokenOverflowError(ValueError):
-    """Raised when required tokens cannot fit within SEO title limits."""
-    pass
+PRODUCT_SEO_TITLE_SUFFIX = " | Vapely Canada"
 
 
 @dataclass(frozen=True)
@@ -222,17 +215,43 @@ def _normalize_for_comparison(text: str) -> str:
     return text
 
 
+def _normalize_whitespace(text: str) -> str:
+    """Collapse all runs of whitespace and strip ends."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _ends_with_suffix(name: str, suffix: str) -> bool:
+    """Check if name already ends with the suffix (case-insensitive, whitespace-normalized)."""
+    name_norm = _normalize_whitespace(name).casefold()
+    suffix_norm = _normalize_whitespace(suffix).casefold()
+    return name_norm.endswith(suffix_norm)
+
+
 def build_deterministic_seo_title(product_name: str, conn=None) -> str:
-    """Build the canonical SEO title: '<product name> | <store suffix>'.
+    """Build the canonical SEO title: '<product name> | Vapely Canada'.
     
-    The store suffix is taken from store identity (e.g., 'Vapely Canada').
+    Always uses the literal suffix ' | Vapely Canada' regardless of store settings.
+    Collapses whitespace and strips ends.
+    If the name already ends in '| Vapely Canada' (any case/spacing), returns the name as-is.
     """
-    store_name, _ = get_store_identity(conn)
-    suffix = store_name or "Vapely"
-    if "canada" not in suffix.lower():
-        suffix = f"{suffix} Canada"
+    # Collapse whitespace and strip
+    name = _normalize_whitespace(product_name)
     
-    return f"{product_name} | {suffix}"
+    # Don't double-add the suffix
+    if _ends_with_suffix(name, PRODUCT_SEO_TITLE_SUFFIX):
+        return name
+    
+    return f"{name}{PRODUCT_SEO_TITLE_SUFFIX}"
+
+
+def _normalize_for_exact_comparison(text: str) -> str:
+    """Normalize for exact comparison: casefold, collapse whitespace only.
+    
+    Preserves punctuation like ' - ', '&', etc. Only case and whitespace may differ.
+    """
+    text = text.casefold()
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def check_seo_title_format(
@@ -242,8 +261,9 @@ def check_seo_title_format(
 ) -> tuple[list[str], list[str]]:
     """Validate SEO title matches the deterministic format.
     
-    Format: '<full product name> | <store suffix>'
-    - Product name must match word-for-word (case-insensitive, whitespace-collapsed)
+    Format: '<full product name> | Vapely Canada'
+    - Product name must match exactly (case-insensitive, whitespace-collapsed)
+    - Punctuation must match exactly (' - ', '&', etc.)
     - Nothing may be added, dropped, reordered
     - >60 chars is a warning, not failure
     - Never truncated
@@ -255,19 +275,25 @@ def check_seo_title_format(
     
     expected = build_deterministic_seo_title(product_name, conn)
     
-    expected_norm = _normalize_for_comparison(expected)
-    actual_norm = _normalize_for_comparison(seo_title)
+    # Use exact comparison (preserves punctuation)
+    expected_norm = _normalize_for_exact_comparison(expected)
+    actual_norm = _normalize_for_exact_comparison(seo_title)
     
     if expected_norm != actual_norm:
-        actual_before_pipe = seo_title.rsplit("|", 1)[0].strip() if "|" in seo_title else seo_title
-        expected_before_pipe = expected.rsplit("|", 1)[0].strip()
+        # Split on pipe to analyze name vs suffix separately
+        actual_parts = seo_title.rsplit("|", 1)
+        expected_parts = expected.rsplit("|", 1)
         
-        actual_name_norm = _normalize_for_comparison(actual_before_pipe)
-        expected_name_norm = _normalize_for_comparison(expected_before_pipe)
+        actual_before_pipe = actual_parts[0].strip() if len(actual_parts) >= 1 else ""
+        expected_before_pipe = expected_parts[0].strip()
+        
+        actual_name_norm = _normalize_for_exact_comparison(actual_before_pipe)
+        expected_name_norm = _normalize_for_exact_comparison(expected_before_pipe)
         
         if actual_name_norm != expected_name_norm:
-            expected_words = set(expected_name_norm.split())
-            actual_words = set(actual_name_norm.split())
+            # Word-level analysis for better error messages (using word normalization)
+            expected_words = set(_normalize_for_comparison(expected_before_pipe).split())
+            actual_words = set(_normalize_for_comparison(actual_before_pipe).split())
             
             missing = expected_words - actual_words
             added = actual_words - expected_words
@@ -283,19 +309,21 @@ def check_seo_title_format(
                     f"Expected: '{expected}'"
                 )
             else:
+                # Same words but different punctuation or order
                 errors.append(
                     f"SEO title does not match the required format. "
                     f"Expected: '{expected}', got: '{seo_title}'"
                 )
         else:
-            if "|" not in seo_title:
+            # Name matches but suffix issues
+            if len(actual_parts) < 2:
                 errors.append(
                     f"SEO title missing store suffix. Expected: '{expected}'"
                 )
             else:
-                suffix_actual = seo_title.rsplit("|", 1)[1].strip()
-                suffix_expected = expected.rsplit("|", 1)[1].strip()
-                if _normalize_for_comparison(suffix_actual) != _normalize_for_comparison(suffix_expected):
+                suffix_actual = actual_parts[1].strip()
+                suffix_expected = expected_parts[1].strip() if len(expected_parts) > 1 else ""
+                if _normalize_for_exact_comparison(suffix_actual) != _normalize_for_exact_comparison(suffix_expected):
                     errors.append(
                         f"SEO title has incorrect store suffix. "
                         f"Expected suffix: '{suffix_expected}', got: '{suffix_actual}'"

@@ -45,19 +45,43 @@ def _strip_trailing_pipe(text: str) -> str:
     return re.sub(r"\s*\|\s*$", "", text)
 
 
-def clamp_generated_seo_field(field: str, value: str) -> str:
-    """Ensure AI/meta outputs never exceed storage/UI limits (providers may ignore JSON maxLength)."""
+def clamp_generated_seo_field(field: str, value: str, object_type: str | None = None) -> str:
+    """Ensure AI/meta outputs never exceed storage/UI limits (providers may ignore JSON maxLength).
+    
+    For product seo_title: NEVER truncate. The full product name must be preserved.
+    For other object types and fields: apply standard limits.
+    """
     cleaned = _strip_trailing_pipe((value or "").strip())
     if field == "seo_title":
+        # Product SEO titles are NEVER truncated
+        if object_type == "product":
+            return cleaned
         return _clamp_text_to_max_length(cleaned, TITLE_LIMIT)
     if field == "seo_description":
         return _clamp_text_to_max_length(cleaned, DESCRIPTION_LIMIT)
     return cleaned if isinstance(value, str) else ""
 
 
+PRODUCT_SEO_TITLE_WARNING_THRESHOLD = 60
+
+
 def _score_title(object_type: str, title: str) -> tuple[float, list[str]]:
+    """Score SEO title quality. Returns (score, issues).
+    
+    For products: length limits are NOT enforced. Over 60 chars is a soft warning only.
+    For other types: enforces the standard 42-65 char limits.
+    """
     issues: list[str] = []
     length = len(title.strip())
+    
+    # Product SEO titles have special rules: never fail on length
+    if object_type == "product":
+        # Only issue a soft warning for very long titles (>60)
+        # but don't add to issues list (which would affect the score)
+        # Score is always 1.0 for product title length
+        return 1.0, []
+    
+    # Standard rules for collections, pages, articles
     hard_min = TITLE_HARD_MIN.get(object_type, 40)
     target_min = TITLE_TARGET_MIN.get(object_type, 45)
 
@@ -76,6 +100,21 @@ def _score_title(object_type: str, title: str) -> tuple[float, list[str]]:
     elif length > TITLE_LIMIT:
         score = 0.8
     return score, issues
+
+
+def get_product_seo_title_warnings(title: str) -> list[str]:
+    """Get warnings (not errors) for product SEO title length.
+    
+    Product titles over 60 chars get a warning but never fail.
+    """
+    warnings: list[str] = []
+    length = len(title.strip())
+    if length > PRODUCT_SEO_TITLE_WARNING_THRESHOLD:
+        warnings.append(
+            f"SEO title exceeds {PRODUCT_SEO_TITLE_WARNING_THRESHOLD} characters ({length} chars). "
+            f"This may be truncated in search results."
+        )
+    return warnings
 
 
 def _score_description(object_type: str, description: str) -> tuple[float, list[str]]:
@@ -156,6 +195,34 @@ def validate_output(
         floor = QA_SCORE_FLOOR.get(object_type, 4) / 10.0
 
     return overall, all_issues
+
+
+def get_field_warnings(
+    object_type: str,
+    field: str,
+    value: str,
+    context: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """Get warnings for a generated field.
+    
+    Returns (general_warnings, strength_warnings) where:
+    - general_warnings: length warnings for product seo_title (>60 chars)
+    - strength_warnings: missing nicotine strength for product seo_description
+    """
+    general_warnings: list[str] = []
+    strength_warnings: list[str] = []
+    value = (value or "").strip()
+    
+    if object_type == "product" and field == "seo_title":
+        general_warnings.extend(get_product_seo_title_warnings(value))
+    
+    if object_type == "product" and field == "seo_description" and context:
+        from .product_name_tokens import required_product_name_tokens, check_meta_description_tokens
+        req = required_product_name_tokens(context)
+        _, meta_warnings = check_meta_description_tokens(value, req)
+        strength_warnings.extend(meta_warnings)
+    
+    return general_warnings, strength_warnings
 
 
 def validate_single_field(

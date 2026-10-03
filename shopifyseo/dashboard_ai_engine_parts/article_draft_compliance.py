@@ -616,6 +616,58 @@ def count_distinct_approved_product_links(body_html: str, path_to_canonical: dic
     return len(products)
 
 
+# Allowlist of HTML tag names that indicate escaped markup when preceded by &lt;
+# Only these real HTML tags trigger the escaped_markup gap; arbitrary words like
+# "Moderate" in "&lt; Moderate daily use" are NOT flagged.
+_ESCAPED_MARKUP_TAG_NAMES = (
+    "p", "a", "br", "strong", "em", "b", "i", "u",
+    "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "div", "span", "img",
+    "table", "tr", "td", "th", "thead", "tbody",
+    "blockquote", "script", "style", "iframe",
+    "section", "nav", "pre", "code", "hr", "figure",
+)
+
+# Regex for escaped HTML tag patterns that should never appear in article output.
+# Matches &lt; (or &amp;lt;) followed by an optional slash (no space!) and a REAL
+# HTML tag name from the allowlist, then whitespace, >, /, or &gt;.
+# Real HTML tags never have a space after '<', so '&lt; p' or '&lt; a' are NOT flagged.
+# Does NOT match &lt; followed by space + arbitrary words (e.g. '&lt; Moderate').
+_ESCAPED_MARKUP_RE = re.compile(
+    r"&(?:amp;)?lt;/?(?:" + "|".join(_ESCAPED_MARKUP_TAG_NAMES) + r")(?:\s|&gt;|>|/)",
+    re.IGNORECASE,
+)
+
+
+def escaped_markup_gaps(body_html: str) -> list[str]:
+    """Detect escaped HTML tags in the article body that indicate a serialization bug.
+
+    Flags patterns like ``&lt;p&gt;``, ``&lt;a href``, ``&lt;/p&gt;`` which should
+    never appear in properly generated article HTML. These indicate the AI returned
+    HTML that was then double-escaped.
+
+    Only flags escaped REAL HTML tag names (p, a, br, strong, em, div, span, etc.).
+    A plain ``&lt;`` followed by a space, digit, or arbitrary word (e.g. ``&lt; 5``,
+    ``&lt; Moderate``, ``&lt;3``) is NOT flagged because that's legitimate escaped text.
+
+    Returns:
+        A list containing one gap message if escaped markup is found, empty otherwise.
+        The gap code is ``escaped_markup``.
+    """
+    if not body_html:
+        return []
+
+    if _ESCAPED_MARKUP_RE.search(body_html):
+        return [
+            "Body contains escaped HTML tags (e.g. &lt;p&gt;, &lt;a href, &lt;/p&gt;) "
+            "which render as visible markup instead of formatting. This indicates a "
+            "serialization bug where HTML was double-escaped. [escaped_markup]"
+        ]
+
+    return []
+
+
 def validate_article_draft_compliance(
     *,
     body_html: str,

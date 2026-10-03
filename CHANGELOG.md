@@ -8,9 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Restore endpoint for dismissed internal-link suggestions.** `POST /api/internal-links/suggestions/{id}/restore` accepts a reason and actor, restores dismissed suggestions back to "suggested" status, and logs the action in an audit table (`link_suggestion_restore_audit`). Restored suggestions survive subsequent rebuild pipelines via the audit table lookup.
+
+- **`preview_only` flag for manual-weave.** `POST /api/internal-links/suggestions/{id}/manual-weave` accepts an optional `preview_only: true` flag that validates the edit and returns a preview without persisting to the database. When enabled, the response includes `preview_only: true` and `preview_token: null`.
+
 - **Manual-weave endpoint for ai_woven internal-link suggestions.** `POST /api/internal-links/suggestions/{id}/manual-weave` accepts a hand-written sentence addition without running AI generation. The addition must be append-only (no changes to the original sentence), contain exactly one `<a>` link to the suggestion target, pass content compliance checks (anchor quality, numbers, banned wording, stock/availability claims, TVPA flavour), and respect the 8-link cap. Returns a preview token for the standard apply flow. No AI or LLM code path is reachable from this endpoint.
 
 ### Fixed
+
+- **Internal-link apply/reconcile now tolerates whitespace differences between block-level HTML tags.** Shopify's editor may normalize whitespace (newlines, spaces) between block elements (p, div, h1-h6, ul, ol, li, table, etc.) when saving. The new `html_equivalent(a, b)` function strips inter-block whitespace before comparing, so reconcile no longer fails on harmless formatting changes. Preformatted elements (pre, textarea, script, style) preserve their whitespace. Text content, attributes, and inline spacing remain strictly compared.
+
+- **AI insert locator matching now normalizes quotes and dashes and supports prefix matching.** Curly quotes (`''""`), em-dashes (`—`), and HTML entities (`&nbsp;`, etc.) are normalized to straight quotes, hyphens, and decoded characters before matching. Locators at least 40 characters long match via prefix if no exact match is found. New distinct error codes `insert_locator_no_match` and `insert_locator_ambiguous` replace the generic `link_conflict` for clearer debugging.
 
 - **Overview missing-meta counts now only include items live on the Online Store.** Products with `status != 'ACTIVE'` or empty `online_store_url`, collections with `api_unreachable = 1`, pages with `is_published = 0`, and articles with `is_published = 0` are now excluded from the "Needs attention" counters on the Overview. The pages sync now stores `is_published` and `published_at` from the Admin API; existing pages remain counted (NULL treated as "unknown/live") until the next pages sync fills the column.
 

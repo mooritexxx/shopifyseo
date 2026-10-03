@@ -1669,3 +1669,119 @@ class TestManualWeaveLinkWithoutHref:
         
         # Only <a> with href counts - bookmark anchors don't
         assert result["existing_link_count"] == 1
+
+
+class TestManualWeavePreviewOnly:
+    """Test preview_only flag: validates without persisting to DB."""
+    
+    def test_preview_only_returns_preview_without_db_write(self, database, live):
+        """preview_only=True returns preview but does not persist ai_edit_json."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
+        
+        # Verify ai_edit_json is NULL before
+        before = database.execute("SELECT ai_edit_json, status FROM link_suggestions WHERE id = 1").fetchone()
+        assert before["ai_edit_json"] is None
+        assert before["status"] == "suggested"
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+            preview_only=True,
+        )
+        
+        # Preview returned with expected flags
+        assert result["allowed"] is True
+        assert result["preview_only"] is True
+        assert result["preview_token"] is None
+        assert result["old_html"] is not None
+        assert result["new_html"] is not None
+        assert result["edit"]["origin"] == "manual"
+        assert "existing_link_count" in result
+        assert result["link_cap"] == 8
+        
+        # Verify ai_edit_json is still NULL after (no DB write)
+        after = database.execute("SELECT ai_edit_json, status FROM link_suggestions WHERE id = 1").fetchone()
+        assert after["ai_edit_json"] is None
+        assert after["status"] == "suggested"
+    
+    def test_preview_only_then_normal_submit_works(self, database, live):
+        """After preview_only, a normal submit persists the edit."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
+        
+        # First, preview_only
+        result1 = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+            preview_only=True,
+        )
+        assert result1["preview_only"] is True
+        assert result1["preview_token"] is None
+        
+        # Verify no DB write
+        mid = database.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        assert mid["ai_edit_json"] is None
+        
+        # Then, normal submit
+        result2 = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+            preview_only=False,
+        )
+        assert result2["allowed"] is True
+        assert result2["preview_token"] is not None
+        assert "preview_only" not in result2 or result2.get("preview_only") is not True
+        
+        # Verify DB write happened
+        after = database.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        assert after["ai_edit_json"] is not None
+    
+    def test_preview_only_validation_still_runs(self, database, live):
+        """preview_only=True still performs all validation checks."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        # Invalid: multiple links
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a> and <a href="/products/zyn">product</a>.'
+        
+        with pytest.raises(ManualWeaveRejected) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+                preview_only=True,
+            )
+        
+        assert "Multiple links" in str(exc_info.value)
+    
+    def test_preview_only_api_round_trip(self, api):
+        """Test preview_only via API endpoint returns correct response."""
+        client, conn, live = api
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
+        
+        resp = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={
+                "original_sentence": original,
+                "replacement_sentence": replacement,
+                "preview_only": True,
+            },
+        )
+        
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["allowed"] is True
+        assert data["preview_only"] is True
+        assert data["preview_token"] is None
+        
+        # Verify no DB write
+        after = conn.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        assert after["ai_edit_json"] is None

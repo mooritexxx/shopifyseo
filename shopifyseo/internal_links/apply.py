@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
 from .graph import extract_links, resolve_internal_target
-from .safety import (LinkConflict, body_hash, build_edit, guard_edit, preview_token,
-                     require_ai_enabled, text_diff, validate_edit, verify_token)
+from .safety import (LinkConflict, body_hash, build_edit, guard_edit, html_equivalent,
+                     preview_token, require_ai_enabled, text_diff, validate_edit, verify_token)
 
 logger = logging.getLogger(__name__)
 _hash_body = body_hash
@@ -188,11 +188,20 @@ def _update_local(conn, sug, body, base_url, event):
     _log_suggestion_event(conn, sug, event)
 
 
-def _finish(conn, snapshot, sug, base_url, undo=False):
+def _finish(conn, snapshot, sug, base_url, undo=False, *, body=None):
+    """Finalize an apply or undo by updating local state.
+    
+    Args:
+        body: Optional override for the body to persist locally. When provided,
+              uses this instead of the snapshot body. Used when Shopify returns
+              a whitespace-normalized variant that passes html_equivalent.
+    """
     row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
     if row["shopify_id"] != snapshot["shopify_id"]:
         raise LinkConflict("The Shopify object identity changed. Reconciliation is required.")
-    _update_local(conn, sug, snapshot["old_body"] if undo else snapshot["new_body"], base_url, "undo" if undo else "apply")
+    # Use provided body override, or fall back to snapshot body
+    local_body = body if body is not None else (snapshot["old_body"] if undo else snapshot["new_body"])
+    _update_local(conn, sug, local_body, base_url, "undo" if undo else "apply")
     _status(conn, snapshot["id"], "undone" if undo else "applied")
 
 
@@ -233,8 +242,15 @@ def apply_suggestion(conn, suggestion_id, base_url, *, preview_token_value="", f
     try:
         accepted = push_fn(sug["source_type"], row, new)
         if accepted != new:
-            raise RuntimeError("Shopify returned different HTML. Reconcile this operation before retrying.")
-        _finish(conn, snapshot, sug, base_url)
+            # Shopify returned different HTML - check if it's just whitespace normalization
+            if not html_equivalent(accepted, new):
+                raise RuntimeError("Shopify returned different HTML. Reconcile this operation before retrying.")
+            # Whitespace-only difference: persist the actual Shopify response
+            # Update snapshot.new_body so undo's strict check (L268) compares against the real live body
+            conn.execute("UPDATE link_body_snapshots SET new_body = ? WHERE id = ?", (accepted, snapshot_id))
+            _finish(conn, snapshot, sug, base_url, body=accepted)
+        else:
+            _finish(conn, snapshot, sug, base_url)
     except Exception:
         conn.rollback()
         _status(conn, snapshot_id, "needs_reconciliation", "Write outcome needs a live read before retrying.")
@@ -305,10 +321,17 @@ def reconcile_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None):
         raise LinkConflict("This operation is already being reconciled. Refresh its status.")
     try:
         live = (fetch_fn or shopify_io.fetch_body)(sug["source_type"], row)
-        if live == (snapshot["old_body"] if undo else snapshot["new_body"]):
-            _finish(conn, snapshot, sug, base_url, undo=undo)
+        expected = snapshot["old_body"] if undo else snapshot["new_body"]
+        other = snapshot["new_body"] if undo else snapshot["old_body"]
+        
+        # Use html_equivalent for whitespace-tolerant comparison
+        if html_equivalent(live, expected):
+            # In apply case, also update snapshot new_body to the actual live body
+            if not undo:
+                conn.execute("UPDATE link_body_snapshots SET new_body = ? WHERE id = ?", (live, snapshot["id"]))
+            _finish(conn, snapshot, sug, base_url, undo=undo, body=live)
             return {"status": "undone" if undo else "applied"}
-        if live == (snapshot["new_body"] if undo else snapshot["old_body"]):
+        if html_equivalent(live, other):
             _status(conn, snapshot["id"], "applied" if undo else "failed")
             return {"status": "not_written"}
         raise LinkConflict("Live content matches neither backup. Keep the backup and reconcile the page manually.")
@@ -360,3 +383,58 @@ def check_link_present_in_body(body, href):
     return any((not urlparse(link).netloc or urlparse(link).netloc.lower() == target_host)
                and (urlparse(link).path.rstrip("/") or "/") == target_path
                for link, _ in extract_links(body or ""))
+
+
+def restore_suggestion(conn, suggestion_id: int, actor: str, reason: str) -> dict:
+    """Restore a dismissed suggestion back to suggested status.
+    
+    Args:
+        conn: Database connection
+        suggestion_id: ID of the dismissed suggestion
+        actor: Actor identifier (e.g. 'salar', 'web', 'system')
+        reason: Reason for restoring the suggestion
+    
+    Returns:
+        Dict with restored suggestion data
+    
+    Raises:
+        LinkConflict: If suggestion not found or not dismissed
+    """
+    sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+    if not sug:
+        raise LinkConflict("Suggestion not found.")
+    if sug["status"] != "dismissed":
+        raise LinkConflict(f"Only dismissed suggestions can be restored. This suggestion has status '{sug['status']}'.")
+    
+    now = int(time.time())
+    
+    # Insert audit record
+    conn.execute(
+        """INSERT INTO link_suggestion_restore_audit 
+           (suggestion_id, restored_at, actor, reason) VALUES (?, ?, ?, ?)""",
+        (suggestion_id, now, actor, reason),
+    )
+    
+    # Update suggestion status
+    conn.execute(
+        "UPDATE link_suggestions SET status = 'suggested', applied_at = NULL WHERE id = ?",
+        (suggestion_id,),
+    )
+    conn.commit()
+    
+    # Fetch and return updated suggestion
+    updated = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+    return {
+        "id": updated["id"],
+        "source_type": updated["source_type"],
+        "source_handle": updated["source_handle"],
+        "target_type": updated["target_type"],
+        "target_handle": updated["target_handle"],
+        "kind": updated["kind"],
+        "anchor_phrase": updated["anchor_phrase"],
+        "status": updated["status"],
+        "score": updated["score"],
+        "restored_at": now,
+        "actor": actor,
+        "reason": reason,
+    }

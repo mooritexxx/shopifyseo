@@ -236,7 +236,7 @@ def generate_anchor(suggestion_id: int):
 
         return success_response(generate_ai_anchor(conn, suggestion_id, base_url=_base_url(conn)))
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -253,6 +253,7 @@ class ApplyRequest(BaseModel):
 class ManualWeaveRequest(BaseModel):
     original_sentence: str
     replacement_sentence: str
+    preview_only: bool = False
 
 
 @router.post("/suggestions/{suggestion_id}/manual-weave", response_model=SuccessResponse[dict])
@@ -279,10 +280,11 @@ def manual_weave(suggestion_id: int, payload: ManualWeaveRequest):
             base_url=_base_url(conn),
             original_sentence=payload.original_sentence,
             replacement_sentence=payload.replacement_sentence,
+            preview_only=payload.preview_only,
         )
         return success_response(result)
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ManualWeaveRejected as exc:
         return JSONResponse(
             status_code=400,
@@ -305,7 +307,7 @@ def apply(suggestion_id: int, payload: ApplyRequest):
 
         return success_response(apply_suggestion(conn, suggestion_id, base_url=_base_url(conn), preview_token_value=payload.preview_token))
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -447,7 +449,7 @@ def undo(suggestion_id: int):
 
         return success_response(undo_suggestion(conn, suggestion_id, base_url=_base_url(conn)))
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
@@ -478,7 +480,7 @@ def reconcile(suggestion_id: int):
     try:
         return success_response(reconcile_suggestion(conn, suggestion_id, _base_url(conn)))
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except Exception:
         logger.warning("Reconciliation failed", exc_info=True)
         raise HTTPException(status_code=502, detail="Could not reconcile with Shopify. The backup is retained.")
@@ -861,11 +863,42 @@ def run_auto_apply(dry_run: bool = Query(default=False)):
         result = _run(conn, base_url=_base_url(conn), dry_run=dry_run)
         return success_response(result)
     except LinkConflict as exc:
-        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": "link_conflict", **exc.detail}})
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except Exception as exc:
         logger.warning("Auto-apply failed", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+    finally:
+        conn.close()
+
+
+class RestoreRequest(BaseModel):
+    reason: str
+    actor: str = "web"
+
+
+@router.post("/suggestions/{suggestion_id}/restore", response_model=SuccessResponse[dict])
+def restore_suggestion(suggestion_id: int, payload: RestoreRequest):
+    """Restore a dismissed suggestion back to suggested status.
+    
+    Only dismissed suggestions can be restored. The restore is logged in an
+    audit table and the restored suggestion survives subsequent rebuilds.
+    """
+    conn = open_db_connection()
+    try:
+        from shopifyseo.internal_links.apply import restore_suggestion as _restore
+        from shopifyseo.internal_links.store import ensure_schema
+        
+        ensure_schema(conn)
+        result = _restore(conn, suggestion_id, payload.actor, payload.reason)
+        return success_response(result)
+    except LinkConflict as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as exc:
+        logger.warning("Restore failed for suggestion %d", suggestion_id, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
     finally:
         conn.close()

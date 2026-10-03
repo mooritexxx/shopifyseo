@@ -25,3 +25,14 @@ def ensure_schema(conn):
         ON link_body_snapshots(source_type, shopify_id)
         WHERE status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_link_body_suggestion ON link_body_snapshots(suggestion_id, id DESC)")
+    
+    # Restore audit table: tracks when dismissed suggestions are restored
+    conn.execute("""CREATE TABLE IF NOT EXISTS link_suggestion_restore_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        suggestion_id INTEGER NOT NULL,
+        restored_at INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        FOREIGN KEY (suggestion_id) REFERENCES link_suggestions(id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_restore_audit_suggestion ON link_suggestion_restore_audit(suggestion_id)")

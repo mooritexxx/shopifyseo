@@ -23,13 +23,234 @@ MANUAL_LINK_CAP = 8
 
 
 class LinkConflict(ValueError):
-    def __init__(self, message: str, *, text_diff: str = ""):
+    """Conflict during link suggestion processing.
+    
+    Args:
+        message: Human-readable error message
+        text_diff: Optional unified diff for text changes
+        code: Error code for programmatic handling (default: "link_conflict")
+        extra: Optional dict of additional details to include in self.detail
+    """
+    def __init__(self, message: str, *, text_diff: str = "", code: str = "link_conflict", extra: dict | None = None):
         super().__init__(message)
-        self.detail = {"message": message, "text_diff": text_diff}
+        self.code = code
+        self.detail = {"message": message, "text_diff": text_diff, **(extra or {})}
 
 
 def body_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+# Block-level tags where inter-tag whitespace is insignificant
+_BLOCK_LEVEL_TAGS = frozenset({
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
+    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "blockquote",
+    "section", "article", "header", "footer", "aside", "nav", "figure",
+    "figcaption", "hr", "dl", "dt", "dd",
+})
+
+# Preformatted/raw elements where whitespace must never be touched
+_PREFORMATTED_TAGS = frozenset({"pre", "textarea", "script", "style"})
+
+
+def _strip_inter_block_whitespace(html: str) -> str:
+    """Remove whitespace-only runs between block-level tags.
+    
+    Preserves whitespace:
+    - Inside <pre>, <textarea>, <script>, <style>
+    - Inside text nodes
+    - Inside tags/attributes
+    - Between inline tags (e.g., </a> <strong>)
+    
+    Also strips leading/trailing whitespace of the whole document (Q1 default).
+    """
+    if not html:
+        return ""
+    
+    # Track depth in preformatted elements
+    result = []
+    i = 0
+    pre_depth = 0
+    
+    while i < len(html):
+        # Check for tag start
+        if html[i] == '<':
+            # Find end of tag
+            tag_end = html.find('>', i)
+            if tag_end == -1:
+                # Malformed: copy rest and stop
+                result.append(html[i:])
+                break
+            
+            tag_content = html[i+1:tag_end]
+            is_closing = tag_content.startswith('/')
+            is_self_closing = tag_content.rstrip().endswith('/') or tag_content.rstrip().endswith('/')
+            
+            # Extract tag name
+            if is_closing:
+                tag_part = tag_content[1:].lstrip()
+            else:
+                tag_part = tag_content.lstrip()
+            
+            # Get just the tag name (before any attributes or /)
+            tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
+            tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
+            
+            # Track preformatted depth
+            if tag_name in _PREFORMATTED_TAGS:
+                if is_closing:
+                    pre_depth = max(0, pre_depth - 1)
+                elif not is_self_closing:
+                    pre_depth += 1
+            
+            result.append(html[i:tag_end + 1])
+            i = tag_end + 1
+        else:
+            # Not a tag - find next tag or end
+            next_tag = html.find('<', i)
+            if next_tag == -1:
+                # Rest of string
+                result.append(html[i:])
+                break
+            
+            text = html[i:next_tag]
+            
+            # If inside preformatted element, keep text as-is
+            if pre_depth > 0:
+                result.append(text)
+            else:
+                result.append(text)
+            
+            i = next_tag
+    
+    # Join and then apply inter-block whitespace removal
+    joined = "".join(result)
+    
+    # Now do a second pass to remove whitespace between block-level tags
+    # Pattern: >(whitespace)< where both tags are block-level
+    # We need to parse more carefully to check both the preceding and following tag
+    
+    def is_block_tag_end(s: str, pos: int) -> bool:
+        """Check if position pos is the > of a block-level closing or opening tag."""
+        if pos <= 0 or s[pos] != '>':
+            return False
+        # Find the start of this tag
+        tag_start = s.rfind('<', 0, pos)
+        if tag_start == -1:
+            return False
+        tag_content = s[tag_start + 1:pos]
+        is_closing = tag_content.startswith('/')
+        tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
+        tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
+        tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
+        return tag_name in _BLOCK_LEVEL_TAGS
+    
+    def is_block_tag_start(s: str, pos: int) -> bool:
+        """Check if position pos is the < of a block-level opening or closing tag."""
+        if pos >= len(s) or s[pos] != '<':
+            return False
+        # Find end of tag
+        tag_end = s.find('>', pos)
+        if tag_end == -1:
+            return False
+        tag_content = s[pos + 1:tag_end]
+        is_closing = tag_content.startswith('/')
+        tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
+        tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
+        tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
+        return tag_name in _BLOCK_LEVEL_TAGS
+    
+    # Find all >\s+< patterns and check if both tags are block-level
+    # We need to avoid preformatted elements
+    output = []
+    i = 0
+    pre_depth = 0
+    
+    while i < len(joined):
+        if joined[i] == '<':
+            # Track preformatted
+            tag_end = joined.find('>', i)
+            if tag_end == -1:
+                output.append(joined[i:])
+                break
+            tag_content = joined[i + 1:tag_end]
+            is_closing = tag_content.startswith('/')
+            tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
+            tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
+            tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
+            
+            if tag_name in _PREFORMATTED_TAGS:
+                if is_closing:
+                    pre_depth = max(0, pre_depth - 1)
+                else:
+                    is_self_closing = tag_content.rstrip().endswith('/')
+                    if not is_self_closing:
+                        pre_depth += 1
+            
+            output.append(joined[i:tag_end + 1])
+            i = tag_end + 1
+        elif joined[i] == '>' and i + 1 < len(joined):
+            # Already added > in the tag handling above, skip
+            output.append(joined[i])
+            i += 1
+        else:
+            # Text or whitespace
+            if pre_depth > 0:
+                # Inside preformatted - keep as-is
+                output.append(joined[i])
+                i += 1
+            else:
+                # Check if this is whitespace between block-level tags
+                # Look back for > and forward for <
+                if i > 0 and joined[i].isspace():
+                    # Collect all whitespace
+                    ws_start = i
+                    while i < len(joined) and joined[i].isspace():
+                        i += 1
+                    ws_end = i
+                    
+                    # Check if preceding char is > of a block tag and next char is < of a block tag
+                    if (ws_start > 0 and 
+                        joined[ws_start - 1] == '>' and 
+                        ws_end < len(joined) and 
+                        joined[ws_end] == '<' and
+                        is_block_tag_end(joined, ws_start - 1) and
+                        is_block_tag_start(joined, ws_end)):
+                        # Skip the whitespace (don't add it)
+                        pass
+                    else:
+                        # Keep the whitespace
+                        output.append(joined[ws_start:ws_end])
+                else:
+                    output.append(joined[i])
+                    i += 1
+    
+    # Strip leading/trailing whitespace of the whole document (Q1 default)
+    return "".join(output).strip()
+
+
+def html_equivalent(a: str, b: str) -> bool:
+    """Check if two HTML strings are equivalent, tolerating inter-block whitespace.
+    
+    Returns True when the strings are identical after:
+    - Removing whitespace-only runs between two block-level tags
+    - Stripping leading/trailing document whitespace
+    
+    Block-level tags: p, div, h1-h6, ul, ol, li, table, thead, tbody, tfoot,
+    tr, td, th, blockquote, section, article, header, footer, aside, nav,
+    figure, figcaption, hr, dl, dt, dd.
+    
+    Does NOT collapse whitespace:
+    - Between inline tags (visible space like "</a> <strong>")
+    - Inside <pre>, <textarea>, <script>, <style>
+    - Inside text nodes
+    - Inside tags/attributes
+    
+    Any other difference (text, attributes, entity encoding, tag names) fails.
+    """
+    if a == b:
+        return True
+    return _strip_inter_block_whitespace(a) == _strip_inter_block_whitespace(b)
 
 
 def ai_enabled_types(conn) -> list[str]:
@@ -580,12 +801,51 @@ def build_edit(old: str, raw: dict, url: str) -> str:
     # AI insert_sentence mode
     sentence = edit.get("insert_sentence")
     if sentence:
-        location = " ".join(edit["insert_after_text"].split())
-        matches = [end for start, end in parser.paragraphs if visible_text(old[start:end]) == location]
-        if len(matches) != 1:
-            raise LinkConflict("The insertion paragraph is missing or ambiguous. Generate a new suggestion.")
+        raw_locator = edit["insert_after_text"]
+        # Strip trailing ellipsis from the locator (Q4 default: yes)
+        locator_text = raw_locator.rstrip()
+        if locator_text.endswith("…"):
+            locator_text = locator_text[:-1].rstrip()
+        elif locator_text.endswith("..."):
+            locator_text = locator_text[:-3].rstrip()
+        
+        # Normalize the locator for matching
+        loc_norm = _normalize_for_matching(locator_text)
+        
+        # Find matching paragraphs using normalized comparison
+        exact_matches = []
+        prefix_matches = []
+        for start, end in parser.paragraphs:
+            p_norm = _normalize_for_matching(visible_text(old[start:end]))
+            if p_norm == loc_norm:
+                exact_matches.append(end)
+            elif len(loc_norm) >= 40 and p_norm.startswith(loc_norm):
+                prefix_matches.append(end)
+        
+        # Use exact matches if any, otherwise fall back to prefix matches
+        matches = exact_matches if exact_matches else prefix_matches
+        
+        # Truncate locator for error messages (first 300 chars)
+        locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
+        
+        if len(matches) == 0:
+            raise LinkConflict(
+                "The insertion paragraph was not found in the live body. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
+            )
+        if len(matches) > 1:
+            raise LinkConflict(
+                f"The insertion paragraph is ambiguous ({len(matches)} paragraphs match). Generate a new suggestion.",
+                code="insert_locator_ambiguous",
+                extra={"insert_after_text": locator_preview, "match_count": len(matches)}
+            )
+        
         linked = html.escape(sentence).replace(html.escape(phrase), f'<a href="{href}">{html.escape(phrase)}</a>', 1)
         offset = matches[0]
+        # Match the body's block separator style: if it uses newlines between blocks, preserve that
+        if "</p>\n<p>" in old or (offset < len(old) and old[offset:offset + 1] == "\n"):
+            return old[:offset] + "\n<p>" + linked + "</p>" + old[offset:]
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
     
     # phrase_wrap mode

@@ -90,6 +90,100 @@ def sanitize_article_internal_links(
     return _A_BODY_TAG_RE.sub(_repl, body_html)
 
 
+# Regex patterns for _faq_answer_to_html
+_FAQ_OUTER_P_RE = re.compile(r"^\s*<p\b[^>]*>(.*)</p>\s*$", re.IGNORECASE | re.DOTALL)
+_FAQ_SAFE_INLINE_TAGS = frozenset({"strong", "em", "br", "b", "i"})
+_FAQ_TAG_RE = re.compile(r"<(/?)(\w+)([^>]*)>", re.IGNORECASE)
+_FAQ_PARAGRAPH_SPLIT_RE = re.compile(r"(?:<p\b[^>]*>|</p\s*>|\n\s*\n)", re.IGNORECASE)
+
+
+def _faq_answer_to_html(answer: str) -> str:
+    """Sanitize an FAQ answer for safe HTML output.
+
+    - Strips outer <p>…</p> wrapper if present.
+    - Splits multi-paragraph answers (multiple <p> blocks or double newlines) into
+      separate <p> elements.
+    - Keeps only safe inline tags: <strong>, <em>, <br>.
+    - Converts <a> tags to their plain text (links come from body's allowlist path).
+    - Drops all other tags but keeps their text content.
+    - Escapes any remaining text properly so '5 < 10 & more' renders correctly.
+    - The output never contains escaped tag patterns (&lt;p, &lt;a, &lt;/, etc.).
+    """
+    from html.parser import HTMLParser
+
+    raw = (answer or "").strip()
+    if not raw:
+        return ""
+
+    # Strip one outer <p>…</p> if present
+    m = _FAQ_OUTER_P_RE.match(raw)
+    if m:
+        raw = m.group(1).strip()
+
+    # Split into paragraphs by <p> tags or double newlines
+    parts = _FAQ_PARAGRAPH_SPLIT_RE.split(raw)
+    paragraphs: list[str] = []
+
+    class TagStripper(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.output: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            tag_lower = tag.lower()
+            if tag_lower in _FAQ_SAFE_INLINE_TAGS:
+                if tag_lower == "br":
+                    self.output.append("<br>")
+                else:
+                    self.output.append(f"<{tag_lower}>")
+
+        def handle_endtag(self, tag):
+            tag_lower = tag.lower()
+            if tag_lower in _FAQ_SAFE_INLINE_TAGS and tag_lower != "br":
+                self.output.append(f"</{tag_lower}>")
+
+        def handle_data(self, data):
+            self.output.append(html_module.escape(data))
+
+        def handle_entityref(self, name):
+            char = html_module.unescape(f"&{name};")
+            self.output.append(html_module.escape(char))
+
+        def handle_charref(self, name):
+            char = html_module.unescape(f"&#{name};")
+            self.output.append(html_module.escape(char))
+
+        def get_result(self) -> str:
+            return "".join(self.output)
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Check if this part contains HTML tags
+        if "<" in part and ">" in part:
+            parser = TagStripper()
+            try:
+                parser.feed(part)
+                cleaned = parser.get_result().strip()
+            except Exception:
+                cleaned = html_module.escape(part)
+        else:
+            cleaned = html_module.escape(part)
+
+        if cleaned:
+            paragraphs.append(cleaned)
+
+    if not paragraphs:
+        return ""
+
+    if len(paragraphs) == 1:
+        return f"<p>{paragraphs[0]}</p>"
+
+    return "".join(f"<p>{p}</p>" for p in paragraphs)
+
+
 def _normalized_relevance_text(value: str) -> str:
     """Normalize text for relevance matching (lower, collapse whitespace, strip punctuation)."""
     return re.sub(r'[^\w]+', ' ', normalize_spelling_for_comparison(value or '')).strip()
@@ -325,6 +419,7 @@ def generate_article_draft(
         collect_hrefs,
         count_distinct_approved_product_links,
         collect_tier_related_queries,
+        escaped_markup_gaps,
         extract_visible_faq_items,
         length_only_article_compliance_gaps,
         mixed_length_and_serp_compliance_gaps,
@@ -1552,6 +1647,20 @@ def generate_article_draft(
         + " " + TVPA_FLAVOUR_RULE
     )
 
+    # FAQ answer system prompt: plain text only, no HTML tags, no markdown links, no URLs.
+    # Keeps the same content filtering rules (health claims, quit-smoking) as body writing.
+    system_faq_answer = (
+        f"You are an expert SEO content writer for {_brand}. "
+        "Write FAQ answers as **plain text only** — no HTML tags, no markdown links, no URLs. "
+        "Do not use <p>, <a>, <strong>, <em>, or any other markup in your answers. "
+        "Write naturally in complete sentences without formatting. "
+        f"{spelling_variant(_market_code)} "
+        "Do not fabricate statistics, specific study results, or invented data. "
+        "Write at a Grade 8–10 reading level."
+        f"{_brand_voice_block}"
+        + ARTICLE_CONTENT_FILTER_INSTRUCTION
+    )
+
     _serp_user_block = ""
     if serp_appendix.strip():
         _serp_user_block = (
@@ -2094,6 +2203,8 @@ def generate_article_draft(
             check_tvpa_flavour=True,
             tvpa_allowed_names=_tvpa_allowed_names,
         )
+        # Check for escaped HTML tags (double-escaping bug)
+        gaps.extend(escaped_markup_gaps(body_html))
         if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
             gaps.append(
                 f"Only {len(product_repair_targets)} relevant approved product URLs are available for repair; "
@@ -2347,11 +2458,12 @@ def generate_article_draft(
                 provider,
                 model,
                 [
-                    {"role": "system", "content": system_section},
+                    {"role": "system", "content": system_faq_answer},
                     {
                         "role": "user",
                         "content": (
                             "Write concise FAQ answers for the exact questions below, in the same order. "
+                            "Each answer must be **plain text only** — no HTML tags, no markdown links, no URLs. "
                             "Use the canonical SEO brief and the article context. When a SerpAPI snippet is provided "
                             "for a question, treat it as a non-authoritative starting point — paraphrase, expand with "
                             "store-specific value, and do not cite the snippet as a source. Return only JSON. "
@@ -2381,7 +2493,13 @@ def generate_article_draft(
             # Normalize spelling one more time for the final output
             q_normalized = normalize_flavor_to_flavour(q, log_changes=False)
             ans_normalized = normalize_flavor_to_flavour(ans, log_changes=False)
-            block += f"\n<h3>{html_module.escape(q_normalized)}</h3><p>{html_module.escape(ans_normalized)}</p>"
+            # Use _faq_answer_to_html to properly sanitize the answer:
+            # - strips outer <p> if AI returned HTML despite prompt
+            # - keeps only safe inline tags (strong, em, br)
+            # - converts <a> to plain text
+            # - properly escapes remaining text (never outputs &lt;p, &lt;a, etc.)
+            ans_html = _faq_answer_to_html(ans_normalized)
+            block += f"\n<h3>{html_module.escape(q_normalized)}</h3>{ans_html}"
         return (body_html or "").rstrip() + block
 
     def _ensure_product_links(body: str) -> str:

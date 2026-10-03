@@ -616,6 +616,42 @@ def count_distinct_approved_product_links(body_html: str, path_to_canonical: dic
     return len(products)
 
 
+# Regex for escaped HTML tag patterns that should never appear in article output.
+# Matches &lt; (or &amp;lt;) followed by an optional slash and a tag name start.
+# Does NOT match &lt; followed by a space or digit (e.g. '&lt; 5' is legitimate).
+_ESCAPED_MARKUP_RE = re.compile(
+    r"&(?:amp;)?lt;\s*/?\s*[a-zA-Z][a-zA-Z0-9]*[\s&>/]",
+    re.IGNORECASE,
+)
+
+
+def escaped_markup_gaps(body_html: str) -> list[str]:
+    """Detect escaped HTML tags in the article body that indicate a serialization bug.
+
+    Flags patterns like ``&lt;p&gt;``, ``&lt;a href``, ``&lt;/p&gt;`` which should
+    never appear in properly generated article HTML. These indicate the AI returned
+    HTML that was then double-escaped.
+
+    A plain ``&lt;`` followed by a space or a digit (e.g. ``&lt; 5``) is NOT flagged
+    because that's legitimate escaped text like ``5 < 10``.
+
+    Returns:
+        A list containing one gap message if escaped markup is found, empty otherwise.
+        The gap code is ``escaped_markup``.
+    """
+    if not body_html:
+        return []
+
+    if _ESCAPED_MARKUP_RE.search(body_html):
+        return [
+            "Body contains escaped HTML tags (e.g. &lt;p&gt;, &lt;a href, &lt;/p&gt;) "
+            "which render as visible markup instead of formatting. This indicates a "
+            "serialization bug where HTML was double-escaped. [escaped_markup]"
+        ]
+
+    return []
+
+
 def validate_article_draft_compliance(
     *,
     body_html: str,

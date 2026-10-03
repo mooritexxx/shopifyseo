@@ -232,3 +232,5 @@ class FieldRegenerateResult(BaseModel):
     review_model: str = ""
     review_action: str = ""
     generated_at: int = 0
+    tvpa_flavour_warnings: list[str] = Field(default_factory=list)
+    flavour_strength_warnings: list[str] = Field(default_factory=list)

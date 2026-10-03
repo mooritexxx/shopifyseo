@@ -169,12 +169,24 @@ def validate_single_field(
     if not value:
         raise RecommendationValidationError(f"Generated {field} is empty")
 
+    errors: list[str] = []
+    
     if field in ("seo_title", "seo_description"):
         from shopifyseo.seo_quality import validate_metadata
         try:
             validate_metadata(object_type, {field: value})
         except ValueError as exc:
-            raise RecommendationValidationError(str(exc)) from exc
+            errors.append(str(exc))
+        
+        # For product seo_description, check that flavour is present
+        if object_type == "product" and field == "seo_description" and context:
+            from .product_name_tokens import required_product_name_tokens, check_meta_description_tokens
+            req = required_product_name_tokens(context)
+            token_errors, _ = check_meta_description_tokens(value, req)
+            errors.extend(token_errors)
+        
+        if errors:
+            raise RecommendationValidationError(" ".join(errors))
 
     elif field == "body":
         import re

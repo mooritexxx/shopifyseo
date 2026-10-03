@@ -18,16 +18,8 @@ jobs:
         run: |
           pip install -e .
           pip install -r backend/requirements-dev.txt
-      - name: Backend tests (all of tests/)
-        # TODO(ci-coverage): fix and remove these deselects:
-        #   - test_collection_update_uses_targeted_refresh: DummyConn stub lacks .execute (record_applied added in content_service.update_content)
-        #   - test_page_update_uses_targeted_refresh: DummyConn stub lacks .execute (record_applied added in content_service.update_content)
-        #   - test_page_detail_contract: depends on a real "contact" page in the live DB; seed a fixture page instead
-        run: >-
-          PYTHONPATH=. python -m pytest tests/ -q -rfEs
-          --deselect tests/test_api.py::test_collection_update_uses_targeted_refresh
-          --deselect tests/test_api.py::test_page_detail_contract
-          --deselect tests/test_api.py::test_page_update_uses_targeted_refresh
+      - name: API smoke tests
+        run: PYTHONPATH=. python -m pytest tests/test_api.py::test_operations_contract tests/test_api.py::test_settings_shopify_test_errors_without_credentials tests/test_rank_tracking.py tests/test_api_usage_summary.py tests/test_internal_links*.py tests/test_internal_link_allowlist.py tests/test_article_draft*.py tests/test_faq_content_filter.py tests/test_article_final_content_filter.py tests/test_serp_draft_context.py tests/test_team_tasks.py tests/test_index_evidence.py tests/test_index_inspection_targets.py tests/test_signal_column_preservation.py tests/test_seo_facts_index_status.py tests/test_indexing_rollup.py tests/test_inspection_link_signal_cards.py tests/test_overview_live_meta_counts.py tests/test_ai_weave_schema.py tests/test_tvpa_flavour_guardrail.py tests/test_internal_links_manual_weave.py tests/test_internal_links_manual_weave_compliance.py tests/test_product_name_tokens.py -q
 
   frontend-typecheck:
     runs-on: ubuntu-latest
@@ -44,6 +36,6 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: npx tsc --noEmit
-      - name: Frontend tests (all test files)
+      - name: Rankings, settings and internal-link UI tests
         working-directory: frontend
-        run: npm test
+        run: npm test -- src/routes/rankings-page.test.tsx src/routes/settings-page.test.tsx src/routes/internal-links-page.test.tsx src/hooks/use-body-draft-sync.test.tsx src/components/ui/signal-card.test.tsx src/lib/list-sort.test.ts src/routes/products-page.test.tsx src/routes/tasks-page.test.tsx

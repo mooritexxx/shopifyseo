@@ -176,18 +176,22 @@ def suggestions(
 
         # Build data query
         cursor_data = _decode_cursor(cursor)
-        if cursor_data is not None:
+        cursor_mode = cursor_data is not None
+        if cursor_mode:
             # Keyset pagination: ignore offset, filter by cursor position
+            # Fetch limit+1 to determine has_more without relying on offset
             cursor_score, cursor_id = cursor_data
             where_clauses.append("(score < ? OR (score = ? AND id > ?))")
             where_params.extend([cursor_score, cursor_score, cursor_id])
             where_sql = " AND ".join(where_clauses)
+            fetch_limit = limit + 1
             effective_offset = 0
         else:
+            fetch_limit = limit
             effective_offset = offset
 
         data_sql = f"SELECT * FROM link_suggestions WHERE {where_sql} ORDER BY score DESC, id ASC LIMIT ? OFFSET ?"
-        data_params = where_params + [limit, effective_offset]
+        data_params = where_params + [fetch_limit, effective_offset]
 
         rows = []
         enabled_types = ai_enabled_types(conn)
@@ -205,13 +209,20 @@ def suggestions(
                 row_dict["weak_anchor_warning"] = None
             rows.append(row_dict)
 
+        # In cursor mode, determine has_more by whether we got more than limit rows
+        has_more_override = None
+        if cursor_mode:
+            has_more_override = len(rows) > limit
+            if has_more_override:
+                rows = rows[:limit]  # Trim to requested limit
+
         # Build next_cursor from last row if there are more rows
         next_cursor = None
         if rows:
             last = rows[-1]
             next_cursor = _encode_cursor(last["score"], last["id"])
 
-        return paginated_response(rows, total, limit, offset, next_cursor)
+        return paginated_response(rows, total, limit, offset, next_cursor, has_more_override)
     finally:
         conn.close()
 

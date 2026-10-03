@@ -219,7 +219,10 @@ def test_default_unchanged(api):
 
 
 def test_cursor_pagination(api):
-    """Test cursor-based pagination yields every filtered id exactly once in same order."""
+    """Test cursor-based pagination yields every filtered id exactly once in same order.
+    
+    Also verifies that the last non-empty page has has_more=False and next_cursor=None.
+    """
     client, conn, live, _ = api
 
     expected_ids = [
@@ -233,6 +236,7 @@ def test_cursor_pagination(api):
     cursor = None
     page = 0
     max_pages = 20
+    last_page_data = None
 
     while page < max_pages:
         if cursor:
@@ -248,13 +252,27 @@ def test_cursor_pagination(api):
 
         assert data["meta"]["total"] == len(expected_ids), "Total should match full filtered count"
 
-        if not data["meta"]["has_more"] or data["meta"]["next_cursor"] is None:
+        # Track the last page with data
+        if page_ids:
+            last_page_data = data
+
+        if not data["meta"]["has_more"]:
+            # Verify last page signals end correctly
+            assert data["meta"]["next_cursor"] is None, "next_cursor should be None when has_more is False"
             break
 
+        assert data["meta"]["next_cursor"] is not None, "next_cursor should exist when has_more is True"
         cursor = data["meta"]["next_cursor"]
         page += 1
 
+    # Verify we visited every row exactly once
     assert cursor_ids == expected_ids, "Cursor walk should match direct SQL order"
+    assert len(cursor_ids) == len(set(cursor_ids)), "Each ID should appear exactly once"
+
+    # Verify the last non-empty page correctly reported end of data
+    assert last_page_data is not None, "Should have at least one page with data"
+    assert last_page_data["meta"]["has_more"] is False, "Last page should have has_more=False"
+    assert last_page_data["meta"]["next_cursor"] is None, "Last page should have next_cursor=None"
 
     live.push.assert_not_called()
 
@@ -328,4 +346,148 @@ def test_existing_api_tests_still_pass(api):
         res = client.get(f"/api/internal-links/{route}")
         assert res.status_code == 200 and res.json()["ok"], f"{route} should still work"
 
+    live.push.assert_not_called()
+
+
+def test_cursor_walk_matches_offset_walk(api):
+    """Test that cursor-based and offset-based pagination return the same id sequence."""
+    client, conn, live, _ = api
+    
+    limit = 100
+    
+    # Offset-based walk
+    offset_ids = []
+    offset = 0
+    while True:
+        res = client.get(f"/api/internal-links/suggestions?status=suggested&limit={limit}&offset={offset}")
+        assert res.status_code == 200
+        data = res.json()
+        page_ids = [r["id"] for r in data["data"]]
+        offset_ids.extend(page_ids)
+        if not data["meta"]["has_more"]:
+            break
+        offset = data["meta"]["next_offset"]
+    
+    # Cursor-based walk
+    cursor_ids = []
+    cursor = None
+    while True:
+        if cursor:
+            res = client.get(f"/api/internal-links/suggestions?status=suggested&limit={limit}&cursor={cursor}")
+        else:
+            res = client.get(f"/api/internal-links/suggestions?status=suggested&limit={limit}")
+        assert res.status_code == 200
+        data = res.json()
+        page_ids = [r["id"] for r in data["data"]]
+        cursor_ids.extend(page_ids)
+        if not data["meta"]["has_more"]:
+            break
+        cursor = data["meta"]["next_cursor"]
+    
+    assert offset_ids == cursor_ids, "Offset walk and cursor walk should return the same ids in the same order"
+    
+    live.push.assert_not_called()
+
+
+@pytest.fixture
+def api_exact_multiple(tmp_path, monkeypatch):
+    """Create test API where total is an exact multiple of page size (limit).
+    
+    Creates exactly 300 'suggested' rows so with limit=100, we get exactly 3 full pages.
+    """
+    path = tmp_path / "pagination_exact.sqlite"
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    ensure_dashboard_schema(conn)
+
+    # Create exactly 300 suggested rows (3 pages of 100)
+    for i in range(300):
+        source_handle = f"exact-handle-{i}"
+        target_handle = f"exact-target-{i}"
+        score = 1.0 - (i // 10) * 0.01
+        conn.execute(
+            "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at) "
+            "VALUES ('product', ?, 'collection', ?, 'phrase_wrap', 'anchor', ?, 'suggested', ?)",
+            (source_handle, target_handle, score, i),
+        )
+    conn.commit()
+
+    def connect():
+        c = sqlite3.connect(path)
+        c.row_factory = sqlite3.Row
+        return c
+
+    monkeypatch.setattr(router, "open_db_connection", connect)
+    monkeypatch.setattr(router, "_base_url", lambda _: BASE)
+    monkeypatch.setattr(pipeline, "generate_link_suggestions", Mock(return_value=0))
+
+    live = Shopify()
+    monkeypatch.setattr(shopify_io, "fetch_body", live.fetch)
+    monkeypatch.setattr(shopify_io, "push_body", live.push)
+
+    yield TestClient(app), conn, live
+    conn.close()
+
+
+def test_cursor_pagination_exact_multiple_of_limit(api_exact_multiple):
+    """Test cursor pagination when total is an exact multiple of limit.
+    
+    With 300 rows and limit=100, we should get exactly 3 full pages.
+    The 3rd page (last) should have has_more=False and next_cursor=None.
+    """
+    client, conn, live = api_exact_multiple
+    
+    limit = 100
+    total = conn.execute("SELECT COUNT(*) FROM link_suggestions WHERE status='suggested'").fetchone()[0]
+    assert total == 300, "Should have exactly 300 suggested rows"
+    
+    expected_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM link_suggestions WHERE status='suggested' ORDER BY score DESC, id ASC"
+        ).fetchall()
+    ]
+    
+    cursor_ids = []
+    cursor = None
+    pages = []
+    
+    while True:
+        if cursor:
+            res = client.get(f"/api/internal-links/suggestions?status=suggested&limit={limit}&cursor={cursor}")
+        else:
+            res = client.get(f"/api/internal-links/suggestions?status=suggested&limit={limit}")
+        
+        assert res.status_code == 200
+        data = res.json()
+        page_ids = [r["id"] for r in data["data"]]
+        cursor_ids.extend(page_ids)
+        pages.append({
+            "count": len(page_ids),
+            "has_more": data["meta"]["has_more"],
+            "next_cursor": data["meta"]["next_cursor"],
+        })
+        
+        if not data["meta"]["has_more"]:
+            break
+        cursor = data["meta"]["next_cursor"]
+    
+    # Should have exactly 3 pages
+    assert len(pages) == 3, f"Expected 3 pages, got {len(pages)}"
+    
+    # First two pages should have has_more=True
+    assert pages[0]["has_more"] is True, "Page 1 should have has_more=True"
+    assert pages[0]["next_cursor"] is not None, "Page 1 should have next_cursor"
+    assert pages[1]["has_more"] is True, "Page 2 should have has_more=True"
+    assert pages[1]["next_cursor"] is not None, "Page 2 should have next_cursor"
+    
+    # Last page (page 3) should have has_more=False
+    assert pages[2]["has_more"] is False, "Page 3 (last) should have has_more=False"
+    assert pages[2]["next_cursor"] is None, "Page 3 (last) should have next_cursor=None"
+    assert pages[2]["count"] == 100, "Last page should still have 100 rows"
+    
+    # All IDs visited exactly once in correct order
+    assert cursor_ids == expected_ids, "Cursor walk should match direct SQL order"
+    assert len(cursor_ids) == 300, "Should visit all 300 rows"
+    
     live.push.assert_not_called()

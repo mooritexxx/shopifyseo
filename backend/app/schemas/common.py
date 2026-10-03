@@ -49,7 +49,14 @@ def success_response(data):
     return {"ok": True, "data": data}
 
 
-def paginated_response(data: list, total: int, limit: int, offset: int, next_cursor: str | None = None):
+def paginated_response(
+    data: list,
+    total: int,
+    limit: int,
+    offset: int,
+    next_cursor: str | None = None,
+    has_more_override: bool | None = None,
+):
     """Build a paginated response with meta information.
 
     Args:
@@ -58,9 +65,14 @@ def paginated_response(data: list, total: int, limit: int, offset: int, next_cur
         limit: The limit used for this request.
         offset: The offset used for this request.
         next_cursor: Opaque cursor for the next page, or None if no next page.
+        has_more_override: If provided, use this value for has_more instead of computing it.
+            Use this for cursor-based pagination where has_more is determined by fetching limit+1 rows.
     """
     count = len(data)
-    has_more = offset + count < total
+    if has_more_override is not None:
+        has_more = has_more_override
+    else:
+        has_more = offset + count < total
     next_offset = offset + count if has_more else None
     return {
         "ok": True,

@@ -161,16 +161,11 @@ def validate_edit(raw: dict) -> dict:
         
         append_text = edit["append_text"]
         
-        # Validate append_text: no newlines, plain text, at most 300 characters
+        # Validate structural requirements (no newlines, anchor appears once)
+        # Shape validation (300 chars, 2 sentences) is done in submit_manual_weave
+        # so it can return 400 ManualWeaveRejected instead of 409 LinkConflict
         if "\n" in append_text:
             raise LinkConflict("Appended text must not contain newlines.")
-        if len(append_text) > 300:
-            raise LinkConflict("Appended text exceeds 300 characters.")
-        
-        # At most 2 sentences: count sentence boundaries ([.!?] + whitespace + non-space)
-        sentence_boundaries = len(re.findall(r"[.!?]\s+\S", append_text))
-        if sentence_boundaries >= 2:
-            raise LinkConflict("Appended text may contain at most 2 sentences.")
         
         # Anchor must appear exactly once in append_text
         if append_text.count(phrase) != 1:
@@ -278,20 +273,28 @@ def _find_sentence_in_body(body: str, sentence: str) -> list[tuple[int, int]]:
     return matches
 
 
+_MATCH_PROTECTED = {"script", "style", "textarea", "template", "code", "pre",
+                    "h1", "h2", "h3", "h4", "h5", "h6"}
+
+_INSERT_PROTECTED = _PROTECTED
+
+
 class _FullTextExtractor(HTMLParser):
-    """Extract all text from HTML including text inside links, with position mapping.
+    """Extract text from HTML for sentence matching.
     
-    Creates a mapping from text positions to HTML positions for sentence matching.
-    Excludes text in script/style/textarea elements.
+    Creates a mapping from text positions to HTML positions.
+    Excludes text inside match-protected elements (headings, script, etc.).
+    Text inside links (<a>) IS included for matching but insert point is checked separately.
+    Uses convert_charrefs=False to preserve raw HTML offsets.
     """
-    _SKIP_TAGS = {"script", "style", "textarea", "template"}
     
     def __init__(self, html_str: str):
-        super().__init__(convert_charrefs=True)
+        super().__init__(convert_charrefs=False)
         self.html = html_str
         self.text_parts: list[str] = []
         self.text_to_html_pos: list[int] = []
-        self.skip_depth = 0
+        self.protected_depth = 0
+        self.tag_stack: list[str] = []
         self._lines = [0] + [m.end() for m in re.finditer("\n", html_str)]
         self.feed(html_str)
         self.close()
@@ -301,19 +304,51 @@ class _FullTextExtractor(HTMLParser):
         return self._lines[line - 1] + col
     
     def handle_starttag(self, tag, attrs):
-        if tag in self._SKIP_TAGS:
-            self.skip_depth += 1
+        if tag in _MATCH_PROTECTED:
+            self.protected_depth += 1
+        if tag not in _VOID:
+            self.tag_stack.append(tag)
     
     def handle_endtag(self, tag):
-        if tag in self._SKIP_TAGS and self.skip_depth > 0:
-            self.skip_depth -= 1
+        if tag in self.tag_stack:
+            idx = len(self.tag_stack) - 1 - self.tag_stack[::-1].index(tag)
+            popped = self.tag_stack[idx:]
+            self.tag_stack = self.tag_stack[:idx]
+            for t in popped:
+                if t in _MATCH_PROTECTED and self.protected_depth > 0:
+                    self.protected_depth -= 1
     
     def handle_data(self, data):
-        if self.skip_depth == 0:
+        if self.protected_depth == 0:
             offset = self._source_offset()
             for i, char in enumerate(data):
                 self.text_parts.append(char)
                 self.text_to_html_pos.append(offset + i)
+    
+    def handle_entityref(self, name):
+        if self.protected_depth == 0:
+            offset = self._source_offset()
+            entity_map = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
+                          "nbsp": "\u00a0", "mdash": "\u2014", "ndash": "\u2013"}
+            char = entity_map.get(name, "")
+            if char:
+                self.text_parts.append(char)
+                entity_len = len(name) + 2
+                self.text_to_html_pos.append(offset + entity_len - 1)
+    
+    def handle_charref(self, name):
+        if self.protected_depth == 0:
+            offset = self._source_offset()
+            try:
+                if name.startswith(("x", "X")):
+                    char = chr(int(name[1:], 16))
+                else:
+                    char = chr(int(name))
+                self.text_parts.append(char)
+                entity_len = len(name) + 3
+                self.text_to_html_pos.append(offset + entity_len - 1)
+            except (ValueError, OverflowError):
+                pass
     
     def get_text(self) -> str:
         return "".join(self.text_parts)
@@ -325,13 +360,58 @@ class _FullTextExtractor(HTMLParser):
         return self.text_to_html_pos[text_pos] + 1
 
 
+def _is_inside_protected(html_str: str, offset: int) -> bool:
+    """Check if offset is inside a _INSERT_PROTECTED element (links, headings, etc.)."""
+    class _ProtectedChecker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.protected_depth = 0
+            self.tag_stack = []
+            self.result = False
+            self.target = offset
+            self._lines = [0] + [m.end() for m in re.finditer("\n", html_str)]
+        
+        def _pos(self):
+            line, col = self.getpos()
+            return self._lines[line - 1] + col
+        
+        def handle_starttag(self, tag, attrs):
+            if tag in _INSERT_PROTECTED:
+                self.protected_depth += 1
+            if tag not in _VOID:
+                self.tag_stack.append(tag)
+        
+        def handle_endtag(self, tag):
+            if tag in self.tag_stack:
+                idx = len(self.tag_stack) - 1 - self.tag_stack[::-1].index(tag)
+                popped = self.tag_stack[idx:]
+                self.tag_stack = self.tag_stack[:idx]
+                for t in popped:
+                    if t in _INSERT_PROTECTED and self.protected_depth > 0:
+                        self.protected_depth -= 1
+        
+        def handle_data(self, data):
+            start = self._pos()
+            end = start + len(data)
+            if start <= self.target < end and self.protected_depth > 0:
+                self.result = True
+    
+    checker = _ProtectedChecker()
+    try:
+        checker.feed(html_str)
+    except Exception:
+        pass
+    return checker.result
+
+
 def _find_sentence_end_in_html(html_str: str, sentence: str) -> int | None:
-    """Find the HTML offset where a sentence ends, handling text inside links.
+    """Find the HTML offset where a sentence ends, excluding _PROTECTED text.
     
     Returns:
         int: HTML offset to insert after (right after the sentence's period)
-        None: If sentence not found
+        None: If sentence not found or only found in protected elements
         -1: If sentence appears multiple times (ambiguous)
+        -2: If insert point would be inside a protected element
     """
     extractor = _FullTextExtractor(html_str)
     full_text = extractor.get_text()
@@ -352,15 +432,23 @@ def _find_sentence_end_in_html(html_str: str, sentence: str) -> int | None:
         
         end_pos = pos + len(sentence_norm)
         
-        before_ok = pos == 0 or text_norm[pos - 1] in " .!?\n"
-        after_ok = sentence_norm[-1] in ".!?"
+        before_ok = False
+        if pos == 0:
+            before_ok = True
+        else:
+            before_text = text_norm[:pos].rstrip()
+            if before_text and before_text[-1] in ".!?":
+                before_ok = True
+        
+        after_ok = sentence_norm and sentence_norm[-1] in ".!?"
         
         if before_ok and after_ok:
             norm_end = end_pos - 1
             text_char_idx = _map_norm_to_text_pos(full_text, norm_end)
             if text_char_idx is not None:
                 html_pos = extractor.html_pos_for_text_pos(text_char_idx)
-                matches.append(html_pos)
+                if not _is_inside_protected(html_str, html_pos - 1):
+                    matches.append(html_pos)
         
         search_start = pos + 1
     
@@ -382,8 +470,6 @@ def _map_norm_to_text_pos(full_text: str, norm_pos: int) -> int | None:
     normalized = _normalize_for_matching(full_text)
     if norm_pos < 0 or norm_pos >= len(normalized):
         return None
-    
-    target_char = normalized[norm_pos]
     
     norm_idx = 0
     in_whitespace = False
@@ -440,14 +526,16 @@ def build_edit(old: str, raw: dict, url: str) -> str:
                 f"Link cap reached: {existing_links} existing links (max {MANUAL_LINK_CAP} including this one)."
             )
         
-        # Find the sentence in the body, including text inside links
+        # Find the sentence in the body, excluding _PROTECTED elements
         # Use _find_sentence_end_in_html which handles sentences spanning links
         insert_offset = _find_sentence_end_in_html(old, after_sentence)
         
         if insert_offset is None:
-            raise LinkConflict("Sentence not found in live body. The page may have changed (drift).")
+            raise LinkConflict("Sentence not found in eligible body text. It may be inside a heading or link, or the page changed (drift).")
         if insert_offset == -1:
             raise LinkConflict("Sentence appears multiple times in the body (ambiguous). Use a more specific sentence.")
+        if insert_offset == -2:
+            raise LinkConflict("Insert point would be inside a heading or link. Choose a different sentence.")
         
         # Build the insertion: space + append_text with anchor linked
         linked_text = html.escape(append_text).replace(

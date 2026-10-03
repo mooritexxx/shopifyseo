@@ -256,6 +256,22 @@ def submit_manual_weave(
     # G7: Validate append-only
     addition_text = _extract_addition(original_sentence, replacement_sentence)
     
+    # G15: Shape validation - must return 400 ManualWeaveRejected, not 409 LinkConflict
+    if len(addition_text) > 300:
+        raise ManualWeaveRejected(
+            "Appended text exceeds 300 characters.",
+            [f"Addition is {len(addition_text)} characters; maximum is 300."]
+        )
+    
+    # At most 2 sentences: count sentence boundaries ([.!?] + whitespace + non-space)
+    import re as re_mod
+    sentence_boundaries = len(re_mod.findall(r"[.!?]\s+\S", addition_text))
+    if sentence_boundaries >= 2:
+        raise ManualWeaveRejected(
+            "Appended text may contain at most 2 sentences.",
+            [f"Found {sentence_boundaries + 1} sentences; maximum is 2."]
+        )
+    
     # Build the edit descriptor
     after_sentence_norm = _normalize_for_matching(original_sentence)
     edit = {

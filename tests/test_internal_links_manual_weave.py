@@ -403,12 +403,12 @@ class TestManualWeaveTargetAndShape:
         assert "tag" in str(exc_info.value).lower()
     
     def test_three_sentences_rejected(self, database, live):
-        """More than 2 sentences in addition should fail."""
+        """More than 2 sentences in addition should fail with 400."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         # Use a valid multi-word anchor to test the sentence limit specifically
         replacement = f'{original} First sentence. Second sentence. Third sentence with <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our detailed guide</a>.'
         
-        with pytest.raises(LinkConflict) as exc_info:
+        with pytest.raises(ManualWeaveRejected) as exc_info:
             submit_manual_weave(
                 database, 1, BASE,
                 original_sentence=original,
@@ -419,14 +419,14 @@ class TestManualWeaveTargetAndShape:
         assert "2 sentences" in str(exc_info.value).lower()
     
     def test_over_300_chars_rejected(self, database, live):
-        """Addition over 300 characters should fail."""
+        """Addition over 300 characters should fail with 400."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         # Use a valid multi-word anchor and enough text to exceed 300 chars
         # "A" * 285 + " our detailed guide." = 285 + 1 + 18 + 1 = 305 chars
         long_addition = "A" * 285 + f' <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our detailed guide</a>.'
         replacement = f'{original} {long_addition}'
         
-        with pytest.raises(LinkConflict) as exc_info:
+        with pytest.raises(ManualWeaveRejected) as exc_info:
             submit_manual_weave(
                 database, 1, BASE,
                 original_sentence=original,
@@ -866,3 +866,422 @@ class TestManualWeaveImportCheck:
         source = inspect.getsource(mw)
         assert "ai_weave" not in source
         assert "providers" not in source or "dashboard_ai_engine_parts.providers" not in source
+
+
+class TestManualWeaveHeadingProtection:
+    """Test that sentences only in headings give zero matches (B1)."""
+    
+    def test_heading_only_match_gives_zero(self, database, live):
+        """Sentence that only appears in an h2 should not match."""
+        body_with_heading = '''<h2>This sentence is in a heading.</h2>
+<p>Other content here that is different.</p>'''
+        live.body = body_with_heading
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body_with_heading,),
+        )
+        database.commit()
+        
+        original = "This sentence is in a heading."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        assert "not found" in str(exc_info.value).lower() or "heading" in str(exc_info.value).lower()
+
+
+class TestManualWeavePartialSubstring:
+    """Test that partial substring matches are rejected (B2)."""
+    
+    def test_partial_substring_rejected(self, database, live):
+        """Mid-sentence substring should not match."""
+        body = '<p>Before the sentence we want to match. After it.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        # Try to match a partial substring (missing the period at the end)
+        original = "the sentence we want to match"  # Not a complete sentence
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        with pytest.raises((LinkConflict, ManualWeaveRejected)):
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+
+
+class TestManualWeaveEntityHandling:
+    """Test that HTML entities are handled correctly (B3)."""
+    
+    def test_entity_amp_handled(self, database, live):
+        """Body with &amp; entity should work correctly."""
+        body = '<p>This text has an ampersand &amp; more text here.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "This text has an ampersand & more text here."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        # Verify the entity is preserved and insert is in the right place
+        assert "&amp;" in result["new_html"]
+        assert "our guide" in result["new_html"]
+    
+    def test_entity_nbsp_handled(self, database, live):
+        """Body with &nbsp; entity should work correctly."""
+        body = '<p>This text has a non-breaking&nbsp;space here.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "This text has a non-breaking\u00a0space here."  # Use actual nbsp char
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        assert "our guide" in result["new_html"]
+    
+    def test_entity_mdash_handled(self, database, live):
+        """Body with &mdash; entity should work correctly."""
+        body = '<p>This text has an em dash&mdash;right here.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "This text has an em dash\u2014right here."  # Use actual mdash char
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        assert "our guide" in result["new_html"]
+
+
+class TestManualWeaveOnlineStoreUrlNull:
+    """Test that online_store_url=NULL products are still linkable."""
+    
+    def test_null_online_store_url_linkable(self, database, live):
+        """Product with NULL online_store_url should still be a valid target.
+        
+        Note: Empty string '' is NOT linkable, but NULL is.
+        """
+        # Change target to a product with NULL online_store_url
+        database.execute("""
+            INSERT INTO products 
+            (shopify_id, handle, title, status, online_store_url, description_html, tags_json, options_json, raw_json, synced_at)
+            VALUES ('gid://shopify/Product/999', 'null-url-product', 'Null URL Product', 'ACTIVE', 
+            NULL, '<p>Description</p>', '[]', '[]', '{}', 'now')
+        """)
+        database.execute("""
+            UPDATE link_suggestions SET target_type = 'product', target_handle = 'null-url-product' WHERE id = 1
+        """)
+        database.commit()
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/products/null-url-product">Null URL Product</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+
+
+class TestManualWeaveInventoryNotRequired:
+    """Test that inventory/stock is never checked (products always linkable if ACTIVE)."""
+    
+    def test_zero_inventory_product_linkable(self, database, live):
+        """Product with zero inventory should still be linkable."""
+        # We don't track inventory in link_suggestions - just ACTIVE status
+        # This test confirms we don't check inventory at all
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal?</a>'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        # Stock/inventory is never checked - only status matters
+        assert result["allowed"] is True
+
+
+class TestManualWeaveApiUnreachable:
+    """Test handling of api_unreachable collections."""
+    
+    def test_api_unreachable_collection_rejected(self, database, live):
+        """Collection with api_unreachable=1 should be rejected as target."""
+        database.execute("""
+            INSERT INTO collections 
+            (shopify_id, handle, title, description_html, raw_json, synced_at, api_unreachable)
+            VALUES ('gid://shopify/Collection/999', 'unreachable-collection', 'Unreachable Collection', 
+            '<p>Description</p>', '{}', 'now', 1)
+        """)
+        database.execute("""
+            UPDATE link_suggestions SET target_type = 'collection', target_handle = 'unreachable-collection' WHERE id = 1
+        """)
+        database.commit()
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/collections/unreachable-collection">our collection</a>.'
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        assert "no longer eligible" in str(exc_info.value).lower()
+
+
+class TestManualWeaveCapRecheckedAtApply:
+    """Test that 8-link cap is re-checked at apply time."""
+    
+    def test_cap_recheck_at_apply(self, api):
+        """If body changes to have 8 links after submit, apply should fail."""
+        client, conn, live = api
+        
+        # Start with 7 links in body
+        body_7_links = '''<p>Links:
+<a href="/a">A</a>, <a href="/b">B</a>, <a href="/c">C</a>,
+<a href="/d">D</a>, <a href="/e">E</a>, <a href="/f">F</a>,
+<a href="/g">G</a>. Health Canada has strict protocols.</p>'''
+        live.body = body_7_links
+        
+        original = "Health Canada has strict protocols."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        # Submit should succeed (7 + 1 = 8, within cap)
+        response = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement},
+        )
+        assert response.status_code == 200
+        token = response.json()["data"]["preview_token"]
+        
+        # Now change live body to have 8 links (cap would be exceeded)
+        body_8_links = '''<p>Links:
+<a href="/a">A</a>, <a href="/b">B</a>, <a href="/c">C</a>,
+<a href="/d">D</a>, <a href="/e">E</a>, <a href="/f">F</a>,
+<a href="/g">G</a>, <a href="/h">H</a>. Health Canada has strict protocols.</p>'''
+        live.body = body_8_links
+        
+        # Apply should fail because body changed (drift) or cap exceeded
+        apply_response = client.post(
+            "/api/internal-links/suggestions/1/apply",
+            json={"preview_token": token},
+        )
+        # Should fail - either 409 for drift/cap or the response includes error info
+        assert apply_response.status_code in (400, 409)
+        response_text = str(apply_response.json()).lower()
+        assert "cap" in response_text or "drift" in response_text or "changed" in response_text
+
+
+class TestManualWeavePendingSnapshot:
+    """Test that applied suggestion blocks new submit."""
+    
+    def test_applied_suggestion_blocks_new_submit(self, api):
+        """If suggestion is already applied, new submit should fail."""
+        client, conn, live = api
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        # First submit and apply
+        response1 = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement},
+        )
+        assert response1.status_code == 200
+        token1 = response1.json()["data"]["preview_token"]
+        
+        apply_response = client.post(
+            "/api/internal-links/suggestions/1/apply",
+            json={"preview_token": token1},
+        )
+        assert apply_response.status_code == 200
+        
+        # Now status is 'applied' - new submit should fail
+        response2 = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement},
+        )
+        assert response2.status_code == 409
+        response_text = str(response2.json()).lower()
+        assert "applied" in response_text or "status" in response_text or "refresh" in response_text
+
+
+class TestManualWeaveDismiss:
+    """Test dismiss after manual-weave."""
+    
+    def test_dismiss_after_submit(self, api):
+        """Dismissing after manual-weave submit should work."""
+        client, conn, live = api
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        # Submit manual-weave
+        response = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement},
+        )
+        assert response.status_code == 200
+        
+        # Dismiss (using existing dismiss endpoint)
+        dismiss_response = client.post("/api/internal-links/suggestions/1/dismiss")
+        assert dismiss_response.status_code == 200
+        
+        # Verify status changed
+        row = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
+        assert row["status"] == "dismissed"
+
+
+class TestManualWeaveTokenResubmit:
+    """Test that old token fails after re-submit."""
+    
+    def test_old_token_fails_after_resubmit(self, api):
+        """After re-submitting, old token should fail."""
+        client, conn, live = api
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement1 = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        replacement2 = f'{original} Check <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">the full article</a>.'
+        
+        # First submit
+        response1 = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement1},
+        )
+        assert response1.status_code == 200
+        token1 = response1.json()["data"]["preview_token"]
+        
+        # Second submit with different anchor
+        response2 = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement2},
+        )
+        assert response2.status_code == 200
+        token2 = response2.json()["data"]["preview_token"]
+        
+        # Old token should fail
+        apply_response1 = client.post(
+            "/api/internal-links/suggestions/1/apply",
+            json={"preview_token": token1},
+        )
+        assert apply_response1.status_code in (400, 409)
+        
+        # New token should succeed
+        apply_response2 = client.post(
+            "/api/internal-links/suggestions/1/apply",
+            json={"preview_token": token2},
+        )
+        assert apply_response2.status_code == 200
+
+
+class TestManualWeaveMixedLinks:
+    """Test body with mixed internal/external links - all are counted toward cap."""
+    
+    def test_all_links_counted_toward_cap(self, database, live):
+        """ALL links (internal and external) count toward the 8-link cap."""
+        # 6 internal + 1 external = 7 links, so adding 1 more = 8 (at cap)
+        body_mixed = '''<p>External <a href="https://google.com">Google</a> and internal
+<a href="/products/a">A</a>, <a href="/products/b">B</a>, <a href="/products/c">C</a>,
+<a href="/products/d">D</a>, <a href="/products/e">E</a>, <a href="/products/f">F</a>.
+Health Canada has strict protocols.</p>'''
+        live.body = body_mixed
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body_mixed,),
+        )
+        database.commit()
+        
+        original = "Health Canada has strict protocols."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        # Should succeed - 7 existing + 1 new = 8, at cap
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        # All <a> tags are counted (internal + external)
+        assert result["existing_link_count"] == 7
+        assert result["allowed"] is True
+
+
+class TestManualWeaveLinkWithoutHref:
+    """Test that <a> without href is not counted as a link."""
+    
+    def test_anchor_without_href_not_counted(self, database, live):
+        """<a> tags without href (bookmarks) should NOT count toward link cap."""
+        body = '''<p>An anchor <a name="bookmark">bookmark</a> here.
+<a href="/products/a">A</a>. Health Canada has strict protocols.</p>'''
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "Health Canada has strict protocols."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        # Only <a> with href counts - bookmark anchors don't
+        assert result["existing_link_count"] == 1

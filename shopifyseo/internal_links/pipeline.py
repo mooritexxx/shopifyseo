@@ -42,10 +42,10 @@ def _hash_body(body: str) -> str:
 # (source_type, table, handle_expr, body_col, published_filter)
 # published_filter: SQL WHERE clause fragment to exclude unpublished sources
 # Note: Product sources tolerate blank online_store_url (like targets per #48).
-# Only the ACTIVE status check is enforced for sources.
+# Product sources require status = 'ACTIVE' (case-insensitive); empty or NULL status is rejected.
 _SUGGESTION_SOURCES = (
     ("blog_article", "blog_articles", "blog_handle || '/' || handle", "body", "is_published = 1"),
-    ("product", "products", "handle", "description_html", "(status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"),
+    ("product", "products", "handle", "description_html", "UPPER(COALESCE(status, '')) = 'ACTIVE'"),
     ("collection", "collections", "handle", "description_html", "COALESCE(api_unreachable, 0) = 0"),
 )
 
@@ -219,8 +219,10 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
     
     This matches the published_filter criteria used in _SUGGESTION_SOURCES:
     - blog_article: is_published = 1
-    - product: status is NULL, empty, or 'ACTIVE' (online_store_url not required for sources)
+    - product: status = 'ACTIVE' (case-insensitive); empty/NULL status is rejected
     - collection: api_unreachable = 0 (or NULL)
+    
+    Note: Product sources tolerate blank online_store_url (like targets per #48).
     """
     if s_type == "blog_article":
         blog_h, _, article_h = s_handle.partition("/")
@@ -230,11 +232,11 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
         ).fetchone()
         return bool(row and row["body"] and row["body"].strip())
     elif s_type == "product":
-        # Product sources only require ACTIVE status + body, not online_store_url
-        # (online_store_url is required for targets per #48, not sources)
+        # Product sources require ACTIVE status (case-insensitive), not online_store_url
+        # Empty or NULL status is rejected
         row = conn.execute(
             "SELECT description_html FROM products WHERE handle = ? "
-            "AND (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')",
+            "AND UPPER(COALESCE(status, '')) = 'ACTIVE'",
             (s_handle,),
         ).fetchone()
         return bool(row and row["description_html"] and row["description_html"].strip())

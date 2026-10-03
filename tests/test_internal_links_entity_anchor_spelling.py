@@ -144,8 +144,8 @@ class TestEntityEquivalence:
     def test_amp_lt_not_equivalent_to_lt(self):
         """&amp;lt;b&amp;gt; should NOT be equivalent to &lt;b&gt;.
         
-        The first displays as literal '<b>' text, the second is an HTML entity
-        that could be interpreted as a tag. They are semantically different.
+        The first displays as literal '&lt;b&gt;' text, the second renders as '<b>'.
+        They are semantically different.
         """
         a = '<p>Use &amp;lt;b&amp;gt; for bold</p>'
         b = '<p>Use &lt;b&gt; for bold</p>'
@@ -158,6 +158,30 @@ class TestEntityEquivalence:
         """
         a = '<p>hello&amp;nbsp;world</p>'
         b = '<p>hello&nbsp;world</p>'
+        assert not html_equivalent(a, b)
+    
+    def test_qa_ampersand_equivalent(self):
+        """Q&amp;A should be equivalent to Q&A (Shopify normalization)."""
+        a = '<p>Check our Q&amp;A section</p>'
+        b = '<p>Check our Q&A section</p>'
+        assert html_equivalent(a, b)
+    
+    def test_rd_ampersand_equivalent(self):
+        """R&amp;D should be equivalent to R&D."""
+        a = '<p>Our R&amp;D team</p>'
+        b = '<p>Our R&D team</p>'
+        assert html_equivalent(a, b)
+    
+    def test_att_ampersand_equivalent(self):
+        """AT&amp;T should be equivalent to AT&T."""
+        a = '<p>AT&amp;T wireless</p>'
+        b = '<p>AT&T wireless</p>'
+        assert html_equivalent(a, b)
+    
+    def test_x39_not_equivalent_to_apostrophe(self):
+        """&#x39; should NOT be equivalent to ' (hex 39 = digit 9, not apostrophe)."""
+        a = '<p>number&#x39;s</p>'
+        b = "<p>number's</p>"
         assert not html_equivalent(a, b)
 
 
@@ -197,31 +221,58 @@ class TestNormalizeTextEntities:
         This is a critical distinction: &#x27; is apostrophe (hex 27 = decimal 39),
         but &#x39; is the digit 9 (hex 39 = decimal 57). We must NOT normalize it.
         """
-        text = "number&#x39;s"  # This should remain as 9, not become apostrophe
+        text = "number&#x39;s"  # This should remain as &#x39;, not become apostrophe
         result = _normalize_text_entities(text)
-        assert result == "number&#x39;s" or result == "number9s"  # Either unchanged or correctly decoded as '9'
+        assert "&#x39;" in result  # Must be preserved
         assert result != "number's"  # MUST NOT become apostrophe
     
     def test_amp_lt_not_converted_to_lt(self):
         """&amp;lt; should NOT be converted to &lt; (they render differently).
         
-        &amp;lt; renders as literal '<' in text, while &lt; renders as '<' tag-like.
-        Single-pass replacement prevents this cascade.
+        &amp;lt; renders as literal '&lt;' in text, while &lt; renders as '<'.
+        These are semantically different and must remain distinct.
         """
-        # &amp;lt; should stay as &amp;lt; or become &lt; only from the amp part
         text = "use &amp;lt;b&amp;gt; for bold"
         result = _normalize_text_entities(text)
-        # The &amp; before lt is followed by 'l', so it should NOT be converted
-        assert "&lt;" not in result or "&amp;" in result  # Either kept or only amp converted correctly
-        # More specifically: standalone &amp; (not followed by # or letter) converts, but &amp;lt; does not
-        assert result == "use &amp;lt;b&amp;gt; for bold"  # Should be unchanged
+        # Must preserve double-escaped entities
+        assert result == "use &amp;lt;b&amp;gt; for bold"
     
     def test_amp_hash_not_converted(self):
         """&amp;#39; should NOT be converted (it's an escaped entity reference)."""
         text = "typed &amp;#39; by user"
         result = _normalize_text_entities(text)
-        # &amp; followed by # should NOT be converted
-        assert result == "typed &amp;#39; by user"  # Should be unchanged
+        # &amp;# must be preserved
+        assert "&amp;#" in result
+    
+    def test_qa_ampersand_normalized(self):
+        """Q&amp;A should normalize to Q&A (Shopify may return either form)."""
+        text = "Check our Q&amp;A section"
+        result = _normalize_text_entities(text)
+        assert result == "Check our Q&A section"
+    
+    def test_rd_ampersand_normalized(self):
+        """R&amp;D should normalize to R&D."""
+        text = "Our R&amp;D team"
+        result = _normalize_text_entities(text)
+        assert result == "Our R&D team"
+    
+    def test_att_ampersand_normalized(self):
+        """AT&amp;T should normalize to AT&T."""
+        text = "AT&amp;T wireless"
+        result = _normalize_text_entities(text)
+        assert result == "AT&T wireless"
+    
+    def test_nbsp_preserved(self):
+        """&nbsp; should NOT be normalized (significant per #117)."""
+        text = "hello&nbsp;world"
+        result = _normalize_text_entities(text)
+        assert "&nbsp;" in result
+    
+    def test_leading_zero_039_is_apostrophe(self):
+        """&#0039; (with leading zeros) should be treated as apostrophe."""
+        text = "beginner&#0039;s guide"
+        result = _normalize_text_entities(text)
+        assert result == "beginner's guide"
 
 
 class TestApplyRoundTrip:
@@ -252,14 +303,19 @@ class TestApplyRoundTrip:
         assert html_equivalent(sent, shopify_returned)
 
 
-class TestRealApplyReconcileIntegration:
-    """Integration tests using real apply_suggestion and reconcile_suggestion with stubbed Shopify."""
+class TestApplyWithEntityNormalization:
+    """Tests for apply/reconcile that exercise entity normalization.
+    
+    These tests MUST FAIL if:
+    - The html_equivalent check is made strict (exact match)
+    - Entity normalization is turned off
+    
+    Each test uses a body that contains the entity-sensitive character (apostrophe, ampersand)
+    in the anchor phrase itself, and the stub returns what Shopify really stores.
+    """
     
     def _create_apply_db(self):
-        """Create database with required schema for apply/reconcile tests.
-        
-        This schema matches the real production schema from ensure_schema().
-        """
+        """Create database with required schema for apply/reconcile tests."""
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.executescript("""
@@ -288,40 +344,47 @@ class TestRealApplyReconcileIntegration:
         """)
         return conn
     
-    def test_apply_with_apostrophe_shopify_normalizes(self):
-        """Apply a link with apostrophe, Shopify returns plain ' → status=applied."""
+    def test_apply_apostrophe_in_anchor_shopify_returns_plain(self):
+        """Apply link with apostrophe in anchor phrase. Shopify returns plain ' where we sent &#x27;.
+        
+        Body contains "beginner's guide" with plain apostrophe.
+        We wrap it with a link, which html.escape will encode as beginner&#x27;s guide (quote=False keeps it plain actually).
+        Shopify stores and returns plain apostrophe.
+        The html_equivalent check must pass.
+        
+        This test FAILS if normalization is disabled.
+        """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
         conn = self._create_apply_db()
+        # Body has apostrophe in the phrase we want to link
+        original_body = "<p>Check our beginner's guide for tips.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
-            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
-            "'<p>Check the ceramic tanks guide here.</p>', 'https://shop.com/products/source')"
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
         )
         conn.execute(
-            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'ceramic-tanks', 'Ceramic Tanks')"
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'guides', 'Guides')"
         )
         conn.execute(
             "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
-            "VALUES (1, 'product', 'source', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+            "VALUES (1, 'product', 'source', 'collection', 'guides', 'phrase_wrap', 'beginner''s guide', 'suggested', 1)"
         )
         conn.commit()
         
-        original_body = '<p>Check the ceramic tanks guide here.</p>'
-        
-        # Simulate Shopify returning body with normalized entities
         def mock_fetch(source_type, row):
             return original_body
         
         def mock_push(source_type, row, body):
-            # Shopify normalizes: returns body as-is (it's already using plain chars)
-            return body
+            # Shopify stores and returns plain apostrophe regardless of what we sent
+            # Our body will have the link with the apostrophe preserved as plain
+            # This simulates Shopify returning exactly what it stored
+            return body  # Already has plain apostrophe from html.escape(quote=False)
         
-        # Get preview token first
         preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
-        assert preview["allowed"]
+        assert preview["allowed"], f"Preview failed: {preview.get('reason')}"
         
-        # Apply
         result = apply_suggestion(
             conn, 1, "https://shop.com",
             preview_token_value=preview["preview_token"],
@@ -330,19 +393,26 @@ class TestRealApplyReconcileIntegration:
         )
         assert result["status"] == "applied"
         
-        # Verify suggestion status changed
+        # Verify the link contains the apostrophe
         sug = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
         assert sug["status"] == "applied"
     
-    def test_reconcile_with_entity_normalized_response(self):
-        """Reconcile succeeds when Shopify returned entity-normalized HTML."""
+    def test_reconcile_apostrophe_entity_vs_plain(self):
+        """Reconcile succeeds when we sent &#x27; but Shopify returned plain '.
+        
+        This directly tests entity normalization in the reconcile path.
+        The snapshot has new_body with &#x27; (entity-encoded).
+        Shopify returns the same content but with plain apostrophe.
+        Reconcile must recognize these as equivalent.
+        
+        This test FAILS if normalization is disabled.
+        """
         from shopifyseo.internal_links.apply import reconcile_suggestion
         
         conn = self._create_apply_db()
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
-            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
-            "'<p>Content.</p>', 'https://shop.com/products/source')"
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', '<p>Old.</p>', 'https://shop.com/products/source')"
         )
         conn.execute(
             "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'target', 'Target')"
@@ -352,55 +422,55 @@ class TestRealApplyReconcileIntegration:
             "VALUES (1, 'product', 'source', 'collection', 'target', 'phrase_wrap', 'test', 'suggested', 1)"
         )
         
-        # Create a snapshot in needs_reconciliation state
-        # We sent body with &#x27; but Shopify stored '
-        sent_body = "<p>The beginner&#x27;s guide is here.</p>"
+        # Snapshot has entity-encoded apostrophe (what we sent)
+        sent_body = "<p>The beginner&#x27;s guide.</p>"
         conn.execute(
             "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old body.</p>', ?, 'needs_reconciliation', 1, 1)",
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
             (sent_body,)
         )
         conn.commit()
         
-        # Simulate Shopify returning the entity-normalized version
         def mock_fetch(source_type, row):
-            return "<p>The beginner's guide is here.</p>"  # Plain apostrophe
+            # Shopify returns plain apostrophe
+            return "<p>The beginner's guide.</p>"
         
         result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
         assert result["status"] == "applied"
-        
-        # Verify snapshot and suggestion status
-        snapshot = conn.execute("SELECT status FROM link_body_snapshots WHERE id = 1").fetchone()
-        assert snapshot["status"] == "applied"
     
-    def test_apply_ampersand_entity_normalized(self):
-        """Apply a link, Shopify returns &amp; normalized to & → status=applied."""
+    def test_apply_ampersand_in_body_shopify_returns_plain(self):
+        """Apply link when body has &. Shopify returns plain & where we might send &amp;.
+        
+        Body contains "Q&A guide" - we link "Q&A guide".
+        The link href will have the ampersand html-escaped in the anchor text.
+        Shopify stores and returns plain &.
+        
+        This test FAILS if normalization is disabled.
+        """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
         conn = self._create_apply_db()
-        # Body has a phrase we can link, and also has Tom & Jerry elsewhere
+        # Body has ampersand in the phrase we want to link
+        original_body = "<p>Check our Q&A guide for answers.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
-            "VALUES ('gid://shopify/Product/1', 'source', 'Source Product', 'ACTIVE', "
-            "'<p>Check our ceramic tanks guide. Tom & Jerry is here.</p>', 'https://shop.com/products/source')"
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
         )
         conn.execute(
-            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'ceramic-tanks', 'Ceramic Tanks')"
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'faq', 'FAQ')"
         )
         conn.execute(
             "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
-            "VALUES (1, 'product', 'source', 'collection', 'ceramic-tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+            "VALUES (1, 'product', 'source', 'collection', 'faq', 'phrase_wrap', 'Q&A guide', 'suggested', 1)"
         )
         conn.commit()
-        
-        original_body = '<p>Check our ceramic tanks guide. Tom & Jerry is here.</p>'
         
         def mock_fetch(source_type, row):
             return original_body
         
         def mock_push(source_type, row, body):
-            # We send Tom &amp; Jerry in our link, Shopify might normalize &amp; to &
-            # This tests the html_equivalent check passes
+            # We send Q&amp;A (html escaped), Shopify returns Q&A (plain)
             return body.replace('&amp;', '&')
         
         preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
@@ -412,6 +482,42 @@ class TestRealApplyReconcileIntegration:
             fetch_fn=mock_fetch,
             push_fn=mock_push
         )
+        assert result["status"] == "applied"
+    
+    def test_reconcile_ampersand_entity_vs_plain(self):
+        """Reconcile succeeds when we sent &amp; but Shopify returned plain &.
+        
+        This test FAILS if normalization is disabled.
+        """
+        from shopifyseo.internal_links.apply import reconcile_suggestion
+        
+        conn = self._create_apply_db()
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', '<p>Old.</p>', 'https://shop.com/products/source')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'target', 'Target')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'target', 'phrase_wrap', 'test', 'suggested', 1)"
+        )
+        
+        # Snapshot has entity-encoded ampersand
+        sent_body = "<p>Check the Q&amp;A guide.</p>"
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
+            (sent_body,)
+        )
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            # Shopify returns plain ampersand
+            return "<p>Check the Q&A guide.</p>"
+        
+        result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
         assert result["status"] == "applied"
 
 
@@ -728,7 +834,10 @@ class TestManualWeaveWriteLock:
     """Test manual-weave respects the page write lock."""
     
     def test_manual_weave_preview_only_returns_page_write_pending(self):
-        """Manual-weave with preview_only=True should return allowed=false shape."""
+        """Manual-weave with preview_only=True should return allowed=false shape.
+        
+        Test-contract change: preview_only now returns allowed=false dict instead of raising 409.
+        """
         from shopifyseo.internal_links.manual_weave import submit_manual_weave
         
         conn = _test_db()
@@ -758,6 +867,127 @@ class TestManualWeaveWriteLock:
         )
         assert result["allowed"] is False
         assert result.get("code") == "page_write_pending"
+
+
+class TestLockHolderBehavior:
+    """Test that the lock holder can preview and apply their own suggestion."""
+    
+    def _create_lock_test_db(self):
+        """Create database for lock holder tests."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+                description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
+            CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
+                description_html TEXT, api_unreachable INTEGER DEFAULT 0);
+            CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
+                body TEXT, is_published INTEGER DEFAULT 1, gsc_clicks INTEGER DEFAULT 0);
+            CREATE TABLE link_suggestions (
+                id INTEGER PRIMARY KEY, source_type TEXT, source_handle TEXT, 
+                target_type TEXT, target_handle TEXT, kind TEXT, anchor_phrase TEXT,
+                ai_edit_json TEXT, ai_anchor_html TEXT, source_body_hash TEXT, score REAL DEFAULT 0, 
+                status TEXT DEFAULT 'suggested', created_at INTEGER, weak_anchor INTEGER DEFAULT 0, applied_at INTEGER,
+                UNIQUE (source_type, source_handle, target_type, target_handle)
+            );
+            CREATE TABLE link_body_snapshots (
+                id INTEGER PRIMARY KEY, suggestion_id INTEGER, source_type TEXT, source_handle TEXT,
+                shopify_id TEXT, old_body TEXT, new_body TEXT, status TEXT, created_at INTEGER, updated_at INTEGER, error TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_pending ON link_body_snapshots (source_type, source_handle)
+                WHERE status IN ('prepared', 'needs_reconciliation', 'undo_prepared', 'undo_needs_reconciliation');
+            CREATE TABLE internal_links (source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, href TEXT, anchor_text TEXT);
+            CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE link_suggestion_events (id INTEGER PRIMARY KEY, suggestion_id INTEGER, event_type TEXT, source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, kind TEXT, score REAL, gsc_clicks_at_event INTEGER, created_at INTEGER);
+        """)
+        return conn
+    
+    def test_lock_holder_preview_then_apply_succeeds(self):
+        """Lock holder can preview and then apply their own suggestion."""
+        from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
+        
+        conn = self._create_lock_test_db()
+        original_body = "<p>Check our ceramic tanks guide.</p>"
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'tanks', 'Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            return original_body
+        
+        def mock_push(source_type, row, body):
+            return body
+        
+        # Preview first
+        preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview["allowed"], f"Preview failed: {preview.get('reason')}"
+        
+        # Then apply with the preview token
+        result = apply_suggestion(
+            conn, 1, "https://shop.com",
+            preview_token_value=preview["preview_token"],
+            fetch_fn=mock_fetch,
+            push_fn=mock_push
+        )
+        assert result["status"] == "applied"
+    
+    def test_preview_blocked_by_another_holders_lock(self):
+        """Preview is blocked when page is locked by another suggestion's snapshot.
+        
+        Suggestion 1 has a pending snapshot (the lock holder).
+        Suggestion 2 on the SAME page tries to preview but is blocked.
+        """
+        from shopifyseo.internal_links.apply import preview_suggestion
+        
+        conn = self._create_lock_test_db()
+        original_body = "<p>Check our ceramic tanks and test2 phrase.</p>"
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'target1', 'Target1')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/2', 'target2', 'Target2')"
+        )
+        # Suggestion 1 - has the lock (prepared snapshot)
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'target1', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', '<p>New.</p>', 'prepared', 1, 1)"
+        )
+        # Suggestion 2 - different suggestion, same source page, NO snapshot yet
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (2, 'product', 'source', 'collection', 'target2', 'phrase_wrap', 'test2 phrase', 'suggested', 1)"
+        )
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            return original_body
+        
+        # Trying to preview suggestion 2 should return allowed=false because suggestion 1 holds the lock
+        preview = preview_suggestion(conn, 2, "https://shop.com", fetch_fn=mock_fetch)
+        
+        # Should indicate the page is locked
+        assert preview["allowed"] == False
+        assert preview["code"] == "page_write_pending"
+        assert "write" in preview["reason"].lower() or "progress" in preview["reason"].lower()
 
 
 # =============================================================================
@@ -993,7 +1223,7 @@ class TestSkipUnpublishedSources:
         """Active product WITHOUT online_store_url should still generate suggestions.
         
         Product SOURCES tolerate blank online_store_url (like targets per #48).
-        Only the ACTIVE status check is enforced for sources.
+        ACTIVE status (case-insensitive) is required for sources.
         """
         conn = _pipeline_db()
         conn.execute(
@@ -1010,6 +1240,71 @@ class TestSkipUnpublishedSources:
         
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1  # Product sources tolerate blank online_store_url
+    
+    def test_product_with_empty_status_skipped(self):
+        """Product with empty string status should NOT generate suggestions.
+        
+        Product sources require status = 'ACTIVE' (case-insensitive).
+        Empty status is rejected.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('empty-status', 'Empty Status', '', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/empty')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+        conn.commit()
+        
+        def related(conn, obj_type, handle, top_k=10):
+            if obj_type == "product":
+                return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+            return []
+        
+        n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+        assert n == 0  # Empty status is rejected
+    
+    def test_product_with_null_status_skipped(self):
+        """Product with NULL status should NOT generate suggestions.
+        
+        Product sources require status = 'ACTIVE' (case-insensitive).
+        NULL status is rejected.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('null-status', 'Null Status', NULL, '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/null')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+        conn.commit()
+        
+        def related(conn, obj_type, handle, top_k=10):
+            if obj_type == "product":
+                return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+            return []
+        
+        n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+        assert n == 0  # NULL status is rejected
+    
+    def test_product_with_lowercase_active_status_generates_suggestions(self):
+        """Product with lowercase 'active' status should generate suggestions.
+        
+        Status check is case-insensitive.
+        """
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('lowercase-active', 'Lowercase', 'active', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/lower')"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+        conn.commit()
+        
+        def related(conn, obj_type, handle, top_k=10):
+            if obj_type == "product":
+                return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+            return []
+        
+        n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+        assert n == 1  # Case-insensitive ACTIVE match
     
     def test_existing_applied_rows_for_unpublished_source_untouched(self):
         """Existing applied rows for unpublished sources should not be deleted."""

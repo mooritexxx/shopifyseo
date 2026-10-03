@@ -216,43 +216,72 @@ def _strip_inter_block_whitespace(html: str) -> str:
 def _normalize_text_entities(text: str) -> str:
     """Normalize entity-encoded characters in text content to their plain equivalents.
     
-    This handles the case where we send &#x27; but Shopify returns ' (and similar).
-    Only affects text content; tag structures and attributes are unchanged.
+    Uses html.unescape to handle all standard HTML entities (Q&amp;A → Q&A, R&amp;D → R&D,
+    AT&amp;T → AT&T), with special handling to:
     
-    Normalizes (single-pass to avoid cascading):
-    - &#x27; / &#39; / &#039; / &apos; → '  (apostrophe: hex 27 = decimal 39)
-    - &#x22; / &#34; / &quot; → "  (quote: hex 22 = decimal 34)
-    - &amp; → & ONLY when standalone (not part of &amp;lt; &amp;#39; etc.)
+    1. Keep &nbsp; as a sentinel (significant per #117 rule)
+    2. Keep &amp;lt; distinct from &lt; (escaped entity ≠ real entity)
+    3. Keep &#x39; distinct from ' (hex 39 = digit '9', not apostrophe)
     
-    Does NOT normalize:
-    - &nbsp; (significant per #117 rule)
-    - &#x39; (that's hex 39 = decimal 57 = digit '9', NOT apostrophe)
-    - &amp;lt; &amp;gt; &amp;#... (these are escaped entities, not bare ampersands)
-    
-    Uses single-pass replacement to prevent &amp;lt; from incorrectly becoming &lt;.
+    The approach:
+    - Replace &nbsp; with a sentinel before unescape, restore after
+    - Replace double-escaped entities (&amp;lt; etc.) with sentinels, restore after
+    - Use html.unescape for everything else
+    - Handle &#x39; specially (it's '9', not apostrophe)
     """
-    # Single-pass replacement using a function
-    # Pattern matches entities we want to normalize, in precedence order
-    # Note: &#39; without x is decimal 39 = apostrophe (correct)
-    #       &#x39; with x is hex 39 = decimal 57 = '9' (NOT apostrophe, so excluded)
-    _ENTITY_PATTERN = re.compile(
-        r'&#x27;|&#39;|&#039;|&apos;'  # apostrophe entities (hex 27, decimal 39)
-        r'|&#x22;|&#34;|&quot;'  # quote entities (hex 22, decimal 34)
-        r'|&amp;(?![#a-zA-Z])',  # standalone &amp; (not followed by # or letter)
-        re.IGNORECASE
-    )
+    if not text:
+        return text
     
-    def _replace_entity(match: re.Match) -> str:
-        entity = match.group(0).lower()
-        if entity in ('&#x27;', '&#39;', '&#039;', '&apos;'):
-            return "'"
-        if entity in ('&#x22;', '&#34;', '&quot;'):
-            return '"'
-        if entity.startswith('&amp;'):
-            return '&'
-        return match.group(0)  # no change
+    # Sentinel for &nbsp; - use a character unlikely to appear in content
+    NBSP_SENTINEL = "\x00NBSP\x00"
+    # Sentinels for double-escaped entities (they should NOT cascade)
+    AMP_LT_SENTINEL = "\x00AMPLT\x00"
+    AMP_GT_SENTINEL = "\x00AMPGT\x00"
+    AMP_AMP_SENTINEL = "\x00AMPAMP\x00"
+    AMP_HASH_SENTINEL = "\x00AMPHASH\x00"
+    AMP_NBSP_SENTINEL = "\x00AMPNBSP\x00"  # &amp;nbsp; should stay distinct from &nbsp;
+    X39_SENTINEL = "\x00X39\x00"  # &#x39; is hex 39 = '9', not apostrophe
+    # Sentinels for structural HTML entities (keep them as-is)
+    LT_SENTINEL = "\x00LT\x00"    # &lt; represents literal '<' in text
+    GT_SENTINEL = "\x00GT\x00"    # &gt; represents literal '>' in text
     
-    return _ENTITY_PATTERN.sub(_replace_entity, text)
+    # Preserve double-escaped entities FIRST (they should NOT cascade)
+    # Must do this before preserving &nbsp; so &amp;nbsp; doesn't partially match
+    text = re.sub(r'&amp;lt;', AMP_LT_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&amp;gt;', AMP_GT_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&amp;amp;', AMP_AMP_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&amp;nbsp;', AMP_NBSP_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&amp;#', AMP_HASH_SENTINEL, text, flags=re.IGNORECASE)
+    
+    # Preserve &lt; and &gt; - these represent literal < and > in text content
+    # Converting them would change HTML structure (text vs element)
+    text = re.sub(r'&lt;', LT_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&gt;', GT_SENTINEL, text, flags=re.IGNORECASE)
+    
+    # Preserve &nbsp; (keep it significant)
+    text = text.replace('&nbsp;', NBSP_SENTINEL)
+    
+    # Preserve &#x39; (hex 39 = decimal 57 = digit '9', NOT apostrophe)
+    text = re.sub(r'&#x39;', X39_SENTINEL, text, flags=re.IGNORECASE)
+    
+    # Also handle &#0039; as apostrophe (leading zeros)
+    text = re.sub(r'&#0+39;', "'", text, flags=re.IGNORECASE)
+    
+    # Now unescape everything else - this handles Q&amp;A → Q&A, &#x27; → ', etc.
+    text = html.unescape(text)
+    
+    # Restore sentinels
+    text = text.replace(NBSP_SENTINEL, '&nbsp;')
+    text = text.replace(AMP_LT_SENTINEL, '&amp;lt;')
+    text = text.replace(AMP_GT_SENTINEL, '&amp;gt;')
+    text = text.replace(AMP_AMP_SENTINEL, '&amp;amp;')
+    text = text.replace(AMP_NBSP_SENTINEL, '&amp;nbsp;')
+    text = text.replace(AMP_HASH_SENTINEL, '&amp;#')
+    text = text.replace(LT_SENTINEL, '&lt;')
+    text = text.replace(GT_SENTINEL, '&gt;')
+    text = text.replace(X39_SENTINEL, '&#x39;')
+    
+    return text
 
 
 def _normalize_for_entity_comparison(html_str: str) -> str:
@@ -536,6 +565,30 @@ class BodyParser(HTMLParser):
     def handle_data(self, data):
         if not any(t in _PROTECTED for t in self.stack):
             self.text_spans.append((self.source_offset(), data))
+
+    def handle_entityref(self, name):
+        if not any(t in _PROTECTED for t in self.stack):
+            # Reconstruct the entity reference as it appears in the source
+            # source_offset points to the '&', and the entity name follows
+            offset = self.source_offset()
+            # Check if there's a semicolon after the entity name
+            end_pos = offset + 1 + len(name)  # &name
+            if end_pos < len(self.body) and self.body[end_pos] == ';':
+                self.text_spans.append((offset, f"&{name};"))
+            else:
+                self.text_spans.append((offset, f"&{name}"))
+
+    def handle_charref(self, name):
+        if not any(t in _PROTECTED for t in self.stack):
+            # Character references have the form &#digits; or &#xhex;
+            offset = self.source_offset()
+            # Check if there's a semicolon
+            prefix_len = 3 if name.startswith('x') or name.startswith('X') else 2  # &# or &#x
+            end_pos = offset + prefix_len + len(name)
+            if end_pos < len(self.body) and self.body[end_pos] == ';':
+                self.text_spans.append((offset, f"&#{name};"))
+            else:
+                self.text_spans.append((offset, f"&#{name}"))
 
 
 class _Text(HTMLParser):
@@ -1099,18 +1152,76 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
     
     # phrase_wrap mode: find first safe occurrence (not inside an escaped anchor)
+    # Build a combined text from spans with position mapping for cross-span matches
+    # (entity references like &amp; create separate spans, so phrase "Q&A" spans multiple)
+    #
+    # Two-stage mapping: combined_text → html_offset, then unescaped_text → combined_text
+    # This handles phrases like "Q&A guide" matching "Q&amp;A guide" in HTML
+    combined_text = ""
+    combined_to_html: list[int] = []  # combined_text[i] came from HTML offset combined_to_html[i]
+    for html_offset, span_text in parser.text_spans:
+        for i, ch in enumerate(span_text):
+            combined_text += ch
+            combined_to_html.append(html_offset + i)
+    
+    # Unescape the combined text for matching (Q&amp;A → Q&A)
+    # Build mapping from unescaped position to combined position
+    unescaped_text = ""
+    unescaped_to_combined: list[int] = []
+    i = 0
+    while i < len(combined_text):
+        # Check if this is the start of an entity reference
+        if combined_text[i] == '&':
+            # Find the end of the entity (semicolon or non-entity char)
+            j = i + 1
+            while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
+                j += 1
+            if j < len(combined_text) and combined_text[j] == ';':
+                j += 1  # Include the semicolon
+            entity = combined_text[i:j]
+            decoded = html.unescape(entity)
+            for k, ch in enumerate(decoded):
+                unescaped_text += ch
+                # Map each decoded char to the start of the entity in combined text
+                unescaped_to_combined.append(i)
+            i = j
+        else:
+            unescaped_text += combined_text[i]
+            unescaped_to_combined.append(i)
+            i += 1
+    
     pattern = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
     found_inside_escaped_anchor = False
-    for offset, text in parser.text_spans:
-        match = pattern.search(text)
-        if match:
-            abs_match_start = offset + match.start()
-            # Skip matches inside escaped anchor regions - keep searching for safe occurrence
-            if _is_inside_escaped_anchor(old, abs_match_start):
-                found_inside_escaped_anchor = True
-                continue
-            start, end = abs_match_start, offset + match.end()
-            return old[:start] + f'<a href="{href}">' + old[start:end] + "</a>" + old[end:]
+    search_start = 0
+    while True:
+        match = pattern.search(unescaped_text, search_start)
+        if not match:
+            break
+        # Map unescaped position → combined position → HTML offset
+        combined_start = unescaped_to_combined[match.start()] if match.start() < len(unescaped_to_combined) else 0
+        abs_match_start = combined_to_html[combined_start] if combined_start < len(combined_to_html) else 0
+        # Skip matches inside escaped anchor regions - keep searching for safe occurrence
+        if _is_inside_escaped_anchor(old, abs_match_start):
+            found_inside_escaped_anchor = True
+            search_start = match.start() + 1
+            continue
+        # Calculate end position: find the last char of the match and map it
+        last_unescaped_idx = match.end() - 1
+        combined_end = unescaped_to_combined[last_unescaped_idx] if last_unescaped_idx < len(unescaped_to_combined) else len(combined_text) - 1
+        # For the end position, we need to find where this entity/char ends in HTML
+        # Walk forward in combined_text to find the end of the current entity or char
+        j = combined_end
+        if combined_text[j] == '&':
+            # This is an entity - find its end
+            j += 1
+            while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
+                j += 1
+            if j < len(combined_text) and combined_text[j] == ';':
+                j += 1
+        else:
+            j += 1  # Regular char, just move past it
+        abs_match_end = combined_to_html[j - 1] + 1 if j > 0 and j - 1 < len(combined_to_html) else len(old)
+        return old[:abs_match_start] + f'<a href="{href}">' + old[abs_match_start:abs_match_end] + "</a>" + old[abs_match_end:]
     
     # If we found the phrase but only inside escaped anchors, report that specific error
     if found_inside_escaped_anchor:

@@ -370,6 +370,15 @@ def submit_manual_weave(
     # Count existing links for response
     existing_links = len([h for h, _ in extract_links(live_body) if h.strip()])
     
+    # S1: Check for pending snapshot BEFORE preview_only (predict a real submit's behavior)
+    pending = conn.execute(
+        "SELECT 1 FROM link_body_snapshots WHERE suggestion_id = ? AND status IN "
+        "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')",
+        (suggestion_id,),
+    ).fetchone()
+    if pending:
+        raise LinkConflict("Another write on this page is in progress or needs reconciliation.")
+    
     # preview_only: return preview without persisting
     if preview_only:
         import difflib
@@ -398,15 +407,6 @@ def submit_manual_weave(
     # Use conditional UPDATE to ensure no concurrent modification
     live_hash = body_hash(live_body)
     edit_json = json.dumps(edit, sort_keys=True)
-    
-    # Check for pending snapshot that would block the update
-    pending = conn.execute(
-        "SELECT 1 FROM link_body_snapshots WHERE suggestion_id = ? AND status IN "
-        "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')",
-        (suggestion_id,),
-    ).fetchone()
-    if pending:
-        raise LinkConflict("Another write on this page is in progress or needs reconciliation.")
     
     cursor = conn.execute(
         """

@@ -385,56 +385,74 @@ def check_link_present_in_body(body, href):
                for link, _ in extract_links(body or ""))
 
 
+class SuggestionNotFound(ValueError):
+    """Raised when a suggestion is not found (HTTP 404)."""
+    pass
+
+
 def restore_suggestion(conn, suggestion_id: int, actor: str, reason: str) -> dict:
     """Restore a dismissed suggestion back to suggested status.
+    
+    Uses atomic conditional UPDATE to prevent race conditions:
+    1. Check for unfinished snapshots (B7)
+    2. Conditional UPDATE where status='dismissed' (B3)
+    3. Check rowcount - if 0, determine whether 404 (not found) or 409 (status changed) (B6)
+    4. Insert audit record only after successful update (B3)
+    5. Commit once at the end (B3)
     
     Args:
         conn: Database connection
         suggestion_id: ID of the dismissed suggestion
-        actor: Actor identifier (e.g. 'salar', 'web', 'system')
-        reason: Reason for restoring the suggestion
+        actor: Actor identifier from X-Task-Token authentication
+        reason: Reason for restoring the suggestion (1-500 chars after strip)
     
     Returns:
-        Dict with restored suggestion data
+        Dict with status, suggestion_id, and actor
     
     Raises:
-        LinkConflict: If suggestion not found or not dismissed
+        SuggestionNotFound: If suggestion does not exist (404)
+        LinkConflict: If suggestion has unfinished snapshot or status changed (409)
     """
-    sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
-    if not sug:
-        raise LinkConflict("Suggestion not found.")
-    if sug["status"] != "dismissed":
-        raise LinkConflict(f"Only dismissed suggestions can be restored. This suggestion has status '{sug['status']}'.")
-    
     now = int(time.time())
     
-    # Insert audit record
+    # B7: Check for unfinished snapshots (same status set as dismiss)
+    pending = conn.execute(
+        """SELECT 1 FROM link_body_snapshots 
+           WHERE suggestion_id = ? 
+           AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')""",
+        (suggestion_id,),
+    ).fetchone()
+    if pending:
+        raise LinkConflict("Cannot restore: an unfinished write operation is pending on this suggestion.")
+    
+    # B3: Atomic conditional UPDATE with status='dismissed' check
+    cursor = conn.execute(
+        """UPDATE link_suggestions 
+           SET status = 'suggested' 
+           WHERE id = ? AND status = 'dismissed'""",
+        (suggestion_id,),
+    )
+    
+    if cursor.rowcount == 0:
+        # B6: Determine if 404 (not found) or 409 (status changed)
+        sug = conn.execute("SELECT status FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        if not sug:
+            raise SuggestionNotFound(f"Suggestion {suggestion_id} not found.")
+        # Status changed during operation (was not 'dismissed')
+        raise LinkConflict(f"Only dismissed suggestions can be restored. This suggestion has status '{sug['status']}'.")
+    
+    # B3: Insert audit record only after successful update
     conn.execute(
         """INSERT INTO link_suggestion_restore_audit 
            (suggestion_id, restored_at, actor, reason) VALUES (?, ?, ?, ?)""",
         (suggestion_id, now, actor, reason),
     )
     
-    # Update suggestion status
-    conn.execute(
-        "UPDATE link_suggestions SET status = 'suggested', applied_at = NULL WHERE id = ?",
-        (suggestion_id,),
-    )
+    # B3: Single commit at the end
     conn.commit()
     
-    # Fetch and return updated suggestion
-    updated = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
     return {
-        "id": updated["id"],
-        "source_type": updated["source_type"],
-        "source_handle": updated["source_handle"],
-        "target_type": updated["target_type"],
-        "target_handle": updated["target_handle"],
-        "kind": updated["kind"],
-        "anchor_phrase": updated["anchor_phrase"],
-        "status": updated["status"],
-        "score": updated["score"],
-        "restored_at": now,
+        "status": "suggested",
+        "suggestion_id": suggestion_id,
         "actor": actor,
-        "reason": reason,
     }

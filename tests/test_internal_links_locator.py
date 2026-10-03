@@ -432,3 +432,100 @@ class TestLinkConflictCode:
         exc = LinkConflict("Test error", text_diff="diff here", extra={"key": "value"})
         assert exc.detail["text_diff"] == "diff here"
         assert exc.detail["key"] == "value"
+
+
+class TestLocatorEmptyPunctuationRejection:
+    """S2: Empty or punctuation-only locator must reject with insert_locator_no_match."""
+    
+    def test_ellipsis_only_locator_rejects(self):
+        """Locator '...' normalizes to empty and rejects."""
+        body = "<p>Normal paragraph text here.</p>"
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "..."
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
+        assert "empty" in str(exc_info.value).lower() or "punctuation" in str(exc_info.value).lower()
+    
+    def test_unicode_ellipsis_only_locator_rejects(self):
+        """Locator '…' normalizes to empty and rejects."""
+        body = "<p>Normal paragraph text here.</p>"
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "…"
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
+    
+    def test_whitespace_only_locator_rejects(self):
+        """Locator with whitespace that normalizes to empty rejects.
+        
+        Note: Pure whitespace is caught by validate_edit first.
+        This tests whitespace that survives validation but becomes empty after normalization.
+        """
+        body = "<p>Normal paragraph text here.</p>"
+        # A locator with just spaces would be caught by validate_edit,
+        # so we test that ellipsis followed by spaces is rejected
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "...   "  # Ellipsis gets stripped, then whitespace
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
+    
+    def test_punctuation_only_locator_rejects(self):
+        """Locator with only punctuation (no alphanumeric) rejects."""
+        body = "<p>Normal paragraph text here.</p>"
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "... --- !!!"
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
+    
+    def test_ellipsis_locator_never_matches_empty_paragraph(self):
+        """S2: Ellipsis locator (empty after processing) must not match empty paragraphs."""
+        body = "<p></p><p>Real content here.</p>"
+        # An empty string would be caught by validate_edit,
+        # so we use ellipsis which gets stripped to empty
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "..."
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
+    
+    def test_empty_locator_never_matches_nbsp_paragraph(self):
+        """S2: Empty locator must not match &nbsp; spacer paragraphs."""
+        body = "<p>&nbsp;</p><p>Real content here.</p>"
+        edit = {
+            "anchor_phrase": "link text",
+            "insert_sentence": "See link text.",
+            "insert_after_text": "..."
+        }
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target")
+        
+        assert exc_info.value.code == "insert_locator_no_match"

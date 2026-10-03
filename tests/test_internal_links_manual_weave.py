@@ -1707,6 +1707,30 @@ class TestManualWeavePreviewOnly:
         assert after["ai_edit_json"] is None
         assert after["status"] == "suggested"
     
+    def test_preview_only_predicts_pending_snapshot_409(self, database, live):
+        """S1: preview_only must run the same pending-snapshot check (409 where real submit would 409)."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
+        
+        # Add a needs_reconciliation snapshot
+        database.execute("""
+            INSERT INTO link_body_snapshots 
+            (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at)
+            VALUES (1, 'product', 'zyn-nicotine-pouches-canada-shopper', 'gid://shopify/Product/1', '<p>old</p>', '<p>new</p>', 'needs_reconciliation', 1, 1)
+        """)
+        database.commit()
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+                preview_only=True,  # Even with preview_only, should get 409
+            )
+        
+        assert "pending" in str(exc_info.value).lower() or "reconciliation" in str(exc_info.value).lower()
+    
     def test_preview_only_then_normal_submit_works(self, database, live):
         """After preview_only, a normal submit persists the edit."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."

@@ -6,12 +6,13 @@ import logging
 import threading
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from fastapi.responses import JSONResponse
 
 from shopifyseo.internal_links.safety import LinkConflict, AI_TYPES_KEY, SOURCE_TYPES, ai_enabled_types
 from shopifyseo.internal_links.manual_weave import ManualWeaveRejected
+from backend.app.services.task_identity import authenticate
 
 from backend.app.db import open_db_connection
 from backend.app.schemas.common import PaginatedSuccessResponse, SuccessResponse, success_response, paginated_response
@@ -874,25 +875,47 @@ def run_auto_apply(dry_run: bool = Query(default=False)):
 
 
 class RestoreRequest(BaseModel):
-    reason: str
-    actor: str = "web"
+    """Request body for restoring a dismissed suggestion.
+    
+    B5: reason must be 1-500 chars after strip; extra fields rejected.
+    """
+    model_config = ConfigDict(extra='forbid')
+    
+    reason: str = Field(..., min_length=1)
+    
+    @field_validator('reason')
+    @classmethod
+    def validate_reason(cls, v: str) -> str:
+        stripped = v.strip()
+        if len(stripped) < 1:
+            raise ValueError('reason must not be empty or whitespace-only')
+        if len(stripped) > 500:
+            raise ValueError('reason must be at most 500 characters after stripping')
+        return stripped
 
 
 @router.post("/suggestions/{suggestion_id}/restore", response_model=SuccessResponse[dict])
-def restore_suggestion(suggestion_id: int, payload: RestoreRequest):
+def restore_suggestion(
+    suggestion_id: int, 
+    payload: RestoreRequest,
+    actor: str = Depends(authenticate),
+):
     """Restore a dismissed suggestion back to suggested status.
     
-    Only dismissed suggestions can be restored. The restore is logged in an
-    audit table and the restored suggestion survives subsequent rebuilds.
+    Requires X-Task-Token authentication (B4). Only dismissed suggestions without
+    unfinished snapshots can be restored. The restore is logged in an audit table.
+    Restored suggestions with valid source/target pairs survive subsequent rebuilds.
     """
     conn = open_db_connection()
     try:
-        from shopifyseo.internal_links.apply import restore_suggestion as _restore
+        from shopifyseo.internal_links.apply import restore_suggestion as _restore, SuggestionNotFound
         from shopifyseo.internal_links.store import ensure_schema
         
         ensure_schema(conn)
-        result = _restore(conn, suggestion_id, payload.actor, payload.reason)
+        result = _restore(conn, suggestion_id, actor, payload.reason)
         return success_response(result)
+    except SuggestionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except LinkConflict as exc:
         return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:

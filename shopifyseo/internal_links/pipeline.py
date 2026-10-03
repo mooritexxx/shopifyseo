@@ -211,6 +211,56 @@ def _orphan_target_set(conn: sqlite3.Connection) -> set[tuple[str, str]]:
     return {(t, h) for t, h, _c, _i in _orphan_targets(conn)}
 
 
+def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: str) -> bool:
+    """Check if source exists and has a non-empty body."""
+    if s_type == "blog_article":
+        blog_h, _, article_h = s_handle.partition("/")
+        row = conn.execute(
+            "SELECT body FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+            (blog_h, article_h),
+        ).fetchone()
+        return bool(row and row["body"] and row["body"].strip())
+    elif s_type == "product":
+        row = conn.execute(
+            "SELECT description_html FROM products WHERE handle = ?",
+            (s_handle,),
+        ).fetchone()
+        return bool(row and row["description_html"] and row["description_html"].strip())
+    elif s_type == "collection":
+        row = conn.execute(
+            "SELECT description_html FROM collections WHERE handle = ?",
+            (s_handle,),
+        ).fetchone()
+        return bool(row and row["description_html"] and row["description_html"].strip())
+    return False
+
+
+def _get_valid_restored_ids(conn: sqlite3.Connection) -> set[int]:
+    """Get IDs of restored suggestions that still have valid source/target pairs.
+    
+    B8: Restored rows survive rebuild only if their pair is still valid.
+    """
+    # Find all restored suggested rows
+    restored = conn.execute("""
+        SELECT DISTINCT ls.id, ls.source_type, ls.source_handle, ls.target_type, ls.target_handle
+        FROM link_suggestions ls
+        JOIN link_suggestion_restore_audit r ON r.suggestion_id = ls.id
+        WHERE ls.status = 'suggested'
+    """).fetchall()
+    
+    valid_ids = set()
+    for row in restored:
+        # Check source exists with body
+        if not _source_exists_with_body(conn, row["source_type"], row["source_handle"]):
+            continue
+        # Check target is linkable
+        if not _target_exists_and_published(conn, row["target_type"], row["target_handle"]):
+            continue
+        valid_ids.add(row["id"])
+    
+    return valid_ids
+
+
 def generate_link_suggestions(
     conn: sqlite3.Connection,
     related_fn: Callable | None = None,
@@ -224,16 +274,30 @@ def generate_link_suggestions(
     try:
         if rebuild_graph:
             _run_with_db_lock_retry(lambda: rebuild_internal_link_graph(conn, base_url=base_url))
-        conn.execute("""DELETE FROM link_suggestions WHERE status = 'suggested' 
-            AND NOT EXISTS (
-                SELECT 1 FROM link_body_snapshots b 
-                WHERE b.suggestion_id = link_suggestions.id 
-                AND b.status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM link_suggestion_restore_audit r
-                WHERE r.suggestion_id = link_suggestions.id
-            )""")
+        
+        # B8: Get IDs of restored rows that have valid source/target pairs
+        # These will be protected from deletion; invalid restored rows are cleaned up
+        valid_restored_ids = _get_valid_restored_ids(conn)
+        
+        # Delete suggested rows except:
+        # 1. Those with pending snapshots
+        # 2. Restored rows with valid source/target pairs
+        if valid_restored_ids:
+            placeholders = ",".join("?" * len(valid_restored_ids))
+            conn.execute(f"""DELETE FROM link_suggestions WHERE status = 'suggested' 
+                AND NOT EXISTS (
+                    SELECT 1 FROM link_body_snapshots b 
+                    WHERE b.suggestion_id = link_suggestions.id 
+                    AND b.status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
+                )
+                AND id NOT IN ({placeholders})""", tuple(valid_restored_ids))
+        else:
+            conn.execute("""DELETE FROM link_suggestions WHERE status = 'suggested' 
+                AND NOT EXISTS (
+                    SELECT 1 FROM link_body_snapshots b 
+                    WHERE b.suggestion_id = link_suggestions.id 
+                    AND b.status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
+                )""")
         existing_edges = {
             (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
             for r in conn.execute(

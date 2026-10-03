@@ -52,9 +52,77 @@ _BLOCK_LEVEL_TAGS = frozenset({
 # Preformatted/raw elements where whitespace must never be touched
 _PREFORMATTED_TAGS = frozenset({"pre", "textarea", "script", "style"})
 
+# HTML ASCII whitespace: space, tab, newline, carriage return, form feed
+_HTML_WHITESPACE = frozenset(" \t\n\r\f")
+
+
+def _is_html_whitespace(char: str) -> bool:
+    """Check if character is HTML ASCII whitespace (space, tab, LF, CR, FF)."""
+    return char in _HTML_WHITESPACE
+
+
+def _strip_html_whitespace(s: str) -> str:
+    """Strip leading/trailing HTML ASCII whitespace only."""
+    start = 0
+    end = len(s)
+    while start < end and s[start] in _HTML_WHITESPACE:
+        start += 1
+    while end > start and s[end - 1] in _HTML_WHITESPACE:
+        end -= 1
+    return s[start:end]
+
+
+# Regex to match an HTML tag, handling quoted attribute values
+# Matches: < followed by optional /, tag name, attributes (with quoted values), optional /, >
+_TAG_RE = re.compile(r'<[^>"\']*(?:"[^"]*"|\'[^\']*\')*[^>]*>', re.DOTALL)
+
+
+def _extract_tag_name(tag_content: str) -> str:
+    """Extract lowercase tag name from tag content (between < and >).
+    
+    Uses exact tag name matching (alphanumeric only after first letter).
+    """
+    is_closing = tag_content.startswith('/')
+    tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
+    # Match only standard HTML tag names: letter followed by letters or digits
+    # This excludes custom elements like <p-x>
+    match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)(?:\s|/|$)', tag_part)
+    return match.group(1).lower() if match else ""
+
+
+def _find_tag_end(html: str, start: int) -> int:
+    """Find the end position of a tag starting at start, handling quoted attributes.
+    
+    Returns the position of the closing > or -1 if malformed.
+    """
+    i = start + 1  # Skip the opening <
+    in_single_quote = False
+    in_double_quote = False
+    
+    while i < len(html):
+        char = html[i]
+        if in_single_quote:
+            if char == "'":
+                in_single_quote = False
+        elif in_double_quote:
+            if char == '"':
+                in_double_quote = False
+        elif char == "'":
+            in_single_quote = True
+        elif char == '"':
+            in_double_quote = True
+        elif char == '>':
+            return i
+        i += 1
+    
+    return -1  # Malformed - no closing >
+
 
 def _strip_inter_block_whitespace(html: str) -> str:
-    """Remove whitespace-only runs between block-level tags.
+    """Remove ASCII whitespace-only runs between block-level tags.
+    
+    Only HTML ASCII whitespace (space, tab, LF, CR, FF) is stripped.
+    NBSP (U+00A0), ideographic space, and other Unicode whitespace are significant.
     
     Preserves whitespace:
     - Inside <pre>, <textarea>, <script>, <style>
@@ -62,171 +130,87 @@ def _strip_inter_block_whitespace(html: str) -> str:
     - Inside tags/attributes
     - Between inline tags (e.g., </a> <strong>)
     
-    Also strips leading/trailing whitespace of the whole document (Q1 default).
+    Also strips leading/trailing ASCII whitespace of the whole document (Q1 default).
     """
     if not html:
         return ""
     
-    # Track depth in preformatted elements
-    result = []
+    # Parse tokens: tags and text segments
+    tokens: list[tuple[str, str]] = []  # ('tag'|'text', content)
     i = 0
-    pre_depth = 0
     
     while i < len(html):
-        # Check for tag start
         if html[i] == '<':
-            # Find end of tag
-            tag_end = html.find('>', i)
+            tag_end = _find_tag_end(html, i)
             if tag_end == -1:
-                # Malformed: copy rest and stop
-                result.append(html[i:])
+                # Malformed: treat rest as text
+                tokens.append(('text', html[i:]))
                 break
-            
-            tag_content = html[i+1:tag_end]
+            tokens.append(('tag', html[i:tag_end + 1]))
+            i = tag_end + 1
+        else:
+            # Find next tag or end
+            next_tag = html.find('<', i)
+            if next_tag == -1:
+                tokens.append(('text', html[i:]))
+                break
+            tokens.append(('text', html[i:next_tag]))
+            i = next_tag
+    
+    # Now process tokens: remove ASCII whitespace between block-level tags
+    # Track preformatted depth
+    output: list[str] = []
+    pre_depth = 0
+    
+    for idx, (token_type, content) in enumerate(tokens):
+        if token_type == 'tag':
+            tag_content = content[1:-1]  # Remove < and >
+            tag_name = _extract_tag_name(tag_content)
             is_closing = tag_content.startswith('/')
-            is_self_closing = tag_content.rstrip().endswith('/') or tag_content.rstrip().endswith('/')
+            is_self_closing = tag_content.rstrip().endswith('/')
             
-            # Extract tag name
-            if is_closing:
-                tag_part = tag_content[1:].lstrip()
-            else:
-                tag_part = tag_content.lstrip()
-            
-            # Get just the tag name (before any attributes or /)
-            tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
-            tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
-            
-            # Track preformatted depth
             if tag_name in _PREFORMATTED_TAGS:
                 if is_closing:
                     pre_depth = max(0, pre_depth - 1)
                 elif not is_self_closing:
                     pre_depth += 1
             
-            result.append(html[i:tag_end + 1])
-            i = tag_end + 1
+            output.append(content)
         else:
-            # Not a tag - find next tag or end
-            next_tag = html.find('<', i)
-            if next_tag == -1:
-                # Rest of string
-                result.append(html[i:])
-                break
-            
-            text = html[i:next_tag]
-            
-            # If inside preformatted element, keep text as-is
-            if pre_depth > 0:
-                result.append(text)
-            else:
-                result.append(text)
-            
-            i = next_tag
-    
-    # Join and then apply inter-block whitespace removal
-    joined = "".join(result)
-    
-    # Now do a second pass to remove whitespace between block-level tags
-    # Pattern: >(whitespace)< where both tags are block-level
-    # We need to parse more carefully to check both the preceding and following tag
-    
-    def is_block_tag_end(s: str, pos: int) -> bool:
-        """Check if position pos is the > of a block-level closing or opening tag."""
-        if pos <= 0 or s[pos] != '>':
-            return False
-        # Find the start of this tag
-        tag_start = s.rfind('<', 0, pos)
-        if tag_start == -1:
-            return False
-        tag_content = s[tag_start + 1:pos]
-        is_closing = tag_content.startswith('/')
-        tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
-        tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
-        tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
-        return tag_name in _BLOCK_LEVEL_TAGS
-    
-    def is_block_tag_start(s: str, pos: int) -> bool:
-        """Check if position pos is the < of a block-level opening or closing tag."""
-        if pos >= len(s) or s[pos] != '<':
-            return False
-        # Find end of tag
-        tag_end = s.find('>', pos)
-        if tag_end == -1:
-            return False
-        tag_content = s[pos + 1:tag_end]
-        is_closing = tag_content.startswith('/')
-        tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
-        tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
-        tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
-        return tag_name in _BLOCK_LEVEL_TAGS
-    
-    # Find all >\s+< patterns and check if both tags are block-level
-    # We need to avoid preformatted elements
-    output = []
-    i = 0
-    pre_depth = 0
-    
-    while i < len(joined):
-        if joined[i] == '<':
-            # Track preformatted
-            tag_end = joined.find('>', i)
-            if tag_end == -1:
-                output.append(joined[i:])
-                break
-            tag_content = joined[i + 1:tag_end]
-            is_closing = tag_content.startswith('/')
-            tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
-            tag_name_match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)', tag_part)
-            tag_name = tag_name_match.group(1).lower() if tag_name_match else ""
-            
-            if tag_name in _PREFORMATTED_TAGS:
-                if is_closing:
-                    pre_depth = max(0, pre_depth - 1)
-                else:
-                    is_self_closing = tag_content.rstrip().endswith('/')
-                    if not is_self_closing:
-                        pre_depth += 1
-            
-            output.append(joined[i:tag_end + 1])
-            i = tag_end + 1
-        elif joined[i] == '>' and i + 1 < len(joined):
-            # Already added > in the tag handling above, skip
-            output.append(joined[i])
-            i += 1
-        else:
-            # Text or whitespace
+            # Text content
             if pre_depth > 0:
                 # Inside preformatted - keep as-is
-                output.append(joined[i])
-                i += 1
+                output.append(content)
             else:
-                # Check if this is whitespace between block-level tags
-                # Look back for > and forward for <
-                if i > 0 and joined[i].isspace():
-                    # Collect all whitespace
-                    ws_start = i
-                    while i < len(joined) and joined[i].isspace():
-                        i += 1
-                    ws_end = i
+                # Check if this is ASCII whitespace-only between block tags
+                is_ascii_ws_only = all(_is_html_whitespace(c) for c in content) and len(content) > 0
+                
+                if is_ascii_ws_only:
+                    # Check preceding and following tags
+                    prev_tag_name = ""
+                    next_tag_name = ""
                     
-                    # Check if preceding char is > of a block tag and next char is < of a block tag
-                    if (ws_start > 0 and 
-                        joined[ws_start - 1] == '>' and 
-                        ws_end < len(joined) and 
-                        joined[ws_end] == '<' and
-                        is_block_tag_end(joined, ws_start - 1) and
-                        is_block_tag_start(joined, ws_end)):
-                        # Skip the whitespace (don't add it)
-                        pass
-                    else:
-                        # Keep the whitespace
-                        output.append(joined[ws_start:ws_end])
-                else:
-                    output.append(joined[i])
-                    i += 1
+                    # Find previous tag
+                    for j in range(idx - 1, -1, -1):
+                        if tokens[j][0] == 'tag':
+                            prev_tag_name = _extract_tag_name(tokens[j][1][1:-1])
+                            break
+                    
+                    # Find next tag
+                    for j in range(idx + 1, len(tokens)):
+                        if tokens[j][0] == 'tag':
+                            next_tag_name = _extract_tag_name(tokens[j][1][1:-1])
+                            break
+                    
+                    # Only strip if both are block-level tags
+                    if prev_tag_name in _BLOCK_LEVEL_TAGS and next_tag_name in _BLOCK_LEVEL_TAGS:
+                        # Skip this whitespace
+                        continue
+                
+                output.append(content)
     
-    # Strip leading/trailing whitespace of the whole document (Q1 default)
-    return "".join(output).strip()
+    # Strip leading/trailing ASCII whitespace of the whole document (Q1 default)
+    return _strip_html_whitespace("".join(output))
 
 
 def html_equivalent(a: str, b: str) -> bool:
@@ -811,6 +795,16 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         
         # Normalize the locator for matching
         loc_norm = _normalize_for_matching(locator_text)
+        
+        # S2: Empty or punctuation-only locator must reject (never match spacer paragraphs)
+        # Check if loc_norm contains any alphanumeric characters
+        if not loc_norm or not any(c.isalnum() for c in loc_norm):
+            locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
+            raise LinkConflict(
+                "The insertion paragraph locator is empty or contains only punctuation. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
+            )
         
         # Find matching paragraphs using normalized comparison
         exact_matches = []

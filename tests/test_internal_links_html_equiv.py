@@ -157,6 +157,103 @@ class TestHtmlEquivalentUnit:
         assert html_equivalent("", "")
         assert html_equivalent("  ", "")
         assert html_equivalent("", "\n")
+    
+    # B1: NBSP and Unicode whitespace tests
+    def test_nbsp_between_blocks_not_tolerated(self):
+        """NBSP (U+00A0) between block tags is NOT tolerated - it's visible content."""
+        # Raw NBSP character
+        assert not html_equivalent("</p>\u00a0<p>", "</p><p>")
+        assert not html_equivalent("<p>a</p>\u00a0<p>b</p>", "<p>a</p><p>b</p>")
+    
+    def test_nbsp_entity_between_blocks_not_tolerated(self):
+        """NBSP entity (&nbsp;) between block tags is NOT tolerated."""
+        assert not html_equivalent("</p>&nbsp;<p>", "</p><p>")
+        assert not html_equivalent("<p>a</p>&nbsp;<p>b</p>", "<p>a</p><p>b</p>")
+    
+    def test_nbsp_numeric_entity_not_tolerated(self):
+        """NBSP numeric entity (&#160;) between block tags is NOT tolerated."""
+        assert not html_equivalent("</p>&#160;<p>", "</p><p>")
+    
+    def test_nbsp_paragraph_vs_empty_paragraph(self):
+        """<p>&nbsp;</p> vs <p></p> must NOT be equal."""
+        assert not html_equivalent("<p>\u00a0</p>", "<p></p>")
+        assert not html_equivalent("<p>&nbsp;</p>", "<p></p>")
+    
+    def test_nbsp_list_items_not_tolerated(self):
+        """NBSP between list items is NOT tolerated."""
+        assert not html_equivalent(
+            "<ul><li>a</li>\u00a0<li>b</li></ul>",
+            "<ul><li>a</li><li>b</li></ul>"
+        )
+    
+    def test_ideographic_space_not_tolerated(self):
+        """Ideographic space (U+3000) is NOT tolerated."""
+        assert not html_equivalent("</p>\u3000<p>", "</p><p>")
+    
+    def test_line_separator_not_tolerated(self):
+        """Line separator (U+2028) is NOT tolerated."""
+        assert not html_equivalent("</p>\u2028<p>", "</p><p>")
+    
+    def test_other_unicode_whitespace_not_tolerated(self):
+        """Other Unicode whitespace characters are NOT tolerated."""
+        # U+1C (file separator)
+        assert not html_equivalent("</p>\x1c<p>", "</p><p>")
+        # U+2003 (em space)
+        assert not html_equivalent("</p>\u2003<p>", "</p><p>")
+    
+    def test_leading_trailing_nbsp_not_tolerated(self):
+        """Leading/trailing NBSP on document is NOT tolerated."""
+        assert not html_equivalent("\u00a0<p>Hello</p>", "<p>Hello</p>")
+        assert not html_equivalent("<p>Hello</p>\u00a0", "<p>Hello</p>")
+    
+    def test_ascii_whitespace_tolerated(self):
+        """ASCII whitespace (space, tab, LF, CR, FF) IS tolerated."""
+        assert html_equivalent("</p> <p>", "</p><p>")
+        assert html_equivalent("</p>\t<p>", "</p><p>")
+        assert html_equivalent("</p>\n<p>", "</p><p>")
+        assert html_equivalent("</p>\r<p>", "</p><p>")
+        assert html_equivalent("</p>\f<p>", "</p><p>")
+        assert html_equivalent("</p> \t\n\r\f <p>", "</p><p>")
+    
+    # B2: Quote-aware tag parsing tests
+    def test_gt_in_quoted_attribute_not_ends_tag(self):
+        """A > inside a quoted attribute value does not end the tag."""
+        # Same attribute value - should be equal
+        assert html_equivalent(
+            '<div title="a>  <p">x</div>',
+            '<div title="a>  <p">x</div>'
+        )
+    
+    def test_gt_in_quoted_attribute_whitespace_preserved(self):
+        """Whitespace inside quoted attribute values must never be stripped."""
+        assert not html_equivalent(
+            '<div title="a>  <p">x</div>',
+            '<div title="a><p">x</div>'
+        )
+    
+    def test_single_quoted_attribute_gt(self):
+        """Single-quoted attribute with > inside is handled correctly."""
+        assert html_equivalent(
+            "<div title='a>  <p'>x</div>",
+            "<div title='a>  <p'>x</div>"
+        )
+        assert not html_equivalent(
+            "<div title='a>  <p'>x</div>",
+            "<div title='a><p'>x</div>"
+        )
+    
+    def test_complex_quoted_attributes(self):
+        """Complex attribute values with HTML-like content are preserved."""
+        assert not html_equivalent(
+            '<div data-template="<p>  text  </p>">x</div>',
+            '<div data-template="<p>text</p>">x</div>'
+        )
+    
+    # Nit: Custom elements like <p-x> should NOT be treated as block-level
+    def test_custom_element_not_block_level(self):
+        """Custom elements like <p-x> are NOT treated as block-level."""
+        # Whitespace between custom elements is preserved
+        assert not html_equivalent("</p-x> <p-y>", "</p-x><p-y>")
 
 
 class TestApplyWithWhitespaceTolerance:
@@ -232,6 +329,29 @@ class TestApplyWithWhitespaceTolerance:
         result = service.undo_suggestion(conn, 1, BASE, fetch_fn=live.fetch, push_fn=live.push)
         assert result["status"] == "undone"
         assert live.body == OLD  # Back to original
+    
+    def test_apply_with_shopify_nbsp_insertion_fails(self):
+        """Apply fails when Shopify returns body with NBSP inserted between paragraphs.
+        
+        B1: NBSP is visible content and must not be tolerated.
+        """
+        conn = database()
+        live = Shopify()
+        
+        # Shopify returns body with NBSP (U+00A0) inserted between paragraphs
+        def push_with_nbsp(source_type, row, body):
+            modified = body.replace("</p><p>", "</p>\u00a0<p>")
+            live.body = modified
+            return modified
+        
+        live.push.side_effect = push_with_nbsp
+        
+        with pytest.raises(RuntimeError, match="different HTML"):
+            apply(conn, live)
+        
+        # Should be in needs_reconciliation state
+        snapshot = conn.execute("SELECT status FROM link_body_snapshots").fetchone()
+        assert snapshot["status"] == "needs_reconciliation"
 
 
 class TestReconcileWithWhitespaceTolerance:

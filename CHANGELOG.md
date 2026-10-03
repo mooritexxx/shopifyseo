@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Manual-weave endpoint for ai_woven internal-link suggestions.** `POST /api/internal-links/suggestions/{id}/manual-weave` accepts a hand-written sentence addition without running AI generation. The addition must be append-only (no changes to the original sentence), contain exactly one `<a>` link to the suggestion target, pass content compliance checks (anchor quality, numbers, banned wording, stock/availability claims, TVPA flavour), and respect the 8-link cap. Returns a preview token for the standard apply flow. No AI or LLM code path is reachable from this endpoint.
+
 ### Fixed
 
 - **Overview missing-meta counts now only include items live on the Online Store.** Products with `status != 'ACTIVE'` or empty `online_store_url`, collections with `api_unreachable = 1`, pages with `is_published = 0`, and articles with `is_published = 0` are now excluded from the "Needs attention" counters on the Overview. The pages sync now stores `is_published` and `published_at` from the Admin API; existing pages remain counted (NULL treated as "unknown/live") until the next pages sync fills the column.

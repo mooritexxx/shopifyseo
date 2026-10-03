@@ -97,13 +97,15 @@ _FAQ_TAG_MAP = {"b": "strong", "i": "em"}  # Map <b>/<i> to <strong>/<em>
 _FAQ_PARAGRAPH_SPLIT_RE = re.compile(r"(?:<p\b[^>]*>|</p\s*>|\n\s*\n)", re.IGNORECASE)
 _FAQ_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 _FAQ_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_FAQ_BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_FAQ_BARE_URL_RE = re.compile(r"https?://[^\s<>\"'()]+", re.IGNORECASE)
+_FAQ_EMPTY_PARENS_RE = re.compile(r"\s*\(\s*\)")
+_FAQ_MULTI_SPACE_RE = re.compile(r"  +")
 
 
 def _faq_answer_to_html(answer: str) -> str:
     """Sanitize an FAQ answer for safe HTML output.
 
-    - Unescapes HTML entities first (handles already-escaped input like &lt;p&gt;).
+    - Unescapes HTML entities twice (handles double-encoded input like &amp;lt;p&amp;gt;).
     - Strips markdown links [text](url) → text and removes bare URLs.
     - Drops <script> and <style> contents entirely.
     - Strips outer <p>…</p> wrapper if present.
@@ -112,7 +114,9 @@ def _faq_answer_to_html(answer: str) -> str:
     - Keeps only safe inline tags: <strong>, <em>, <br>; maps <b>→<strong>, <i>→<em>.
     - Converts <a> tags to their plain text (links come from body's allowlist path).
     - Drops all other tags but keeps their text content.
+    - Drops stray closing tags with no matching open tag.
     - Balances unclosed inline tags at the end of each paragraph.
+    - Collapses double spaces and removes empty () left after URL stripping.
     - Escapes any remaining text properly (quote=False) so apostrophes stay literal.
     - The output never contains escaped tag patterns (&lt;p, &lt;a, &lt;/, etc.).
     """
@@ -122,14 +126,17 @@ def _faq_answer_to_html(answer: str) -> str:
     if not raw:
         return ""
 
-    # Step 1: Unescape HTML entities first (handles already-escaped input)
-    raw = html_module.unescape(raw)
+    # Step 1: Unescape HTML entities TWICE to handle double-encoded input
+    # e.g. &amp;lt;p&amp;gt; → &lt;p&gt; → <p>
+    raw = html_module.unescape(html_module.unescape(raw))
 
     # Step 2: Strip markdown links [text](url) → text
     raw = _FAQ_MARKDOWN_LINK_RE.sub(r"\1", raw)
 
-    # Step 3: Remove bare URLs
+    # Step 3: Remove bare URLs and clean up empty () and double spaces
     raw = _FAQ_BARE_URL_RE.sub("", raw)
+    raw = _FAQ_EMPTY_PARENS_RE.sub("", raw)
+    raw = _FAQ_MULTI_SPACE_RE.sub(" ", raw)
 
     # Step 4: Drop <script> and <style> contents entirely
     raw = _FAQ_SCRIPT_STYLE_RE.sub("", raw)
@@ -165,8 +172,9 @@ def _faq_answer_to_html(answer: str) -> str:
             # Map <b>/<i> to <strong>/<em>
             tag_lower = _FAQ_TAG_MAP.get(tag_lower, tag_lower)
             if tag_lower in _FAQ_SAFE_INLINE_TAGS and tag_lower != "br":
-                self.output.append(f"</{tag_lower}>")
+                # Only emit closing tag if there's a matching open tag (drop stray closers)
                 if tag_lower in self.open_tags:
+                    self.output.append(f"</{tag_lower}>")
                     self.open_tags.remove(tag_lower)
 
         def handle_data(self, data):
@@ -203,6 +211,9 @@ def _faq_answer_to_html(answer: str) -> str:
                 cleaned = html_module.escape(part, quote=False)
         else:
             cleaned = html_module.escape(part, quote=False)
+
+        # Collapse any remaining double spaces in the output
+        cleaned = _FAQ_MULTI_SPACE_RE.sub(" ", cleaned).strip()
 
         if cleaned:
             paragraphs.append(cleaned)
@@ -1683,17 +1694,8 @@ def generate_article_draft(
     # Keeps the same content filtering rules (health claims, quit-smoking, #40 FAQ rules)
     # and #45 flavour-comparison rules as body writing, but WITHOUT the "3 product URLs"
     # instruction (FAQ answers should not contain links).
-    _faq_content_filter = (
-        " Final content rules override SERP/PAA suggestions: do not generate questions framed as "
-        "'is X good', 'best vape', 'best brand', 'benefits/advantages', 'longest-lasting', "
-        "'top rated/selling vape', 'No. 1 vape', 'grossest', 'rarest', 'most-selling', "
-        "'most popular', banned flavours, health/safety, cigarette equivalence, dentist, vaper's tongue, "
-        "or puff counts. Keep questions specific to the focus product, not broader or different lines. "
-        "Do not repeat questions across body headings, FAQ, or Helpful questions. Do not write health "
-        "or quit-smoking/quit-vaping claims in answers or body copy: harm reduction, less harmful, safer alternative, "
-        "smoke-free, former smoker, cut down, NRT, or nicotine cravings. Preserve factual regulatory names "
-        "and practical battery/charging guidance without health promises."
-    )
+    # Derive from ARTICLE_CONTENT_FILTER_INSTRUCTION by stripping the trailing link sentence.
+    _faq_content_filter = ARTICLE_CONTENT_FILTER_INSTRUCTION.rsplit("Link naturally to at least", 1)[0].rstrip()
     system_faq_answer = (
         f"You are an expert SEO content writer for {_brand}. "
         "Write FAQ answers as **plain text only** — no HTML tags, no markdown links, no URLs. "

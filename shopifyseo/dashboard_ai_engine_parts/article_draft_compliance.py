@@ -626,14 +626,16 @@ _ESCAPED_MARKUP_TAG_NAMES = (
     "div", "span", "img",
     "table", "tr", "td", "th", "thead", "tbody",
     "blockquote", "script", "style", "iframe",
+    "section", "nav", "pre", "code", "hr", "figure",
 )
 
 # Regex for escaped HTML tag patterns that should never appear in article output.
-# Matches &lt; (or &amp;lt;) followed by an optional slash and a REAL HTML tag name
-# from the allowlist, then whitespace, >, /, or &gt;.
-# Does NOT match &lt; followed by arbitrary words (e.g. '&lt; Moderate' is legitimate).
+# Matches &lt; (or &amp;lt;) followed by an optional slash (no space!) and a REAL
+# HTML tag name from the allowlist, then whitespace, >, /, or &gt;.
+# Real HTML tags never have a space after '<', so '&lt; p' or '&lt; a' are NOT flagged.
+# Does NOT match &lt; followed by space + arbitrary words (e.g. '&lt; Moderate').
 _ESCAPED_MARKUP_RE = re.compile(
-    r"&(?:amp;)?lt;\s*/?\s*(?:" + "|".join(_ESCAPED_MARKUP_TAG_NAMES) + r")(?:\s|&gt;|>|/)",
+    r"&(?:amp;)?lt;/?(?:" + "|".join(_ESCAPED_MARKUP_TAG_NAMES) + r")(?:\s|&gt;|>|/)",
     re.IGNORECASE,
 )
 

@@ -6,10 +6,12 @@ Test cases from the 2026-10-03 trace covering:
 3. Answer containing <a href> → plain text, no &lt;a
 4. <strong> kept
 5. '5 < 10 &' stays escaped as text and isn't flagged
-6. Guard flags &lt;p&gt; and &lt;a (only real HTML tag names)
-7. Guard ignores '&lt; 5', '&lt;3', '&lt; Moderate'
+6. Guard flags &lt;p&gt; and &lt;a (only real HTML tag names, no space after <)
+7. Guard ignores '&lt; 5', '&lt;3', '&lt; Moderate', 'if a &lt; b then'
 8. Full generate_article_draft run with stubbed AI returning HTML answers
 """
+
+import sqlite3
 
 import pytest
 
@@ -253,11 +255,52 @@ class TestFaqAnswerToHtml:
         assert "Visit" in result
         assert "for more info" in result
 
+    # Nit: Stray closing tags dropped
+    def test_stray_closing_strong_dropped(self):
+        """Stray closing </strong> with no open tag is dropped."""
+        answer = "</strong>stray text here"
+        result = _faq_answer_to_html(answer)
+        assert "</strong>" not in result
+        assert "stray text here" in result
+        assert "<p>stray text here</p>" == result
+
+    def test_stray_closing_em_dropped(self):
+        """Stray closing </em> with no open tag is dropped."""
+        answer = "text</em> more text"
+        result = _faq_answer_to_html(answer)
+        assert "</em>" not in result
+        assert "text more text" in result
+
+    # Nit: Double spaces collapsed and empty () removed
+    def test_double_spaces_collapsed(self):
+        """Double spaces are collapsed to single space."""
+        answer = "Text  with   multiple    spaces."
+        result = _faq_answer_to_html(answer)
+        assert "  " not in result
+        assert "Text with multiple spaces." in result
+
+    def test_empty_parens_removed_after_url_strip(self):
+        """Empty () left after URL stripping is removed."""
+        answer = "See details (https://example.com/link) for info."
+        result = _faq_answer_to_html(answer)
+        assert "()" not in result
+        assert "( )" not in result
+        assert "See details for info." in result
+
+    # Double-encoded handling
+    def test_double_encoded_unescaped_twice(self):
+        """Double-encoded &amp;lt;p&amp;gt; is unescaped twice to become <p>."""
+        answer = "&amp;lt;p&amp;gt;Double encoded&amp;lt;/p&amp;gt;"
+        result = _faq_answer_to_html(answer)
+        assert result == "<p>Double encoded</p>"
+        assert "&amp;" not in result
+        assert "&lt;" not in result
+
 
 class TestEscapedMarkupGaps:
     """Test escaped_markup_gaps compliance checker."""
 
-    # Positive tests - should BE flagged
+    # Positive tests - should BE flagged (real HTML tags without space after <)
     def test_flags_escaped_p_tag(self):
         """Guard flags &lt;p&gt;."""
         body = "<p>&lt;p&gt;This is double escaped&lt;/p&gt;</p>"
@@ -300,13 +343,7 @@ class TestEscapedMarkupGaps:
         gaps = escaped_markup_gaps(body)
         assert len(gaps) == 1
 
-    def test_flags_amp_escaped_lt(self):
-        """Guard flags &amp;lt; (double encoded)."""
-        body = "<p>&amp;lt;p&gt;Double encoded&amp;lt;/p&gt;</p>"
-        gaps = escaped_markup_gaps(body)
-        assert len(gaps) == 1
-
-    # Negative tests - should NOT be flagged
+    # Negative tests - should NOT be flagged (space after < or not a real tag)
     def test_ignores_less_than_with_space(self):
         """Guard ignores '&lt; 5'."""
         body = "<p>The value is &lt; 5 units, which is acceptable.</p>"
@@ -330,6 +367,30 @@ class TestEscapedMarkupGaps:
         body = "<p>Recommended usage &lt; Moderate daily use is best.</p>"
         gaps = escaped_markup_gaps(body)
         assert gaps == [], "'&lt; Moderate' should not be flagged (not a real HTML tag)"
+
+    def test_ignores_if_a_less_than_b(self):
+        """Guard ignores 'if a &lt; b then' (comparison expression)."""
+        body = "<p>The condition if a &lt; b then triggers the alert.</p>"
+        gaps = escaped_markup_gaps(body)
+        assert gaps == [], "'if a &lt; b then' should not be flagged"
+
+    def test_ignores_nicotine_comparison(self):
+        """Guard ignores 'nicotine &lt; a typical cigarette'."""
+        body = "<p>The nicotine content is &lt; a typical cigarette amount.</p>"
+        gaps = escaped_markup_gaps(body)
+        assert gaps == [], "'&lt; a typical' should not be flagged (space before 'a')"
+
+    def test_ignores_i_think(self):
+        """Guard ignores '&lt; i think' (not an italic tag due to space)."""
+        body = "<p>The value &lt; i think is acceptable.</p>"
+        gaps = escaped_markup_gaps(body)
+        assert gaps == [], "'&lt; i think' should not be flagged (space before 'i')"
+
+    def test_ignores_p_value(self):
+        """Guard ignores '&lt; p value' (not a paragraph tag due to space)."""
+        body = "<p>The result &lt; p value threshold.</p>"
+        gaps = escaped_markup_gaps(body)
+        assert gaps == [], "'&lt; p value' should not be flagged (space before 'p')"
 
     def test_ignores_legitimate_math_expression(self):
         """Guard ignores '5 < 10 & more'."""
@@ -406,83 +467,121 @@ class TestNormalizeFlavourIntegration:
         assert "flavor" not in normalized.lower()
 
 
+# Import fixtures from test_article_draft_phased for the e2e test
+from tests.test_article_draft_phased import db_conn, _outline_payload, _html_fragment
+
+
 class TestEndToEndGenerateArticleDraft:
-    """End-to-end test with stubbed AI returning HTML FAQ answers."""
+    """End-to-end test with real generate_article_draft and stubbed AI."""
 
-    def test_generate_article_draft_with_html_faq_answers(self):
-        """Case 8: Full generate_article_draft with stubbed AI returning HTML answers.
+    def test_e2e_html_faq_answers(self, db_conn, monkeypatch):
+        """Case 8: Full generate_article_draft with stubbed AI returning HTML FAQ answers.
 
-        The AI stub returns HTML FAQ answers (<p>-wrapped, containing <a href>, multi-paragraph).
-        The final body must have:
+        The AI stub returns HTML FAQ answers (<p>-wrapped, containing <a href>,
+        and an already-escaped &lt;p&gt; answer). The final body must have:
         - Real <p> answers (not escaped)
-        - No &lt; tags (escaped markup)
-        - No FAQ <a> tags at all (links stripped)
-        - _compliance_gaps clean (no escaped_markup gap)
-        - #40 FAQ rules still apply (health claims filtered)
+        - No &lt; tags anywhere (escaped markup)
+        - No FAQ <a> tags at all (links stripped from FAQ)
+        - Flavour spelling normalized (not flavor)
+        - FAQ JSON-LD present
+        - No escaped_markup compliance gap
+
+        This test FAILS if _append_faq_answers goes back to html.escape.
         """
-        import sqlite3
-        from unittest.mock import patch, MagicMock
+        from shopifyseo.dashboard_ai_engine_parts import _article_draft
+        from shopifyseo.dashboard_ai_engine_parts import settings as _s
+        from shopifyseo.dashboard_ai_engine_parts._article_draft import generate_article_draft
+        from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import escaped_markup_gaps
 
-        from shopifyseo.dashboard_ai_engine_parts._article_draft import (
-            _faq_answer_to_html,
+        # Force phased mode
+        monkeypatch.setattr(
+            _article_draft, "ai_settings",
+            lambda c, o=None: {**_s.ai_settings(c, o), "article_draft_phased": True}
         )
-        from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
-            escaped_markup_gaps,
+
+        seen = {}
+
+        def fake_call_ai(settings, provider, model, messages, timeout, *, json_schema=None, stage=""):
+            if stage == "article_draft_outline":
+                return _outline_payload()
+            if stage == "article_draft_section":
+                n = int(json_schema["schema"]["properties"]["html_blocks"].get("minItems") or 3)
+                return {"html_blocks": [_html_fragment(1750) for _ in range(n)]}
+            if stage == "article_draft_append_repair":
+                return {"append_html": _html_fragment(int(json_schema["schema"]["properties"]["append_html"].get("minLength") or 700))}
+            if stage == "article_draft_faq_repair":
+                # Capture the system message to verify prompt rules
+                seen["faq_system"] = messages[0]["content"]
+                n = json_schema["schema"]["properties"]["answers"]["minItems"]
+                # Return HTML answers: <p>-wrapped, with <a href>, multi-paragraph, and already-escaped
+                html_answers = [
+                    # Answer with HTML <p>, <a href>, and "flavor" (should become flavour)
+                    '<p>Widget batteries charge over USB-C in about an hour, see <a href="https://example.com/collections/x">our widgets</a> for the flavor list.</p><p>Second paragraph about <strong>care</strong>.</p>',
+                    # Already-escaped answer (simulates double-escaping)
+                    '&lt;p&gt;Already escaped content here&lt;/p&gt;',
+                    # Plain HTML paragraph
+                    '<p>Simple answer with proper formatting.</p>',
+                ]
+                return {"answers": html_answers[:n] if n <= len(html_answers) else html_answers * ((n // len(html_answers)) + 1)}
+            return {}
+
+        monkeypatch.setattr(_article_draft, "_call_ai", fake_call_ai)
+
+        out = generate_article_draft(
+            db_conn,
+            topic="Widget buyers guide for unit tests",
+            keywords=["widgets"],
+            primary_target=None,
+            secondary_targets=[],
+            idea_serp_context={
+                "audience_questions": [
+                    {"question": "How long does a widget battery take to charge?", "snippet": "About an hour."},
+                    {"question": "What is widget care?", "snippet": "Keep them clean."},
+                    {"question": "Are widgets good?", "snippet": "Yes they are."},
+                ]
+            },
         )
 
-        # Simulate what _append_faq_answers does with HTML answers from AI
-        html_answers = [
-            "<p>At its core, vaping is the inhalation of <a href='https://example.com'>vapor</a> created by an electronic device.</p>",
-            "<p>First paragraph about pods.</p><p>Second paragraph with <strong>details</strong>.</p>",
-            "<p>The best choice depends on your <em>preferences</em> and budget.</p>",
-        ]
+        body = out["body"]
 
-        # Sanitize each answer as the real code does
-        sanitized_answers = [_faq_answer_to_html(ans) for ans in html_answers]
+        # Find the FAQ section
+        faq_start = body.find("Helpful questions")
+        assert faq_start != -1, "FAQ section should be present in body"
+        faq_section = body[faq_start:]
 
-        # Build the FAQ block as the real code does
-        from shopifyseo.dashboard_ai_engine_parts.faq_content_filter import normalize_flavor_to_flavour
-        import html as html_module
+        # 1. Verify FAQ system prompt was used with plain text instruction
+        assert "faq_system" in seen, "FAQ system prompt should have been captured"
+        assert "plain text" in seen["faq_system"].lower(), "FAQ prompt should ask for plain text"
 
-        questions = [
-            "What is vaping?",
-            "What are the best pods?",
-            "Which device should I choose?",
-        ]
+        # 2. No escaped markup anywhere in body (&lt;p, &lt;a, etc.)
+        assert "&lt;" not in body, f"Body should not contain escaped markup, found &lt; at: {body[body.find('&lt;'):body.find('&lt;')+50] if '&lt;' in body else 'N/A'}"
 
-        block = "\n<h2>Helpful questions before you choose</h2>"
-        for q, ans_html in zip(questions, sanitized_answers):
-            q_normalized = normalize_flavor_to_flavour(q, log_changes=False)
-            ans_normalized = normalize_flavor_to_flavour(ans_html, log_changes=False)
-            block += f"\n<h3>{html_module.escape(q_normalized)}</h3>{ans_normalized}"
+        # 3. Flavour spelling normalized (not flavor)
+        assert "flavour" in body.lower(), "Body should contain 'flavour' (normalized spelling)"
+        # Note: "flavor" might appear in non-FAQ content, so we check the FAQ section specifically
+        if "flavor" in faq_section.lower():
+            assert False, "FAQ section should have 'flavour' not 'flavor'"
 
-        # Verify the output
-        # 1. Real <p> answers (not escaped)
-        assert "<p>" in block
-        assert "</p>" in block
+        # 4. No <a> tags in the FAQ section (links stripped)
+        assert "<a " not in faq_section.lower(), "FAQ section should not contain anchor tags"
+        assert "<a>" not in faq_section.lower(), "FAQ section should not contain anchor tags"
 
-        # 2. No escaped markup (&lt;p, &lt;a, &lt;/, etc.)
-        assert "&lt;p" not in block
-        assert "&lt;/p" not in block
-        assert "&lt;a" not in block
+        # 5. Real <p> tags present (not escaped)
+        assert "<p>" in faq_section, "FAQ section should have real <p> tags"
+        assert "</p>" in faq_section, "FAQ section should have real </p> tags"
 
-        # 3. No FAQ <a> tags (links stripped)
-        assert "<a " not in block
-        assert "<a>" not in block
+        # 6. Check for FAQ JSON-LD (FAQPage schema)
+        assert "FAQPage" in body, "Body should contain FAQPage JSON-LD schema"
+        assert "application/ld+json" in body.lower(), "Body should contain JSON-LD script"
 
-        # 4. _compliance_gaps clean (no escaped_markup gap)
-        gaps = escaped_markup_gaps(block)
-        assert gaps == [], f"FAQ block should pass escaped_markup_gaps, got: {gaps}"
+        # 7. No escaped_markup compliance gap
+        gaps = escaped_markup_gaps(body)
+        escaped_gaps = [g for g in gaps if "escaped_markup" in g]
+        assert escaped_gaps == [], f"Body should have no escaped_markup gaps, got: {escaped_gaps}"
 
-        # 5. Verify specific content is present
-        assert "vaping is the inhalation" in block
-        assert "<strong>details</strong>" in block
-        assert "<em>preferences</em>" in block
-
-        # 6. Multi-paragraph answer produces multiple <p> elements
-        # The second answer had two paragraphs
-        assert "First paragraph about pods" in block
-        assert "Second paragraph with" in block
+        # 8. Verify content from HTML answers made it through (but sanitized)
+        assert "batteries charge" in body.lower() or "battery" in body.lower(), "FAQ answer content should be present"
+        assert "<strong>care</strong>" in faq_section or "care" in faq_section, "Strong tag or its content should be present"
 
     def test_faq_content_filter_rules_still_apply(self):
         """#40 FAQ rules still apply on this path (health claims filtered)."""

@@ -220,17 +220,19 @@ def _normalize_text_entities(text: str) -> str:
     Only affects text content; tag structures and attributes are unchanged.
     
     Normalizes:
-    - &#x27; / &#39; / &apos; → '
+    - &#x27; / &#x39; / &#39; / &#039; / &apos; → '
     - &#x22; / &#34; / &quot; → "
+    - &amp; → & (Shopify may normalize this in text nodes)
     
     Does NOT normalize:
-    - &amp; (always escaped by html.escape, mismatch indicates real issue)
     - &nbsp; (significant per #117 rule)
     """
-    # Normalize apostrophe entities
-    text = re.sub(r'&#x27;|&#39;|&apos;', "'", text, flags=re.IGNORECASE)
+    # Normalize apostrophe entities (hex and decimal forms)
+    text = re.sub(r'&#x27;|&#x39;|&#39;|&#039;|&apos;', "'", text, flags=re.IGNORECASE)
     # Normalize quote entities
     text = re.sub(r'&#x22;|&#34;|&quot;', '"', text, flags=re.IGNORECASE)
+    # Normalize ampersand entity (Shopify may return plain & where we sent &amp;)
+    text = text.replace('&amp;', '&')
     return text
 
 
@@ -330,21 +332,31 @@ def _find_escaped_anchor_regions(text: str) -> list[tuple[int, int]]:
     
     Returns list of (start, end) tuples marking escaped anchor regions.
     These regions should be protected from phrase wrapping.
+    
+    Limits pairing to the same block element: if a block-level tag (e.g., </p>, <p>)
+    appears between the start and end, the region is not formed. This prevents an
+    unclosed &lt;a in paragraph 1 from incorrectly protecting content in paragraph 3.
     """
     regions: list[tuple[int, int]] = []
+    
+    # Block-level tag pattern (opening or closing)
+    block_tag_re = re.compile(r'</?(?:p|div|h[1-6]|ul|ol|li|table|tr|td|th|blockquote|section|article|header|footer)[\s>]', re.IGNORECASE)
     
     # Find all escaped anchor starts
     starts = [(m.start(), m.group()) for m in _ESCAPED_ANCHOR_START_RE.finditer(text)]
     if not starts:
         return regions
     
-    # For each start, find the matching end
+    # For each start, find the matching end within the same block
     for start_pos, _ in starts:
         # Find the closing &lt;/a&gt; after this start
         end_match = _ESCAPED_ANCHOR_END_RE.search(text, start_pos)
         if end_match:
-            # Region includes the closing tag
-            regions.append((start_pos, end_match.end()))
+            # Check if there's a block-level tag between start and end
+            between = text[start_pos:end_match.start()]
+            if not block_tag_re.search(between):
+                # No block boundary crossed - valid region
+                regions.append((start_pos, end_match.end()))
     
     return regions
 
@@ -986,22 +998,27 @@ def build_edit(old: str, raw: dict, url: str) -> str:
             return old[:offset] + "\n<p>" + linked + "</p>" + old[offset:]
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
     
-    # phrase_wrap mode
+    # phrase_wrap mode: find first safe occurrence (not inside an escaped anchor)
     pattern = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
+    found_inside_escaped_anchor = False
     for offset, text in parser.text_spans:
         match = pattern.search(text)
         if match:
-            # Check if match is inside an escaped anchor region
-            # The offset is into the original body, and the match is within the text span
             abs_match_start = offset + match.start()
+            # Skip matches inside escaped anchor regions - keep searching for safe occurrence
             if _is_inside_escaped_anchor(old, abs_match_start):
-                raise LinkConflict(
-                    "The anchor phrase is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;). "
-                    "Generate a new suggestion or fix the source content.",
-                    code="insert_inside_existing_anchor"
-                )
+                found_inside_escaped_anchor = True
+                continue
             start, end = abs_match_start, offset + match.end()
             return old[:start] + f'<a href="{href}">' + old[start:end] + "</a>" + old[end:]
+    
+    # If we found the phrase but only inside escaped anchors, report that specific error
+    if found_inside_escaped_anchor:
+        raise LinkConflict(
+            "The anchor phrase appears only inside escaped anchor regions (&lt;a&gt;...&lt;/a&gt;). "
+            "No safe occurrence found. Generate a new suggestion or fix the source content.",
+            code="insert_inside_existing_anchor"
+        )
     raise LinkConflict("The anchor phrase is no longer present in eligible live text. Generate a new suggestion.")
 
 
@@ -1010,15 +1027,17 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     
     Checks:
     1. Exact reconstruction: new must equal build_edit(old, edit, url)
-    2. No nested anchors: result must not contain <a> inside <a>
+    2. No NEW nested anchors: if old had nested anchors, that's pre-existing; we only
+       reject if the edit created NEW nesting (comparing anchor depth changes)
     """
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):
         raise LinkConflict("Changes outside the approved link insertion are blocked.", text_diff=text_diff(old, new))
     
-    # Check for nested anchors in the result
-    if _has_nested_anchors(new):
+    # Check for nested anchors: only reject if we CREATED new nesting
+    # (pre-existing nesting in the source body is not our fault)
+    if _has_nested_anchors(new) and not _has_nested_anchors(old):
         raise LinkConflict(
             "The edit would create nested anchor tags (<a> inside <a>), which is invalid HTML.",
             code="insert_inside_existing_anchor"

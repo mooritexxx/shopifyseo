@@ -43,7 +43,7 @@ def _hash_body(body: str) -> str:
 # published_filter: SQL WHERE clause fragment to exclude unpublished sources
 _SUGGESTION_SOURCES = (
     ("blog_article", "blog_articles", "blog_handle || '/' || handle", "body", "is_published = 1"),
-    ("product", "products", "handle", "description_html", "(status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')"),
+    ("product", "products", "handle", "description_html", "(status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE') AND online_store_url IS NOT NULL AND TRIM(online_store_url) != ''"),
     ("collection", "collections", "handle", "description_html", "COALESCE(api_unreachable, 0) = 0"),
 )
 
@@ -217,7 +217,7 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
     
     This matches the published_filter criteria used in _SUGGESTION_SOURCES:
     - blog_article: is_published = 1
-    - product: status is NULL, empty, or 'ACTIVE'
+    - product: status is NULL, empty, or 'ACTIVE'; AND has online_store_url
     - collection: api_unreachable = 0 (or NULL)
     """
     if s_type == "blog_article":
@@ -229,11 +229,14 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
         return bool(row and row["body"] and row["body"].strip())
     elif s_type == "product":
         row = conn.execute(
-            "SELECT description_html FROM products WHERE handle = ? "
+            "SELECT description_html, online_store_url FROM products WHERE handle = ? "
             "AND (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE')",
             (s_handle,),
         ).fetchone()
-        return bool(row and row["description_html"] and row["description_html"].strip())
+        if not row or not row["description_html"] or not row["description_html"].strip():
+            return False
+        # Also require online_store_url
+        return bool(row["online_store_url"] and row["online_store_url"].strip())
     elif s_type == "collection":
         row = conn.execute(
             "SELECT description_html FROM collections WHERE handle = ? "

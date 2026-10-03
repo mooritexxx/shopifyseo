@@ -84,10 +84,13 @@ class TestHtmlEquivalentUnit:
         b2 = '<p>Hello </a><strong>world</strong></p>'
         assert not html_equivalent(a2, b2)
     
-    def test_entity_difference_fails(self):
-        """Entity encoding differences are not equivalent."""
-        assert not html_equivalent("<p>A &amp; B</p>", "<p>A & B</p>")
+    def test_entity_difference_lt_gt_still_significant(self):
+        """&lt; and &gt; differences remain significant (tag boundaries)."""
         assert not html_equivalent("<p>&lt;tag&gt;</p>", "<p><tag></p>")
+    
+    def test_ampersand_entity_equivalent(self):
+        """&amp; vs & should be equivalent in text nodes (Shopify normalization)."""
+        assert html_equivalent("<p>A &amp; B</p>", "<p>A & B</p>")
     
     def test_pre_whitespace_preserved(self):
         """Whitespace inside <pre> is preserved."""

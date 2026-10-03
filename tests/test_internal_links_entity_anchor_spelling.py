@@ -10,7 +10,7 @@ These tests cover the changes in the PR:
 import json
 import sqlite3
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from shopifyseo.internal_links.safety import (
     build_edit, guard_edit, html_equivalent, LinkConflict,
@@ -40,7 +40,6 @@ class TestEntitySafeInsert:
             "insert_after_text": "First paragraph.",
         }
         result = build_edit(old, edit, "https://example.com/guide")
-        # The apostrophe should be a literal ', not &#x27;
         assert "beginner's guide" in result
         assert "&#x27;" not in result
         assert "&#39;" not in result
@@ -54,7 +53,6 @@ class TestEntitySafeInsert:
             "insert_after_text": "First paragraph.",
         }
         result = build_edit(old, edit, "https://example.com/picks")
-        # The quote should be a literal ", not &quot;
         assert 'our "best" picks' in result
         assert "&quot;" not in result
         assert "&#34;" not in result
@@ -81,9 +79,7 @@ class TestEntitySafeInsert:
             "insert_after_text": "First paragraph.",
         }
         result = build_edit(old, edit, "https://example.com/guide")
-        # & in anchor text gets escaped to &amp;
         assert '<a href="https://example.com/guide">Tom &amp; Jerry guide</a>' in result
-        # But quotes and apostrophes should NOT be escaped
         assert "&#x27;" not in result
         assert "&quot;" not in result
 
@@ -103,10 +99,22 @@ class TestEntityEquivalence:
         received = "<p>beginner's guide</p>"
         assert html_equivalent(sent, received)
     
+    def test_apostrophe_039_decimal_equivalent(self):
+        """&#039; (leading zero) vs ' should be equivalent."""
+        sent = '<p>beginner&#039;s guide</p>'
+        received = "<p>beginner's guide</p>"
+        assert html_equivalent(sent, received)
+    
     def test_quote_entity_vs_literal_equivalent(self):
         """&quot; vs " should be equivalent in text nodes."""
         sent = '<p>The &quot;best&quot; guide</p>'
         received = '<p>The "best" guide</p>'
+        assert html_equivalent(sent, received)
+    
+    def test_ampersand_entity_vs_literal_equivalent(self):
+        """&amp; vs & should be equivalent in text nodes (Shopify normalization)."""
+        sent = '<p>Tom &amp; Jerry</p>'
+        received = '<p>Tom & Jerry</p>'
         assert html_equivalent(sent, received)
     
     def test_nbsp_still_significant(self):
@@ -143,8 +151,16 @@ class TestNormalizeTextEntities:
     def test_normalize_apostrophe_decimal(self):
         assert _normalize_text_entities("beginner&#39;s") == "beginner's"
     
+    def test_normalize_apostrophe_039(self):
+        """&#039; with leading zero should normalize to '."""
+        assert _normalize_text_entities("beginner&#039;s") == "beginner's"
+    
     def test_normalize_quote_entity(self):
         assert _normalize_text_entities('the &quot;best&quot;') == 'the "best"'
+    
+    def test_normalize_ampersand_entity(self):
+        """&amp; should normalize to &."""
+        assert _normalize_text_entities("Tom &amp; Jerry") == "Tom & Jerry"
     
     def test_normalize_preserves_nbsp(self):
         assert "&nbsp;" in _normalize_text_entities("hello&nbsp;world")
@@ -153,10 +169,36 @@ class TestNormalizeTextEntities:
         """Entities in attributes should not be normalized."""
         html = '<a href="/path?a=1&amp;b=2">text&#x27;s</a>'
         result = _normalize_for_entity_comparison(html)
-        # Text entity normalized
         assert "text's" in result
-        # Attribute entity preserved
         assert "&amp;" in result
+
+
+class TestApplyRoundTrip:
+    """Test apply → Shopify-returned body → verify returns applied."""
+    
+    def test_apply_roundtrip_apostrophe_entity_variants(self):
+        """Insert with ' → Shopify returns &#39; variant → verify succeeds."""
+        sent = "<p>Check our beginner's guide.</p>"
+        received_variants = [
+            "<p>Check our beginner's guide.</p>",
+            "<p>Check our beginner&#39;s guide.</p>",
+            "<p>Check our beginner&#x27;s guide.</p>",
+            "<p>Check our beginner&#039;s guide.</p>",
+        ]
+        for received in received_variants:
+            assert html_equivalent(sent, received), f"Failed for variant: {received}"
+    
+    def test_apply_roundtrip_ampersand_variants(self):
+        """Insert with &amp; → Shopify returns & → verify succeeds."""
+        sent = "<p>Tom &amp; Jerry guide.</p>"
+        received = "<p>Tom & Jerry guide.</p>"
+        assert html_equivalent(sent, received)
+    
+    def test_reconcile_snapshot_52_shape(self):
+        """Snapshot #52 shape: Shopify stores plain ', we sent &#x27; → applied."""
+        sent = "<p>The beginner&#x27;s guide is here.</p>"
+        shopify_returned = "<p>The beginner's guide is here.</p>"
+        assert html_equivalent(sent, shopify_returned)
 
 
 # =============================================================================
@@ -178,12 +220,9 @@ class TestEscapedAnchorDetection:
     def test_is_inside_escaped_anchor(self):
         """Should detect when offset is inside an escaped anchor."""
         text = 'Before &lt;a href="#"&gt;inside&lt;/a&gt; after'
-        # Find "inside" position
         inside_pos = text.find("inside")
         assert _is_inside_escaped_anchor(text, inside_pos)
-        # "Before" should not be inside
         assert not _is_inside_escaped_anchor(text, 0)
-        # "after" should not be inside
         after_pos = text.find("after")
         assert not _is_inside_escaped_anchor(text, after_pos)
     
@@ -192,6 +231,12 @@ class TestEscapedAnchorDetection:
         text = 'Just regular text with <a href="#">real link</a>'
         regions = _find_escaped_anchor_regions(text)
         assert regions == []
+    
+    def test_escaped_anchor_limited_to_same_block(self):
+        """Unclosed &lt;a in para 1 should not protect content in para 3."""
+        text = '<p>Para 1 with &lt;a href="#"&gt;unclosed</p><p>Para 2</p><p>Para 3 with test phrase&lt;/a&gt;</p>'
+        regions = _find_escaped_anchor_regions(text)
+        assert len(regions) == 0
 
 
 class TestNestedAnchorDetection:
@@ -213,23 +258,35 @@ class TestNestedAnchorDetection:
         assert not _has_nested_anchors(html)
 
 
-class TestPhraseWrapEscapedAnchorGuard:
-    """Test that phrase_wrap rejects matches inside escaped anchors."""
+class TestPhraseWrapSkipsEscapedAndKeepsSearching:
+    """Test that phrase_wrap skips matches inside anchors and finds safe occurrences."""
     
-    def test_phrase_inside_escaped_anchor_rejected(self):
-        """Wrapping a phrase inside an escaped anchor should be rejected."""
-        body = '<p>Our &lt;a href="https://example.com"&gt;rechargeable disposables&lt;/a&gt; are great.</p>'
-        edit = {"anchor_phrase": "rechargeable disposables"}
+    def test_phrase_in_escaped_anchor_para1_plain_para3_wraps_para3(self):
+        """Phrase inside &lt;a&gt; in para 1, plain in para 3 → para 3 gets wrapped."""
+        body = (
+            '<p>Our &lt;a href="https://example.com"&gt;ceramic tanks&lt;/a&gt; are good.</p>'
+            '<p>Some other content.</p>'
+            '<p>We also sell ceramic tanks in bulk.</p>'
+        )
+        edit = {"anchor_phrase": "ceramic tanks"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">ceramic tanks</a>' in result
+        assert result.index('<a href="https://example.com/target">') > result.index("We also sell")
+    
+    def test_phrase_only_inside_escaped_anchor_rejected(self):
+        """Phrase only inside escaped anchor → insert_inside_existing_anchor."""
+        body = '<p>Our &lt;a href="https://example.com"&gt;ceramic tanks&lt;/a&gt; are great.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
         with pytest.raises(LinkConflict) as exc_info:
             build_edit(body, edit, "https://example.com/target")
-        assert "insert_inside_existing_anchor" in str(exc_info.value) or exc_info.value.code == "insert_inside_existing_anchor"
+        assert exc_info.value.code == "insert_inside_existing_anchor"
     
     def test_phrase_outside_escaped_anchor_allowed(self):
         """Wrapping a phrase outside escaped anchor should work."""
-        body = '<p>Some &lt;a href="#"&gt;escaped&lt;/a&gt; content. Our rechargeable disposables are great.</p>'
-        edit = {"anchor_phrase": "rechargeable disposables"}
+        body = '<p>Some &lt;a href="#"&gt;escaped&lt;/a&gt; content. Our ceramic tanks are great.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
         result = build_edit(body, edit, "https://example.com/target")
-        assert '<a href="https://example.com/target">rechargeable disposables</a>' in result
+        assert '<a href="https://example.com/target">ceramic tanks</a>' in result
     
     def test_less_than_without_anchor_ok(self):
         """&lt; without 'a' (e.g. '5 &lt; 10') should not trigger guard."""
@@ -240,11 +297,10 @@ class TestPhraseWrapEscapedAnchorGuard:
 
 
 class TestGuardEditNestedAnchors:
-    """Test the nested anchor detection used by guard_edit."""
+    """Test guard_edit behavior with nested anchors."""
     
     def test_has_nested_anchors_detects_nested_structure(self):
-        """_has_nested_anchors should detect <a> inside <a> which guard_edit checks."""
-        # This is the pattern guard_edit would detect after build_edit
+        """_has_nested_anchors should detect <a> inside <a>."""
         nested_html = '<p>Some <a href="/existing"><a href="/new">nested</a> link</a> text.</p>'
         assert _has_nested_anchors(nested_html)
     
@@ -252,6 +308,62 @@ class TestGuardEditNestedAnchors:
         """Sequential anchors should not be flagged."""
         sequential_html = '<p>Some <a href="/first">first</a> and <a href="/second">second</a> text.</p>'
         assert not _has_nested_anchors(sequential_html)
+    
+    def test_guard_edit_allows_preexisting_nested_anchors(self):
+        """Pre-existing nested anchors in source should not block our edit."""
+        old = '<p>Pre-existing <a href="/outer"><a href="/inner">nested</a></a>. New phrase here.</p>'
+        edit = {"anchor_phrase": "New phrase"}
+        new = build_edit(old, edit, "https://example.com/target")
+        guard_edit(old, new, edit, "https://example.com/target")
+
+
+class TestRealWorldAnchorGuardCases:
+    """Test real-world cases from issue #740158 and spec tests 2-6."""
+    
+    def test_740158_shape_escaped_anchor_in_article(self):
+        """Real 740158 shape: article with escaped &lt;a ...&gt; markup."""
+        body = '<p>Our range of &lt;a href="https://shop.com/collections/rechargeable"&gt;rechargeable disposables&lt;/a&gt; offers great value.</p>'
+        edit = {"anchor_phrase": "rechargeable disposables"}
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, "https://shop.com/target")
+        assert exc_info.value.code == "insert_inside_existing_anchor"
+    
+    def test_spec_case2_multiple_occurrences_first_safe(self):
+        """Spec test 2: multiple occurrences, first one outside anchor → first gets wrapped."""
+        body = '<p>Ceramic tanks are great. Our &lt;a href="#"&gt;ceramic tanks&lt;/a&gt; link.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert '<a href="https://example.com/target">Ceramic tanks</a> are great' in result
+    
+    def test_spec_case3_inside_real_anchor_skipped(self):
+        """Spec test 3: phrase inside <a> is skipped by BodyParser."""
+        body = '<p>Check our <a href="/existing">ceramic tanks</a> collection. We also sell ceramic tanks.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        result = build_edit(body, edit, "https://example.com/target")
+        assert result.count('<a href="https://example.com/target">ceramic tanks</a>') == 1
+        assert result.count('<a href="/existing">ceramic tanks</a>') == 1
+    
+    def test_spec_case4_phrase_wrap_basic(self):
+        """Spec test 4: basic phrase_wrap via build_edit."""
+        body = '<p>Our ceramic tanks collection is popular.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        result = build_edit(body, edit, "https://example.com/ceramic")
+        assert '<a href="https://example.com/ceramic">ceramic tanks</a>' in result
+    
+    def test_spec_case5_guard_edit_exact_reconstruction(self):
+        """Spec test 5: guard_edit verifies exact reconstruction."""
+        old = '<p>Our ceramic tanks are popular.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        new = build_edit(old, edit, "https://example.com/ceramic")
+        guard_edit(old, new, edit, "https://example.com/ceramic")
+    
+    def test_spec_case6_guard_edit_blocks_unauthorized_changes(self):
+        """Spec test 6: guard_edit blocks changes outside approved insertion."""
+        old = '<p>Our ceramic tanks are popular.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        tampered_new = '<p>Our <a href="https://example.com/ceramic">ceramic tanks</a> are MODIFIED.</p>'
+        with pytest.raises(LinkConflict):
+            guard_edit(old, tampered_new, edit, "https://example.com/ceramic")
 
 
 # =============================================================================
@@ -264,7 +376,7 @@ def _test_db():
     conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
-            description_html TEXT, gsc_clicks INTEGER DEFAULT 0);
+            description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
         CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
             description_html TEXT, api_unreachable INTEGER DEFAULT 0);
         CREATE TABLE blog_articles (shopify_id TEXT, blog_handle TEXT, handle TEXT, title TEXT,
@@ -312,8 +424,8 @@ class TestPreviewWriteLock:
         """Preview should return allowed=false with page_write_pending code."""
         conn = _test_db()
         conn.execute(
-            "INSERT INTO products (shopify_id, handle, title, status, description_html) "
-            "VALUES ('gid://1', 'source', 'Source', 'ACTIVE', '<p>Body</p>')"
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://1', 'source', 'Source', 'ACTIVE', '<p>Body</p>', 'https://shop.com/products/source')"
         )
         conn.execute(
             "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://2', 'target', 'Target')"
@@ -322,7 +434,6 @@ class TestPreviewWriteLock:
             "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, anchor_phrase, created_at) "
             "VALUES ('product', 'source', 'collection', 'target', 'phrase_wrap', 'test', 1)"
         )
-        # Create pending snapshot
         conn.execute(
             "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, status, created_at, updated_at) "
             "VALUES (1, 'product', 'source', 'needs_reconciliation', 1, 1)"
@@ -330,6 +441,42 @@ class TestPreviewWriteLock:
         conn.commit()
         
         result = preview_suggestion(conn, 1, "https://example.com")
+        assert result["allowed"] is False
+        assert result.get("code") == "page_write_pending"
+
+
+class TestManualWeaveWriteLock:
+    """Test manual-weave respects the page write lock."""
+    
+    def test_manual_weave_preview_only_returns_page_write_pending(self):
+        """Manual-weave with preview_only=True should return allowed=false shape."""
+        from shopifyseo.internal_links.manual_weave import submit_manual_weave
+        
+        conn = _test_db()
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://1', 'source', 'Source', 'ACTIVE', '<p>Body sentence.</p>', 'https://shop.com/products/source')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://2', 'target', 'Target')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES ('product', 'source', 'collection', 'target', 'ai_woven', 'test', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'needs_reconciliation', 1, 1)"
+        )
+        conn.execute("INSERT INTO service_settings (key, value) VALUES ('internal_links_ai_types', 'blog_article,product,collection')")
+        conn.commit()
+        
+        result = submit_manual_weave(
+            conn, 1, "https://example.com",
+            "Body sentence.",
+            'Body sentence. <a href="/collections/target">test link</a>.',
+            preview_only=True,
+        )
         assert result["allowed"] is False
         assert result.get("code") == "page_write_pending"
 
@@ -376,16 +523,28 @@ class TestEnCaSpelling:
     
     def test_flags_us_color(self):
         """'color' should be flagged as US spelling."""
-        issues = check_en_ca_spelling("Choose your favorite color.")
-        assert len(issues) >= 2
-        assert any("color" in i.lower() for i in issues)
-        assert any("favorite" in i.lower() for i in issues)
+        issues = check_en_ca_spelling("Choose your color.")
+        assert len(issues) == 1
+        assert "color" in issues[0].lower()
+    
+    def test_flags_us_favorite(self):
+        """'favorite' should be flagged as US spelling."""
+        issues = check_en_ca_spelling("This is my favorite product.")
+        assert len(issues) == 1
+        assert "favorite" in issues[0].lower()
     
     def test_flags_us_flavor(self):
         """'flavor' should be flagged."""
-        issues = check_en_ca_spelling("Great flavors available.")
+        issues = check_en_ca_spelling("Great flavor available.")
         assert len(issues) == 1
-        assert "flavors" in issues[0].lower()
+        assert "flavor" in issues[0].lower()
+    
+    def test_flags_flavors_times_two_plus_one(self):
+        """'flavors' appearing multiple times should be reported once + one extra word."""
+        issues = check_en_ca_spelling("Many flavors here. More flavors there. Good color too.")
+        assert len(issues) == 2
+        assert any("flavors" in i.lower() for i in issues)
+        assert any("color" in i.lower() for i in issues)
     
     def test_accepts_ize_forms(self):
         """'-ize' forms are valid Canadian English and should NOT be flagged."""
@@ -402,24 +561,28 @@ class TestEnCaSpelling:
         assert check_en_ca_spelling("") == []
         assert check_en_ca_spelling(None) == []
     
-    def test_existing_minimize_plus_clean_sentence(self):
-        """Body with existing 'minimize', clean inserted text → no issues."""
-        # This simulates the false-skip case from the investigation
-        inserted = "Check our guide for tips."  # No US spellings
-        issues = check_en_ca_spelling(inserted)
-        assert len(issues) == 0
-    
-    def test_inserted_color_flagged(self):
-        """Inserted 'color' should be flagged."""
-        inserted = "See our guide for color options."
-        issues = check_en_ca_spelling(inserted)
-        assert len(issues) == 1
-        assert "color" in issues[0].lower()
+    def test_phrase_wrap_on_body_text_no_inserted_text(self):
+        """phrase_wrap mode inserts no new text, so no spelling check needed."""
+        edit = {"anchor_phrase": "color options"}
+        new_text = inserted_text(edit)
+        assert new_text == ""
+        issues = check_en_ca_spelling(new_text)
+        assert issues == []
     
     def test_deduplicates_issues(self):
         """Multiple occurrences of same word should be reported once."""
         issues = check_en_ca_spelling("Color color color everywhere.")
         assert len(issues) == 1
+    
+    def test_does_not_flag_vigorous(self):
+        """'vigorous' is correct in en-CA and should NOT be flagged."""
+        issues = check_en_ca_spelling("A vigorous workout routine.")
+        assert len(issues) == 0
+    
+    def test_does_not_flag_program(self):
+        """'program' is correct for computer programs in en-CA."""
+        issues = check_en_ca_spelling("This program runs well.")
+        assert len(issues) == 0
 
 
 # =============================================================================
@@ -476,12 +639,10 @@ class TestSkipUnpublishedSources:
     def test_unpublished_article_skipped(self):
         """Unpublished blog article should not generate suggestions."""
         conn = _pipeline_db()
-        # Unpublished article
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content about ceramic tanks.</p>', 0, 100)"
         )
-        # Target collection
         conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
         conn.commit()
         
@@ -498,12 +659,10 @@ class TestSkipUnpublishedSources:
     def test_published_article_generates_suggestions(self):
         """Published blog article should generate suggestions."""
         conn = _pipeline_db()
-        # Published article
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'pub', 'Published', '<p>Content about ceramic tanks.</p>', 1, 100)"
         )
-        # Target collection
         conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
         conn.commit()
         
@@ -518,12 +677,10 @@ class TestSkipUnpublishedSources:
     def test_draft_product_skipped(self):
         """Draft product (status != ACTIVE) should not generate suggestions."""
         conn = _pipeline_db()
-        # Draft product
         conn.execute(
-            "INSERT INTO products (handle, title, status, description_html, gsc_clicks) "
-            "VALUES ('draft-product', 'Draft', 'DRAFT', '<p>About ceramic tanks.</p>', 100)"
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('draft-product', 'Draft', 'DRAFT', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/draft')"
         )
-        # Target
         conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
         conn.commit()
         
@@ -535,12 +692,12 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 0
     
-    def test_active_product_generates_suggestions(self):
-        """Active product should generate suggestions."""
+    def test_active_product_with_online_store_url_generates_suggestions(self):
+        """Active product with online_store_url should generate suggestions."""
         conn = _pipeline_db()
         conn.execute(
-            "INSERT INTO products (handle, title, status, description_html, gsc_clicks) "
-            "VALUES ('active-product', 'Active', 'ACTIVE', '<p>About ceramic tanks.</p>', 100)"
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('active-product', 'Active', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/active')"
         )
         conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
         conn.commit()
@@ -553,17 +710,32 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1
     
-    def test_existing_rows_for_unpublished_source_untouched(self):
-        """Existing suggestion rows for unpublished sources should not be deleted."""
+    def test_active_product_without_online_store_url_skipped(self):
+        """Active product WITHOUT online_store_url should not generate suggestions."""
         conn = _pipeline_db()
-        # Unpublished article
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
+            "VALUES ('no-url-product', 'No URL', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, NULL)"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('ceramic-tanks', 'Ceramic Tanks')")
+        conn.commit()
+        
+        def related(conn, obj_type, handle, top_k=10):
+            if obj_type == "product":
+                return [{"object_type": "collection", "object_handle": "ceramic-tanks", "score": 0.9}]
+            return []
+        
+        n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
+        assert n == 0
+    
+    def test_existing_applied_rows_for_unpublished_source_untouched(self):
+        """Existing applied rows for unpublished sources should not be deleted."""
+        conn = _pipeline_db()
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
         )
-        # Target
         conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
-        # Pre-existing suggestion (e.g., created when article was published)
         conn.execute(
             "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, status, created_at) "
             "VALUES ('blog_article', 'news/unpub', 'collection', 'target', 'phrase_wrap', 'applied', 1)"
@@ -572,14 +744,131 @@ class TestSkipUnpublishedSources:
         
         generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
         
-        # The applied row should still exist
         row = conn.execute("SELECT status FROM link_suggestions WHERE source_handle = 'news/unpub'").fetchone()
         assert row is not None
         assert row["status"] == "applied"
 
 
+class TestRestoredRowsSurviveRebuild:
+    """Test that restored rows survive or are dropped based on eligibility."""
+    
+    def test_restored_row_both_pages_eligible_survives(self):
+        """Restored row with both source and target eligible survives rebuild."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
+            "VALUES ('news', 'pub', 'Published', '<p>Content about tanks.</p>', 1, 100)"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'blog_article', 'news/pub', 'collection', 'target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is not None
+    
+    def test_restored_row_source_unpublished_dropped(self):
+        """Restored row with unpublished source is dropped at rebuild."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
+            "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'blog_article', 'news/unpub', 'collection', 'target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None
+    
+    def test_restored_row_target_removed_dropped(self):
+        """Restored row with removed target is dropped at rebuild."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
+            "VALUES ('news', 'pub', 'Published', '<p>Content.</p>', 1, 100)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'blog_article', 'news/pub', 'collection', 'removed-target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None
+    
+    def test_restored_row_target_blocked_dropped(self):
+        """Restored row with blocked target (api_unreachable) is dropped at rebuild."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
+            "VALUES ('news', 'pub', 'Published', '<p>Content.</p>', 1, 100)"
+        )
+        conn.execute("INSERT INTO collections (handle, title, api_unreachable) VALUES ('blocked', 'Blocked', 1)")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'blog_article', 'news/pub', 'collection', 'blocked', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestion_restore_audit (suggestion_id, restored_at, actor, reason) "
+            "VALUES (1, 1, 'user', 'test')"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None
+    
+    def test_row_with_open_snapshot_on_unpublished_source_kept(self):
+        """Row with open snapshot on unpublished source is protected from deletion."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
+            "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
+        )
+        conn.execute("INSERT INTO collections (handle, title) VALUES ('target', 'Target')")
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, status, created_at) "
+            "VALUES (1, 'blog_article', 'news/unpub', 'collection', 'target', 'phrase_wrap', 'suggested', 1)"
+        )
+        conn.execute(
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, status, created_at, updated_at) "
+            "VALUES (1, 'blog_article', 'news/unpub', 'prepared', 1, 1)"
+        )
+        conn.commit()
+        
+        generate_link_suggestions(conn, related_fn=lambda *a, **k: [], rebuild_graph=False)
+        
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is not None
+
+
 class TestSourceExistsWithBodyPublished:
-    """Test _source_exists_with_body respects published status."""
+    """Test _source_exists_with_body respects published status and online_store_url."""
     
     def test_unpublished_article_returns_false(self):
         """Unpublished article should return False."""
@@ -605,18 +894,28 @@ class TestSourceExistsWithBodyPublished:
         """Draft product should return False."""
         conn = _pipeline_db()
         conn.execute(
-            "INSERT INTO products (handle, title, status, description_html) "
-            "VALUES ('draft', 'Draft', 'DRAFT', '<p>Content.</p>')"
+            "INSERT INTO products (handle, title, status, description_html, online_store_url) "
+            "VALUES ('draft', 'Draft', 'DRAFT', '<p>Content.</p>', 'https://shop.com/products/draft')"
         )
         conn.commit()
         assert not _source_exists_with_body(conn, "product", "draft")
     
-    def test_active_product_returns_true(self):
-        """Active product with body should return True."""
+    def test_active_product_with_url_returns_true(self):
+        """Active product with online_store_url should return True."""
         conn = _pipeline_db()
         conn.execute(
-            "INSERT INTO products (handle, title, status, description_html) "
-            "VALUES ('active', 'Active', 'ACTIVE', '<p>Content.</p>')"
+            "INSERT INTO products (handle, title, status, description_html, online_store_url) "
+            "VALUES ('active', 'Active', 'ACTIVE', '<p>Content.</p>', 'https://shop.com/products/active')"
         )
         conn.commit()
         assert _source_exists_with_body(conn, "product", "active")
+    
+    def test_active_product_without_url_returns_false(self):
+        """Active product without online_store_url should return False."""
+        conn = _pipeline_db()
+        conn.execute(
+            "INSERT INTO products (handle, title, status, description_html, online_store_url) "
+            "VALUES ('no-url', 'No URL', 'ACTIVE', '<p>Content.</p>', NULL)"
+        )
+        conn.commit()
+        assert not _source_exists_with_body(conn, "product", "no-url")

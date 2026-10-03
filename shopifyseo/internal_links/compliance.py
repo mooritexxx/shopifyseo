@@ -319,9 +319,17 @@ def inserted_text(edit: dict) -> str:
 # US spellings to flag for en-CA content.
 # IMPORTANT: -ize forms (minimize, customize, organize, etc.) are ACCEPTED in
 # Canadian English (Canadian Oxford uses -ize), so they are NOT included here.
-# Only -our/-re/grey-type differences are flagged.
+# Only clear -our/-re/grey-type differences are flagged.
+#
+# EXCLUDED (ambiguous or incorrect):
+# - vigorous: en-CA is also "vigorous" (not "vigourous")
+# - program: correct for computer programs in en-CA
+# - practice/practise: depends on noun vs verb usage
+# - license/licence: depends on noun vs verb usage
+# - meter: depends on context (measuring device vs unit of length)
+# - dialog/analog: technical usage in computing is acceptable
 _US_TO_EN_CA = {
-    # -or → -our
+    # -or → -our (clear differences)
     "color": "colour",
     "colors": "colours",
     "colored": "coloured",
@@ -353,18 +361,13 @@ _US_TO_EN_CA = {
     "neighbor": "neighbour",
     "neighbors": "neighbours",
     "neighboring": "neighbouring",
-    "neighbourhood": "neighbourhood",
-    "vigor": "vigour",
-    "vigorous": "vigourous",
-    # -er → -re
+    # -er → -re (clear differences)
     "center": "centre",
     "centers": "centres",
     "centered": "centred",
     "centering": "centring",
     "liter": "litre",
     "liters": "litres",
-    "meter": "metre",
-    "meters": "metres",
     "theater": "theatre",
     "theaters": "theatres",
     # gray → grey
@@ -373,18 +376,9 @@ _US_TO_EN_CA = {
     "grayer": "greyer",
     "grayest": "greyest",
     "grayish": "greyish",
-    # Other common differences
-    "catalog": "catalogue",
-    "catalogs": "catalogues",
-    "dialog": "dialogue",
-    "dialogs": "dialogues",
-    "analog": "analogue",
-    "analogs": "analogues",
-    "program": "programme",  # Note: "program" is correct for computer programs in en-CA
+    # Other clear differences
     "defense": "defence",
     "offense": "offence",
-    "license": "licence",  # Note: verb vs noun differs
-    "practice": "practise",  # Note: verb vs noun differs
     "traveling": "travelling",
     "traveled": "travelled",
     "traveler": "traveller",

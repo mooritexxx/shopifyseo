@@ -253,6 +253,20 @@ def submit_manual_weave(
         (sug["source_type"], sug["source_handle"]),
     ).fetchone()
     if page_pending:
+        # For preview_only mode, return the same shape as preview_suggestion
+        if preview_only:
+            return {
+                "suggestion_id": suggestion_id,
+                "allowed": False,
+                "reason": "Another write on this page is in progress or needs reconciliation.",
+                "code": "page_write_pending",
+                "old_html": None,
+                "new_html": None,
+                "text_diff": "",
+                "preview_token": None,
+                "preview_only": True,
+            }
+        # For actual submit, raise LinkConflict for 409 response
         raise LinkConflict(
             "Another write on this page is in progress or needs reconciliation.",
             code="page_write_pending"

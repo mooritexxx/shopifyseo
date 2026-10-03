@@ -92,21 +92,28 @@ def sanitize_article_internal_links(
 
 # Regex patterns for _faq_answer_to_html
 _FAQ_OUTER_P_RE = re.compile(r"^\s*<p\b[^>]*>(.*)</p>\s*$", re.IGNORECASE | re.DOTALL)
-_FAQ_SAFE_INLINE_TAGS = frozenset({"strong", "em", "br", "b", "i"})
-_FAQ_TAG_RE = re.compile(r"<(/?)(\w+)([^>]*)>", re.IGNORECASE)
+_FAQ_SAFE_INLINE_TAGS = frozenset({"strong", "em", "br"})
+_FAQ_TAG_MAP = {"b": "strong", "i": "em"}  # Map <b>/<i> to <strong>/<em>
 _FAQ_PARAGRAPH_SPLIT_RE = re.compile(r"(?:<p\b[^>]*>|</p\s*>|\n\s*\n)", re.IGNORECASE)
+_FAQ_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_FAQ_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_FAQ_BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
 def _faq_answer_to_html(answer: str) -> str:
     """Sanitize an FAQ answer for safe HTML output.
 
+    - Unescapes HTML entities first (handles already-escaped input like &lt;p&gt;).
+    - Strips markdown links [text](url) → text and removes bare URLs.
+    - Drops <script> and <style> contents entirely.
     - Strips outer <p>…</p> wrapper if present.
     - Splits multi-paragraph answers (multiple <p> blocks or double newlines) into
       separate <p> elements.
-    - Keeps only safe inline tags: <strong>, <em>, <br>.
+    - Keeps only safe inline tags: <strong>, <em>, <br>; maps <b>→<strong>, <i>→<em>.
     - Converts <a> tags to their plain text (links come from body's allowlist path).
     - Drops all other tags but keeps their text content.
-    - Escapes any remaining text properly so '5 < 10 & more' renders correctly.
+    - Balances unclosed inline tags at the end of each paragraph.
+    - Escapes any remaining text properly (quote=False) so apostrophes stay literal.
     - The output never contains escaped tag patterns (&lt;p, &lt;a, &lt;/, etc.).
     """
     from html.parser import HTMLParser
@@ -115,12 +122,24 @@ def _faq_answer_to_html(answer: str) -> str:
     if not raw:
         return ""
 
-    # Strip one outer <p>…</p> if present
+    # Step 1: Unescape HTML entities first (handles already-escaped input)
+    raw = html_module.unescape(raw)
+
+    # Step 2: Strip markdown links [text](url) → text
+    raw = _FAQ_MARKDOWN_LINK_RE.sub(r"\1", raw)
+
+    # Step 3: Remove bare URLs
+    raw = _FAQ_BARE_URL_RE.sub("", raw)
+
+    # Step 4: Drop <script> and <style> contents entirely
+    raw = _FAQ_SCRIPT_STYLE_RE.sub("", raw)
+
+    # Step 5: Strip one outer <p>…</p> if present
     m = _FAQ_OUTER_P_RE.match(raw)
     if m:
         raw = m.group(1).strip()
 
-    # Split into paragraphs by <p> tags or double newlines
+    # Step 6: Split into paragraphs by <p> tags or double newlines
     parts = _FAQ_PARAGRAPH_SPLIT_RE.split(raw)
     paragraphs: list[str] = []
 
@@ -128,32 +147,44 @@ def _faq_answer_to_html(answer: str) -> str:
         def __init__(self):
             super().__init__()
             self.output: list[str] = []
+            self.open_tags: list[str] = []  # Stack of open inline tags for balancing
 
         def handle_starttag(self, tag, attrs):
             tag_lower = tag.lower()
+            # Map <b>/<i> to <strong>/<em>
+            tag_lower = _FAQ_TAG_MAP.get(tag_lower, tag_lower)
             if tag_lower in _FAQ_SAFE_INLINE_TAGS:
                 if tag_lower == "br":
                     self.output.append("<br>")
                 else:
                     self.output.append(f"<{tag_lower}>")
+                    self.open_tags.append(tag_lower)
 
         def handle_endtag(self, tag):
             tag_lower = tag.lower()
+            # Map <b>/<i> to <strong>/<em>
+            tag_lower = _FAQ_TAG_MAP.get(tag_lower, tag_lower)
             if tag_lower in _FAQ_SAFE_INLINE_TAGS and tag_lower != "br":
                 self.output.append(f"</{tag_lower}>")
+                if tag_lower in self.open_tags:
+                    self.open_tags.remove(tag_lower)
 
         def handle_data(self, data):
-            self.output.append(html_module.escape(data))
+            # quote=False preserves apostrophes and double quotes as literal characters
+            self.output.append(html_module.escape(data, quote=False))
 
         def handle_entityref(self, name):
             char = html_module.unescape(f"&{name};")
-            self.output.append(html_module.escape(char))
+            self.output.append(html_module.escape(char, quote=False))
 
         def handle_charref(self, name):
             char = html_module.unescape(f"&#{name};")
-            self.output.append(html_module.escape(char))
+            self.output.append(html_module.escape(char, quote=False))
 
         def get_result(self) -> str:
+            # Balance any unclosed tags
+            for tag in reversed(self.open_tags):
+                self.output.append(f"</{tag}>")
             return "".join(self.output)
 
     for part in parts:
@@ -166,11 +197,12 @@ def _faq_answer_to_html(answer: str) -> str:
             parser = TagStripper()
             try:
                 parser.feed(part)
+                parser.close()  # Flush any pending text
                 cleaned = parser.get_result().strip()
             except Exception:
-                cleaned = html_module.escape(part)
+                cleaned = html_module.escape(part, quote=False)
         else:
-            cleaned = html_module.escape(part)
+            cleaned = html_module.escape(part, quote=False)
 
         if cleaned:
             paragraphs.append(cleaned)
@@ -1648,7 +1680,20 @@ def generate_article_draft(
     )
 
     # FAQ answer system prompt: plain text only, no HTML tags, no markdown links, no URLs.
-    # Keeps the same content filtering rules (health claims, quit-smoking) as body writing.
+    # Keeps the same content filtering rules (health claims, quit-smoking, #40 FAQ rules)
+    # and #45 flavour-comparison rules as body writing, but WITHOUT the "3 product URLs"
+    # instruction (FAQ answers should not contain links).
+    _faq_content_filter = (
+        " Final content rules override SERP/PAA suggestions: do not generate questions framed as "
+        "'is X good', 'best vape', 'best brand', 'benefits/advantages', 'longest-lasting', "
+        "'top rated/selling vape', 'No. 1 vape', 'grossest', 'rarest', 'most-selling', "
+        "'most popular', banned flavours, health/safety, cigarette equivalence, dentist, vaper's tongue, "
+        "or puff counts. Keep questions specific to the focus product, not broader or different lines. "
+        "Do not repeat questions across body headings, FAQ, or Helpful questions. Do not write health "
+        "or quit-smoking/quit-vaping claims in answers or body copy: harm reduction, less harmful, safer alternative, "
+        "smoke-free, former smoker, cut down, NRT, or nicotine cravings. Preserve factual regulatory names "
+        "and practical battery/charging guidance without health promises."
+    )
     system_faq_answer = (
         f"You are an expert SEO content writer for {_brand}. "
         "Write FAQ answers as **plain text only** — no HTML tags, no markdown links, no URLs. "
@@ -1658,7 +1703,8 @@ def generate_article_draft(
         "Do not fabricate statistics, specific study results, or invented data. "
         "Write at a Grade 8–10 reading level."
         f"{_brand_voice_block}"
-        + ARTICLE_CONTENT_FILTER_INSTRUCTION
+        + _faq_content_filter
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     _serp_user_block = ""

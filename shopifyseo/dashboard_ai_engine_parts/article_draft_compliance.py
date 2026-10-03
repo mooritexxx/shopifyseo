@@ -616,11 +616,24 @@ def count_distinct_approved_product_links(body_html: str, path_to_canonical: dic
     return len(products)
 
 
+# Allowlist of HTML tag names that indicate escaped markup when preceded by &lt;
+# Only these real HTML tags trigger the escaped_markup gap; arbitrary words like
+# "Moderate" in "&lt; Moderate daily use" are NOT flagged.
+_ESCAPED_MARKUP_TAG_NAMES = (
+    "p", "a", "br", "strong", "em", "b", "i", "u",
+    "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "div", "span", "img",
+    "table", "tr", "td", "th", "thead", "tbody",
+    "blockquote", "script", "style", "iframe",
+)
+
 # Regex for escaped HTML tag patterns that should never appear in article output.
-# Matches &lt; (or &amp;lt;) followed by an optional slash and a tag name start.
-# Does NOT match &lt; followed by a space or digit (e.g. '&lt; 5' is legitimate).
+# Matches &lt; (or &amp;lt;) followed by an optional slash and a REAL HTML tag name
+# from the allowlist, then whitespace, >, /, or &gt;.
+# Does NOT match &lt; followed by arbitrary words (e.g. '&lt; Moderate' is legitimate).
 _ESCAPED_MARKUP_RE = re.compile(
-    r"&(?:amp;)?lt;\s*/?\s*[a-zA-Z][a-zA-Z0-9]*[\s&>/]",
+    r"&(?:amp;)?lt;\s*/?\s*(?:" + "|".join(_ESCAPED_MARKUP_TAG_NAMES) + r")(?:\s|&gt;|>|/)",
     re.IGNORECASE,
 )
 
@@ -632,8 +645,9 @@ def escaped_markup_gaps(body_html: str) -> list[str]:
     never appear in properly generated article HTML. These indicate the AI returned
     HTML that was then double-escaped.
 
-    A plain ``&lt;`` followed by a space or a digit (e.g. ``&lt; 5``) is NOT flagged
-    because that's legitimate escaped text like ``5 < 10``.
+    Only flags escaped REAL HTML tag names (p, a, br, strong, em, div, span, etc.).
+    A plain ``&lt;`` followed by a space, digit, or arbitrary word (e.g. ``&lt; 5``,
+    ``&lt; Moderate``, ``&lt;3``) is NOT flagged because that's legitimate escaped text.
 
     Returns:
         A list containing one gap message if escaped markup is found, empty otherwise.

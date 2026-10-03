@@ -11,14 +11,18 @@ from . import shopify_io
 from .safety import LinkConflict, build_edit, require_ai_enabled, text_diff, validate_edit
 
 WEAVE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "anchor_phrase": {"type": "string", "minLength": 1, "maxLength": 120},
-        "insert_sentence": {"type": "string", "maxLength": 300},
-        "insert_after_text": {"type": "string"},
+    "name": "link_weave_edit",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "anchor_phrase": {"type": "string", "minLength": 1, "maxLength": 120},
+            "insert_sentence": {"type": "string", "maxLength": 300},
+            "insert_after_text": {"type": "string"},
+        },
+        "required": ["anchor_phrase", "insert_sentence", "insert_after_text"],
+        "additionalProperties": False,
     },
-    "required": ["anchor_phrase"],
-    "additionalProperties": False,
 }
 
 _PROMPT = (
@@ -28,7 +32,9 @@ _PROMPT = (
     "at most 300 characters, containing anchor_phrase exactly once) and insert_after_text "
     "(the entire visible text of exactly one existing paragraph). "
     "The server will add the link and, if requested, a new paragraph after that paragraph. "
-    "Never rewrite, remove or replace existing text. Avoid unsupported product claims.\n\n"
+    "Never rewrite, remove or replace existing text. Avoid unsupported product claims. "
+    "Return only these JSON keys: anchor_phrase, insert_sentence, insert_after_text. "
+    "Use empty strings for insert_sentence and insert_after_text when no new sentence is needed.\n\n"
     "Target title: {title}\nTarget URL: {url}\n\nCurrent live HTML:\n{body}"
 )
 

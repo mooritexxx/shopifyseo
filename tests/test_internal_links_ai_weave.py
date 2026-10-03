@@ -10,7 +10,7 @@ def test_generates_structured_edit_from_live_body():
     conn.execute("UPDATE link_suggestions SET kind='ai_woven'"); conn.commit()
     def ai(messages, schema):
         assert live.body in messages[0]['content']
-        assert 'revised_body' not in schema['properties']
+        assert 'revised_body' not in schema['schema']['properties']
         return {'anchor_phrase':'ceramic tanks'}
     result = generate_ai_anchor(conn,1,BASE,call_ai_fn=ai,fetch_fn=live.fetch)
     row = conn.execute('SELECT ai_edit_json,ai_anchor_html,source_body_hash FROM link_suggestions').fetchone()

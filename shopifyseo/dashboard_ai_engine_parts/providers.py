@@ -6,6 +6,7 @@ This module owns everything that speaks directly to an AI provider's HTTP API.
 
 import json
 import logging
+import re
 
 from ..dashboard_http import HttpRequestError, request_json
 from .config import (
@@ -21,6 +22,22 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _openai_style_json_schema(json_schema: dict, stage: str = "") -> dict:
+    """Return the {name, schema[, strict]} wrapper OpenAI/OpenRouter expect.
+
+    Already-wrapped schemas (with a dict "schema" key) are returned unchanged.
+    A bare JSON Schema (has "type" or "properties", no "schema" key) gets wrapped
+    without "strict", because a bare schema may not meet strict-mode rules.
+    """
+    if isinstance(json_schema.get("schema"), dict):
+        return json_schema
+    if "type" in json_schema or "properties" in json_schema:
+        name = re.sub(r"[^a-zA-Z0-9_-]", "_", (stage or "").strip())[:64] or "response"
+        return {"name": name, "schema": json_schema}
+    return json_schema
+
 
 # When structured JSON asks for very long strings (e.g. article body minLength 14k), raise completion
 # budget for *all* providers using the same threshold — no provider-specific callers.
@@ -459,7 +476,7 @@ def _call_openai(api_key: str, model: str, messages: list[dict], timeout: int, *
     if json_schema is not None:
         response_format = {
             "type": "json_schema",
-            "json_schema": json_schema,
+            "json_schema": _openai_style_json_schema(json_schema, stage),
         }
     else:
         response_format = {"type": "json_object"}
@@ -547,7 +564,7 @@ def _call_openrouter(api_key: str, model: str, messages: list[dict], timeout: in
     if json_schema is not None:
         response_format = {
             "type": "json_schema",
-            "json_schema": json_schema,
+            "json_schema": _openai_style_json_schema(json_schema, stage),
         }
     else:
         response_format = {"type": "json_object"}

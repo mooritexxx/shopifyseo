@@ -172,16 +172,34 @@ diff, without executing source or AI HTML in the browser.
 | ------ | ---- | -------- |
 | POST (GET retained) | `/api/internal-links/suggestions/{id}/preview` | Reads the current Shopify body; returns `{allowed, old_html, new_html, text_diff, html_diff, preview_token}` or a blocked reason. No database or Shopify writes. |
 | POST | `/api/internal-links/suggestions/{id}/generate-anchor` | Stores `{anchor_phrase, insert_sentence?, insert_after_text?}` as `ai_edit_json`. Full-body AI responses are rejected with 409 and a text diff. |
-| POST | `/api/internal-links/suggestions/{id}/manual-weave` | Accepts `{original_sentence, replacement_sentence}` for ai_woven suggestions. Append-only: replacement must start with original, contain one `<a>` to the target, pass content compliance (G8-G11), and respect the 8-link cap. Returns preview data plus `{edit, existing_link_count, link_cap}`. 400 for validation failures; 409 for state/drift conflicts. No AI call. |
-| POST | `/api/internal-links/suggestions/{id}/apply` | Requires `{preview_token}`. Token binds the object identity, exact live HTML, target and edit for ten minutes. Changed or invalid approvals return 409; no write occurs. |
+| POST | `/api/internal-links/suggestions/{id}/manual-weave` | Accepts `{original_sentence, replacement_sentence, preview_only?}` for ai_woven suggestions. Append-only: replacement must start with original, contain one `<a>` to the target, pass content compliance (G8-G11), and respect the 8-link cap. Returns preview data plus `{edit, existing_link_count, link_cap}`. With `preview_only: true`, validates (including pending-snapshot check) and returns preview without persisting (`preview_token: null`); 409 if a real submit would 409. 400 for validation failures; 409 for state/drift/pending conflicts. No AI call. |
+| POST | `/api/internal-links/suggestions/{id}/apply` | Requires `{preview_token}`. Token binds the object identity, exact live HTML, target and edit for ten minutes. Changed or invalid approvals return 409; no write occurs. Tolerates whitespace differences between block-level tags via `html_equivalent`. |
 | POST | `/api/internal-links/suggestions/{id}/undo` | Restores the exact saved body only if live HTML still equals the applied body. Later edits and legacy applies without backups return 409. |
-| POST | `/api/internal-links/suggestions/{id}/reconcile` | Reads Shopify to resolve an uncertain apply/undo. Updates local state only when live HTML matches the saved before/after body; never repeats a Shopify write. |
+| POST | `/api/internal-links/suggestions/{id}/reconcile` | Reads Shopify to resolve an uncertain apply/undo. Updates local state only when live HTML matches the saved before/after body (whitespace-tolerant via `html_equivalent`); never repeats a Shopify write. |
+| POST | `/api/internal-links/suggestions/{id}/restore` | Requires `X-Task-Token` auth (401 if missing/invalid). Accepts `{reason}` (1-500 chars after strip; 422 on violations). Actor derived from token. 404 for non-existent suggestions. 409 if not dismissed or has unfinished snapshot. Uses atomic conditional UPDATE; audit logged only on success. Restored rows survive rebuild only if source/target remain valid (exist and are linkable); invalid pairs are cleaned up. Audit table has no FK. |
 | GET / PUT | `/api/internal-links/settings` | `ai_woven_enabled_types` is returned as an array; PUT accepts comma-separated source types. An empty value disables all AI weaving. |
 
 Server construction preserves every original HTML byte outside one anchor wrapper
 or one short sentence inserted after a uniquely identified paragraph. Existing links,
 images and attributes are preserved; the whole-body AI link sanitizer is not used.
 Only the body is sent to Shopify. Title, SEO, tags and metafields are omitted.
+
+**Whitespace tolerance:** `html_equivalent(a, b)` in `safety.py` strips inter-block
+ASCII whitespace only (space, tab, LF, CR, FF between block-level tags like p, div,
+h1-h6, ul, ol, li, table, thead, tbody, tfoot, tr, td, th, blockquote, section,
+article, header, footer, aside, nav, figure, figcaption, hr, dl, dt, dd) before
+comparing. **NBSP (U+00A0, `&nbsp;`, `&#160;`), ideographic space (U+3000), and
+other Unicode whitespace are significant** and will cause reconciliation to fail
+if added/removed by Shopify. Tag parsing is quote-aware: `>` inside quoted
+attribute values does not end the tag. Custom elements like `<p-x>` are not
+treated as block-level. Preformatted elements (pre, textarea, script, style)
+preserve their content. Text, attributes, and inline spacing remain strictly
+compared. Apply and reconcile use this to tolerate Shopify's HTML normalization.
+
+**Locator normalization:** AI insert mode normalizes curly quotes (`''""`→`'"`),
+em-dashes (`—`→`-`), and HTML entities before matching. Locators ≥40 characters
+match via prefix if no exact match is found. Error codes: `insert_locator_no_match`
+(zero matches), `insert_locator_ambiguous` (multiple matches), `link_conflict` (default).
 Snapshot creation commits before network dispatch; a partial unique index reserves
 the source object until completion or reconciliation. Failed/ambiguous writes keep
 the backup and block another write. An interrupted `prepared` operation can be

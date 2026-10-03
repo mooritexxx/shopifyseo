@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 
 from ..dashboard_queries._urls import object_url_with_base
@@ -9,6 +10,8 @@ from .apply import _hash_body, _load_source_row
 
 from . import shopify_io
 from .safety import LinkConflict, build_edit, require_ai_enabled, text_diff, validate_edit
+
+logger = logging.getLogger(__name__)
 
 WEAVE_SCHEMA = {
     "name": "link_weave_edit",
@@ -30,7 +33,7 @@ _PROMPT = (
     "Prefer anchor_phrase: an exact existing phrase outside headings and existing links. "
     "If no suitable phrase exists, also return insert_sentence (one short plain-text sentence, "
     "at most 300 characters, containing anchor_phrase exactly once) and insert_after_text "
-    "(the entire visible text of exactly one existing paragraph). "
+    "(the opening of exactly one existing paragraph, at least its first sentence, copied verbatim). "
     "The server will add the link and, if requested, a new paragraph after that paragraph. "
     "Never rewrite, remove or replace existing text. Avoid unsupported product claims. "
     "Return only these JSON keys: anchor_phrase, insert_sentence, insert_after_text. "
@@ -84,8 +87,21 @@ def generate_ai_anchor(conn, suggestion_id, base_url, call_ai_fn=None, fetch_fn=
         edit = validate_edit(raw)
         build_edit(body, edit, url)
     except LinkConflict as exc:
+        # Log locator failures at info level
+        if exc.code in ("insert_locator_no_match", "insert_locator_ambiguous"):
+            locator_preview = exc.detail.get("insert_after_text", "")[:300]
+            logger.info(
+                "Locator failure for suggestion %d: code=%s, locator=%r",
+                suggestion_id, exc.code, locator_preview
+            )
         if isinstance(raw, dict) and isinstance(raw.get("revised_body"), str):
-            raise LinkConflict(str(exc), text_diff=text_diff(body, raw["revised_body"])) from None
+            # Preserve the original code and extra when re-raising with a diff
+            raise LinkConflict(
+                str(exc),
+                text_diff=text_diff(body, raw["revised_body"]),
+                code=exc.code,
+                extra={k: v for k, v in exc.detail.items() if k not in ("message", "text_diff")}
+            ) from None
         raise
     changed = conn.execute(
         "UPDATE link_suggestions SET ai_edit_json = ?, ai_anchor_html = NULL, anchor_phrase = ?, source_body_hash = ? "

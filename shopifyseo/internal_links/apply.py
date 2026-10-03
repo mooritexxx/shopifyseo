@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
 from .graph import extract_links, resolve_internal_target
-from .safety import (LinkConflict, body_hash, build_edit, guard_edit, preview_token,
-                     require_ai_enabled, text_diff, validate_edit, verify_token)
+from .safety import (LinkConflict, body_hash, build_edit, guard_edit, html_equivalent,
+                     preview_token, require_ai_enabled, text_diff, validate_edit, verify_token)
 
 logger = logging.getLogger(__name__)
 _hash_body = body_hash
@@ -188,11 +188,20 @@ def _update_local(conn, sug, body, base_url, event):
     _log_suggestion_event(conn, sug, event)
 
 
-def _finish(conn, snapshot, sug, base_url, undo=False):
+def _finish(conn, snapshot, sug, base_url, undo=False, *, body=None):
+    """Finalize an apply or undo by updating local state.
+    
+    Args:
+        body: Optional override for the body to persist locally. When provided,
+              uses this instead of the snapshot body. Used when Shopify returns
+              a whitespace-normalized variant that passes html_equivalent.
+    """
     row = _load_source_row(conn, sug["source_type"], sug["source_handle"])
     if row["shopify_id"] != snapshot["shopify_id"]:
         raise LinkConflict("The Shopify object identity changed. Reconciliation is required.")
-    _update_local(conn, sug, snapshot["old_body"] if undo else snapshot["new_body"], base_url, "undo" if undo else "apply")
+    # Use provided body override, or fall back to snapshot body
+    local_body = body if body is not None else (snapshot["old_body"] if undo else snapshot["new_body"])
+    _update_local(conn, sug, local_body, base_url, "undo" if undo else "apply")
     _status(conn, snapshot["id"], "undone" if undo else "applied")
 
 
@@ -233,8 +242,15 @@ def apply_suggestion(conn, suggestion_id, base_url, *, preview_token_value="", f
     try:
         accepted = push_fn(sug["source_type"], row, new)
         if accepted != new:
-            raise RuntimeError("Shopify returned different HTML. Reconcile this operation before retrying.")
-        _finish(conn, snapshot, sug, base_url)
+            # Shopify returned different HTML - check if it's just whitespace normalization
+            if not html_equivalent(accepted, new):
+                raise RuntimeError("Shopify returned different HTML. Reconcile this operation before retrying.")
+            # Whitespace-only difference: persist the actual Shopify response
+            # Update snapshot.new_body so undo's strict check (L268) compares against the real live body
+            conn.execute("UPDATE link_body_snapshots SET new_body = ? WHERE id = ?", (accepted, snapshot_id))
+            _finish(conn, snapshot, sug, base_url, body=accepted)
+        else:
+            _finish(conn, snapshot, sug, base_url)
     except Exception:
         conn.rollback()
         _status(conn, snapshot_id, "needs_reconciliation", "Write outcome needs a live read before retrying.")
@@ -305,10 +321,17 @@ def reconcile_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None):
         raise LinkConflict("This operation is already being reconciled. Refresh its status.")
     try:
         live = (fetch_fn or shopify_io.fetch_body)(sug["source_type"], row)
-        if live == (snapshot["old_body"] if undo else snapshot["new_body"]):
-            _finish(conn, snapshot, sug, base_url, undo=undo)
+        expected = snapshot["old_body"] if undo else snapshot["new_body"]
+        other = snapshot["new_body"] if undo else snapshot["old_body"]
+        
+        # Use html_equivalent for whitespace-tolerant comparison
+        if html_equivalent(live, expected):
+            # In apply case, also update snapshot new_body to the actual live body
+            if not undo:
+                conn.execute("UPDATE link_body_snapshots SET new_body = ? WHERE id = ?", (live, snapshot["id"]))
+            _finish(conn, snapshot, sug, base_url, undo=undo, body=live)
             return {"status": "undone" if undo else "applied"}
-        if live == (snapshot["new_body"] if undo else snapshot["old_body"]):
+        if html_equivalent(live, other):
             _status(conn, snapshot["id"], "applied" if undo else "failed")
             return {"status": "not_written"}
         raise LinkConflict("Live content matches neither backup. Keep the backup and reconcile the page manually.")
@@ -360,3 +383,81 @@ def check_link_present_in_body(body, href):
     return any((not urlparse(link).netloc or urlparse(link).netloc.lower() == target_host)
                and (urlparse(link).path.rstrip("/") or "/") == target_path
                for link, _ in extract_links(body or ""))
+
+
+class SuggestionNotFound(ValueError):
+    """Raised when a suggestion is not found (HTTP 404)."""
+    pass
+
+
+def restore_suggestion(conn, suggestion_id: int, actor: str, reason: str) -> dict:
+    """Restore a dismissed suggestion back to suggested status.
+    
+    Uses a single atomic conditional UPDATE to prevent race conditions:
+    - Checks status='dismissed' AND no unfinished snapshots in one UPDATE
+    - If rowcount=0, re-reads to determine 404 vs 409 (status or snapshot)
+    - Audit row written only after successful update
+    - Single commit at the end
+    
+    Args:
+        conn: Database connection
+        suggestion_id: ID of the dismissed suggestion
+        actor: Actor identifier from X-Task-Token authentication
+        reason: Reason for restoring the suggestion (1-500 chars after strip)
+    
+    Returns:
+        Dict with status, suggestion_id, and actor
+    
+    Raises:
+        SuggestionNotFound: If suggestion does not exist (404)
+        LinkConflict: If suggestion has unfinished snapshot or status not dismissed (409)
+    """
+    now = int(time.time())
+    
+    # B3/B7: Atomic conditional UPDATE with status='dismissed' AND no pending snapshot
+    cursor = conn.execute(
+        """UPDATE link_suggestions 
+           SET status = 'suggested' 
+           WHERE id = ? AND status = 'dismissed'
+           AND NOT EXISTS (
+               SELECT 1 FROM link_body_snapshots 
+               WHERE suggestion_id = link_suggestions.id 
+               AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
+           )""",
+        (suggestion_id,),
+    )
+    
+    if cursor.rowcount == 0:
+        # Re-read to determine the specific error
+        sug = conn.execute("SELECT status FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        if not sug:
+            raise SuggestionNotFound(f"Suggestion {suggestion_id} not found.")
+        
+        # Check if there's a pending snapshot (B7)
+        pending = conn.execute(
+            """SELECT 1 FROM link_body_snapshots 
+               WHERE suggestion_id = ? 
+               AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')""",
+            (suggestion_id,),
+        ).fetchone()
+        if pending:
+            raise LinkConflict("Cannot restore: an unfinished write operation is pending on this suggestion.")
+        
+        # Status was not 'dismissed'
+        raise LinkConflict(f"Only dismissed suggestions can be restored. This suggestion has status '{sug['status']}'.")
+    
+    # B3: Insert audit record only after successful update
+    conn.execute(
+        """INSERT INTO link_suggestion_restore_audit 
+           (suggestion_id, restored_at, actor, reason) VALUES (?, ?, ?, ?)""",
+        (suggestion_id, now, actor, reason),
+    )
+    
+    # B3: Single commit at the end
+    conn.commit()
+    
+    return {
+        "status": "suggested",
+        "suggestion_id": suggestion_id,
+        "actor": actor,
+    }

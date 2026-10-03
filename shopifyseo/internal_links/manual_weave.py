@@ -199,6 +199,7 @@ def submit_manual_weave(
     replacement_sentence: str,
     *,
     fetch_fn: Callable | None = None,
+    preview_only: bool = False,
 ) -> dict:
     """Submit a manual-weave edit for an ai_woven suggestion.
     
@@ -214,9 +215,11 @@ def submit_manual_weave(
         original_sentence: Exact sentence from the live body to append to
         replacement_sentence: original_sentence + addition with one <a> link
         fetch_fn: Optional body fetch function (for testing)
+        preview_only: If True, validate and return preview without persisting
     
     Returns:
-        Dict with preview data plus edit, existing_link_count, and link_cap
+        Dict with preview data plus edit, existing_link_count, and link_cap.
+        When preview_only=True, also includes preview_only=True and preview_token=None.
     
     Raises:
         LinkConflict: For state/drift issues (409)
@@ -367,12 +370,7 @@ def submit_manual_weave(
     # Count existing links for response
     existing_links = len([h for h, _ in extract_links(live_body) if h.strip()])
     
-    # Persist the edit (G14, G16)
-    # Use conditional UPDATE to ensure no concurrent modification
-    live_hash = body_hash(live_body)
-    edit_json = json.dumps(edit, sort_keys=True)
-    
-    # Check for pending snapshot that would block the update
+    # S1: Check for pending snapshot BEFORE preview_only (predict a real submit's behavior)
     pending = conn.execute(
         "SELECT 1 FROM link_body_snapshots WHERE suggestion_id = ? AND status IN "
         "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')",
@@ -380,6 +378,35 @@ def submit_manual_weave(
     ).fetchone()
     if pending:
         raise LinkConflict("Another write on this page is in progress or needs reconciliation.")
+    
+    # preview_only: return preview without persisting
+    if preview_only:
+        import difflib
+        from .safety import text_diff
+        return {
+            "suggestion_id": suggestion_id,
+            "kind": sug["kind"],
+            "old_html": live_body,
+            "new_html": new_body,
+            "text_diff": text_diff(live_body, new_body),
+            "html_diff": "\n".join(difflib.unified_diff(
+                live_body.splitlines(), new_body.splitlines(),
+                fromfile="Current Shopify HTML", tofile="With link", lineterm=""
+            )),
+            "anchor_phrase": edit["anchor_phrase"],
+            "target_url": target_url,
+            "allowed": True,
+            "preview_token": None,
+            "preview_only": True,
+            "edit": edit,
+            "existing_link_count": existing_links,
+            "link_cap": MANUAL_LINK_CAP,
+        }
+    
+    # Persist the edit (G14, G16)
+    # Use conditional UPDATE to ensure no concurrent modification
+    live_hash = body_hash(live_body)
+    edit_json = json.dumps(edit, sort_keys=True)
     
     cursor = conn.execute(
         """

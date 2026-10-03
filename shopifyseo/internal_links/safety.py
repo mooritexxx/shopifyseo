@@ -23,13 +23,218 @@ MANUAL_LINK_CAP = 8
 
 
 class LinkConflict(ValueError):
-    def __init__(self, message: str, *, text_diff: str = ""):
+    """Conflict during link suggestion processing.
+    
+    Args:
+        message: Human-readable error message
+        text_diff: Optional unified diff for text changes
+        code: Error code for programmatic handling (default: "link_conflict")
+        extra: Optional dict of additional details to include in self.detail
+    """
+    def __init__(self, message: str, *, text_diff: str = "", code: str = "link_conflict", extra: dict | None = None):
         super().__init__(message)
-        self.detail = {"message": message, "text_diff": text_diff}
+        self.code = code
+        self.detail = {"message": message, "text_diff": text_diff, **(extra or {})}
 
 
 def body_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+# Block-level tags where inter-tag whitespace is insignificant
+_BLOCK_LEVEL_TAGS = frozenset({
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
+    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "blockquote",
+    "section", "article", "header", "footer", "aside", "nav", "figure",
+    "figcaption", "hr", "dl", "dt", "dd",
+})
+
+# Preformatted/raw elements where whitespace must never be touched
+_PREFORMATTED_TAGS = frozenset({"pre", "textarea", "script", "style"})
+
+# HTML ASCII whitespace: space, tab, newline, carriage return, form feed
+_HTML_WHITESPACE = frozenset(" \t\n\r\f")
+
+
+def _is_html_whitespace(char: str) -> bool:
+    """Check if character is HTML ASCII whitespace (space, tab, LF, CR, FF)."""
+    return char in _HTML_WHITESPACE
+
+
+def _strip_html_whitespace(s: str) -> str:
+    """Strip leading/trailing HTML ASCII whitespace only."""
+    start = 0
+    end = len(s)
+    while start < end and s[start] in _HTML_WHITESPACE:
+        start += 1
+    while end > start and s[end - 1] in _HTML_WHITESPACE:
+        end -= 1
+    return s[start:end]
+
+
+# Regex to match an HTML tag, handling quoted attribute values
+# Matches: < followed by optional /, tag name, attributes (with quoted values), optional /, >
+_TAG_RE = re.compile(r'<[^>"\']*(?:"[^"]*"|\'[^\']*\')*[^>]*>', re.DOTALL)
+
+
+def _extract_tag_name(tag_content: str) -> str:
+    """Extract lowercase tag name from tag content (between < and >).
+    
+    Uses exact tag name matching (alphanumeric only after first letter).
+    """
+    is_closing = tag_content.startswith('/')
+    tag_part = tag_content[1:].lstrip() if is_closing else tag_content.lstrip()
+    # Match only standard HTML tag names: letter followed by letters or digits
+    # This excludes custom elements like <p-x>
+    match = re.match(r'^([a-zA-Z][a-zA-Z0-9]*)(?:\s|/|$)', tag_part)
+    return match.group(1).lower() if match else ""
+
+
+def _find_tag_end(html: str, start: int) -> int:
+    """Find the end position of a tag starting at start, handling quoted attributes.
+    
+    Returns the position of the closing > or -1 if malformed.
+    """
+    i = start + 1  # Skip the opening <
+    in_single_quote = False
+    in_double_quote = False
+    
+    while i < len(html):
+        char = html[i]
+        if in_single_quote:
+            if char == "'":
+                in_single_quote = False
+        elif in_double_quote:
+            if char == '"':
+                in_double_quote = False
+        elif char == "'":
+            in_single_quote = True
+        elif char == '"':
+            in_double_quote = True
+        elif char == '>':
+            return i
+        i += 1
+    
+    return -1  # Malformed - no closing >
+
+
+def _strip_inter_block_whitespace(html: str) -> str:
+    """Remove ASCII whitespace-only runs between block-level tags.
+    
+    Only HTML ASCII whitespace (space, tab, LF, CR, FF) is stripped.
+    NBSP (U+00A0), ideographic space, and other Unicode whitespace are significant.
+    
+    Preserves whitespace:
+    - Inside <pre>, <textarea>, <script>, <style>
+    - Inside text nodes
+    - Inside tags/attributes
+    - Between inline tags (e.g., </a> <strong>)
+    
+    Also strips leading/trailing ASCII whitespace of the whole document (Q1 default).
+    """
+    if not html:
+        return ""
+    
+    # Parse tokens: tags and text segments
+    tokens: list[tuple[str, str]] = []  # ('tag'|'text', content)
+    i = 0
+    
+    while i < len(html):
+        if html[i] == '<':
+            tag_end = _find_tag_end(html, i)
+            if tag_end == -1:
+                # Malformed: treat rest as text
+                tokens.append(('text', html[i:]))
+                break
+            tokens.append(('tag', html[i:tag_end + 1]))
+            i = tag_end + 1
+        else:
+            # Find next tag or end
+            next_tag = html.find('<', i)
+            if next_tag == -1:
+                tokens.append(('text', html[i:]))
+                break
+            tokens.append(('text', html[i:next_tag]))
+            i = next_tag
+    
+    # Now process tokens: remove ASCII whitespace between block-level tags
+    # Track preformatted depth
+    output: list[str] = []
+    pre_depth = 0
+    
+    for idx, (token_type, content) in enumerate(tokens):
+        if token_type == 'tag':
+            tag_content = content[1:-1]  # Remove < and >
+            tag_name = _extract_tag_name(tag_content)
+            is_closing = tag_content.startswith('/')
+            is_self_closing = tag_content.rstrip().endswith('/')
+            
+            if tag_name in _PREFORMATTED_TAGS:
+                if is_closing:
+                    pre_depth = max(0, pre_depth - 1)
+                elif not is_self_closing:
+                    pre_depth += 1
+            
+            output.append(content)
+        else:
+            # Text content
+            if pre_depth > 0:
+                # Inside preformatted - keep as-is
+                output.append(content)
+            else:
+                # Check if this is ASCII whitespace-only between block tags
+                is_ascii_ws_only = all(_is_html_whitespace(c) for c in content) and len(content) > 0
+                
+                if is_ascii_ws_only:
+                    # Check preceding and following tags
+                    prev_tag_name = ""
+                    next_tag_name = ""
+                    
+                    # Find previous tag
+                    for j in range(idx - 1, -1, -1):
+                        if tokens[j][0] == 'tag':
+                            prev_tag_name = _extract_tag_name(tokens[j][1][1:-1])
+                            break
+                    
+                    # Find next tag
+                    for j in range(idx + 1, len(tokens)):
+                        if tokens[j][0] == 'tag':
+                            next_tag_name = _extract_tag_name(tokens[j][1][1:-1])
+                            break
+                    
+                    # Only strip if both are block-level tags
+                    if prev_tag_name in _BLOCK_LEVEL_TAGS and next_tag_name in _BLOCK_LEVEL_TAGS:
+                        # Skip this whitespace
+                        continue
+                
+                output.append(content)
+    
+    # Strip leading/trailing ASCII whitespace of the whole document (Q1 default)
+    return _strip_html_whitespace("".join(output))
+
+
+def html_equivalent(a: str, b: str) -> bool:
+    """Check if two HTML strings are equivalent, tolerating inter-block whitespace.
+    
+    Returns True when the strings are identical after:
+    - Removing whitespace-only runs between two block-level tags
+    - Stripping leading/trailing document whitespace
+    
+    Block-level tags: p, div, h1-h6, ul, ol, li, table, thead, tbody, tfoot,
+    tr, td, th, blockquote, section, article, header, footer, aside, nav,
+    figure, figcaption, hr, dl, dt, dd.
+    
+    Does NOT collapse whitespace:
+    - Between inline tags (visible space like "</a> <strong>")
+    - Inside <pre>, <textarea>, <script>, <style>
+    - Inside text nodes
+    - Inside tags/attributes
+    
+    Any other difference (text, attributes, entity encoding, tag names) fails.
+    """
+    if a == b:
+        return True
+    return _strip_inter_block_whitespace(a) == _strip_inter_block_whitespace(b)
 
 
 def ai_enabled_types(conn) -> list[str]:
@@ -580,12 +785,61 @@ def build_edit(old: str, raw: dict, url: str) -> str:
     # AI insert_sentence mode
     sentence = edit.get("insert_sentence")
     if sentence:
-        location = " ".join(edit["insert_after_text"].split())
-        matches = [end for start, end in parser.paragraphs if visible_text(old[start:end]) == location]
-        if len(matches) != 1:
-            raise LinkConflict("The insertion paragraph is missing or ambiguous. Generate a new suggestion.")
+        raw_locator = edit["insert_after_text"]
+        # Strip trailing ellipsis from the locator (Q4 default: yes)
+        locator_text = raw_locator.rstrip()
+        if locator_text.endswith("…"):
+            locator_text = locator_text[:-1].rstrip()
+        elif locator_text.endswith("..."):
+            locator_text = locator_text[:-3].rstrip()
+        
+        # Normalize the locator for matching
+        loc_norm = _normalize_for_matching(locator_text)
+        
+        # S2: Empty or punctuation-only locator must reject (never match spacer paragraphs)
+        # Check if loc_norm contains any alphanumeric characters
+        if not loc_norm or not any(c.isalnum() for c in loc_norm):
+            locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
+            raise LinkConflict(
+                "The insertion paragraph locator is empty or contains only punctuation. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
+            )
+        
+        # Find matching paragraphs using normalized comparison
+        exact_matches = []
+        prefix_matches = []
+        for start, end in parser.paragraphs:
+            p_norm = _normalize_for_matching(visible_text(old[start:end]))
+            if p_norm == loc_norm:
+                exact_matches.append(end)
+            elif len(loc_norm) >= 40 and p_norm.startswith(loc_norm):
+                prefix_matches.append(end)
+        
+        # Use exact matches if any, otherwise fall back to prefix matches
+        matches = exact_matches if exact_matches else prefix_matches
+        
+        # Truncate locator for error messages (first 300 chars)
+        locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
+        
+        if len(matches) == 0:
+            raise LinkConflict(
+                "The insertion paragraph was not found in the live body. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
+            )
+        if len(matches) > 1:
+            raise LinkConflict(
+                f"The insertion paragraph is ambiguous ({len(matches)} paragraphs match). Generate a new suggestion.",
+                code="insert_locator_ambiguous",
+                extra={"insert_after_text": locator_preview, "match_count": len(matches)}
+            )
+        
         linked = html.escape(sentence).replace(html.escape(phrase), f'<a href="{href}">{html.escape(phrase)}</a>', 1)
         offset = matches[0]
+        # Match the body's block separator style: if it uses newlines between blocks, preserve that
+        if "</p>\n<p>" in old or (offset < len(old) and old[offset:offset + 1] == "\n"):
+            return old[:offset] + "\n<p>" + linked + "</p>" + old[offset:]
         return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
     
     # phrase_wrap mode

@@ -573,7 +573,9 @@ class TestRebuildWithRealPipeline:
     def test_restored_pair_survives_when_non_restored_is_deleted(self, pipeline_db):
         """Control test: restored pair survives the same rebuild that deletes non-restored pairs.
         
-        This proves that restore protection works: same pair, same rebuild, different outcomes.
+        This proves that restore protection works: two suggestions from the same source,
+        one restored and one not, same rebuild — the restored one survives while the
+        non-restored one is deleted.
         """
         conn, db_path = pipeline_db
         
@@ -613,7 +615,7 @@ class TestRebuildWithRealPipeline:
         row2 = conn.execute("SELECT * FROM link_suggestions WHERE id = 2").fetchone()
         assert row2 is None, "Non-restored pair should be deleted"
     
-    def test_restored_row_with_live_link_cleaned_up_no_shopify_calls(self, pipeline_db):
+    def test_restored_row_with_live_link_cleaned_up_no_shopify_calls(self, pipeline_db, monkeypatch):
         """Restored row whose link is already live is cleaned up - NO Shopify calls.
         
         This cleanup ONLY affects the local DB suggestion row. It must NEVER:
@@ -621,8 +623,29 @@ class TestRebuildWithRealPipeline:
         - Remove anything from Shopify  
         - Push any data to Shopify
         - Change the source page body locally
+        
+        Verifies with Shopify stubs that fail on any call.
         """
         conn, db_path = pipeline_db
+        
+        # Track calls to Shopify entry points
+        shopify_calls = []
+        
+        def boom(*args, **kwargs):
+            shopify_calls.append(("call", args, kwargs))
+            raise AssertionError("Shopify should NOT be called during rebuild cleanup")
+        
+        # Monkeypatch all Shopify client entry points
+        from shopifyseo.internal_links import shopify_io
+        monkeypatch.setattr(shopify_io, "fetch_body", boom)
+        monkeypatch.setattr(shopify_io, "push_body", boom)
+        
+        # Also patch shopify_admin if it exists
+        try:
+            from shopifyseo import shopify_admin
+            monkeypatch.setattr(shopify_admin, "graphql_request", boom)
+        except (ImportError, AttributeError):
+            pass
         
         original_body = '<p>Sample body with <a href="/products/valid-target">link to target</a>.</p>'
         
@@ -645,21 +668,22 @@ class TestRebuildWithRealPipeline:
         # Restore the suggestion
         restore_suggestion(conn, 1, "salar", "preserve this link")
         
-        # Track any Shopify-like calls (the pipeline doesn't call Shopify directly, 
-        # but we verify the source body is untouched)
         body_before = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
         
-        # Run the pipeline
         from shopifyseo.internal_links.pipeline import generate_link_suggestions
         
         def mock_related(conn, object_type, handle, top_k=10):
             return []
         
+        # Run the pipeline WITHOUT graph rebuild
         generate_link_suggestions(conn, related_fn=mock_related, rebuild_graph=False)
         
         # The restored suggestion should be DELETED (link is already live)
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None, "Restored row with live link should be cleaned up"
+        
+        # Assert ZERO Shopify calls
+        assert len(shopify_calls) == 0, f"Expected zero Shopify calls, got {len(shopify_calls)}"
         
         # CRITICAL: Source body must be UNCHANGED
         body_after = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
@@ -672,6 +696,38 @@ class TestRebuildWithRealPipeline:
             WHERE source_type = 'blog_article' AND source_handle = 'news/sample-article'
         """).fetchone()
         assert edge is not None, "Internal links edge must not be removed"
+        
+        # Now test WITH graph rebuild - insert another restored suggestion
+        conn.execute("""
+            INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at)
+            VALUES (2, 'blog_article', 'news/sample-article', 'product', 'valid-target', 'phrase_wrap', 'Valid Target', 0.8, 'dismissed', 1700000000)
+        """)
+        conn.commit()
+        restore_suggestion(conn, 2, "salar", "test with graph rebuild")
+        
+        shopify_calls.clear()
+        body_before_graph = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
+        
+        # Run WITH graph rebuild (graph.rebuild_internal_link_graph only re-parses local bodies)
+        generate_link_suggestions(conn, related_fn=mock_related, rebuild_graph=True)
+        
+        # Suggestion 2 should also be deleted
+        row2 = conn.execute("SELECT * FROM link_suggestions WHERE id = 2").fetchone()
+        assert row2 is None, "Restored row with live link should be cleaned up (with graph rebuild)"
+        
+        # Still zero Shopify calls
+        assert len(shopify_calls) == 0, f"Expected zero Shopify calls with graph rebuild, got {len(shopify_calls)}"
+        
+        # Body still unchanged
+        body_after_graph = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
+        assert body_after_graph == body_before_graph, "Source body must not be modified (with graph rebuild)"
+        
+        # Edge still exists
+        edge_after = conn.execute("""
+            SELECT * FROM internal_links 
+            WHERE source_type = 'blog_article' AND source_handle = 'news/sample-article'
+        """).fetchone()
+        assert edge_after is not None, "Internal links edge must not be removed (with graph rebuild)"
 
 
 def _make_api_database(path):

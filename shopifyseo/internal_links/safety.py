@@ -277,6 +277,16 @@ _MATCH_PROTECTED = {"script", "style", "textarea", "template", "code", "pre",
                     "h1", "h2", "h3", "h4", "h5", "h6"}
 
 _INSERT_PROTECTED = _PROTECTED
+_BLOCK_SEP = "\x00"
+_BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "br", "td", "th", "tr", "table", "blockquote", "section",
+               "article", "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "dd", "dt", "hr"}
+
+
+def _normalize_decoded(text: str) -> str:
+    """Like _normalize_for_matching but for already-decoded text (no second unescape)."""
+    for a, b in (("\u00a0", " "), ("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'), ("\u2014", "-"), ("\u2013", "-")):
+        text = text.replace(a, b)
+    return " ".join(text.split())
 
 
 class _FullTextExtractor(HTMLParser):
@@ -303,13 +313,21 @@ class _FullTextExtractor(HTMLParser):
         line, col = self.getpos()
         return self._lines[line - 1] + col
     
+    def _block_sep(self):
+        self.text_parts.append(_BLOCK_SEP)
+        self.text_to_html_pos.append(self._source_offset() - 1)
+
     def handle_starttag(self, tag, attrs):
+        if tag in _BLOCK_TAGS:
+            self._block_sep()
         if tag in _MATCH_PROTECTED:
             self.protected_depth += 1
         if tag not in _VOID:
             self.tag_stack.append(tag)
     
     def handle_endtag(self, tag):
+        if tag in _BLOCK_TAGS:
+            self._block_sep()
         if tag in self.tag_stack:
             idx = len(self.tag_stack) - 1 - self.tag_stack[::-1].index(tag)
             popped = self.tag_stack[idx:]
@@ -328,13 +346,17 @@ class _FullTextExtractor(HTMLParser):
     def handle_entityref(self, name):
         if self.protected_depth == 0:
             offset = self._source_offset()
-            entity_map = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
-                          "nbsp": "\u00a0", "mdash": "\u2014", "ndash": "\u2013"}
-            char = entity_map.get(name, "")
-            if char:
-                self.text_parts.append(char)
-                entity_len = len(name) + 2
-                self.text_to_html_pos.append(offset + entity_len - 1)
+            raw_m = re.match(r"&" + re.escape(name) + r";?", self.html[offset:])
+            raw = raw_m.group(0) if raw_m else "&" + name + ";"
+            decoded = html.unescape(raw)
+            if decoded == raw:  # unknown entity: keep literal chars at their raw offsets
+                for k, ch in enumerate(raw):
+                    self.text_parts.append(ch)
+                    self.text_to_html_pos.append(offset + k)
+            else:
+                for ch in decoded:
+                    self.text_parts.append(ch)
+                    self.text_to_html_pos.append(offset + len(raw) - 1)
     
     def handle_charref(self, name):
         if self.protected_depth == 0:
@@ -417,7 +439,7 @@ def _find_sentence_end_in_html(html_str: str, sentence: str) -> int | None:
     full_text = extractor.get_text()
     
     sentence_norm = _normalize_for_matching(sentence)
-    text_norm = _normalize_for_matching(full_text)
+    text_norm = _normalize_decoded(full_text)
     
     if not sentence_norm:
         return None
@@ -436,11 +458,13 @@ def _find_sentence_end_in_html(html_str: str, sentence: str) -> int | None:
         if pos == 0:
             before_ok = True
         else:
-            before_text = text_norm[:pos].rstrip()
-            if before_text and before_text[-1] in ".!?":
+            before_text = text_norm[:pos].rstrip(" ")
+            if before_text and before_text[-1] == _BLOCK_SEP:
                 before_ok = True
-        
-        after_ok = sentence_norm and sentence_norm[-1] in ".!?"
+            elif before_text and before_text[-1] in ".!?" and pos > 0 and text_norm[pos - 1] == " ":
+                before_ok = True
+        nxt = text_norm[end_pos] if end_pos < len(text_norm) else ""
+        after_ok = bool(sentence_norm) and sentence_norm[-1] in ".!?" and (nxt in ("", " ", _BLOCK_SEP))
         
         if before_ok and after_ok:
             norm_end = end_pos - 1
@@ -467,12 +491,12 @@ def _map_norm_to_text_pos(full_text: str, norm_pos: int) -> int | None:
     if not full_text:
         return None
     
-    normalized = _normalize_for_matching(full_text)
+    normalized = _normalize_decoded(full_text)
     if norm_pos < 0 or norm_pos >= len(normalized):
         return None
     
     norm_idx = 0
-    in_whitespace = False
+    in_whitespace = True  # leading whitespace is stripped by " ".join(split())
     
     for text_idx, char in enumerate(full_text):
         if char.isspace() or char in "\u00a0":

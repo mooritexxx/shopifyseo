@@ -239,9 +239,19 @@ def submit_manual_weave(
     # G2: Check AI setting is enabled for this source type
     require_ai_enabled(conn, sug["source_type"])
     
-    # G3: Check target is linkable
+    # G3: Check target is linkable (status, handle, basic checks)
     if not _target_exists_and_published(conn, sug["target_type"], sug["target_handle"]):
         raise LinkConflict("The target is no longer eligible for linking. Refresh the catalog.")
+    
+    # B6: For product targets, require non-empty online_store_url
+    # This catches ACTIVE products with NULL online_store_url (which pass the general linkability check)
+    if sug["target_type"] == "product":
+        row = conn.execute(
+            "SELECT online_store_url FROM products WHERE handle = ?",
+            (sug["target_handle"],),
+        ).fetchone()
+        if not row or not (row["online_store_url"] or "").strip():
+            raise LinkConflict("Target product has no Online Store URL.")
     
     # Parse the replacement sentence to extract link info
     parsed = _parse_replacement_sentence(
@@ -280,6 +290,13 @@ def submit_manual_weave(
         "after_sentence": after_sentence_norm,
         "append_text": addition_text,
     }
+    
+    # B5': Validate edit shape and convert LinkConflict to ManualWeaveRejected
+    from .safety import validate_edit
+    try:
+        validate_edit(edit)
+    except LinkConflict as exc:
+        raise ManualWeaveRejected(str(exc), [str(exc)])
     
     # Get target title and keywords for anchor quality check
     target_title_keywords = _target_title_and_keywords(conn, sug["target_type"], sug["target_handle"])

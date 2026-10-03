@@ -199,7 +199,7 @@ class TestManualWeaveHappyPath:
         live.push.assert_not_called()
     
     def test_new_html_is_append_only(self, database, live):
-        """Verify the new_html is old[:i] + insertion + old[i:]."""
+        """Verify the new_html is old[:i] + insertion + old[i:] for some offset i."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
         
@@ -213,8 +213,29 @@ class TestManualWeaveHappyPath:
         old_html = result["old_html"]
         new_html = result["new_html"]
         
-        # The addition should be inserted, preserving original
-        assert old_html in new_html or old_html.replace("</p>", "") in new_html.replace("</p>", "")
+        # Find the insertion point: new_html == old[:i] + insertion + old[i:]
+        # The insertion contains the addition with link
+        insertion_marker = 'For the full picture'
+        insert_idx = new_html.find(insertion_marker)
+        assert insert_idx > 0, "Insertion not found in new_html"
+        
+        # Find where the insertion ends (after </a>)
+        insertion_end_marker = '</a>'
+        insertion_end = new_html.find(insertion_end_marker, insert_idx)
+        assert insertion_end > insert_idx, "Link end not found"
+        insertion_end += len(insertion_end_marker)
+        
+        # The prefix before insertion should be in old_html
+        # (minus the space that's part of the insertion)
+        prefix = new_html[:insert_idx - 1]  # -1 for the leading space
+        assert prefix in old_html, f"Prefix '{prefix[:50]}...' not found in old_html"
+        
+        # The suffix after insertion should be the closing tag(s) of old_html
+        suffix = new_html[insertion_end:]
+        # The suffix should be the remainder of old_html (just closing tags like </p>)
+        # Old html ends with </p>, new html should end with </a></p> or similar
+        assert suffix.strip() in old_html or old_html.endswith(suffix.strip().lstrip()), f"Suffix mismatch: '{suffix}'"
+        
         # Link href can be relative or absolute
         assert 'zyn-canada-nicotine-pouch-availability"' in new_html
         assert "is Zyn legal in Canada?" in new_html
@@ -655,8 +676,6 @@ class TestManualWeaveTVPA:
     
     def test_tvpa_candy_category_rejected(self, database, live):
         """TVPA category terms like 'candy-like' should be rejected."""
-        tvpa = pytest.importorskip("shopifyseo.dashboard_ai_engine_parts.tvpa_flavour")
-        
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         replacement = f'{original} This has a candy-like finish, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">guide</a>.'
         
@@ -995,16 +1014,145 @@ class TestManualWeaveEntityHandling:
         
         assert result["allowed"] is True
         assert "our guide" in result["new_html"]
+    
+    def test_entity_rsquo_handled(self, database, live):
+        """Body with &rsquo; entity should work correctly."""
+        body = '<p>Don&rsquo;t miss this important information here.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "Don't miss this important information here."  # Use ASCII apostrophe
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        new_html = result["new_html"]
+        # Verify the entity is preserved and insertion is in the right place
+        assert "&rsquo;" in new_html, "Entity should be preserved"
+        assert "our guide" in new_html, "Insertion should be present"
+        # Verify the insertion comes after the sentence end, not inside it
+        entity_idx = new_html.find("&rsquo;")
+        insertion_idx = new_html.find("our guide")
+        assert insertion_idx > entity_idx, "Insertion should come after the entity"
+    
+    def test_entity_eacute_handled(self, database, live):
+        """Body with &eacute; entity (é) should work correctly."""
+        body = '<p>Visit the caf&eacute; for great coffee.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "Visit the café for great coffee."  # Use actual é char
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        new_html = result["new_html"]
+        insertion_idx = new_html.find("our guide")
+        assert insertion_idx > 0, "Insertion not found"
+    
+    def test_entity_hellip_handled(self, database, live):
+        """Body with &hellip; entity (…) should work correctly."""
+        body = '<p>Wait&hellip; this is important information.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "Wait… this is important information."  # Use actual ellipsis char
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
+        new_html = result["new_html"]
+        insertion_idx = new_html.find("our guide")
+        assert insertion_idx > 0, "Insertion not found"
+
+
+class TestManualWeaveSentenceBoundary:
+    """Test sentence boundary detection (B2')."""
+    
+    def test_partial_sentence_match_rejected(self, database, live):
+        """'Battery is 2.' must NOT match 'Battery is 2.5 times stronger'."""
+        body = '<p>Battery is 2.5 times stronger now.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        # This should NOT match - "Battery is 2." is a partial match of "Battery is 2.5"
+        original = "Battery is 2."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        # Should get "not found" error since it's not a valid sentence match
+        assert "not found" in str(exc_info.value).lower() or "sentence" in str(exc_info.value).lower()
+    
+    def test_valid_sentence_boundary_accepted(self, database, live):
+        """A real sentence boundary should be accepted."""
+        body = '<p>Battery is 2. The new model is better.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        # This should match - "Battery is 2." is a complete sentence
+        original = "Battery is 2."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        assert result["allowed"] is True
 
 
 class TestManualWeaveOnlineStoreUrlNull:
-    """Test that online_store_url=NULL products are still linkable."""
+    """Test that online_store_url=NULL products are NOT linkable (B6)."""
     
-    def test_null_online_store_url_linkable(self, database, live):
-        """Product with NULL online_store_url should still be a valid target.
-        
-        Note: Empty string '' is NOT linkable, but NULL is.
-        """
+    def test_null_online_store_url_rejected(self, database, live):
+        """Product with NULL online_store_url should be rejected as target."""
         # Change target to a product with NULL online_store_url
         database.execute("""
             INSERT INTO products 
@@ -1020,14 +1168,44 @@ class TestManualWeaveOnlineStoreUrlNull:
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         replacement = f'{original} See <a href="/products/null-url-product">Null URL Product</a>.'
         
-        result = submit_manual_weave(
-            database, 1, BASE,
-            original_sentence=original,
-            replacement_sentence=replacement,
-            fetch_fn=live.fetch,
-        )
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
         
-        assert result["allowed"] is True
+        assert "online store url" in str(exc_info.value).lower()
+    
+    def test_empty_online_store_url_rejected(self, database, live):
+        """Product with empty string online_store_url should be rejected as target."""
+        # Change target to a product with empty online_store_url
+        database.execute("""
+            INSERT INTO products 
+            (shopify_id, handle, title, status, online_store_url, description_html, tags_json, options_json, raw_json, synced_at)
+            VALUES ('gid://shopify/Product/998', 'empty-url-product', 'Empty URL Product', 'ACTIVE', 
+            '', '<p>Description</p>', '[]', '[]', '{}', 'now')
+        """)
+        database.execute("""
+            UPDATE link_suggestions SET target_type = 'product', target_handle = 'empty-url-product' WHERE id = 1
+        """)
+        database.commit()
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/products/empty-url-product">Empty URL Product</a>.'
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        # Empty string fails the general linkability check (is_product_linkable rejects empty URLs)
+        error_msg = str(exc_info.value).lower()
+        assert "no longer eligible" in error_msg or "online store url" in error_msg
 
 
 class TestManualWeaveInventoryNotRequired:
@@ -1035,10 +1213,20 @@ class TestManualWeaveInventoryNotRequired:
     
     def test_zero_inventory_product_linkable(self, database, live):
         """Product with zero inventory should still be linkable."""
-        # We don't track inventory in link_suggestions - just ACTIVE status
-        # This test confirms we don't check inventory at all
+        # Create a product target with zero inventory but valid online_store_url
+        database.execute("""
+            INSERT INTO products 
+            (shopify_id, handle, title, status, online_store_url, description_html, tags_json, options_json, raw_json, synced_at, total_inventory)
+            VALUES ('gid://shopify/Product/997', 'zero-stock-product', 'Zero Stock Product', 'ACTIVE', 
+            '/products/zero-stock-product', '<p>Description</p>', '[]', '[]', '{}', 'now', 0)
+        """)
+        database.execute("""
+            UPDATE link_suggestions SET target_type = 'product', target_handle = 'zero-stock-product' WHERE id = 1
+        """)
+        database.commit()
+        
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
-        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal?</a>'
+        replacement = f'{original} See <a href="/products/zero-stock-product">Zero Stock Product</a>.'
         
         result = submit_manual_weave(
             database, 1, BASE,
@@ -1047,7 +1235,7 @@ class TestManualWeaveInventoryNotRequired:
             fetch_fn=live.fetch,
         )
         
-        # Stock/inventory is never checked - only status matters
+        # Stock/inventory is never checked - only status and online_store_url matter
         assert result["allowed"] is True
 
 
@@ -1156,6 +1344,45 @@ class TestManualWeavePendingSnapshot:
         assert response2.status_code == 409
         response_text = str(response2.json()).lower()
         assert "applied" in response_text or "status" in response_text or "refresh" in response_text
+    
+    def test_pending_snapshot_blocks_submit(self, api):
+        """If a pending snapshot exists (status='prepared'), new submit should fail."""
+        client, conn, live = api
+        
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        # Get current ai_edit_json before inserting snapshot
+        row_before = conn.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        edit_json_before = row_before["ai_edit_json"] if row_before else None
+        
+        # Get source info from suggestion for the snapshot
+        sug = conn.execute("SELECT source_type, source_handle FROM link_suggestions WHERE id = 1").fetchone()
+        source_type = sug["source_type"]
+        source_handle = sug["source_handle"]
+        
+        # Insert a pending snapshot manually using correct schema columns
+        import time
+        conn.execute("""
+            INSERT INTO link_body_snapshots 
+            (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at)
+            VALUES (1, ?, ?, 'gid://shopify/Product/1', '<p>old</p>', '<p>new</p>', 'prepared', ?, ?)
+        """, (source_type, source_handle, int(time.time()), int(time.time())))
+        conn.commit()
+        
+        # Submit should fail with 409 due to pending snapshot
+        response = client.post(
+            "/api/internal-links/suggestions/1/manual-weave",
+            json={"original_sentence": original, "replacement_sentence": replacement},
+        )
+        assert response.status_code == 409
+        response_text = str(response.json()).lower()
+        assert "in progress" in response_text or "reconciliation" in response_text
+        
+        # Verify ai_edit_json unchanged
+        row_after = conn.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        edit_json_after = row_after["ai_edit_json"] if row_after else None
+        assert edit_json_before == edit_json_after
 
 
 class TestManualWeaveDismiss:

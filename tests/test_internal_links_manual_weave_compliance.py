@@ -7,7 +7,6 @@ from shopifyseo.internal_links.compliance import (
     check_numbers_outside_anchor,
     check_stock_availability_claims,
     build_tvpa_allowlist,
-    TVPA_AVAILABLE,
 )
 
 
@@ -183,7 +182,6 @@ class TestManualWeaveGaps:
 class TestManualWeaveGapsTVPA:
     """Tests for TVPA flavour check in manual_weave_gaps."""
     
-    @pytest.mark.skipif(not TVPA_AVAILABLE, reason="TVPA module not available")
     def test_tvpa_category_term_rejected(self):
         """TVPA category terms should be rejected."""
         gaps = manual_weave_gaps(
@@ -193,7 +191,6 @@ class TestManualWeaveGapsTVPA:
         assert len(gaps) > 0
         assert any("tvpa" in g.lower() for g in gaps)
     
-    @pytest.mark.skipif(not TVPA_AVAILABLE, reason="TVPA module not available")
     def test_tvpa_style_term_rejected(self):
         """TVPA style terms should be rejected."""
         gaps = manual_weave_gaps(
@@ -203,7 +200,6 @@ class TestManualWeaveGapsTVPA:
         assert len(gaps) > 0
         assert any("tvpa" in g.lower() for g in gaps)
     
-    @pytest.mark.skipif(not TVPA_AVAILABLE, reason="TVPA module not available")
     def test_tvpa_allowlist_product_name_passes(self):
         """Product names in allowlist should not trigger TVPA."""
         gaps = manual_weave_gaps(
@@ -211,7 +207,6 @@ class TestManualWeaveGapsTVPA:
             anchor="our guide",
             allowed_names=("Peaches & Cream Disposable Vape", "Peaches & Cream"),
         )
-        # Should not have TVPA gaps for the allowlisted name
         tvpa_gaps = [g for g in gaps if "tvpa" in g.lower()]
         assert len(tvpa_gaps) == 0
 
@@ -230,7 +225,6 @@ class TestBuildTvpaAllowlist:
         assert "Source Title" in result
         assert "Target Title" in result
     
-    @pytest.mark.skipif(not TVPA_AVAILABLE, reason="TVPA module not available")
     def test_extracted_flavours_included(self):
         """Extracted flavour names should be included when available."""
         result = build_tvpa_allowlist(

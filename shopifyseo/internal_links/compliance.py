@@ -16,29 +16,18 @@ from ..dashboard_ai_engine_parts.faq_content_filter import (
     _match_denylist_category,
 )
 from ..dashboard_ai_engine_parts.commerce_heading_gate import classify_commerce_heading
+from ..dashboard_ai_engine_parts.tvpa_flavour import (
+    tvpa_flavour_matches,
+    extract_flavour_from_title,
+)
 from .anchors import is_weak_anchor
-
-# TVPA flavour module from PR #45 - import when available
-try:
-    from ..dashboard_ai_engine_parts.tvpa_flavour import (
-        tvpa_flavour_matches,
-        extract_flavour_from_title,
-    )
-    _TVPA_AVAILABLE = True
-except ImportError:
-    tvpa_flavour_matches = None  # type: ignore[assignment,misc]
-    extract_flavour_from_title = None  # type: ignore[assignment,misc]
-    _TVPA_AVAILABLE = False
 
 __all__ = [
     "manual_weave_gaps",
     "check_anchor_quality",
     "check_numbers_outside_anchor",
     "check_stock_availability_claims",
-    "TVPA_AVAILABLE",
 ]
-
-TVPA_AVAILABLE = _TVPA_AVAILABLE
 
 # Supplementary stock/availability patterns not covered by commerce_heading_gate
 # (these are addition-level checks, not heading-level)
@@ -244,20 +233,19 @@ def manual_weave_gaps(
     # G11: Stock/availability claims
     gaps.extend(check_stock_availability_claims(addition))
     
-    # G11: TVPA flavour check (when available)
-    if _TVPA_AVAILABLE and tvpa_flavour_matches is not None:
-        allowed_set = tuple(allowed_names) if allowed_names else ()
-        matches = tvpa_flavour_matches(addition, allowed_names=allowed_set)
-        if matches:
-            for m in matches:
-                group = m.get("group", "unknown")
-                term = m.get("term", "")
-                if group == "category":
-                    gaps.append(f'TVPA violation: "{term}" is a restricted flavour category term.')
-                elif group == "style":
-                    gaps.append(f'TVPA violation: "{term}" is a restricted flavour style descriptor.')
-                else:
-                    gaps.append(f'TVPA violation: "{term}" triggers flavour comparison rules.')
+    # G11: TVPA flavour check
+    allowed_set = tuple(allowed_names) if allowed_names else ()
+    matches = tvpa_flavour_matches(addition, allowed_names=allowed_set)
+    if matches:
+        for m in matches:
+            group = m.get("group", "unknown")
+            term = m.get("term", "")
+            if group == "category":
+                gaps.append(f'TVPA violation: "{term}" is a restricted flavour category term.')
+            elif group == "style":
+                gaps.append(f'TVPA violation: "{term}" is a restricted flavour style descriptor.')
+            else:
+                gaps.append(f'TVPA violation: "{term}" triggers flavour comparison rules.')
     
     return gaps
 
@@ -268,8 +256,7 @@ def build_tvpa_allowlist(
 ) -> tuple[str, ...]:
     """Build the TVPA allowlist from source and target titles.
     
-    When tvpa_flavour.py is available, extracts flavour names from titles
-    and combines them with the titles themselves.
+    Extracts flavour names from titles and combines them with the titles themselves.
     """
     names: list[str] = []
     
@@ -278,14 +265,13 @@ def build_tvpa_allowlist(
     if target_title:
         names.append(target_title)
     
-    if _TVPA_AVAILABLE and extract_flavour_from_title is not None:
-        if source_title:
-            extracted = extract_flavour_from_title(source_title)
-            if extracted:
-                names.append(extracted)
-        if target_title:
-            extracted = extract_flavour_from_title(target_title)
-            if extracted:
-                names.append(extracted)
+    if source_title:
+        extracted = extract_flavour_from_title(source_title)
+        if extracted:
+            names.append(extracted)
+    if target_title:
+        extracted = extract_flavour_from_title(target_title)
+        if extracted:
+            names.append(extracted)
     
     return tuple(names)

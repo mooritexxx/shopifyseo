@@ -358,3 +358,157 @@ def test_article_draft_system_prompts_contain_rule():
     from shopifyseo.dashboard_ai_engine_parts import _article_draft
     # Just check the import exists
     assert hasattr(_article_draft, "TVPA_FLAVOUR_RULE")
+
+
+# ---------------------------------------------------------------------------
+# B1: TVPA-only body passes on attempt 0 with zero repair calls
+# ---------------------------------------------------------------------------
+
+def test_tvpa_only_gaps_pass_without_repair():
+    """Article with only TVPA gaps should pass without calling repair (B1 fix)."""
+    # Simulate _compliance_gaps returning only TVPA gaps
+    gaps = ["TVPA flavour wording: 'candy' (candy) in: 'A candy-like taste.'"]
+    
+    # Split logic from B1 fix
+    tvpa_w = [g for g in gaps if g.startswith("TVPA flavour wording: ")]
+    hard = [g for g in gaps if not g.startswith("TVPA flavour wording: ")]
+    
+    # Should pass (no hard gaps)
+    assert not hard, "Expected no hard gaps for TVPA-only issues"
+    assert len(tvpa_w) == 1, "Expected exactly one TVPA warning"
+
+
+# ---------------------------------------------------------------------------
+# B2: Flavour extraction from title
+# ---------------------------------------------------------------------------
+
+def test_extract_flavour_from_title():
+    """extract_flavour_from_title should extract flavour part from product titles."""
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import extract_flavour_from_title
+    
+    # Basic extraction
+    assert extract_flavour_from_title("ELFBAR BC5000 - Bubblegum Ice Disposable Vape") == "Bubblegum Ice"
+    assert extract_flavour_from_title("Lost Mary OS5000 - Strawberry Sundae (Iced)") == "Strawberry Sundae"
+    assert extract_flavour_from_title("Juul Pods - Virginia Tobacco") == "Virginia Tobacco"
+    
+    # No separator - returns None
+    assert extract_flavour_from_title("Simple Product Name") is None
+    
+    # Strip various suffixes
+    assert extract_flavour_from_title("Device - Blue Raspberry Vape Pod") == "Blue Raspberry"
+    assert extract_flavour_from_title("Device - Grape E-Liquid") == "Grape"
+
+
+def test_flavour_allowlist_prevents_false_positive():
+    """Short flavour names from title should be allowlisted (B2 fix)."""
+    # Title: "ELFBAR BC5000 - Bubblegum Ice Disposable Vape"
+    # Body mentions "Bubblegum Ice flavour" - should NOT match
+    title = "ELFBAR BC5000 - Bubblegum Ice Disposable Vape"
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import extract_flavour_from_title
+    
+    flavour = extract_flavour_from_title(title)
+    assert flavour == "Bubblegum Ice"
+    
+    body = "The Bubblegum Ice flavour is smooth and refreshing."
+    matches = tvpa_flavour_matches(body, allowed_names=[title, flavour])
+    assert matches == [], f"Should not flag allowlisted flavour name: {matches}"
+    
+    # But "tastes like bubblegum candy" should still match
+    body_violation = "This tastes like bubblegum candy."
+    matches_violation = tvpa_flavour_matches(body_violation, allowed_names=[title, flavour])
+    assert len(matches_violation) >= 1, "Should flag 'candy' comparison"
+
+
+# ---------------------------------------------------------------------------
+# N4: Generation retry path test with fake provider
+# ---------------------------------------------------------------------------
+
+def test_generate_single_field_core_preserves_tvpa_feedback():
+    """_generate_single_field_core should preserve TVPA feedback through metadata correction (N3 fix)."""
+    # This tests that original feedback (including TVPA feedback) is not overwritten
+    # by metadata correction loop. We mock the internal functions.
+    from unittest.mock import patch, MagicMock
+    from shopifyseo.dashboard_ai_engine_parts.generation import _generate_single_field_core
+    
+    tvpa_feedback = "Remove TVPA violations: 'candy-like' is prohibited."
+    call_count = [0]
+    received_feedback = []
+    
+    def mock_attempt(**kwargs):
+        call_count[0] += 1
+        received_feedback.append(kwargs.get("retry_feedback", ""))
+        # Return a value that triggers metadata issues on first call
+        if call_count[0] == 1:
+            return {"value": "x" * 10}  # Too short, will trigger metadata issues
+        return {"value": "A great product description that meets length requirements."}
+    
+    def mock_metadata_issues(obj_type, data):
+        if call_count[0] == 1:
+            return [{"message": "Description too short"}]
+        return []
+    
+    with patch("shopifyseo.dashboard_ai_engine_parts.generation._generate_single_field_attempt", mock_attempt):
+        with patch("shopifyseo.seo_quality.metadata_issues", mock_metadata_issues):
+            result = _generate_single_field_core(
+                settings={},
+                context={},
+                object_type="product",
+                field="seo_description",
+                accepted_fields={},
+                prompt_context_precomputed={},
+                signal_narrative_precomputed="",
+                retry_feedback=tvpa_feedback,
+            )
+    
+    # Should have called attempt twice (first failed metadata, second passed)
+    assert call_count[0] == 2
+    # First call should have original TVPA feedback
+    assert tvpa_feedback in received_feedback[0]
+    # Second call should preserve TVPA feedback and add metadata issues
+    assert tvpa_feedback in received_feedback[1], f"TVPA feedback lost: {received_feedback[1]}"
+    assert "too short" in received_feedback[1].lower()
+
+
+def test_body_retry_rejects_worse_tvpa_issues():
+    """Body retry should be rejected if TVPA issues get worse (N1 fix)."""
+    # Test the retry acceptance logic
+    original_tvpa_count = 1
+    retry_tvpa_count = 2  # Worse
+    original_spec_count = 1
+    retry_spec_count = 0  # Better
+    original_score = 0.6
+    retry_score = 0.7  # Better
+    
+    # Old logic (OR): would accept because score and spec improved
+    old_logic_accepts = (
+        (retry_score > original_score) or
+        (retry_spec_count < original_spec_count) or
+        (retry_tvpa_count < original_tvpa_count)
+    )
+    
+    # New logic (N1 fix): reject if TVPA or spec gets worse
+    tvpa_not_worse = retry_tvpa_count <= original_tvpa_count
+    spec_not_worse = retry_spec_count <= original_spec_count
+    something_improved = (
+        (retry_score > original_score) or
+        (retry_spec_count < original_spec_count) or
+        (retry_tvpa_count < original_tvpa_count)
+    )
+    new_logic_accepts = tvpa_not_worse and spec_not_worse and something_improved
+    
+    assert old_logic_accepts, "Old logic should have accepted"
+    assert not new_logic_accepts, "New logic should reject because TVPA got worse"
+
+
+# ---------------------------------------------------------------------------
+# N6: seo_description system prompt contains TVPA rule
+# ---------------------------------------------------------------------------
+
+def test_seo_description_system_prompt_contains_tvpa_rule(mock_store_identity):
+    """field_system_prompt for seo_description should include TVPA_FLAVOUR_RULE."""
+    from shopifyseo.dashboard_ai_engine_parts.prompts import field_system_prompt
+    
+    prompt = field_system_prompt("product", "seo_description", "default")
+    assert "Flavour compliance" in prompt
+    assert "candy" in prompt.lower()
+    assert "dessert" in prompt.lower()

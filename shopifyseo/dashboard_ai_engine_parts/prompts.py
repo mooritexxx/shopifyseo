@@ -1352,6 +1352,7 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 f"{m['spelling']} "
                 "Return valid JSON only: " + '{"seo_description": "..."}'
                 + _market_block
+                + " " + TVPA_FLAVOUR_RULE
             )),
             xml_block("profile", profile_instructions(prompt_profile, object_type)),
         ])

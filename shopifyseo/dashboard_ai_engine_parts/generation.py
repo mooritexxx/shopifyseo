@@ -180,7 +180,8 @@ def _context_with_accepted_fields(context: dict, accepted_fields: dict[str, str]
 def _generate_single_field_core(**kwargs) -> dict:
     """Use the same bounded quality correction loop for full and single-field AI."""
     from shopifyseo.seo_quality import metadata_issues
-    feedback = kwargs.get("retry_feedback") or ""
+    original_feedback = kwargs.get("retry_feedback") or ""
+    feedback = original_feedback
     for attempt in range(3):
         try:
             result = _generate_single_field_attempt(**{**kwargs, "retry_feedback": feedback})
@@ -192,7 +193,9 @@ def _generate_single_field_core(**kwargs) -> dict:
         issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
         if not issues or attempt == 2:
             return {**result, "quality_issues": issues, "quality_retry_count": attempt}
-        feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        # Don't overwrite original feedback (e.g. TVPA feedback) — append metadata issues
+        metadata_feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        feedback = f"{original_feedback}\n{metadata_feedback}" if original_feedback else metadata_feedback
     raise RuntimeError("Quality correction did not complete")
 
 
@@ -757,19 +760,39 @@ def generate_recommendation(
     tvpa_retry_feedback: str = ""
     if object_type in ("product", "collection", "blog_article"):
         # Build allowed names from context for the TVPA detector
+        from .tvpa_flavour import extract_flavour_from_title
         detail_payload = context.get("detail") or {}
         tvpa_allowed_names: list[str] = []
         if object_type == "product":
             primary = detail_payload.get("product") or {}
             # Product title, vendor, and e_liquid_flavor_labels
             if primary.get("title"):
-                tvpa_allowed_names.append(str(primary["title"]))
+                title_str = str(primary["title"])
+                tvpa_allowed_names.append(title_str)
+                # Also extract flavour from title (text after " - ", stripped)
+                flavour = extract_flavour_from_title(title_str)
+                if flavour:
+                    tvpa_allowed_names.append(flavour)
             if primary.get("vendor"):
                 tvpa_allowed_names.append(str(primary["vendor"]))
             product_specs_data = _extract_product_specs(primary, detail_payload)
             flavor_labels = product_specs_data.get("e_liquid_flavor_labels") or []
             if isinstance(flavor_labels, list):
                 tvpa_allowed_names.extend(str(lbl) for lbl in flavor_labels if lbl)
+            # Also allowlist variant option values and titles
+            variants = primary.get("variants") or []
+            for var in variants:
+                if isinstance(var, dict):
+                    if var.get("title"):
+                        var_title = str(var["title"])
+                        tvpa_allowed_names.append(var_title)
+                        var_flavour = extract_flavour_from_title(var_title)
+                        if var_flavour:
+                            tvpa_allowed_names.append(var_flavour)
+                    for opt_key in ("option1", "option2", "option3"):
+                        opt_val = var.get(opt_key)
+                        if opt_val and isinstance(opt_val, str):
+                            tvpa_allowed_names.append(opt_val)
         elif object_type == "collection":
             collection = detail_payload.get("collection") or {}
             if collection.get("title"):
@@ -781,7 +804,12 @@ def generate_recommendation(
             link_targets = prompt_ctx_data.get("approved_internal_link_targets") or []
         for target in link_targets:
             if target.get("title"):
-                tvpa_allowed_names.append(str(target["title"]))
+                target_title = str(target["title"])
+                tvpa_allowed_names.append(target_title)
+                # Also extract flavour from link target titles
+                target_flavour = extract_flavour_from_title(target_title)
+                if target_flavour:
+                    tvpa_allowed_names.append(target_flavour)
 
         # Check body and seo fields for TVPA violations
         body_tvpa_passed, body_tvpa_issues = validate_tvpa_flavour_claims(
@@ -874,21 +902,26 @@ def generate_recommendation(
                     for m in retry_body_matches if m["group"] == "category"
                 ]
 
-            # Accept retry if it's better (better score, fewer spec issues, or fewer TVPA issues)
-            retry_is_better = (
+            # Accept retry only if neither TVPA hit count nor spec issues get worse,
+            # AND at least one metric improves (score, spec issues, or TVPA issues)
+            tvpa_not_worse = len(retry_tvpa_category_issues) <= len(tvpa_category_issues)
+            spec_not_worse = len(retry_spec_issues) <= len(spec_claim_issues)
+            something_improved = (
                 (retry_body_score > body_score) or
                 (len(retry_spec_issues) < len(spec_claim_issues)) or
                 (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
             )
+            retry_is_better = tvpa_not_worse and spec_not_worse and something_improved
             if retry_is_better:
                 recommendation["body"] = retry_body
                 body_score = retry_body_score
                 body_issues = retry_body_issues
                 spec_claim_issues = retry_spec_issues
-                # Update TVPA issues if applicable
+                # Update TVPA issues if applicable — keep SEO title/description issues
                 if object_type in ("product", "collection", "blog_article"):
                     tvpa_category_issues = retry_tvpa_category_issues
-                    tvpa_flavour_issues = retry_body_tvpa_issues
+                    # Preserve meta_tvpa_issues (from seo_title/seo_description), update body portion
+                    tvpa_flavour_issues = retry_body_tvpa_issues + meta_tvpa_issues
                 generated_fields["body"]["value"] = retry_body
                 review_actions["body"] = retry_result.get("review_action", "")
                 body_retried = True

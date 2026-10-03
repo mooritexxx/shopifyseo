@@ -19,6 +19,7 @@ __all__ = [
     "TVPA_FLAVOUR_RULE",
     "tvpa_flavour_matches",
     "tvpa_flavour_issue_messages",
+    "extract_flavour_from_title",
 ]
 
 TVPA_FLAVOUR_RULE = (
@@ -243,21 +244,31 @@ def tvpa_flavour_matches(
                         if not _FLAVOUR_CTX.search(sent):
                             continue
 
-                    # Unmask the sentence for display (replace placeholder with actual text)
+                    # Unmask the sentence for display — find the original sentence
+                    # containing the matched term, not just the document start
                     display_sent = sent.strip()[:220]
-                    # Replace mask characters with the original visible text
-                    orig_visible = _visible_text(text_or_html)
+                    term_text = m.group(0)
                     if "\u2588" in display_sent:
-                        # Find the position in original and reconstruct
-                        display_sent = orig_visible[
-                            : min(220, len(orig_visible))
-                        ].strip()
+                        # Find the sentence containing the term in original visible text
+                        orig_visible = _visible_text(text_or_html)
+                        orig_sentences = re.split(r"(?<=[.!?])\s+", orig_visible)
+                        for orig_sent in orig_sentences:
+                            if term_text.lower() in orig_sent.lower():
+                                display_sent = orig_sent.strip()[:220]
+                                break
+                        else:
+                            # Fallback: truncate original around the term
+                            term_pos = orig_visible.lower().find(term_text.lower())
+                            if term_pos >= 0:
+                                start = max(0, term_pos - 50)
+                                end = min(len(orig_visible), term_pos + len(term_text) + 100)
+                                display_sent = orig_visible[start:end].strip()[:220]
 
                     hits.append(
                         {
                             "group": group,
                             "key": key,
-                            "term": m.group(0),
+                            "term": term_text,
                             "sentence": display_sent,
                         }
                     )
@@ -277,3 +288,36 @@ def tvpa_flavour_issue_messages(matches: list[dict]) -> list[str]:
             sent = sent[:97] + "..."
         messages.append(f"TVPA flavour wording: '{term}' ({key}) in: '{sent}'")
     return messages
+
+
+# Trailing product-type suffixes to strip when extracting flavour from title
+_PRODUCT_SUFFIXES = re.compile(
+    r"\s*\(?(?:Iced|Ice|Disposable\s*Vape|Vape\s*Pod|E-Liquid|Vape|Pod)\)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def extract_flavour_from_title(title: str) -> str | None:
+    """Extract the flavour portion from a product title.
+    
+    Looks for text after the last " - " separator, then strips trailing
+    product-type suffixes like "(Iced)", "Disposable Vape", "Vape Pod",
+    "E-Liquid", "Vape".
+    
+    Returns the flavour string if found, else None.
+    
+    Examples:
+        "ELFBAR BC5000 - Bubblegum Ice Disposable Vape" -> "Bubblegum Ice"
+        "Lost Mary OS5000 - Strawberry Sundae (Iced)" -> "Strawberry Sundae"
+        "Juul Pods - Virginia Tobacco" -> "Virginia Tobacco"
+        "Simple Product Name" -> None (no separator)
+    """
+    if " - " not in title:
+        return None
+    # Get text after the last " - "
+    flavour_part = title.rsplit(" - ", 1)[-1].strip()
+    if not flavour_part:
+        return None
+    # Strip trailing product suffixes
+    flavour_part = _PRODUCT_SUFFIXES.sub("", flavour_part).strip()
+    return flavour_part if flavour_part else None

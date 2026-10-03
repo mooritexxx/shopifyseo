@@ -160,6 +160,12 @@ def validate_edit(raw: dict) -> dict:
             raise LinkConflict("Manual mode requires append_text (the text to add).")
         
         append_text = edit["append_text"]
+        after_sentence = edit["after_sentence"]
+        
+        # C1: Reject control characters
+        _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+        if _CONTROL_CHAR_RE.search(append_text) or _CONTROL_CHAR_RE.search(after_sentence):
+            raise LinkConflict("Control characters are not allowed in manual edit fields.")
         
         # Validate structural requirements (no newlines, anchor appears once)
         # Shape validation (300 chars, 2 sentences) is done in submit_manual_weave

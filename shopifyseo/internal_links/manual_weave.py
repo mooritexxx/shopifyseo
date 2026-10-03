@@ -224,6 +224,16 @@ def submit_manual_weave(
     """
     fetch_fn = fetch_fn or shopify_io.fetch_body
     
+    # C1: Reject control characters in client input
+    import re as re_mod
+    _CONTROL_CHAR_RE = re_mod.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+    for field_name, field_val in [("original_sentence", original_sentence), ("replacement_sentence", replacement_sentence)]:
+        if field_val and _CONTROL_CHAR_RE.search(field_val):
+            raise ManualWeaveRejected(
+                f"Control characters are not allowed in {field_name}.",
+                [f"{field_name} contains invalid control characters"]
+            )
+    
     # G1: Load suggestion and validate state
     sug = conn.execute("SELECT * FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
     if not sug:

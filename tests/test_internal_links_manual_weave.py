@@ -199,9 +199,11 @@ class TestManualWeaveHappyPath:
         live.push.assert_not_called()
     
     def test_new_html_is_append_only(self, database, live):
-        """Verify the new_html is old[:i] + insertion + old[i:] for some offset i."""
+        """Verify exact equality: new_html == old[:i] + ' ' + linked_addition + old[i:]."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
-        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
+        addition_plain = "For the full picture, see is Zyn legal in Canada?"
+        anchor = "is Zyn legal in Canada?"
+        replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">{anchor}</a>'
         
         result = submit_manual_weave(
             database, 1, BASE,
@@ -213,32 +215,17 @@ class TestManualWeaveHappyPath:
         old_html = result["old_html"]
         new_html = result["new_html"]
         
-        # Find the insertion point: new_html == old[:i] + insertion + old[i:]
-        # The insertion contains the addition with link
-        insertion_marker = 'For the full picture'
-        insert_idx = new_html.find(insertion_marker)
-        assert insert_idx > 0, "Insertion not found in new_html"
+        # The old HTML ends with </p>, sentence ends with "Canada."
+        # Insertion should be right after the period
+        sentence_end = old_html.find("Canada.") + len("Canada.")
         
-        # Find where the insertion ends (after </a>)
-        insertion_end_marker = '</a>'
-        insertion_end = new_html.find(insertion_end_marker, insert_idx)
-        assert insertion_end > insert_idx, "Link end not found"
-        insertion_end += len(insertion_end_marker)
+        # Build expected linked addition
+        expected_url = f"{BASE}/blogs/canada/zyn-canada-nicotine-pouch-availability"
+        expected_linked = f'For the full picture, see <a href="{expected_url}">{anchor}</a>'
         
-        # The prefix before insertion should be in old_html
-        # (minus the space that's part of the insertion)
-        prefix = new_html[:insert_idx - 1]  # -1 for the leading space
-        assert prefix in old_html, f"Prefix '{prefix[:50]}...' not found in old_html"
-        
-        # The suffix after insertion should be the closing tag(s) of old_html
-        suffix = new_html[insertion_end:]
-        # The suffix should be the remainder of old_html (just closing tags like </p>)
-        # Old html ends with </p>, new html should end with </a></p> or similar
-        assert suffix.strip() in old_html or old_html.endswith(suffix.strip().lstrip()), f"Suffix mismatch: '{suffix}'"
-        
-        # Link href can be relative or absolute
-        assert 'zyn-canada-nicotine-pouch-availability"' in new_html
-        assert "is Zyn legal in Canada?" in new_html
+        # Assert exact equality: old[:i] + ' ' + linked_addition + old[i:]
+        expected_new = old_html[:sentence_end] + ' ' + expected_linked + old_html[sentence_end:]
+        assert new_html == expected_new, f"Mismatch:\nExpected: {expected_new}\nGot: {new_html}"
 
 
 class TestManualWeaveWithExistingLink:
@@ -268,6 +255,66 @@ class TestManualWeaveWithExistingLink:
         assert 'href="/products/draggg-4k-mango-ice"' in result["new_html"]
         # New link should be added (URL may be relative or absolute)
         assert 'blogs/canada/zyn-canada-nicotine-pouch-availability"' in result["new_html"]
+
+
+class TestManualWeaveControlCharacters:
+    """Test C1: Control characters are rejected (400)."""
+    
+    def test_nul_in_replacement_rejected(self, database, live):
+        """NUL character in replacement_sentence should be rejected with 400."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our\x00guide</a>.'
+        
+        with pytest.raises(ManualWeaveRejected) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        assert "control" in str(exc_info.value).lower()
+        
+        # Nothing should be persisted
+        row = database.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        assert row["ai_edit_json"] is None
+    
+    def test_nul_in_original_rejected(self, database, live):
+        """NUL character in original_sentence should be rejected with 400."""
+        original = "Health Canada\x00has strict protocols."
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">our guide</a>.'
+        
+        with pytest.raises(ManualWeaveRejected) as exc_info:
+            submit_manual_weave(
+                database, 1, BASE,
+                original_sentence=original,
+                replacement_sentence=replacement,
+                fetch_fn=live.fetch,
+            )
+        
+        assert "control" in str(exc_info.value).lower()
+        
+        # Nothing should be persisted
+        row = database.execute("SELECT ai_edit_json FROM link_suggestions WHERE id = 1").fetchone()
+        assert row["ai_edit_json"] is None
+    
+    def test_other_control_chars_rejected(self, database, live):
+        """Other control characters (\x0b, \x7f, etc.) should also be rejected."""
+        original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
+        
+        # Test various control characters
+        for ctrl_char in ["\x01", "\x08", "\x0b", "\x0c", "\x0e", "\x1f", "\x7f"]:
+            replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">guide{ctrl_char}</a>.'
+            
+            with pytest.raises(ManualWeaveRejected) as exc_info:
+                submit_manual_weave(
+                    database, 1, BASE,
+                    original_sentence=original,
+                    replacement_sentence=replacement,
+                    fetch_fn=live.fetch,
+                )
+            
+            assert "control" in str(exc_info.value).lower(), f"Failed for char {repr(ctrl_char)}"
 
 
 class TestManualWeaveRewriteRejected:
@@ -1094,6 +1141,116 @@ class TestManualWeaveEntityHandling:
         new_html = result["new_html"]
         insertion_idx = new_html.find("our guide")
         assert insertion_idx > 0, "Insertion not found"
+
+
+class TestManualWeaveExactEquality:
+    """Test C2: Exact equality assertions for append-only."""
+    
+    def test_leading_whitespace_exact_equality(self, database, live):
+        """Body starting with whitespace should insert at correct offset."""
+        body = '\n<p>Alpha beta end.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "Alpha beta end."
+        anchor = "our guide"
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">{anchor}</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        old_html = result["old_html"]
+        new_html = result["new_html"]
+        
+        # Sentence ends after "end."
+        sentence_end = old_html.find("end.") + len("end.")
+        
+        # Build expected linked addition
+        expected_url = f"{BASE}/blogs/canada/zyn-canada-nicotine-pouch-availability"
+        expected_linked = f'See <a href="{expected_url}">{anchor}</a>.'
+        
+        # Assert exact equality
+        expected_new = old_html[:sentence_end] + ' ' + expected_linked + old_html[sentence_end:]
+        assert new_html == expected_new, f"Mismatch:\nExpected: {repr(expected_new)}\nGot: {repr(new_html)}"
+    
+    def test_existing_link_mdash_exact_equality(self, database, live):
+        """Body with existing link and &mdash; entity should have exact insertion."""
+        body = '<p>For shoppers exploring other cooling fruit sensations, you can easily expand your collection by viewing <a href="/products/draggg-4k-mango-ice">Draggg 4K - Mango Ice</a> or browsing the complete lineup available within the STLTH 60K Disposable Vapes &mdash; Vapely collection.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        # The sentence spans the existing link and includes em dash
+        original = "For shoppers exploring other cooling fruit sensations, you can easily expand your collection by viewing Draggg 4K - Mango Ice or browsing the complete lineup available within the STLTH 60K Disposable Vapes \u2014 Vapely collection."
+        anchor = "STLTH 60K buying guide"
+        replacement = f'{original} Check our <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">{anchor}</a> for more.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        old_html = result["old_html"]
+        new_html = result["new_html"]
+        
+        # Sentence ends after "collection."
+        sentence_end = old_html.find("collection.") + len("collection.")
+        
+        # Build expected linked addition
+        expected_url = f"{BASE}/blogs/canada/zyn-canada-nicotine-pouch-availability"
+        expected_linked = f'Check our <a href="{expected_url}">{anchor}</a> for more.'
+        
+        # Assert exact equality
+        expected_new = old_html[:sentence_end] + ' ' + expected_linked + old_html[sentence_end:]
+        assert new_html == expected_new, f"Mismatch:\nExpected: {repr(expected_new)}\nGot: {repr(new_html)}"
+    
+    def test_entity_amp_exact_equality(self, database, live):
+        """Body with &amp; entity should have exact insertion."""
+        body = '<p>This text has an ampersand &amp; more text here.</p>'
+        live.body = body
+        database.execute(
+            "UPDATE products SET description_html = ? WHERE handle = 'zyn-nicotine-pouches-canada-shopper'",
+            (body,),
+        )
+        database.commit()
+        
+        original = "This text has an ampersand & more text here."
+        anchor = "our guide"
+        replacement = f'{original} See <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">{anchor}</a>.'
+        
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+        )
+        
+        old_html = result["old_html"]
+        new_html = result["new_html"]
+        
+        # Sentence ends after "here."
+        sentence_end = old_html.find("here.") + len("here.")
+        
+        # Build expected linked addition
+        expected_url = f"{BASE}/blogs/canada/zyn-canada-nicotine-pouch-availability"
+        expected_linked = f'See <a href="{expected_url}">{anchor}</a>.'
+        
+        # Assert exact equality
+        expected_new = old_html[:sentence_end] + ' ' + expected_linked + old_html[sentence_end:]
+        assert new_html == expected_new, f"Mismatch:\nExpected: {repr(expected_new)}\nGot: {repr(new_html)}"
 
 
 class TestManualWeaveSentenceBoundary:

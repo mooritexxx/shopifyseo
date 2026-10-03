@@ -393,12 +393,11 @@ class SuggestionNotFound(ValueError):
 def restore_suggestion(conn, suggestion_id: int, actor: str, reason: str) -> dict:
     """Restore a dismissed suggestion back to suggested status.
     
-    Uses atomic conditional UPDATE to prevent race conditions:
-    1. Check for unfinished snapshots (B7)
-    2. Conditional UPDATE where status='dismissed' (B3)
-    3. Check rowcount - if 0, determine whether 404 (not found) or 409 (status changed) (B6)
-    4. Insert audit record only after successful update (B3)
-    5. Commit once at the end (B3)
+    Uses a single atomic conditional UPDATE to prevent race conditions:
+    - Checks status='dismissed' AND no unfinished snapshots in one UPDATE
+    - If rowcount=0, re-reads to determine 404 vs 409 (status or snapshot)
+    - Audit row written only after successful update
+    - Single commit at the end
     
     Args:
         conn: Database connection
@@ -411,34 +410,40 @@ def restore_suggestion(conn, suggestion_id: int, actor: str, reason: str) -> dic
     
     Raises:
         SuggestionNotFound: If suggestion does not exist (404)
-        LinkConflict: If suggestion has unfinished snapshot or status changed (409)
+        LinkConflict: If suggestion has unfinished snapshot or status not dismissed (409)
     """
     now = int(time.time())
     
-    # B7: Check for unfinished snapshots (same status set as dismiss)
-    pending = conn.execute(
-        """SELECT 1 FROM link_body_snapshots 
-           WHERE suggestion_id = ? 
-           AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')""",
-        (suggestion_id,),
-    ).fetchone()
-    if pending:
-        raise LinkConflict("Cannot restore: an unfinished write operation is pending on this suggestion.")
-    
-    # B3: Atomic conditional UPDATE with status='dismissed' check
+    # B3/B7: Atomic conditional UPDATE with status='dismissed' AND no pending snapshot
     cursor = conn.execute(
         """UPDATE link_suggestions 
            SET status = 'suggested' 
-           WHERE id = ? AND status = 'dismissed'""",
+           WHERE id = ? AND status = 'dismissed'
+           AND NOT EXISTS (
+               SELECT 1 FROM link_body_snapshots 
+               WHERE suggestion_id = link_suggestions.id 
+               AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
+           )""",
         (suggestion_id,),
     )
     
     if cursor.rowcount == 0:
-        # B6: Determine if 404 (not found) or 409 (status changed)
+        # Re-read to determine the specific error
         sug = conn.execute("SELECT status FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
         if not sug:
             raise SuggestionNotFound(f"Suggestion {suggestion_id} not found.")
-        # Status changed during operation (was not 'dismissed')
+        
+        # Check if there's a pending snapshot (B7)
+        pending = conn.execute(
+            """SELECT 1 FROM link_body_snapshots 
+               WHERE suggestion_id = ? 
+               AND status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')""",
+            (suggestion_id,),
+        ).fetchone()
+        if pending:
+            raise LinkConflict("Cannot restore: an unfinished write operation is pending on this suggestion.")
+        
+        # Status was not 'dismissed'
         raise LinkConflict(f"Only dismissed suggestions can be restored. This suggestion has status '{sug['status']}'.")
     
     # B3: Insert audit record only after successful update

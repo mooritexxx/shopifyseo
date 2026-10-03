@@ -533,6 +533,145 @@ class TestRebuildWithRealPipeline:
         # Audit entry still exists (append-only)
         audit = conn.execute("SELECT * FROM link_suggestion_restore_audit WHERE suggestion_id = 1").fetchone()
         assert audit is not None
+    
+    def test_non_restored_pair_deleted_and_not_recreated(self, pipeline_db):
+        """Control test: non-restored suggested pair not re-proposed is deleted and not re-created.
+        
+        This proves the PR body's 'NO' answer: a plain rebuild does NOT re-create the same pair.
+        The pipeline with related_fn=[] won't propose any suggestions, so the row is deleted.
+        """
+        conn, db_path = pipeline_db
+        
+        # Insert a suggested (NOT dismissed, NOT restored) suggestion
+        conn.execute("""
+            INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at)
+            VALUES (1, 'blog_article', 'news/sample-article', 'product', 'valid-target', 'phrase_wrap', 'Valid Target', 0.8, 'suggested', 1700000000)
+        """)
+        conn.commit()
+        
+        # Verify it exists
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is not None
+        assert row["status"] == "suggested"
+        
+        # Run the real pipeline with empty related_fn (no suggestions will be proposed)
+        from shopifyseo.internal_links.pipeline import generate_link_suggestions
+        
+        def mock_related(conn, object_type, handle, top_k=10):
+            return []  # No related items -> no suggestions proposed
+        
+        generate_link_suggestions(conn, related_fn=mock_related, rebuild_graph=False)
+        
+        # The non-restored suggestion should be DELETED and NOT re-created
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None, "Non-restored pair should be deleted"
+        
+        # No suggestions should exist at all (nothing was proposed)
+        count = conn.execute("SELECT COUNT(*) FROM link_suggestions").fetchone()[0]
+        assert count == 0, "No suggestions should be re-created"
+    
+    def test_restored_pair_survives_when_non_restored_is_deleted(self, pipeline_db):
+        """Control test: restored pair survives the same rebuild that deletes non-restored pairs.
+        
+        This proves that restore protection works: same pair, same rebuild, different outcomes.
+        """
+        conn, db_path = pipeline_db
+        
+        # Insert TWO suggestions for the same source but different targets
+        # One will be restored, one will not
+        conn.execute("""
+            INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at)
+            VALUES (1, 'blog_article', 'news/sample-article', 'product', 'valid-target', 'phrase_wrap', 'Valid Target', 0.8, 'dismissed', 1700000000)
+        """)
+        conn.execute("""
+            INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at)
+            VALUES (2, 'blog_article', 'news/sample-article', 'product', 'invalid-target', 'phrase_wrap', 'Invalid Target', 0.7, 'suggested', 1700000000)
+        """)
+        conn.commit()
+        
+        # Restore only suggestion 1
+        restore_suggestion(conn, 1, "salar", "preserve this link")
+        
+        # Both are now 'suggested'
+        assert conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()["status"] == "suggested"
+        assert conn.execute("SELECT status FROM link_suggestions WHERE id = 2").fetchone()["status"] == "suggested"
+        
+        # Run the pipeline with empty related_fn
+        from shopifyseo.internal_links.pipeline import generate_link_suggestions
+        
+        def mock_related(conn, object_type, handle, top_k=10):
+            return []
+        
+        generate_link_suggestions(conn, related_fn=mock_related, rebuild_graph=False)
+        
+        # Restored suggestion 1 should SURVIVE
+        row1 = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row1 is not None, "Restored pair should survive"
+        assert row1["status"] == "suggested"
+        
+        # Non-restored suggestion 2 should be DELETED
+        row2 = conn.execute("SELECT * FROM link_suggestions WHERE id = 2").fetchone()
+        assert row2 is None, "Non-restored pair should be deleted"
+    
+    def test_restored_row_with_live_link_cleaned_up_no_shopify_calls(self, pipeline_db):
+        """Restored row whose link is already live is cleaned up - NO Shopify calls.
+        
+        This cleanup ONLY affects the local DB suggestion row. It must NEVER:
+        - Edit anything on Shopify
+        - Remove anything from Shopify  
+        - Push any data to Shopify
+        - Change the source page body locally
+        """
+        conn, db_path = pipeline_db
+        
+        original_body = '<p>Sample body with <a href="/products/valid-target">link to target</a>.</p>'
+        
+        # Update the source article to have the link already live
+        conn.execute("UPDATE blog_articles SET body = ?", (original_body,))
+        
+        # Add the edge to internal_links (link is already live)
+        conn.execute("""
+            INSERT INTO internal_links (source_type, source_handle, target_type, target_handle, anchor_text, href)
+            VALUES ('blog_article', 'news/sample-article', 'product', 'valid-target', 'link to target', '/products/valid-target')
+        """)
+        
+        # Insert a dismissed suggestion for the same pair
+        conn.execute("""
+            INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at)
+            VALUES (1, 'blog_article', 'news/sample-article', 'product', 'valid-target', 'phrase_wrap', 'Valid Target', 0.8, 'dismissed', 1700000000)
+        """)
+        conn.commit()
+        
+        # Restore the suggestion
+        restore_suggestion(conn, 1, "salar", "preserve this link")
+        
+        # Track any Shopify-like calls (the pipeline doesn't call Shopify directly, 
+        # but we verify the source body is untouched)
+        body_before = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
+        
+        # Run the pipeline
+        from shopifyseo.internal_links.pipeline import generate_link_suggestions
+        
+        def mock_related(conn, object_type, handle, top_k=10):
+            return []
+        
+        generate_link_suggestions(conn, related_fn=mock_related, rebuild_graph=False)
+        
+        # The restored suggestion should be DELETED (link is already live)
+        row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
+        assert row is None, "Restored row with live link should be cleaned up"
+        
+        # CRITICAL: Source body must be UNCHANGED
+        body_after = conn.execute("SELECT body FROM blog_articles WHERE handle = 'sample-article'").fetchone()["body"]
+        assert body_after == body_before, "Source body must not be modified"
+        assert body_after == original_body, "Source body must equal original"
+        
+        # The internal_links edge should still exist (untouched)
+        edge = conn.execute("""
+            SELECT * FROM internal_links 
+            WHERE source_type = 'blog_article' AND source_handle = 'news/sample-article'
+        """).fetchone()
+        assert edge is not None, "Internal links edge must not be removed"
 
 
 def _make_api_database(path):

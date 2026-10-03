@@ -235,10 +235,16 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
     return False
 
 
-def _get_valid_restored_ids(conn: sqlite3.Connection) -> set[int]:
+def _get_valid_restored_ids(conn: sqlite3.Connection, existing_edges: set[tuple[str, str, str, str]]) -> set[int]:
     """Get IDs of restored suggestions that still have valid source/target pairs.
     
-    B8: Restored rows survive rebuild only if their pair is still valid.
+    B8: Restored rows survive rebuild only if their pair is still valid:
+    - Source exists with body
+    - Target is linkable (exists, active, has handle, has Online Store URL)
+    - Link is NOT already live on the source page (not in existing_edges)
+    
+    If the link is already live, the restored row is cleaned up like a normal row.
+    This cleanup ONLY affects the local DB suggestion row - it never touches Shopify.
     """
     # Find all restored suggested rows
     restored = conn.execute("""
@@ -255,6 +261,10 @@ def _get_valid_restored_ids(conn: sqlite3.Connection) -> set[int]:
             continue
         # Check target is linkable
         if not _target_exists_and_published(conn, row["target_type"], row["target_handle"]):
+            continue
+        # Check link is not already live on the source page
+        edge = (row["source_type"], row["source_handle"], row["target_type"], row["target_handle"])
+        if edge in existing_edges:
             continue
         valid_ids.add(row["id"])
     
@@ -275,13 +285,22 @@ def generate_link_suggestions(
         if rebuild_graph:
             _run_with_db_lock_retry(lambda: rebuild_internal_link_graph(conn, base_url=base_url))
         
+        # Compute existing edges BEFORE delete - needed for validity check
+        existing_edges = {
+            (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
+            for r in conn.execute(
+                "SELECT source_type, source_handle, target_type, target_handle FROM internal_links"
+            ).fetchall()
+        }
+        
         # B8: Get IDs of restored rows that have valid source/target pairs
         # These will be protected from deletion; invalid restored rows are cleaned up
-        valid_restored_ids = _get_valid_restored_ids(conn)
+        # (including rows whose link is already live - they're no longer needed)
+        valid_restored_ids = _get_valid_restored_ids(conn, existing_edges)
         
         # Delete suggested rows except:
         # 1. Those with pending snapshots
-        # 2. Restored rows with valid source/target pairs
+        # 2. Restored rows with valid source/target pairs (and link not already live)
         if valid_restored_ids:
             placeholders = ",".join("?" * len(valid_restored_ids))
             conn.execute(f"""DELETE FROM link_suggestions WHERE status = 'suggested' 
@@ -298,12 +317,6 @@ def generate_link_suggestions(
                     WHERE b.suggestion_id = link_suggestions.id 
                     AND b.status IN ('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')
                 )""")
-        existing_edges = {
-            (r["source_type"], r["source_handle"], r["target_type"], r["target_handle"])
-            for r in conn.execute(
-                "SELECT source_type, source_handle, target_type, target_handle FROM internal_links"
-            ).fetchall()
-        }
         orphans = _orphan_target_set(conn)
         incoming_pending: dict[tuple[str, str], int] = {}
         for r in conn.execute(

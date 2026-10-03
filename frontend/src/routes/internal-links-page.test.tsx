@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { LinkPreview, LinkSuggestion } from "../hooks/use-internal-links";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LinkPreview, LinkSuggestion, PaginationMeta } from "../hooks/use-internal-links";
 
 const state = vi.hoisted(() => ({ data: null as LinkPreview | null, loading: false, error: null as Error | null }));
 vi.mock("../hooks/use-internal-links", () => ({ useLinkPreview: () => ({ data: state.data, isLoading: state.loading, isFetching: state.loading, error: state.error }) }));

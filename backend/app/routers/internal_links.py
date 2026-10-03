@@ -1,17 +1,19 @@
 """API endpoints for the internal linking engine."""
 
+import base64
+import json
 import logging
 import threading
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 
 from shopifyseo.internal_links.safety import LinkConflict, AI_TYPES_KEY, SOURCE_TYPES, ai_enabled_types
 
 from backend.app.db import open_db_connection
-from backend.app.schemas.common import SuccessResponse, success_response
+from backend.app.schemas.common import PaginatedSuccessResponse, SuccessResponse, success_response, paginated_response
 
 logger = logging.getLogger(__name__)
 
@@ -110,44 +112,106 @@ def graph_stats(
         conn.close()
 
 
-@router.get("/suggestions", response_model=SuccessResponse[list])
+def _decode_cursor(cursor: str | None) -> tuple[float, int] | None:
+    """Decode a base64-encoded JSON cursor to (score, id).
+
+    Returns None if cursor is None or invalid.
+    Raises HTTPException(400) for malformed cursors.
+    """
+    if cursor is None:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+        data = json.loads(decoded)
+        return (float(data["s"]), int(data["i"]))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Malformed cursor")
+
+
+def _encode_cursor(score: float, id_: int) -> str:
+    """Encode (score, id) as a base64 JSON cursor."""
+    return base64.urlsafe_b64encode(json.dumps({"s": score, "i": id_}).encode()).decode()
+
+
+@router.get("/suggestions", response_model=PaginatedSuccessResponse[list])
 def suggestions(
+    response: Response,
     source_type: str | None = Query(default=None),
     source_handle: str | None = Query(default=None),
     status_filter: str = Query(default="suggested", alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = Query(default=None, description="Opaque cursor for keyset pagination; when provided, offset is ignored."),
 ):
+    """List link suggestions with pagination.
+
+    Supports two pagination modes:
+    - **Offset-based**: Use `offset` for random access. Rows may shift if data changes between requests.
+    - **Cursor-based**: Use `cursor` (from `meta.next_cursor`) for drift-free batch walking while rows
+      are being applied or dismissed. When `cursor` is provided, `offset` is ignored.
+
+    The response `meta.total` always reflects the full filtered count (not affected by cursor).
+    """
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.anchors import get_weak_anchor_warning
-        
-        sql = "SELECT * FROM link_suggestions WHERE status = ?"
-        params: list = [status_filter]
+
+        # Build WHERE clause (reused for both data and count queries)
+        where_clauses = ["status = ?"]
+        where_params: list = [status_filter]
         if source_type:
-            sql += " AND source_type = ?"
-            params.append(source_type)
+            where_clauses.append("source_type = ?")
+            where_params.append(source_type)
         if source_handle:
-            sql += " AND source_handle = ?"
-            params.append(source_handle)
-        sql += " ORDER BY score DESC LIMIT ?"
-        params.append(limit)
+            where_clauses.append("source_handle = ?")
+            where_params.append(source_handle)
+        where_sql = " AND ".join(where_clauses)
+
+        # Count total matching rows (ignoring cursor/offset)
+        count_sql = f"SELECT COUNT(*) FROM link_suggestions WHERE {where_sql}"
+        total = conn.execute(count_sql, where_params).fetchone()[0]
+
+        # Set X-Total-Count header
+        response.headers["X-Total-Count"] = str(total)
+
+        # Build data query
+        cursor_data = _decode_cursor(cursor)
+        if cursor_data is not None:
+            # Keyset pagination: ignore offset, filter by cursor position
+            cursor_score, cursor_id = cursor_data
+            where_clauses.append("(score < ? OR (score = ? AND id > ?))")
+            where_params.extend([cursor_score, cursor_score, cursor_id])
+            where_sql = " AND ".join(where_clauses)
+            effective_offset = 0
+        else:
+            effective_offset = offset
+
+        data_sql = f"SELECT * FROM link_suggestions WHERE {where_sql} ORDER BY score DESC, id ASC LIMIT ? OFFSET ?"
+        data_params = where_params + [limit, effective_offset]
+
         rows = []
         enabled_types = ai_enabled_types(conn)
         operations = {r["suggestion_id"]: dict(r) for r in conn.execute(
             "SELECT suggestion_id, status FROM link_body_snapshots WHERE status IN "
             "('prepared','needs_reconciliation','undo_prepared','undo_needs_reconciliation')"
         )}
-        for r in conn.execute(sql, params).fetchall():
+        for r in conn.execute(data_sql, data_params).fetchall():
             row_dict = dict(r)
             row_dict["ai_enabled"] = row_dict["source_type"] in enabled_types
             row_dict["pending_operation"] = operations.get(row_dict["id"], {}).get("status")
-            # Add weak anchor warning for phrase_wrap suggestions
             if row_dict.get("kind") == "phrase_wrap":
                 row_dict["weak_anchor_warning"] = get_weak_anchor_warning(row_dict.get("anchor_phrase"))
             else:
                 row_dict["weak_anchor_warning"] = None
             rows.append(row_dict)
-        return success_response(rows)
+
+        # Build next_cursor from last row if there are more rows
+        next_cursor = None
+        if rows:
+            last = rows[-1]
+            next_cursor = _encode_cursor(last["score"], last["id"])
+
+        return paginated_response(rows, total, limit, offset, next_cursor)
     finally:
         conn.close()
 

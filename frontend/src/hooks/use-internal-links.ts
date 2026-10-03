@@ -21,6 +21,21 @@ export interface LinkSuggestion {
   applied_at?: number | null;
 }
 
+export interface PaginationMeta {
+  total: number;
+  limit: number;
+  offset: number;
+  count: number;
+  has_more: boolean;
+  next_offset: number | null;
+  next_cursor: string | null;
+}
+
+export interface PaginatedResponse<T> {
+  data: T;
+  meta: PaginationMeta;
+}
+
 export interface AppliedLink extends LinkSuggestion {
   live_present: boolean | null;
   href: string | null;
@@ -79,6 +94,13 @@ async function getJson<T>(url: string): Promise<T> {
   return body.data as T;
 }
 
+async function getJsonWithMeta<T>(url: string): Promise<PaginatedResponse<T>> {
+  const res = await fetch(url);
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error?.message ?? "Request failed");
+  return { data: body.data as T, meta: body.meta as PaginationMeta };
+}
+
 async function postJson<T>(url: string, payload?: unknown): Promise<T> {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload === undefined ? undefined : JSON.stringify(payload) });
   const body = await res.json();
@@ -113,13 +135,22 @@ export function useLinkSummary() {
   return query;
 }
 
-export function useLinkSuggestions(params: { sourceType?: string; sourceHandle?: string } = {}) {
+export interface UseLinkSuggestionsParams {
+  sourceType?: string;
+  sourceHandle?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function useLinkSuggestions(params: UseLinkSuggestionsParams = {}) {
   const search = new URLSearchParams({ status: "suggested" });
   if (params.sourceType) search.set("source_type", params.sourceType);
   if (params.sourceHandle) search.set("source_handle", params.sourceHandle);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
   return useQuery({
     queryKey: ["internal-links", "suggestions", params],
-    queryFn: () => getJson<LinkSuggestion[]>(`/api/internal-links/suggestions?${search}`),
+    queryFn: () => getJsonWithMeta<LinkSuggestion[]>(`/api/internal-links/suggestions?${search}`),
   });
 }
 

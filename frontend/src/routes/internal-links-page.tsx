@@ -2,7 +2,7 @@ import "./workspace-tools.css";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { AiLinkTypeFields } from "../components/ai-link-types-settings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle, Settings, Save } from "lucide-react";
+import { Link2, AlertTriangle, RefreshCw, Check, X, Sparkles, ArrowDownLeft, ArrowUpRight, Undo2, Eye, Map, List, ExternalLink, AlertCircle, Settings, Save, ChevronLeft, ChevronRight } from "lucide-react";
 
 import {
   useApplySuggestion,
@@ -27,6 +27,7 @@ import {
   type AppliedLink,
   type GraphNode,
   type GraphEdge,
+  type PaginationMeta,
 } from "../hooks/use-internal-links";
 import { Input } from "../components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -710,6 +711,8 @@ function InternalLinkSettingsTab({ setToast }: SettingsTabProps) {
   );
 }
 
+const SUGGESTIONS_PAGE_SIZE = 100;
+
 export function InternalLinksPage() {
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
   const [tab, setTab] = useState<"suggestions" | "applied" | "orphans" | "graph" | "outcomes" | "settings">("suggestions");
@@ -717,9 +720,10 @@ export function InternalLinksPage() {
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [graphView, setGraphView] = useState<"list" | "map">("list");
   const [focusNode, setFocusNode] = useState<{ type: string; handle: string } | null>(null);
+  const [suggestionsOffset, setSuggestionsOffset] = useState(0);
 
   const summary = useLinkSummary();
-  const suggestions = useLinkSuggestions();
+  const suggestions = useLinkSuggestions({ limit: SUGGESTIONS_PAGE_SIZE, offset: suggestionsOffset });
   const appliedLinks = useAppliedLinks();
   const orphans = useOrphans();
   const graphStats = useGraphStatsAll();
@@ -740,10 +744,13 @@ export function InternalLinksPage() {
   };
   const wasRebuildRunning = useRef(false);
 
+  const suggestionsList = suggestions.data?.data ?? [];
+  const suggestionsMeta = suggestions.data?.meta;
+
   const previewSuggestion = useMemo(() => {
     if (previewId === null) return null;
-    return suggestions.data?.find(s => s.id === previewId) ?? null;
-  }, [previewId, suggestions.data]);
+    return suggestionsList.find(s => s.id === previewId) ?? null;
+  }, [previewId, suggestionsList]);
 
   useEffect(() => {
     const running = Boolean(summary.data?.progress?.running);
@@ -765,7 +772,7 @@ export function InternalLinksPage() {
       await apply.mutateAsync({ id, previewToken });
       setToast({ message: "Link applied successfully", variant: "success" });
       // Show nudge for ai_woven to regenerate other suggestions
-      const sug = suggestions.data?.find(s => s.id === id);
+      const sug = suggestionsList.find(s => s.id === id);
       if (sug?.kind === "ai_woven") {
         setTimeout(() => {
           setToast({ 
@@ -773,6 +780,11 @@ export function InternalLinksPage() {
             variant: "info" 
           });
         }, 2000);
+      }
+      // Clamp offset if the page comes back empty after an action
+      if (suggestionsMeta && suggestionsMeta.count === 1 && suggestionsOffset > 0) {
+        const newOffset = Math.max(0, suggestionsOffset - SUGGESTIONS_PAGE_SIZE);
+        setSuggestionsOffset(newOffset);
       }
     } catch (e) {
       setToast({ message: `Apply failed: ${(e as Error).message}`, variant: "error" });
@@ -786,6 +798,11 @@ export function InternalLinksPage() {
     try {
       await dismiss.mutateAsync(id);
       setToast({ message: "Suggestion dismissed", variant: "info" });
+      // Clamp offset if the page comes back empty after an action
+      if (suggestionsMeta && suggestionsMeta.count === 1 && suggestionsOffset > 0) {
+        const newOffset = Math.max(0, suggestionsOffset - SUGGESTIONS_PAGE_SIZE);
+        setSuggestionsOffset(newOffset);
+      }
     } catch (e) {
       setToast({ message: `Dismiss failed: ${(e as Error).message}`, variant: "error" });
     } finally {
@@ -920,37 +937,110 @@ export function InternalLinksPage() {
                 <AlertTriangle className="h-5 w-5 text-amber-500" />
                 <span>Failed to load suggestions: {suggestions.error.message}</span>
               </div>
-            ) : (suggestions.data?.length ?? 0) === 0 ? (
+            ) : suggestionsList.length === 0 && suggestionsOffset === 0 ? (
               <div className="py-8 text-center text-muted-foreground">
                 No pending suggestions. Run a Rebuild to generate new opportunities.
               </div>
+            ) : suggestionsList.length === 0 && suggestionsOffset > 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                No more suggestions on this page.{" "}
+                <button
+                  type="button"
+                  className="text-indigo-600 hover:underline"
+                  onClick={() => setSuggestionsOffset(0)}
+                >
+                  Go back to first page
+                </button>
+              </div>
             ) : (
-              <Table scrollLabel="Internal link data" className="workspace-tools-table">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Source</TableHead>
-                    <TableHead>Target</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead className="text-right">Score</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {suggestions.data?.map((s) => (
-                    <SuggestionRow
-                      key={s.id}
-                      suggestion={s}
-                      onReconcile={() => handleReconcile(s.id)}
-                      onDismiss={() => handleDismiss(s.id)}
-                      onGenerate={() => handleGenerate(s.id)}
-                      onPreview={() => setPreviewId(s.id)}
-                      applying={processingId === s.id && apply.isPending}
-                      dismissing={processingId === s.id && dismiss.isPending}
-                      generating={processingId === s.id && generate.isPending}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
+              <>
+                {/* Pagination info and controls */}
+                {suggestionsMeta && (
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="text-sm text-muted-foreground" data-testid="pagination-info">
+                      Showing {suggestionsOffset + 1}–{suggestionsOffset + suggestionsMeta.count} of{" "}
+                      <span data-testid="total-count">{suggestionsMeta.total}</span> suggestions
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setSuggestionsOffset(Math.max(0, suggestionsOffset - SUGGESTIONS_PAGE_SIZE))}
+                        disabled={suggestionsOffset === 0}
+                        className="gap-1"
+                      >
+                        <ChevronLeft size={14} />
+                        Prev
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => suggestionsMeta.next_offset !== null && setSuggestionsOffset(suggestionsMeta.next_offset)}
+                        disabled={!suggestionsMeta.has_more}
+                        className="gap-1"
+                      >
+                        Next
+                        <ChevronRight size={14} />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <Table scrollLabel="Internal link data" className="workspace-tools-table">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Target</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="text-right">Score</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {suggestionsList.map((s) => (
+                      <SuggestionRow
+                        key={s.id}
+                        suggestion={s}
+                        onReconcile={() => handleReconcile(s.id)}
+                        onDismiss={() => handleDismiss(s.id)}
+                        onGenerate={() => handleGenerate(s.id)}
+                        onPreview={() => setPreviewId(s.id)}
+                        applying={processingId === s.id && apply.isPending}
+                        dismissing={processingId === s.id && dismiss.isPending}
+                        generating={processingId === s.id && generate.isPending}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+                {/* Bottom pagination controls */}
+                {suggestionsMeta && suggestionsMeta.total > SUGGESTIONS_PAGE_SIZE && (
+                  <div className="mt-4 flex items-center justify-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSuggestionsOffset(Math.max(0, suggestionsOffset - SUGGESTIONS_PAGE_SIZE))}
+                      disabled={suggestionsOffset === 0}
+                      className="gap-1"
+                    >
+                      <ChevronLeft size={14} />
+                      Prev
+                    </Button>
+                    <span className="text-sm text-muted-foreground">
+                      Page {Math.floor(suggestionsOffset / SUGGESTIONS_PAGE_SIZE) + 1} of{" "}
+                      {Math.ceil(suggestionsMeta.total / SUGGESTIONS_PAGE_SIZE)}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => suggestionsMeta.next_offset !== null && setSuggestionsOffset(suggestionsMeta.next_offset)}
+                      disabled={!suggestionsMeta.has_more}
+                      className="gap-1"
+                    >
+                      Next
+                      <ChevronRight size={14} />
+                    </Button>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>

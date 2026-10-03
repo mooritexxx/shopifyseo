@@ -590,6 +590,7 @@ def object_field_instructions(object_type: str, conn=None) -> str:
             "Maximise toward 160 — short descriptions hurt CTR. "
             "Count every character — spaces included — before finalising. "
             "Lead with the strongest transactional hook — brand name plus device type or flavour — to capture intent immediately. "
+            "MUST include the full flavour name exactly as shown in the product title (e.g. if the title contains 'Blue Razz Ice', the description must contain 'Blue Razz Ice'). "
             "Add the most compelling differentiator: key product attribute, spec options, or variety. "
             f"End with a natural {m['adjective']} buying signal. {m['spelling']}\n"
             "Do not echo the seo_title verbatim — complement it with secondary intent such as use case, spec detail, or buying trigger.\n"

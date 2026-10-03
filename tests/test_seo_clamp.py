@@ -3,16 +3,31 @@
 from shopifyseo.dashboard_ai_engine_parts.qa import clamp_generated_seo_field
 
 
-def test_clamp_seo_title_trims_over_65():
+def test_clamp_seo_title_trims_over_65_for_collection():
+    """Collections/pages/articles should still truncate to 65."""
+    s = "x" * 66
+    out = clamp_generated_seo_field("seo_title", s, "collection")
+    assert len(out) == 65
+
+
+def test_clamp_seo_title_trims_over_65_default():
+    """Default (no object_type) should still truncate to 65."""
     s = "x" * 66
     out = clamp_generated_seo_field("seo_title", s)
     assert len(out) == 65
 
 
+def test_clamp_seo_title_product_never_truncated():
+    """Product seo_title should NEVER be truncated."""
+    s = "x" * 100
+    out = clamp_generated_seo_field("seo_title", s, "product")
+    assert len(out) == 100
+
+
 def test_clamp_seo_title_prefers_word_boundary():
     base = "Acme Novo Filter Kits: Essential Features and Tips | Example Store"
     assert len(base) > 65
-    out = clamp_generated_seo_field("seo_title", base)
+    out = clamp_generated_seo_field("seo_title", base, "collection")
     assert len(out) <= 65
     assert out == out.strip()
 

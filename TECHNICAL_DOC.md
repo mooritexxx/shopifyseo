@@ -241,7 +241,7 @@ The dashboard indexing rollup includes `stale_robots_block`, `robots_block_curre
 | GET    | `/api/products/{handle}`                        | Query: `gsc_period`                            | `{ ok, data }` | Product detail + signals + `gsc_queries` (top Search Console queries for the URL, same cache window as GSC cards) |
 | POST   | `/api/products/{handle}/refresh`                | —                                              | `{ ok, data }` | Refresh signals / cached data   |
 | POST   | `/api/products/{handle}/generate-ai`            | —                                              | `{ ok, data }` | Start full AI generation job    |
-| POST   | `/api/products/{handle}/regenerate-field`       | Body: field key, options                       | `{ ok, data }` | Regenerate one SEO field (sync) |
+| POST   | `/api/products/{handle}/regenerate-field`       | Body: field key, options                       | `{ ok, data }` | Regenerate one SEO field (sync). TVPA QA runs with retry-once-then-reject for body and meta. Product `seo_title` is built deterministically as `<product name> \| Vapely Canada` (no AI). Product `seo_description` must contain the full flavour name. |
 | POST   | `/api/products/{handle}/regenerate-field/start` | Body                                           | `{ ok, data }` | Start background field regen    |
 | POST   | `/api/products/{handle}/update`                 | Body: SEO edits                                | `{ ok, data }` | Persist local SEO edits         |
 | POST   | `/api/products/{handle}/inspection-link`        | —                                              | `{ ok, data }` | URL Inspection link             |
@@ -264,7 +264,7 @@ The dashboard indexing rollup includes `stale_robots_block`, `robots_block_curre
 | POST   | `/api/pages/{handle}/refresh`                      | —       | `{ ok, data }` | Refresh page                        |
 | POST   | `/api/collections/{handle}/generate-ai`            | —       | `{ ok, data }` | Start AI for collection             |
 | POST   | `/api/pages/{handle}/generate-ai`                  | —       | `{ ok, data }` | Start AI for page                   |
-| POST   | `/api/collections/{handle}/regenerate-field`       | Body    | `{ ok, data }` | Regenerate field (sync)             |
+| POST   | `/api/collections/{handle}/regenerate-field`       | Body    | `{ ok, data }` | Regenerate field (sync). TVPA QA runs with retry-once-then-reject. |
 | POST   | `/api/pages/{handle}/regenerate-field`             | Body    | `{ ok, data }` | Regenerate field (sync)             |
 | POST   | `/api/collections/{handle}/regenerate-field/start` | Body    | `{ ok, data }` | Start field regen (async)           |
 | POST   | `/api/pages/{handle}/regenerate-field/start`       | Body    | `{ ok, data }` | Start field regen (async)           |
@@ -285,7 +285,7 @@ The dashboard indexing rollup includes `stale_robots_block`, `robots_block_curre
 | POST   | `/api/articles/{blog_handle}/{article_handle}/inspection-link`        | —       | `{ ok, data }` | Inspection link                              |
 | POST   | `/api/articles/{blog_handle}/{article_handle}/refresh`                | —       | `{ ok, data }` | Refresh article                              |
 | POST   | `/api/articles/{blog_handle}/{article_handle}/generate-ai`            | —       | `{ ok, data }` | Start AI for article                         |
-| POST   | `/api/articles/{blog_handle}/{article_handle}/regenerate-field`       | Body    | `{ ok, data }` | Regenerate field (sync)                      |
+| POST   | `/api/articles/{blog_handle}/{article_handle}/regenerate-field`       | Body    | `{ ok, data }` | Regenerate field (sync). TVPA QA runs with retry-once-then-reject. |
 | POST   | `/api/articles/{blog_handle}/{article_handle}/regenerate-field/start` | Body    | `{ ok, data }` | Start field regen                            |
 | GET    | `/api/blogs`                                                          | —       | `{ ok, data }` | Blog list                                    |
 | GET    | `/api/blogs/shopify-ids`                                              | —       | `{ ok, data }` | Shopify GIDs for blogs                       |

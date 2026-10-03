@@ -53,6 +53,91 @@ from ._article_draft import (
 )
 
 
+def _tvpa_allowed_names(context: dict, object_type: str) -> list[str]:
+    """Build the TVPA allowlist names from context.
+    
+    This extracts product/collection titles, vendor, flavour labels, variant titles,
+    and approved internal link target titles that should not trigger TVPA matches.
+    """
+    from .tvpa_flavour import extract_flavour_from_title
+    from .context import product_specs as _extract_product_specs
+    
+    detail_payload = context.get("detail") or {}
+    tvpa_allowed_names: list[str] = []
+    
+    if object_type == "product":
+        primary = detail_payload.get("product") or {}
+        if primary.get("title"):
+            title_str = str(primary["title"])
+            tvpa_allowed_names.append(title_str)
+            flavour = extract_flavour_from_title(title_str)
+            if flavour:
+                tvpa_allowed_names.append(flavour)
+        if primary.get("vendor"):
+            tvpa_allowed_names.append(str(primary["vendor"]))
+        product_specs_data = _extract_product_specs(primary, detail_payload)
+        flavor_labels = product_specs_data.get("e_liquid_flavor_labels") or []
+        if isinstance(flavor_labels, list):
+            tvpa_allowed_names.extend(str(lbl) for lbl in flavor_labels if lbl)
+        variants = detail_payload.get("variants") or []
+        for var in variants:
+            if isinstance(var, dict) and var.get("title"):
+                var_title = str(var["title"])
+                tvpa_allowed_names.append(var_title)
+                var_flavour = extract_flavour_from_title(var_title)
+                if var_flavour:
+                    tvpa_allowed_names.append(var_flavour)
+    elif object_type == "collection":
+        collection = detail_payload.get("collection") or {}
+        if collection.get("title"):
+            tvpa_allowed_names.append(str(collection["title"]))
+    
+    link_targets = context.get("approved_internal_link_targets") or []
+    if not link_targets:
+        prompt_ctx_data = context.get("prompt_context") or {}
+        link_targets = prompt_ctx_data.get("approved_internal_link_targets") or []
+    for target in link_targets:
+        if target.get("title"):
+            target_title = str(target["title"])
+            tvpa_allowed_names.append(target_title)
+            target_flavour = extract_flavour_from_title(target_title)
+            if target_flavour:
+                tvpa_allowed_names.append(target_flavour)
+    
+    return tvpa_allowed_names
+
+
+def _tvpa_category_issues(text: str, allowed_names: list[str]) -> list[str]:
+    """Return list of TVPA category-group issues (not style issues) for the text.
+    
+    Category issues trigger retry/reject; style issues are warnings only.
+    """
+    from .tvpa_flavour import tvpa_flavour_matches
+    
+    matches = tvpa_flavour_matches(text, allowed_names=allowed_names)
+    return [
+        f"TVPA flavour wording: '{m['term']}' ({m['key']})"
+        for m in matches if m["group"] == "category"
+    ]
+
+
+def _build_tvpa_retry_feedback(text: str, allowed_names: list[str], field: str = "body") -> str:
+    """Build retry feedback for TVPA category issues."""
+    from .tvpa_flavour import tvpa_flavour_matches, TVPA_FLAVOUR_RULE
+    
+    matches = tvpa_flavour_matches(text, allowed_names=allowed_names)
+    category_terms = [m['term'] for m in matches if m["group"] == "category"]
+    
+    if not category_terms:
+        return ""
+    
+    return (
+        f"The previous {field} contains prohibited TVPA flavour wording that must be removed: "
+        f"{', '.join(repr(t) for t in category_terms)}. "
+        f"Rewrite the {field} without these phrases. {TVPA_FLAVOUR_RULE}"
+    )
+
+
 def _body_retry_acceptable(
     body_score: float,
     retry_body_score: float,
@@ -204,6 +289,8 @@ def _generate_single_field_core(**kwargs) -> dict:
     from shopifyseo.seo_quality import metadata_issues
     original_feedback = kwargs.get("retry_feedback") or ""
     feedback = original_feedback
+    object_type = kwargs["object_type"]
+    field = kwargs["field"]
     for attempt in range(3):
         try:
             result = _generate_single_field_attempt(**{**kwargs, "retry_feedback": feedback})
@@ -212,11 +299,17 @@ def _generate_single_field_core(**kwargs) -> dict:
                 raise
             feedback = f"{feedback}\nCorrect this validation failure: {exc}. Rewrite naturally using only confirmed facts."
             continue
-        issues = metadata_issues(kwargs["object_type"], {kwargs["field"]: result["value"]})
-        if not issues or attempt == 2:
+        issues = metadata_issues(object_type, {field: result["value"]})
+        # Product seo_title: only retry on errors (warnings like >60 chars don't trigger retry)
+        # All other types/fields: retry on any issue (preserves original behavior)
+        if object_type == "product" and field == "seo_title":
+            retry_issues = [i for i in issues if i.get("severity") == "error"]
+        else:
+            retry_issues = issues
+        if not retry_issues or attempt == 2:
             return {**result, "quality_issues": issues, "quality_retry_count": attempt}
         # Don't overwrite original feedback (e.g. TVPA feedback) — append metadata issues
-        metadata_feedback = "\n".join(i["message"] for i in issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
+        metadata_feedback = "\n".join(i["message"] for i in retry_issues) + " Rewrite naturally using only confirmed facts; do not pad with filler."
         feedback = f"{original_feedback}\n{metadata_feedback}" if original_feedback else metadata_feedback
     raise RuntimeError("Quality correction did not complete")
 
@@ -246,6 +339,38 @@ def _generate_single_field_attempt(
     timeout = settings["timeout"]
 
     _raise_if_cancelled(cancel_callback)
+    
+    # For product seo_title: build deterministically, no AI needed
+    if object_type == "product" and field == "seo_title":
+        from .product_name_tokens import build_deterministic_seo_title, check_seo_title_format
+        detail = context.get("detail") or {}
+        product = detail.get("product") or {}
+        product_name = product.get("title", "")
+        
+        if product_name:
+            deterministic_title = build_deterministic_seo_title(product_name, conn)
+            
+            # Check for warnings (>60 chars)
+            _, warnings = check_seo_title_format(deterministic_title, product_name, conn)
+            
+            _emit_progress(
+                progress_callback,
+                stage=f"completed_{field}",
+                step_index=step_index,
+                step_total=step_total,
+                model="deterministic",
+                message=f"{field.replace('_', ' ')} complete (deterministic)",
+            )
+            return {
+                "field": field,
+                "value": deterministic_title,
+                "generation_model": "deterministic",
+                "review_model": "",
+                "review_action": "deterministic",
+                "generated_at": int(time.time()),
+                "seo_title_warnings": warnings,
+            }
+    
     _emit_progress(
         progress_callback,
         stage=f"preparing_{field}",
@@ -565,8 +690,8 @@ def generate_recommendation(
 
             # Save partial recommendation after each field completes for real-time updates
             partial_recommendation = {
-                "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", "")),
-                "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", "")),
+                "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", ""), object_type),
+                "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", ""), object_type),
                 "body": generated_fields.get("body", {}).get("value", ""),
             }
             if object_type == "product":
@@ -621,8 +746,8 @@ def generate_recommendation(
             }
         )
         partial = {
-            "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", "")),
-            "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", "")),
+            "seo_title": clamp_generated_seo_field("seo_title", generated_fields.get("seo_title", {}).get("value", ""), object_type),
+            "seo_description": clamp_generated_seo_field("seo_description", generated_fields.get("seo_description", {}).get("value", ""), object_type),
             "body": generated_fields.get("body", {}).get("value", ""),
             "_meta": {
                 "review_actions": review_actions,
@@ -675,8 +800,8 @@ def generate_recommendation(
     body_html = generated_fields["body"]["value"]
     body_html = ensure_link_titles(body_html, conn)
     recommendation = {
-        "seo_title": clamp_generated_seo_field("seo_title", generated_fields["seo_title"]["value"]),
-        "seo_description": clamp_generated_seo_field("seo_description", generated_fields["seo_description"]["value"]),
+        "seo_title": clamp_generated_seo_field("seo_title", generated_fields["seo_title"]["value"], object_type),
+        "seo_description": clamp_generated_seo_field("seo_description", generated_fields["seo_description"]["value"], object_type),
         "body": body_html,
     }
     if object_type == "product":
@@ -735,7 +860,7 @@ def generate_recommendation(
                     step_total=step_total,
                     conn=conn,
                 )
-                retry_title = clamp_generated_seo_field("seo_title", retry_result["value"])
+                retry_title = clamp_generated_seo_field("seo_title", retry_result["value"], object_type)
                 retry_puff_ok, retry_puff_issues = check_title_puff_redundancy(product_title, retry_title)
                 _, retry_title_spelling = validate_commonwealth_spelling(retry_title)
 
@@ -780,53 +905,10 @@ def generate_recommendation(
     tvpa_flavour_issues: list[str] = []
     tvpa_category_issues: list[str] = []
     tvpa_retry_feedback: str = ""
+    tvpa_allowed_names: list[str] = []
     if object_type in ("product", "collection", "blog_article"):
         # Build allowed names from context for the TVPA detector
-        from .tvpa_flavour import extract_flavour_from_title
-        detail_payload = context.get("detail") or {}
-        tvpa_allowed_names: list[str] = []
-        if object_type == "product":
-            primary = detail_payload.get("product") or {}
-            # Product title, vendor, and e_liquid_flavor_labels
-            if primary.get("title"):
-                title_str = str(primary["title"])
-                tvpa_allowed_names.append(title_str)
-                # Also extract flavour from title (text after " - ", stripped)
-                flavour = extract_flavour_from_title(title_str)
-                if flavour:
-                    tvpa_allowed_names.append(flavour)
-            if primary.get("vendor"):
-                tvpa_allowed_names.append(str(primary["vendor"]))
-            product_specs_data = _extract_product_specs(primary, detail_payload)
-            flavor_labels = product_specs_data.get("e_liquid_flavor_labels") or []
-            if isinstance(flavor_labels, list):
-                tvpa_allowed_names.extend(str(lbl) for lbl in flavor_labels if lbl)
-            # Allowlist variant titles (variants live at detail_payload, not primary)
-            variants = detail_payload.get("variants") or []
-            for var in variants:
-                if isinstance(var, dict) and var.get("title"):
-                    var_title = str(var["title"])
-                    tvpa_allowed_names.append(var_title)
-                    var_flavour = extract_flavour_from_title(var_title)
-                    if var_flavour:
-                        tvpa_allowed_names.append(var_flavour)
-        elif object_type == "collection":
-            collection = detail_payload.get("collection") or {}
-            if collection.get("title"):
-                tvpa_allowed_names.append(str(collection["title"]))
-        # Add titles from approved_internal_link_targets
-        link_targets = context.get("approved_internal_link_targets") or []
-        if not link_targets:
-            prompt_ctx_data = context.get("prompt_context") or {}
-            link_targets = prompt_ctx_data.get("approved_internal_link_targets") or []
-        for target in link_targets:
-            if target.get("title"):
-                target_title = str(target["title"])
-                tvpa_allowed_names.append(target_title)
-                # Also extract flavour from link target titles
-                target_flavour = extract_flavour_from_title(target_title)
-                if target_flavour:
-                    tvpa_allowed_names.append(target_flavour)
+        tvpa_allowed_names = _tvpa_allowed_names(context, object_type)
 
         # Check body and seo fields for TVPA violations
         body_tvpa_passed, body_tvpa_issues = validate_tvpa_flavour_claims(
@@ -836,25 +918,16 @@ def generate_recommendation(
         meta_tvpa_passed, meta_tvpa_issues = validate_tvpa_flavour_claims(
             meta_text, allowed_names=tvpa_allowed_names
         )
-        tvpa_flavour_issues = body_tvpa_issues + meta_tvpa_issues
+        tvpa_flavour_issues = list(dict.fromkeys(body_tvpa_issues + meta_tvpa_issues))
         
         # Separate category issues (trigger retry/fail) from style issues (warnings only)
-        from .tvpa_flavour import tvpa_flavour_matches
-        body_matches = tvpa_flavour_matches(recommendation["body"], allowed_names=tvpa_allowed_names)
-        tvpa_category_issues = [
-            f"TVPA flavour wording: '{m['term']}' ({m['key']})"
-            for m in body_matches if m["group"] == "category"
-        ]
+        tvpa_category_issues = _tvpa_category_issues(recommendation["body"], tvpa_allowed_names)
         if tvpa_flavour_issues:
             logger.info(f"Body has TVPA flavour issues for {object_type}/{handle}: {tvpa_flavour_issues}")
             # Build retry feedback for category issues only
             if tvpa_category_issues:
-                from .tvpa_flavour import TVPA_FLAVOUR_RULE
-                offending_terms = [m['term'] for m in body_matches if m["group"] == "category"]
-                tvpa_retry_feedback = (
-                    f"The previous body contains prohibited TVPA flavour wording that must be removed: "
-                    f"{', '.join(repr(t) for t in offending_terms)}. "
-                    f"Rewrite the body without these phrases. {TVPA_FLAVOUR_RULE}"
+                tvpa_retry_feedback = _build_tvpa_retry_feedback(
+                    recommendation["body"], tvpa_allowed_names, "body"
                 )
 
     # Retry body if it fails QA floor OR has unsupported spec claims OR has TVPA category issues
@@ -913,11 +986,7 @@ def generate_recommendation(
                 retry_body_tvpa_passed, retry_body_tvpa_issues = validate_tvpa_flavour_claims(
                     retry_body, allowed_names=tvpa_allowed_names
                 )
-                retry_body_matches = tvpa_flavour_matches(retry_body, allowed_names=tvpa_allowed_names)
-                retry_tvpa_category_issues = [
-                    f"TVPA flavour wording: '{m['term']}' ({m['key']})"
-                    for m in retry_body_matches if m["group"] == "category"
-                ]
+                retry_tvpa_category_issues = _tvpa_category_issues(retry_body, tvpa_allowed_names)
 
             # Accept retry only if neither TVPA hit count nor spec issues get worse,
             # AND at least one metric improves (score, spec issues, or TVPA issues)
@@ -935,7 +1004,7 @@ def generate_recommendation(
                 if object_type in ("product", "collection", "blog_article"):
                     tvpa_category_issues = retry_tvpa_category_issues
                     # Preserve meta_tvpa_issues (from seo_title/seo_description), update body portion
-                    tvpa_flavour_issues = retry_body_tvpa_issues + meta_tvpa_issues
+                    tvpa_flavour_issues = list(dict.fromkeys(retry_body_tvpa_issues + meta_tvpa_issues))
                 generated_fields["body"]["value"] = retry_body
                 review_actions["body"] = retry_result.get("review_action", "")
                 body_retried = True
@@ -959,7 +1028,34 @@ def generate_recommendation(
     )
 
     from shopifyseo.seo_quality import validate_metadata
-    validate_metadata(object_type, recommendation)
+    try:
+        validate_metadata(object_type, recommendation)
+    except ValueError as exc:
+        # Validation failed - save as error status, not stuck in 'generating'
+        logger.error(f"Final validation failed for {object_type}/{handle}: {exc}")
+        error_details = _build_error_details(
+            recommendation,
+            _provider_display(generation_provider, generation_model),
+            prompt_version,
+            requested_prompt_version,
+            prompt_profile,
+            str(exc),
+            context,
+        )
+        insert_recommendation_record(
+            conn,
+            object_type=object_type,
+            handle=handle,
+            status="error",
+            priority=context["fact"]["priority"],
+            summary=recommendation.get("seo_title") or f"Validation failed for {handle}",
+            details=error_details,
+            source="dashboard_ai",
+            model=f"{_provider_display(generation_provider, generation_model)}+{_provider_display(review_provider, review_model)}",
+            prompt_version=prompt_version,
+            error_message=str(exc),
+        )
+        raise RuntimeError(str(exc)) from exc
 
     recommendation["_meta"] = {
         "generation_model": _provider_display(generation_provider, generation_model),
@@ -982,6 +1078,17 @@ def generate_recommendation(
     # passed is False if: score below floor, spec claim issues, or TVPA category-group issues
     # Style-group TVPA issues are warnings only and do not flip passed
     qa_passed = qa_score >= qa_floor and not spec_claim_issues and not tvpa_category_issues
+    
+    # Collect warnings (non-blocking issues)
+    from .qa import get_product_seo_title_warnings, get_field_warnings
+    title_warnings: list[str] = []
+    meta_strength_warnings: list[str] = []
+    if object_type == "product":
+        title_warnings = get_product_seo_title_warnings(recommendation["seo_title"])
+        _, meta_strength_warnings = get_field_warnings(
+            object_type, "seo_description", recommendation["seo_description"], context
+        )
+    
     recommendation["_qa"] = {
         "score": round(qa_score, 2),
         "floor": qa_floor,
@@ -994,6 +1101,9 @@ def generate_recommendation(
         "description_retry_count": description_retry_count,
         "description_length_repaired": description_length_repaired,
         "body_retried": body_retried,
+        "warnings": title_warnings + meta_strength_warnings,
+        "title_length_warnings": title_warnings,
+        "meta_strength_warnings": meta_strength_warnings,
     }
     priority = context["fact"]["priority"]
     insert_recommendation_record(
@@ -1080,6 +1190,9 @@ def generate_field_recommendation(
     if opportunity_context:
         prompt_context_precomputed["opportunity_task"] = opportunity_context
 
+    tvpa_flavour_warnings: list[str] = []
+    flavour_strength_warnings: list[str] = []
+    
     try:
         result = _generate_single_field_core(
             settings=settings,
@@ -1099,8 +1212,103 @@ def generate_field_recommendation(
         if field == "body":
             final_value = ensure_link_titles(final_value, conn)
         review_action = result["review_action"]
+        
+        # TVPA check for regenerate-field (products, collections, blog_articles)
+        if object_type in ("product", "collection", "blog_article") and field in REGENERABLE_FIELDS:
+            tvpa_allowed = _tvpa_allowed_names(context, object_type)
+            tvpa_category_issues = _tvpa_category_issues(final_value, tvpa_allowed)
+            
+            # Also get style-only warnings
+            from .tvpa_flavour import tvpa_flavour_matches
+            all_matches = tvpa_flavour_matches(final_value, allowed_names=tvpa_allowed)
+            style_issues = [
+                f"TVPA style wording: '{m['term']}' ({m['key']})"
+                for m in all_matches if m["group"] == "style"
+            ]
+            
+            if tvpa_category_issues:
+                # Retry once with TVPA feedback
+                logger.info(f"TVPA category issues in regenerated {field} for {object_type}/{handle}, retrying once")
+                tvpa_retry_feedback = _build_tvpa_retry_feedback(final_value, tvpa_allowed, field)
+                
+                retry_result = _generate_single_field_core(
+                    settings=settings,
+                    context=context,
+                    object_type=object_type,
+                    field=field,
+                    accepted_fields=accepted_fields,
+                    prompt_context_precomputed=prompt_context_precomputed,
+                    signal_narrative_precomputed=signal_narrative_precomputed,
+                    retry_feedback=tvpa_retry_feedback,
+                    progress_callback=progress_callback,
+                    cancel_callback=cancel_callback,
+                    step_index=2,
+                    step_total=3,
+                    conn=conn,
+                )
+                retry_value = retry_result["value"]
+                if field == "body":
+                    retry_value = ensure_link_titles(retry_value, conn)
+                
+                retry_tvpa_category_issues = _tvpa_category_issues(retry_value, tvpa_allowed)
+                
+                # Accept retry only if it has fewer category issues
+                if len(retry_tvpa_category_issues) < len(tvpa_category_issues):
+                    final_value = retry_value
+                    result = retry_result
+                    review_action = retry_result["review_action"]
+                    tvpa_category_issues = retry_tvpa_category_issues
+                    # Recalculate style warnings for retry value
+                    all_matches = tvpa_flavour_matches(final_value, allowed_names=tvpa_allowed)
+                    style_issues = [
+                        f"TVPA style wording: '{m['term']}' ({m['key']})"
+                        for m in all_matches if m["group"] == "style"
+                    ]
+                    logger.info(f"TVPA retry accepted for {field} ({object_type}/{handle})")
+                else:
+                    logger.info(f"TVPA retry not accepted for {field} ({object_type}/{handle})")
+                
+                # If category issues still remain after retry, reject
+                if tvpa_category_issues:
+                    error_msg = f"TVPA flavour wording in regenerated {field}: {', '.join(tvpa_category_issues)}"
+                    raise RecommendationValidationError(error_msg)
+            
+            # Style-only issues are warnings, not rejections
+            tvpa_flavour_warnings = style_issues
     except AICancelledError:
         raise
+    except RecommendationValidationError as exc:
+        # Re-raise validation errors (including TVPA rejections) after logging
+        error_message = str(exc)
+        logger.error(
+            f"Single field regeneration validation failed: object_type={object_type}, handle={handle}, field={field}: {error_message}",
+            exc_info=True,
+        )
+        insert_recommendation_record(
+            conn,
+            object_type=object_type,
+            handle=handle,
+            status="error",
+            priority=priority,
+            summary=f"Single-field regeneration failed for {handle}",
+            details=_build_single_field_error_details(
+                field=field,
+                value=accepted_fields.get(field, ""),
+                accepted_fields=accepted_fields,
+                model=f"{_provider_display(generation_provider, generation_model)}+{_provider_display(review_provider, review_model)}",
+                prompt_version=prompt_version,
+                requested_prompt_version=requested_prompt_version,
+                prompt_profile=prompt_profile,
+                error_message=error_message,
+                context=context,
+                review_action="failed",
+            ),
+            source="dashboard_ai",
+            model=f"{_provider_display(generation_provider, generation_model)}+{_provider_display(review_provider, review_model)}",
+            prompt_version=prompt_version,
+            error_message=error_message,
+        )
+        raise RuntimeError(error_message) from exc
     except Exception as exc:
         error_message = _friendly_ai_error(exc) if isinstance(exc, Exception) else str(exc)
         logger.error(
@@ -1143,6 +1351,11 @@ def generate_field_recommendation(
         )
         raise RuntimeError(error_message) from exc
 
+    # Collect warnings (not errors)
+    from .qa import get_field_warnings
+    general_warnings, strength_warnings = get_field_warnings(object_type, field, final_value, context)
+    flavour_strength_warnings = strength_warnings
+
     _emit_progress(
         progress_callback,
         stage=f"field_complete_{field}",
@@ -1151,11 +1364,15 @@ def generate_field_recommendation(
         model=_provider_display(generation_provider, generation_model),
         message=f"Generated {field.replace('_', ' ')}",
         field_complete=field,
-        field_value=result["value"],
+        field_value=final_value,
     )
 
     return {
         **result,
+        "value": final_value,
+        "warnings": general_warnings,
+        "tvpa_flavour_warnings": tvpa_flavour_warnings,
+        "flavour_strength_warnings": flavour_strength_warnings,
     }
 
 

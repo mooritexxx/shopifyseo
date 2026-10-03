@@ -12,6 +12,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`preview_only` flag for manual-weave.** `POST /api/internal-links/suggestions/{id}/manual-weave` accepts an optional `preview_only: true` flag that validates the edit and returns a preview without persisting to the database. When enabled, the response includes `preview_only: true` and `preview_token: null`. Preview-only runs the same pending-snapshot check as a real submit (409 if a write is in progress).
 
+- **Single-field regenerate now runs TVPA QA with retry-once-then-reject.** For products, collections, and blog articles, `generate_field_recommendation` (single-field regenerate) now checks the generated content for TVPA flavour violations. Category-group violations (candy, dessert, soda, energy drinks, cannabis) trigger one retry with corrective feedback; if violations persist, the request is rejected with a `RuntimeError`. Style-group violations (nostalgic, treat, testimonial, lifestyle) are returned as warnings only in the new `tvpa_flavour_warnings` field. Full generation already had this check; this extends it to single-field regeneration.
+
+- **Product SEO titles are now deterministic: `<product name> | Vapely Canada`.** No AI is called for product `seo_title` generation — the title is built programmatically from the product name. This ensures the full product name is always preserved word-for-word, including separators like " - " and words like "Disposable Vape". Nothing is added (no '20mg' unless it's in the product name) and nothing is truncated. Titles over 60 characters produce a non-blocking warning. This applies to new AI copy only; existing live titles are not modified. **Product SEO titles are never auto-applied** — they are stored as pending recommendations only, requiring explicit manual apply.
+
+- **Product meta descriptions must contain the full flavour name.** `validate_single_field` now checks that product `seo_description` contains the flavour extracted from the product title. Missing flavour raises a validation error, triggering the retry loop. Missing nicotine strength is a warning only (recorded in `flavour_strength_warnings`). Flavour matching is case-insensitive with `&` ≡ `and` and whitespace collapsed.
+
+- **New module `shopifyseo/dashboard_ai_engine_parts/product_name_tokens.py`** provides pure functions for deterministic SEO title building and flavour/strength token extraction: `RequiredTokens`, `required_product_name_tokens`, `build_deterministic_seo_title`, `check_seo_title_format`, `check_meta_description_tokens`.
+
+- **Refactored TVPA helpers** extracted from inline code in `generation.py`: `_tvpa_allowed_names(context, object_type)` builds the allowlist, `_tvpa_category_issues(text, allowed_names)` returns category-group violations, and `_build_tvpa_retry_feedback(text, allowed_names, field)` constructs corrective feedback. Full generation calls these helpers instead of inline logic.
+
+- **`FieldRegenerateResult` schema** gains `tvpa_flavour_warnings: list[str]`, `flavour_strength_warnings: list[str]`, and `warnings: list[str]` (backward compatible, default empty lists).
+
 - **Manual-weave endpoint for ai_woven internal-link suggestions.** `POST /api/internal-links/suggestions/{id}/manual-weave` accepts a hand-written sentence addition without running AI generation. The addition must be append-only (no changes to the original sentence), contain exactly one `<a>` link to the suggestion target, pass content compliance checks (anchor quality, numbers, banned wording, stock/availability claims, TVPA flavour), and respect the 8-link cap. Returns a preview token for the standard apply flow. No AI or LLM code path is reachable from this endpoint.
 
 ### Fixed

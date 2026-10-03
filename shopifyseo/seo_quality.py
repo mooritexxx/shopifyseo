@@ -4,6 +4,8 @@ from .dashboard_ai_engine_parts.config import (
     DESCRIPTION_HARD_MIN, DESCRIPTION_TARGET_MIN, DESCRIPTION_LIMIT,
 )
 
+PRODUCT_SEO_TITLE_WARNING_THRESHOLD = 60
+
 
 def quality_policy(kind):
     return {
@@ -13,12 +15,31 @@ def quality_policy(kind):
 
 
 def metadata_issues(kind, fields):
+    """Return issues for metadata fields.
+    
+    For product seo_title: length limits are NEVER enforced as errors.
+    Over 60 chars is a warning only. The full product name must be preserved.
+    For other object types and fields: enforces the standard limits.
+    """
     issues = []
     for field, rule in quality_policy(kind).items():
         if field not in fields:
             continue
         length = len(str(fields[field] or '').strip())
         label = field.replace('_', ' ').capitalize()
+        
+        # Product SEO titles have special rules: NEVER fail on length
+        if kind == 'product' and field == 'seo_title':
+            # Only a warning if over 60 chars, never an error
+            if length > PRODUCT_SEO_TITLE_WARNING_THRESHOLD:
+                issues.append({
+                    'field': field,
+                    'severity': 'warning',
+                    'message': f"{label}: {length} characters exceeds {PRODUCT_SEO_TITLE_WARNING_THRESHOLD}. May be truncated in search results."
+                })
+            continue
+        
+        # Standard rules for other fields and object types
         if length < rule['minimum'] or length > rule['maximum']:
             issues.append({'field': field, 'severity': 'error', 'message': f"{label} too {'short' if length < rule['minimum'] else 'long'} ({length} characters; required {rule['minimum']}–{rule['maximum']})."})
         elif length < rule['target']:

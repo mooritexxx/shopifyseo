@@ -462,12 +462,13 @@ def test_generate_single_field_core_preserves_tvpa_feedback():
         received_feedback.append(kwargs.get("retry_feedback", ""))
         # Return a value that triggers metadata issues on first call
         if call_count[0] == 1:
-            return {"value": "x" * 10}  # Too short, will trigger metadata issues
+            return {"value": "x" * 10}  # Too short, will trigger error-severity metadata issues
         return {"value": "A great product description that meets length requirements."}
     
     def mock_metadata_issues(obj_type, data):
         if call_count[0] == 1:
-            return [{"message": "Description too short"}]
+            # Must include severity='error' to trigger retry (warnings don't trigger retries)
+            return [{"field": "seo_description", "severity": "error", "message": "Description too short"}]
         return []
     
     with patch("shopifyseo.dashboard_ai_engine_parts.generation._generate_single_field_attempt", mock_attempt):

@@ -24,7 +24,7 @@ from .commerce_heading_gate import (
     COMMERCE_HEADING_PROMPT_RULE,
     repair_commerce_headings,
 )
-from .tvpa_flavour import TVPA_FLAVOUR_RULE
+from .tvpa_flavour import TVPA_FLAVOUR_RULE, split_tvpa_gaps
 
 _A_BODY_TAG_RE = re.compile(r"(?is)<a\s+([^>]+)>(.*?)</a>")
 
@@ -2551,8 +2551,7 @@ def generate_article_draft(
             # Split TVPA gaps from hard-fail gaps inside the loop. TVPA gaps are warnings
             # only — repairs can't remove an offending sentence (they are append-only),
             # so burning repair calls on TVPA-only articles is wasteful.
-            tvpa_w = [g for g in gaps if g.startswith("TVPA flavour wording: ")]
-            hard = [g for g in gaps if not g.startswith("TVPA flavour wording: ")]
+            tvpa_w, hard = split_tvpa_gaps(gaps)
             _save_validation_checkpoint(result_local, body, {
                 'ok': False, 'pending': False, 'gaps': gaps, 'repairs': attempt,
                 'had_faq_candidates': had_faq_candidates, 'faq_candidates_rejected': faq_candidates_rejected,
@@ -2602,8 +2601,7 @@ def generate_article_draft(
             body = _sanitize_body(body)
         final_gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
         # Split TVPA flavour gaps from hard-fail gaps at exit too.
-        tvpa_flavour_warnings = [g for g in final_gaps if g.startswith("TVPA flavour wording: ")]
-        hard_fail_gaps = [g for g in final_gaps if not g.startswith("TVPA flavour wording: ")]
+        tvpa_flavour_warnings, hard_fail_gaps = split_tvpa_gaps(final_gaps)
         if hard_fail_gaps:
             raise RuntimeError(
                 "Article draft failed compliance after targeted repairs: " + " | ".join(hard_fail_gaps)

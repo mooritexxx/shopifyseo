@@ -17,10 +17,15 @@ from typing import Iterable
 
 __all__ = [
     "TVPA_FLAVOUR_RULE",
+    "TVPA_GAP_PREFIX",
     "tvpa_flavour_matches",
     "tvpa_flavour_issue_messages",
     "extract_flavour_from_title",
+    "split_tvpa_gaps",
 ]
+
+# Prefix used in compliance gap messages for TVPA flavour issues
+TVPA_GAP_PREFIX = "TVPA flavour wording: "
 
 TVPA_FLAVOUR_RULE = (
     "Flavour compliance (Canada Tobacco and Vaping Products Act): describe flavours only with plain fruit, "
@@ -358,3 +363,19 @@ def extract_flavour_from_title(title: str) -> str | None:
     # Strip trailing product suffixes
     flavour_part = _PRODUCT_SUFFIXES.sub("", flavour_part).strip()
     return flavour_part if flavour_part else None
+
+
+def split_tvpa_gaps(gaps: list[str]) -> tuple[list[str], list[str]]:
+    """Split compliance gaps into TVPA warnings and hard-fail gaps.
+    
+    Args:
+        gaps: List of compliance gap strings from validation.
+        
+    Returns:
+        Tuple of (tvpa_warnings, hard_gaps) where:
+        - tvpa_warnings: gaps starting with TVPA_GAP_PREFIX (warnings only)
+        - hard_gaps: all other gaps (require repair or cause failure)
+    """
+    tvpa = [g for g in gaps if g.startswith(TVPA_GAP_PREFIX)]
+    hard = [g for g in gaps if not g.startswith(TVPA_GAP_PREFIX)]
+    return tvpa, hard

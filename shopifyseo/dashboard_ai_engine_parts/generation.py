@@ -53,6 +53,28 @@ from ._article_draft import (
 )
 
 
+def _body_retry_acceptable(
+    body_score: float,
+    retry_body_score: float,
+    spec_claim_issues: list,
+    retry_spec_issues: list,
+    tvpa_category_issues: list,
+    retry_tvpa_category_issues: list,
+) -> bool:
+    """Determine if a body retry should be accepted.
+    
+    Accept only if neither TVPA hit count nor spec issues get worse,
+    AND at least one metric improves (score, spec issues, or TVPA issues).
+    """
+    tvpa_not_worse = len(retry_tvpa_category_issues) <= len(tvpa_category_issues)
+    spec_not_worse = len(retry_spec_issues) <= len(spec_claim_issues)
+    something_improved = (
+        (retry_body_score > body_score) or
+        (len(retry_spec_issues) < len(spec_claim_issues)) or
+        (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
+    )
+    return tvpa_not_worse and spec_not_worse and something_improved
+
 
 def _emit_progress(progress_callback: ProgressCallback | None, **payload) -> None:
     if progress_callback is not None:
@@ -899,14 +921,11 @@ def generate_recommendation(
 
             # Accept retry only if neither TVPA hit count nor spec issues get worse,
             # AND at least one metric improves (score, spec issues, or TVPA issues)
-            tvpa_not_worse = len(retry_tvpa_category_issues) <= len(tvpa_category_issues)
-            spec_not_worse = len(retry_spec_issues) <= len(spec_claim_issues)
-            something_improved = (
-                (retry_body_score > body_score) or
-                (len(retry_spec_issues) < len(spec_claim_issues)) or
-                (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
+            retry_is_better = _body_retry_acceptable(
+                body_score, retry_body_score,
+                spec_claim_issues, retry_spec_issues,
+                tvpa_category_issues, retry_tvpa_category_issues,
             )
-            retry_is_better = tvpa_not_worse and spec_not_worse and something_improved
             if retry_is_better:
                 recommendation["body"] = retry_body
                 body_score = retry_body_score

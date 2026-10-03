@@ -364,57 +364,41 @@ def test_article_draft_system_prompts_contain_rule():
 # B1: TVPA-only body passes on attempt 0 with zero repair calls
 # ---------------------------------------------------------------------------
 
-def test_tvpa_only_gaps_pass_without_repair():
-    """Article with only TVPA gaps should pass without calling repair (B1 fix).
+def test_split_tvpa_gaps():
+    """split_tvpa_gaps should correctly separate TVPA warnings from hard gaps (B1 fix).
     
-    This test verifies the B1 fix by:
-    1. Creating gaps that include TVPA warnings but no hard gaps
-    2. Running the split logic that the real code uses
-    3. Confirming that repair would not be called for TVPA-only issues
+    This test uses the real split_tvpa_gaps helper from tvpa_flavour.
     """
-    # Simulate gaps returned by _compliance_gaps - only TVPA gaps, no hard gaps
-    gaps = ["TVPA flavour wording: 'candy' (candy) in: 'A candy-like taste.'"]
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import split_tvpa_gaps, TVPA_GAP_PREFIX
     
-    # Import the actual validation function to verify TVPA gaps are detected
-    body_with_tvpa_issue = "<p>A candy-like berry essence.</p>" + "<p>More content.</p>" * 50
-    from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
-        validate_article_draft_compliance,
-    )
+    # Test with mixed gaps
+    gaps = [
+        "TVPA flavour wording: 'candy' (candy) in: 'A candy-like taste.'",
+        "Missing required link to /collections/foo",
+        "TVPA flavour wording: 'dessert' (dessert_baked) in: 'A dessert-inspired blend.'",
+        "Body is too short",
+    ]
     
-    # Get actual gaps from the real compliance function
-    actual_gaps = validate_article_draft_compliance(
-        body_html=body_with_tvpa_issue,
-        require_faqpage_ld=False,
-        secondary_urls=[],
-        primary_keyword_for_body=None,
-        path_to_canonical={},
-        check_tvpa_flavour=True,
-    )
+    tvpa_w, hard = split_tvpa_gaps(gaps)
     
-    # Filter to just TVPA gaps
-    actual_tvpa_gaps = [g for g in actual_gaps if g.startswith("TVPA flavour wording: ")]
-    assert len(actual_tvpa_gaps) >= 1, "Should detect TVPA gap in test body"
+    assert len(tvpa_w) == 2, f"Expected 2 TVPA warnings, got {len(tvpa_w)}"
+    assert len(hard) == 2, f"Expected 2 hard gaps, got {len(hard)}"
+    assert all(g.startswith(TVPA_GAP_PREFIX) for g in tvpa_w)
+    assert not any(g.startswith(TVPA_GAP_PREFIX) for g in hard)
     
-    # Now verify the B1 fix logic: split gaps inside the loop
-    tvpa_w = [g for g in actual_gaps if g.startswith("TVPA flavour wording: ")]
-    hard = [g for g in actual_gaps if not g.startswith("TVPA flavour wording: ")]
+    # Test with TVPA-only gaps
+    tvpa_only_gaps = [
+        "TVPA flavour wording: 'candy' (candy) in: 'A candy-like taste.'",
+    ]
+    tvpa_w2, hard2 = split_tvpa_gaps(tvpa_only_gaps)
     
-    # Key assertion: TVPA-only means `not hard`, so we pass without repair
-    # The real code does: `if not hard: <pass branch>` instead of `if not gaps:`
-    # This test confirms that with TVPA-only gaps:
-    # - `hard` is empty (no hard gaps requiring repair)
-    # - The pass branch would be taken (no repair calls)
+    assert len(tvpa_w2) == 1
+    assert len(hard2) == 0, "TVPA-only gaps should have no hard gaps"
     
-    # Note: we may have other non-TVPA gaps due to the minimal test body,
-    # but the key point is that TVPA gaps alone don't trigger repair
-    if hard:
-        # If there are hard gaps, that's expected for minimal test body
-        # The B1 fix ensures TVPA gaps are not counted as hard gaps
-        pass
-    
-    # Verify TVPA gaps exist and are correctly classified
-    assert len(tvpa_w) >= 1, "Expected at least one TVPA warning"
-    assert all(g.startswith("TVPA flavour wording: ") for g in tvpa_w), "TVPA gaps should be correctly identified"
+    # Test with no gaps
+    tvpa_w3, hard3 = split_tvpa_gaps([])
+    assert tvpa_w3 == []
+    assert hard3 == []
 
 
 # ---------------------------------------------------------------------------
@@ -511,42 +495,12 @@ def test_generate_single_field_core_preserves_tvpa_feedback():
 def test_body_retry_rejects_worse_tvpa_issues():
     """Body retry should be rejected if TVPA issues get worse (N1 fix).
     
-    This test exercises the real retry acceptance logic used in generation.py.
+    This test uses the real _body_retry_acceptable helper from generation.py.
     """
-    from unittest.mock import patch, MagicMock
+    from shopifyseo.dashboard_ai_engine_parts.generation import _body_retry_acceptable
     
-    # Create a function that implements the real retry acceptance logic
-    # from generation.py (extracted for testability)
-    def evaluate_retry_acceptance(
-        body_score: float,
-        retry_body_score: float,
-        spec_claim_issues: list,
-        retry_spec_issues: list,
-        tvpa_category_issues: list,
-        retry_tvpa_category_issues: list,
-    ) -> tuple[bool, bool]:
-        """Return (old_logic_accepts, new_logic_accepts) for comparison."""
-        # Old logic (OR): would accept if ANY metric improved
-        old_logic_accepts = (
-            (retry_body_score > body_score) or
-            (len(retry_spec_issues) < len(spec_claim_issues)) or
-            (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
-        )
-        
-        # New logic (N1 fix): reject if TVPA or spec gets worse
-        tvpa_not_worse = len(retry_tvpa_category_issues) <= len(tvpa_category_issues)
-        spec_not_worse = len(retry_spec_issues) <= len(spec_claim_issues)
-        something_improved = (
-            (retry_body_score > body_score) or
-            (len(retry_spec_issues) < len(spec_claim_issues)) or
-            (len(retry_tvpa_category_issues) < len(tvpa_category_issues))
-        )
-        new_logic_accepts = tvpa_not_worse and spec_not_worse and something_improved
-        
-        return old_logic_accepts, new_logic_accepts
-    
-    # Test case: TVPA gets worse, but score and spec improve
-    old_accepts, new_accepts = evaluate_retry_acceptance(
+    # Test case: TVPA gets worse, but score and spec improve - should REJECT
+    result = _body_retry_acceptable(
         body_score=0.6,
         retry_body_score=0.7,  # Better
         spec_claim_issues=["issue1"],
@@ -554,11 +508,21 @@ def test_body_retry_rejects_worse_tvpa_issues():
         tvpa_category_issues=["tvpa1"],
         retry_tvpa_category_issues=["tvpa1", "tvpa2"],  # Worse
     )
-    assert old_accepts, "Old logic should have accepted (score and spec improved)"
-    assert not new_accepts, "New logic should reject because TVPA got worse"
+    assert not result, "Should reject because TVPA got worse"
+    
+    # Test case: Spec gets worse, but score and TVPA improve - should REJECT
+    result2 = _body_retry_acceptable(
+        body_score=0.6,
+        retry_body_score=0.7,  # Better
+        spec_claim_issues=[],
+        retry_spec_issues=["new_issue"],  # Worse
+        tvpa_category_issues=["tvpa1"],
+        retry_tvpa_category_issues=[],  # Better
+    )
+    assert not result2, "Should reject because spec got worse"
     
     # Test case: All improve - should accept
-    old_accepts2, new_accepts2 = evaluate_retry_acceptance(
+    result3 = _body_retry_acceptable(
         body_score=0.6,
         retry_body_score=0.7,
         spec_claim_issues=["issue1"],
@@ -566,10 +530,10 @@ def test_body_retry_rejects_worse_tvpa_issues():
         tvpa_category_issues=["tvpa1"],
         retry_tvpa_category_issues=[],
     )
-    assert new_accepts2, "Should accept when all metrics improve or stay same"
+    assert result3, "Should accept when all metrics improve or stay same"
     
     # Test case: Score improves, others stay same - should accept
-    old_accepts3, new_accepts3 = evaluate_retry_acceptance(
+    result4 = _body_retry_acceptable(
         body_score=0.6,
         retry_body_score=0.8,
         spec_claim_issues=[],
@@ -577,7 +541,18 @@ def test_body_retry_rejects_worse_tvpa_issues():
         tvpa_category_issues=[],
         retry_tvpa_category_issues=[],
     )
-    assert new_accepts3, "Should accept when score improves and others are unchanged"
+    assert result4, "Should accept when score improves and others are unchanged"
+    
+    # Test case: Nothing improves - should reject
+    result5 = _body_retry_acceptable(
+        body_score=0.7,
+        retry_body_score=0.7,  # Same
+        spec_claim_issues=["issue1"],
+        retry_spec_issues=["issue1"],  # Same
+        tvpa_category_issues=["tvpa1"],
+        retry_tvpa_category_issues=["tvpa1"],  # Same
+    )
+    assert not result5, "Should reject when nothing improves"
 
 
 # ---------------------------------------------------------------------------
@@ -663,3 +638,148 @@ def test_b3_whole_word_matching():
     # "a" should be ignored (less than 3 chars)
     matches = tvpa_flavour_matches("It tastes like candy.", allowed_names=["a"])
     assert len(matches) >= 1, "Should flag 'candy' even with 'a' allowlisted"
+
+
+# ---------------------------------------------------------------------------
+# Test _finalize_and_repair_body loop behavior
+# ---------------------------------------------------------------------------
+
+def test_finalize_and_repair_body_tvpa_only_no_repair():
+    """_finalize_and_repair_body with TVPA-only gaps should pass with 0 repair calls.
+    
+    This simulates the real loop behavior with stubbed compliance check and repair.
+    """
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import split_tvpa_gaps
+    
+    # Track repair calls
+    repair_calls = []
+    
+    def mock_compliance_gaps(body, *, faq_candidates_rejected=False):
+        # Return TVPA-only gaps
+        return ["TVPA flavour wording: 'candy' (candy) in: 'A candy-like taste.'"]
+    
+    def mock_append_repair_html(body, gaps, title):
+        repair_calls.append(gaps)
+        return body + "<p>Repaired</p>"
+    
+    # Simulate the _finalize_and_repair_body loop
+    body = "<p>Test body with candy-like content.</p>"
+    for attempt in range(3):
+        gaps = mock_compliance_gaps(body)
+        tvpa_w, hard = split_tvpa_gaps(gaps)
+        
+        if not hard:
+            # Pass: no hard gaps
+            validation = {"ok": True, "repairs": attempt, "tvpa_flavour_warnings": tvpa_w}
+            break
+        
+        if attempt >= 2:
+            break
+        
+        # Only repair hard gaps
+        body = mock_append_repair_html(body, hard, "Test Title")
+    
+    # Verify: 0 repair calls, validation['repairs'] == 0
+    assert len(repair_calls) == 0, f"Expected 0 repair calls, got {len(repair_calls)}"
+    assert validation["repairs"] == 0, f"Expected repairs=0, got {validation['repairs']}"
+    assert len(validation["tvpa_flavour_warnings"]) == 1
+
+
+def test_finalize_and_repair_body_hard_gap_calls_repair():
+    """_finalize_and_repair_body with hard gaps should call repair.
+    
+    This simulates the real loop behavior with stubbed compliance check and repair.
+    """
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import split_tvpa_gaps
+    
+    # Track repair calls
+    repair_calls = []
+    call_count = [0]
+    
+    def mock_compliance_gaps(body, *, faq_candidates_rejected=False):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call: return one hard gap
+            return ["Missing required link to /collections/foo"]
+        # After repair: return no gaps
+        return []
+    
+    def mock_append_repair_html(body, gaps, title):
+        repair_calls.append(gaps)
+        return body + "<p>Repaired link</p>"
+    
+    # Simulate the _finalize_and_repair_body loop
+    body = "<p>Test body.</p>"
+    validation = None
+    for attempt in range(3):
+        gaps = mock_compliance_gaps(body)
+        tvpa_w, hard = split_tvpa_gaps(gaps)
+        
+        if not hard:
+            # Pass: no hard gaps
+            validation = {"ok": True, "repairs": attempt, "tvpa_flavour_warnings": tvpa_w}
+            break
+        
+        if attempt >= 2:
+            break
+        
+        # Only repair hard gaps
+        body = mock_append_repair_html(body, hard, "Test Title")
+    
+    # Verify: 1 repair call (hard gap), then pass on attempt 1
+    assert len(repair_calls) == 1, f"Expected 1 repair call, got {len(repair_calls)}"
+    assert repair_calls[0] == ["Missing required link to /collections/foo"]
+    assert validation is not None
+    assert validation["repairs"] == 1, f"Expected repairs=1, got {validation['repairs']}"
+
+
+# ---------------------------------------------------------------------------
+# Test variant title allowlist from detail_payload['variants']
+# ---------------------------------------------------------------------------
+
+def test_variant_title_allowlist_from_detail_payload():
+    """Variant titles from detail_payload['variants'] should be allowlisted (but not hide comparisons)."""
+    from shopifyseo.dashboard_ai_engine_parts.tvpa_flavour import extract_flavour_from_title
+    
+    # Simulate the variant allowlist building logic from generation.py
+    detail_payload = {
+        "product": {"title": "ELFBAR BC5000 - Bubblegum Ice Disposable Vape"},
+        "variants": [
+            {"title": "3mg Nicotine - Bubblegum Ice"},
+            {"title": "6mg Nicotine - Bubblegum Ice"},
+        ],
+    }
+    
+    # Build allowlist as generation.py does
+    tvpa_allowed_names = []
+    primary = detail_payload.get("product") or {}
+    if primary.get("title"):
+        title_str = str(primary["title"])
+        tvpa_allowed_names.append(title_str)
+        flavour = extract_flavour_from_title(title_str)
+        if flavour:
+            tvpa_allowed_names.append(flavour)
+    
+    # Note: variants come from detail_payload, not primary
+    variants = detail_payload.get("variants") or []
+    for var in variants:
+        if isinstance(var, dict) and var.get("title"):
+            var_title = str(var["title"])
+            tvpa_allowed_names.append(var_title)
+            var_flavour = extract_flavour_from_title(var_title)
+            if var_flavour:
+                tvpa_allowed_names.append(var_flavour)
+    
+    # The allowlist should contain the variant titles
+    assert "3mg Nicotine - Bubblegum Ice" in tvpa_allowed_names
+    assert "6mg Nicotine - Bubblegum Ice" in tvpa_allowed_names
+    
+    # Variant mention should be clean
+    body = "Choose the 3mg Nicotine variant for a smooth experience."
+    matches = tvpa_flavour_matches(body, allowed_names=tvpa_allowed_names)
+    assert matches == [], f"Should not flag variant mention: {matches}"
+    
+    # But comparison should still be flagged
+    body_comparison = "This tastes like bubblegum candy."
+    matches_comparison = tvpa_flavour_matches(body_comparison, allowed_names=tvpa_allowed_names)
+    assert len(matches_comparison) >= 1, "Should flag 'candy' comparison"

@@ -55,7 +55,7 @@ FastAPI's `/docs` and `/openapi.json` expose request schemas. Responses are `{ "
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/tasks/actors` | Fixed actor names and current caller; no credentials |
+| GET | `/api/tasks/actors` | Fixed actor names and current caller; requires `X-Task-Token` (unauthenticated requests return 401) |
 | GET | `/api/tasks` | Filters: `owner`, `status`, `stale`, `done_this_week`; `limit` 1–500 (default 100), `offset` |
 | POST | `/api/tasks` | Create; returns 201 and complete task |
 | GET | `/api/tasks/{id}` | Current task and version |

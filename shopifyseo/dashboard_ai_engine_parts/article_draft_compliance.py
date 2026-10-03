@@ -633,6 +633,8 @@ def validate_article_draft_compliance(
     linkable_product_handles: set[str] | frozenset[str] | None = None,
     store_hosts: tuple[str, ...] | list[str] | set[str] | frozenset[str] = (),
     check_commerce_headings: bool = False,
+    check_tvpa_flavour: bool = False,
+    tvpa_allowed_names: list[str] | tuple[str, ...] = (),
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
@@ -725,6 +727,13 @@ def validate_article_draft_compliance(
             "including every tag, quote, and whitespace — that length is measured exactly as Python `len(body)` "
             "on the full HTML string you return."
         )
+    # TVPA flavour compliance check (opt-in via check_tvpa_flavour)
+    if check_tvpa_flavour:
+        from .tvpa_flavour import tvpa_flavour_matches, tvpa_flavour_issue_messages
+        matches = tvpa_flavour_matches(body_html, allowed_names=tvpa_allowed_names)
+        if matches:
+            for msg in tvpa_flavour_issue_messages(matches):
+                gaps.append(msg)
     return gaps
 
 

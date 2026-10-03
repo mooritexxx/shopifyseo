@@ -489,3 +489,32 @@ def validate_body_spec_claims(
 
     passed = len(issues) == 0
     return passed, issues
+
+
+def validate_tvpa_flavour_claims(
+    text: str,
+    *,
+    allowed_names: list[str] | tuple[str, ...] = (),
+) -> tuple[bool, list[str]]:
+    """Validate text for TVPA flavour compliance violations.
+
+    Args:
+        text: The text or HTML to check.
+        allowed_names: Product/flavour names from the catalog that should not
+            trigger matches when used verbatim.
+
+    Returns:
+        (passed, issues) tuple. passed is True if no category-group violations
+        were found. issues is a list of human-readable TVPA issue messages.
+    """
+    from .tvpa_flavour import tvpa_flavour_matches, tvpa_flavour_issue_messages
+
+    matches = tvpa_flavour_matches(text, allowed_names=allowed_names)
+    if not matches:
+        return True, []
+
+    # Only category-group matches cause a failure; style-group matches are warnings
+    category_matches = [m for m in matches if m["group"] == "category"]
+    issues = tvpa_flavour_issue_messages(matches)
+    passed = len(category_matches) == 0
+    return passed, issues

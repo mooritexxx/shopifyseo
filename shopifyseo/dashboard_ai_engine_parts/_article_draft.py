@@ -24,6 +24,7 @@ from .commerce_heading_gate import (
     COMMERCE_HEADING_PROMPT_RULE,
     repair_commerce_headings,
 )
+from .tvpa_flavour import TVPA_FLAVOUR_RULE
 
 _A_BODY_TAG_RE = re.compile(r"(?is)<a\s+([^>]+)>(.*?)</a>")
 
@@ -1515,6 +1516,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     system_outline = (
@@ -1528,6 +1530,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     system_section = (
@@ -1546,6 +1549,7 @@ def generate_article_draft(
         f"{_serp_system_extra}"
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
+        + " " + TVPA_FLAVOUR_RULE
     )
 
     _serp_user_block = ""
@@ -2052,6 +2056,14 @@ def generate_article_draft(
         else 0
     )
 
+    # Build tvpa_allowed_names from link_targets titles and focus product titles
+    _tvpa_allowed_names: list[str] = []
+    for target in link_targets:
+        if target.get("title"):
+            _tvpa_allowed_names.append(str(target["title"]))
+    if primary_normalized and primary_normalized.get("title"):
+        _tvpa_allowed_names.append(str(primary_normalized["title"]))
+
     def _compliance_gaps(body_html: str, *, faq_candidates_rejected: bool = False) -> list[str]:
         gaps = validate_article_draft_compliance(
             body_html=body_html,
@@ -2069,6 +2081,8 @@ def generate_article_draft(
             linkable_product_handles=_linkable_product_snapshot if _linkable_product_snapshot else None,
             store_hosts=_store_hosts,
             check_commerce_headings=True,
+            check_tvpa_flavour=True,
+            tvpa_allowed_names=_tvpa_allowed_names,
         )
         if count_distinct_approved_product_links(body_html, path_to_canonical) < 3 and len(product_repair_targets) < 3:
             gaps.append(
@@ -2417,7 +2431,8 @@ def generate_article_draft(
                     "content": (
                         "Append only new HTML that fixes these validation gaps. Do not repeat existing sections. "
                         "Use the canonical SEO brief, the locked article title, and the current article memory. "
-                        "Return JSON with append_html only."
+                        "Return JSON with append_html only. "
+                        "Do not add flavour comparisons to candy, dessert, soda, energy drinks, or cannabis."
                         + COMMERCE_HEADING_PROMPT_RULE
                         + "\n\n"
                         f"Title: {title}\n"
@@ -2568,11 +2583,17 @@ def generate_article_draft(
             body = _append_repair_html(body, gaps, title)
             body = _sanitize_body(body)
         final_gaps = _compliance_gaps(body, faq_candidates_rejected=faq_candidates_rejected)
-        if final_gaps:
+        # Split TVPA flavour gaps from hard-fail gaps. TVPA gaps are warnings only —
+        # the prompt rule is the primary control for articles; repairs can't remove an
+        # offending sentence (they are append-only), so a hard fail would just kill
+        # expensive article jobs without a fix path.
+        tvpa_flavour_warnings = [g for g in final_gaps if g.startswith("TVPA flavour wording: ")]
+        hard_fail_gaps = [g for g in final_gaps if not g.startswith("TVPA flavour wording: ")]
+        if hard_fail_gaps:
             raise RuntimeError(
-                "Article draft failed compliance after targeted repairs: " + " | ".join(final_gaps)
+                "Article draft failed compliance after targeted repairs: " + " | ".join(hard_fail_gaps)
             )
-        validation = {"ok": True, "body_chars": len(body), "repairs": 3}
+        validation = {"ok": True, "body_chars": len(body), "repairs": 3, "tvpa_flavour_warnings": tvpa_flavour_warnings}
         _run_update(validation_summary_json=validation)
         return body, validation
 

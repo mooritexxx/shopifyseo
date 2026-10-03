@@ -517,7 +517,7 @@ def infer_product_intent(context: dict, country_code: str = "CA") -> dict:
     elif any(token in lowered_title for token in ["berry", "mango", "apple", "grape", "peach", "lemon", "banana", "cherry"]):
         flavor_family = "fruit"
     elif any(token in lowered_title for token in ["cola", "gummy", "candy", "bubblegum"]):
-        flavor_family = "candy"
+        flavor_family = "sweet"
     else:
         flavor_family = "other"
     return {

@@ -2,6 +2,7 @@ import json
 
 from .config import BODY_MIN_LENGTH, DESCRIPTION_HARD_MIN, DESCRIPTION_LIMIT, DESCRIPTION_TARGET_MAX, DESCRIPTION_TARGET_MIN, TITLE_HARD_MIN, TITLE_LIMIT, TITLE_TARGET_MIN
 from .context import _slim_keyword_context, condensed_context, curated_primary_object, infer_product_intent, json_list, prompt_context, signal_availability_summary, strip_html, word_count
+from .tvpa_flavour import TVPA_FLAVOUR_RULE
 
 _GSC_QUERY_HIGHLIGHTS_MAX = 3
 
@@ -629,7 +630,8 @@ def object_field_instructions(object_type: str, conn=None) -> str:
             "- tags: include must_consider keywords as tags where they fit the taxonomy\n"
             "The `already_present` list shows keywords already covered — do NOT repeat these unnecessarily. "
             "Readability and conversion always take priority over keyword density. "
-            "Do not repeat keywords unnaturally or force phrases where they break the reading flow."
+            "Do not repeat keywords unnaturally or force phrases where they break the reading flow.\n"
+            f"flavour_compliance: {TVPA_FLAVOUR_RULE}"
         )
     if object_type == "collection":
         bmin = BODY_MIN_LENGTH.get("collection", 220)
@@ -662,7 +664,8 @@ def object_field_instructions(object_type: str, conn=None) -> str:
             "- body: weave in as many must_consider phrases as fit naturally; prioritise those listed first\n"
             "The `already_present` list shows keywords already covered — do NOT repeat these unnecessarily. "
             "Readability and conversion always take priority over keyword density. "
-            "Do not repeat keywords unnaturally or force phrases where they break the reading flow."
+            "Do not repeat keywords unnaturally or force phrases where they break the reading flow.\n"
+            f"flavour_compliance: {TVPA_FLAVOUR_RULE}"
         )
     bmin_page = BODY_MIN_LENGTH.get("page", 300)
     page_like_body = (
@@ -692,6 +695,7 @@ def object_field_instructions(object_type: str, conn=None) -> str:
         "The `already_present` list shows keywords already covered — do NOT repeat these unnecessarily. "
         "Readability and conversion always take priority over keyword density. "
         "Do not repeat keywords unnaturally or force phrases where they break the reading flow.\n"
+        f"flavour_compliance: {TVPA_FLAVOUR_RULE}\n"
     )
     if object_type == "blog_article":
         return (
@@ -767,6 +771,9 @@ def single_field_specific_instructions(object_type: str, field: str, conn=None) 
             "Do not include internal links, workflow notes, or body-writing strategy in the output. "
             "Focus only on the strongest title based on the core product facts and accepted sibling fields."
         )
+    # For flavour-relevant fields, append the TVPA flavour compliance rule
+    if object_type in {"product", "collection", "blog_article"} and field in {"seo_title", "seo_description", "body", "title"}:
+        matched_lines.append(f"flavour_compliance: {TVPA_FLAVOUR_RULE}")
     return "\n".join(matched_lines) if matched_lines else instructions
 
 
@@ -1206,7 +1213,7 @@ def system_prompt(object_type: str, prompt_profile: str, conn=None) -> str:
     m = _market_ctx(conn)
 
     common = xml_block("role", f"You are the senior SEO strategist for {_brand}. You specialize in ranking product, collection, and brand pages for commercial-intent searches. You are not a generic copywriter. You optimize for the highest-likelihood ranking gains from the evidence provided.")
-    constraints = xml_block("constraints", f"Use only the provided facts. Do not invent data, rankings, product specs, shipping promises, or trust claims. Prefer exact commercial phrasing, strong transactional alignment, internal-link clarity, adult-consumer compliance, and valid JSON output only. Do not make health, smoking cessation, or medical claims. Do not recommend awkward repetition, title stuffing, unnatural {m['name']} repetition, redundant tags, or placeholders.")
+    constraints = xml_block("constraints", f"Use only the provided facts. Do not invent data, rankings, product specs, shipping promises, or trust claims. Prefer exact commercial phrasing, strong transactional alignment, internal-link clarity, adult-consumer compliance, and valid JSON output only. Do not make health, smoking cessation, or medical claims. Do not recommend awkward repetition, title stuffing, unnatural {m['name']} repetition, redundant tags, or placeholders. {TVPA_FLAVOUR_RULE}")
     eeat = xml_block("eeat", f"Write with store-level experience, expertise, authority, and trust. Use natural store voice such as {_brand}, we, or our when appropriate. Use correct product terminology from the provided specs. Weave in trust and buying signals naturally when supported, such as market relevance, authentic product sourcing, and shipping expectations.")
     geo = xml_block("geo", "Optimize body content for AI-search citability. Use an answer-first opening, question-based H2 or H3 headings where natural, and self-contained passages that can be extracted cleanly by AI Overviews or answer engines.")
     profile = xml_block("profile", profile_instructions(prompt_profile, object_type))
@@ -1229,7 +1236,7 @@ def review_system_prompt(conn=None) -> str:
 
     return "\n".join([
         xml_block("role", f"You are the QA reviewer for {_brand}'s SEO recommendation engine. You receive a draft recommendation generated by a junior model and decide for each field whether to APPROVE it as-is, IMPROVE it with targeted edits, or REWRITE it from scratch. You are the final editorial gate before recommendations are shown to the operator."),
-        xml_block("constraints", f"Preserve any field that is already strong. Only touch fields that have clear problems: generic phrasing, missed brand/flavor, length violations, weak {m['adjective']} targeting, spec-heavy body, or poor opening structure. Return valid JSON only. Do not invent data. Do not add health claims. Keep improvements grounded in the original context."),
+        xml_block("constraints", f"Preserve any field that is already strong. Only touch fields that have clear problems: generic phrasing, missed brand/flavor, length violations, weak {m['adjective']} targeting, spec-heavy body, or poor opening structure. Return valid JSON only. Do not invent data. Do not add health claims. {TVPA_FLAVOUR_RULE} Keep improvements grounded in the original context."),
         xml_block("output_format", "Return one JSON object with the same top-level keys as the input draft. For each field, return the final value (approved original or your improved version). Add a top-level key '_review' that is an object mapping each field name to one of: 'approved', 'improved', or 'rewritten'."),
     ])
 
@@ -1372,6 +1379,7 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 f"{m['spelling']} "
                 "Return valid JSON only."
                 + _market_block
+                + " " + TVPA_FLAVOUR_RULE
             )
         elif object_type == "collection":
             role = (
@@ -1386,7 +1394,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 + _RAG_INTERNAL_LINK_PREFERENCE
                 + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
-                "Return valid JSON only."
+                "Return valid JSON only. "
+                + TVPA_FLAVOUR_RULE
             )
         elif object_type == "blog_article":
             role = (
@@ -1401,7 +1410,8 @@ def field_system_prompt(object_type: str, field: str, prompt_profile: str, conn=
                 + _RAG_INTERNAL_LINK_PREFERENCE
                 + "Every `<a>` MUST include a `title` attribute set to the target page's title. "
                 "Do not make health, cessation, or medical claims. "
-                "Return valid JSON only."
+                "Return valid JSON only. "
+                + TVPA_FLAVOUR_RULE
             )
         else:
             role = (
@@ -1581,7 +1591,7 @@ def field_review_user_prompt(
                 "3. Flavour-led: flavour must be the primary merchandising story; specs should be supporting context only.\n"
                 "4. Links: every `<a href>` must exactly match a `url` from `approved_internal_link_targets` in <context> — reject invented URLs. "
                 "Avoid generic footer links like 'New Arrivals' or 'All Products' when better same-collection or category links exist in `related_content_examples`.\n"
-                "5. Compliance: no health claims, no cessation claims, no invented product specs or shipping promises.\n"
+                "5. Compliance: no health claims, no cessation claims, no invented product specs or shipping promises, and no flavour comparisons to candy, dessert/baked goods, soda, energy drinks or cannabis (see flavour compliance rule).\n"
                 "6. Spelling: must use Commonwealth English spelling throughout (e.g. 'flavour', 'vapour', 'colour', 'favourite') — reject American spellings.\n"
                 "7. No redundant puff count: if the product name includes a puff count (e.g. '10000'), do not repeat it redundantly in headings or body copy.\n"
                 "Approve if all seven checks pass. Improve or rewrite if any fail, correcting only the specific issue."
@@ -1593,7 +1603,7 @@ def field_review_user_prompt(
                 "2. Structure: scannable sections with H2 or H3 headings; clear category/hub intent.\n"
                 "3. Merchandising: copy should fit this collection specifically — not generic filler.\n"
                 "4. Links: every `<a href>` must exactly match a `url` from `approved_internal_link_targets` in <context> — reject invented URLs.\n"
-                "5. Compliance: no health claims, no cessation claims, no invented specs or shipping promises.\n"
+                "5. Compliance: no health claims, no cessation claims, no invented specs or shipping promises, and no flavour comparisons to candy, dessert/baked goods, soda, energy drinks or cannabis (see flavour compliance rule).\n"
                 "Approve if all five checks pass. Improve or rewrite if any fail, correcting only the specific issue."
             )
         else:
@@ -1603,7 +1613,7 @@ def field_review_user_prompt(
                 "2. Structure: scannable sections with H2 or H3 where appropriate; aligned to this page's purpose.\n"
                 "3. Specificity: copy should fit this page's intent — not generic product or category boilerplate.\n"
                 "4. Links: every `<a href>` must exactly match a `url` from `approved_internal_link_targets` in <context> — reject invented URLs.\n"
-                "5. Compliance: no health claims, no cessation claims, no invented facts.\n"
+                "5. Compliance: no health claims, no cessation claims, no invented facts, and no flavour comparisons to candy, dessert/baked goods, soda, energy drinks or cannabis (see flavour compliance rule).\n"
                 "Approve if all five checks pass. Improve or rewrite if any fail, correcting only the specific issue."
             )
     else:

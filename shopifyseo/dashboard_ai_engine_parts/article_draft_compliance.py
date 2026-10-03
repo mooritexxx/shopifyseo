@@ -499,6 +499,63 @@ def tier1_related_search_heading_gaps(body_html: str, queries: list[str]) -> lis
     return gaps
 
 
+def unlinkable_product_link_gaps(
+    body_html: str,
+    *,
+    linkable_handles: set[str] | frozenset[str],
+    store_hosts: tuple[str, ...] | list[str] | set[str] | frozenset[str] = (),
+) -> list[str]:
+    """Return a gap if the article links to inactive or unpublished products.
+
+    This checks product links in the body HTML against the set of linkable
+    product handles. A product is linkable when it is active, has a handle,
+    and has an Online Store URL. Stock/inventory is **never** checked.
+
+    Parameters
+    ----------
+    body_html : str
+        The article body HTML.
+    linkable_handles : set or frozenset of str
+        Handles of all linkable products (from product_linkability module).
+    store_hosts : tuple/list/set of str
+        Hosts (without scheme) that belong to the store. Case-insensitive.
+
+    Returns
+    -------
+    list[str]
+        A list containing at most one gap message if there are unlinkable
+        product links, or an empty list if all product links are valid.
+    """
+    from ..product_linkability import product_handle_from_href
+
+    hrefs = collect_hrefs(body_html)
+    unlinkable_paths: list[str] = []
+    seen: set[str] = set()
+
+    for href in hrefs:
+        handle = product_handle_from_href(href, store_hosts)
+        if handle is None:
+            continue
+        if handle in seen:
+            continue
+        seen.add(handle)
+        if handle not in linkable_handles:
+            path = f"/products/{handle}"
+            unlinkable_paths.append(path)
+
+    if not unlinkable_paths:
+        return []
+
+    paths_str = ", ".join(sorted(unlinkable_paths)[:5])
+    if len(unlinkable_paths) > 5:
+        paths_str += f" (+{len(unlinkable_paths) - 5} more)"
+
+    return [
+        f"Article links to inactive or unpublished products (not on the Online Store); "
+        f"remove or replace them: {paths_str}"
+    ]
+
+
 def count_storefront_internal_links(
     body_html: str,
     *,
@@ -573,6 +630,9 @@ def validate_article_draft_compliance(
     check_health_claims: bool = False,
     check_faq_questions: bool = False,
     target_brand: str = "",
+    linkable_product_handles: set[str] | frozenset[str] | None = None,
+    store_hosts: tuple[str, ...] | list[str] | set[str] | frozenset[str] = (),
+    check_commerce_headings: bool = False,
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
@@ -585,8 +645,22 @@ def validate_article_draft_compliance(
     sanitization. Guards against the failure mode where the writer hallucinated
     paths that ``sanitize_article_internal_links`` then stripped, leaving the
     article with fewer interlinks than planned.
+
+    ``linkable_product_handles`` (optional): when set, checks that all product
+    links in the body target linkable products (active, has handle, has Online
+    Store URL). Stock/inventory is never checked. Pass None to skip this check.
+
+    ``store_hosts`` (optional): store hostnames for product link validation.
+
+    ``check_commerce_headings`` (optional): when True, checks for stock-status
+    or bulk/wholesale H2 headings that should not appear in articles.
     """
     gaps: list[str] = []
+    if linkable_product_handles is not None:
+        gaps.extend(unlinkable_product_link_gaps(body_html, linkable_handles=linkable_product_handles, store_hosts=store_hosts))
+    if check_commerce_headings:
+        from .commerce_heading_gate import commerce_heading_gaps
+        gaps.extend(commerce_heading_gaps(body_html))
     if faq_candidates_rejected:
         gaps.append("All FAQ candidates were rejected by the final content filters; provide useful on-topic questions and answers.")
     if check_faq_questions:

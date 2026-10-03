@@ -85,12 +85,13 @@ def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle
     """Check if target exists, is published, and is reachable via Admin API.
     
     Phase A: Excludes api_unreachable collections to prevent Apply failures.
+
+    For products, uses the shared linkability rule from product_linkability module:
+    active status + handle + Online Store URL. Stock/inventory is never checked.
     """
     if t_type == "product":
-        row = conn.execute(
-            "SELECT status FROM products WHERE handle = ?", (t_handle,)
-        ).fetchone()
-        return bool(row) and (row["status"] or "ACTIVE").upper() == "ACTIVE"
+        from ..product_linkability import is_product_linkable
+        return is_product_linkable(conn, t_handle)
     if t_type == "collection":
         # Phase A: exclude api_unreachable collections (ghost/API-invisible)
         row = conn.execute(

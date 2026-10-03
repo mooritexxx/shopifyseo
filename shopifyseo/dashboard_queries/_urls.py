@@ -123,19 +123,40 @@ def build_store_internal_link_allowlist(
     *,
     rag_results: list[dict] | None = None,
     caps: dict[str, int] | None = None,
+    priority_handles: dict[str, list[str]] | None = None,
 ) -> tuple[list[dict], frozenset[str], frozenset[str]]:
     """Build canonical internal link targets for prompts and HTML sanitization.
 
     Returns ``(targets, allowed_full_urls, allowed_paths)`` where *targets* are
     dicts ``{"type", "handle", "title", "url"}`` sorted for prompt injection
-    (RAG hits first per type, then alphabetical DB fill up to caps).
+    (RAG hits first per type, then priority handles, then alphabetical DB fill
+    up to caps).
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Database connection.
+    base_url : str
+        Store base URL (e.g. ``https://example.com``).
+    rag_results : list of dict, optional
+        RAG retrieval results to prioritize.
+    caps : dict, optional
+        Per-type caps (defaults to DEFAULT_INTERNAL_LINK_CAPS).
+    priority_handles : dict, optional
+        Mapping of object type to list of handles to prioritize after RAG hits
+        but before the alphabetical fill. For example:
+        ``{"product": ["handle-a", "handle-b"], "collection": ["coll-x"]}``.
+        Unknown or unlinkable handles are silently ignored.
 
     *allowed_full_urls* includes every ``url`` plus alternate forms (e.g. with
     trailing slash stripped). *allowed_paths* is normalized path keys like
     ``/collections/foo`` (no trailing slash).
     """
+    from ..product_linkability import linkable_product_sql
+
     caps = {**DEFAULT_INTERNAL_LINK_CAPS, **(caps or {})}
     rag_results = rag_results or []
+    priority_handles = priority_handles or {}
     base = (base_url or "").strip().rstrip("/")
 
     def _blog_composite(bh: str, ah: str) -> str:
@@ -153,9 +174,9 @@ def build_store_internal_link_allowlist(
             h = (r[0] or "").strip()
             if h:
                 collections.append((h, (r[1] or h).strip() or h))
+        linkable_expr = linkable_product_sql(conn)
         for r in conn.execute(
-            "SELECT handle, title FROM products WHERE handle IS NOT NULL AND TRIM(handle) != '' "
-            "AND (status IS NULL OR status = '' OR UPPER(status) = 'ACTIVE') "
+            f"SELECT handle, title FROM products WHERE {linkable_expr} "
             "ORDER BY title COLLATE NOCASE"
         ).fetchall():
             h = (r[0] or "").strip()
@@ -192,6 +213,14 @@ def build_store_internal_link_allowlist(
         oh = (r.get("object_handle") or "").strip()
         if ot in rag_priority and oh and oh not in rag_priority[ot]:
             rag_priority[ot].append(oh)
+
+    for ptype, phandles in priority_handles.items():
+        if ptype not in rag_priority:
+            continue
+        for ph in phandles or []:
+            ph = (ph or "").strip()
+            if ph and ph not in rag_priority[ptype]:
+                rag_priority[ptype].append(ph)
 
     def _pick(
         kind: str,

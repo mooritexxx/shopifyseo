@@ -234,8 +234,16 @@ def generate_anchor(suggestion_id: int):
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.ai_weave import generate_ai_anchor
+        from shopifyseo.internal_links.compliance import inserted_text, check_en_ca_spelling
 
-        return success_response(generate_ai_anchor(conn, suggestion_id, base_url=_base_url(conn)))
+        result = generate_ai_anchor(conn, suggestion_id, base_url=_base_url(conn))
+        
+        # Add spelling issues for the new text
+        edit = result.get("edit", {})
+        new_text = inserted_text(edit)
+        result["new_text_spelling_issues"] = check_en_ca_spelling(new_text)
+        
+        return success_response(result)
     except LinkConflict as exc:
         return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
     except ValueError as exc:
@@ -266,7 +274,7 @@ def manual_weave(suggestion_id: int, payload: ManualWeaveRequest):
     and must contain exactly one <a> link pointing to the suggestion's target.
     
     Returns:
-        - On success: preview data including preview_token, plus edit, existing_link_count, link_cap
+        - On success: preview data including preview_token, plus edit, existing_link_count, link_cap, new_text_spelling_issues
         - 400: Content validation failed (ManualWeaveRejected with gaps)
         - 409: State/drift conflict (LinkConflict)
         - 500: Internal error
@@ -274,6 +282,7 @@ def manual_weave(suggestion_id: int, payload: ManualWeaveRequest):
     conn = open_db_connection()
     try:
         from shopifyseo.internal_links.manual_weave import submit_manual_weave
+        from shopifyseo.internal_links.compliance import inserted_text, check_en_ca_spelling
         
         result = submit_manual_weave(
             conn,
@@ -283,6 +292,12 @@ def manual_weave(suggestion_id: int, payload: ManualWeaveRequest):
             replacement_sentence=payload.replacement_sentence,
             preview_only=payload.preview_only,
         )
+        
+        # Add spelling issues for the new text
+        edit = result.get("edit", {})
+        new_text = inserted_text(edit)
+        result["new_text_spelling_issues"] = check_en_ca_spelling(new_text)
+        
         return success_response(result)
     except LinkConflict as exc:
         return JSONResponse(status_code=409, content={"ok": False, "error": {"code": exc.code, **exc.detail}})
@@ -464,9 +479,29 @@ def undo(suggestion_id: int):
 @router.post("/suggestions/{suggestion_id}/preview", response_model=SuccessResponse[dict])
 def preview(suggestion_id: int):
     from shopifyseo.internal_links.apply import preview_suggestion
+    from shopifyseo.internal_links.compliance import inserted_text, check_en_ca_spelling
     conn = open_db_connection()
     try:
-        return success_response(preview_suggestion(conn, suggestion_id, _base_url(conn)))
+        result = preview_suggestion(conn, suggestion_id, _base_url(conn))
+        
+        # Add spelling issues for new text if preview is allowed
+        if result.get("allowed"):
+            # Load the edit to extract inserted text
+            sug = conn.execute("SELECT ai_edit_json, anchor_phrase FROM link_suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+            if sug and sug["ai_edit_json"]:
+                try:
+                    edit = json.loads(sug["ai_edit_json"])
+                    new_text = inserted_text(edit)
+                    result["new_text_spelling_issues"] = check_en_ca_spelling(new_text)
+                except (json.JSONDecodeError, TypeError):
+                    result["new_text_spelling_issues"] = []
+            else:
+                # phrase_wrap mode: no new text added
+                result["new_text_spelling_issues"] = []
+        else:
+            result["new_text_spelling_issues"] = []
+        
+        return success_response(result)
     except Exception:
         logger.warning("Live preview failed", exc_info=True)
         raise HTTPException(status_code=502, detail="Could not read Shopify for preview. Nothing was written.")

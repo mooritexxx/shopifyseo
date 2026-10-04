@@ -5,6 +5,10 @@ This module provides guards G8–G11 as defined in the manual-weave design:
 - G9: Numbers outside anchor text
 - G10: Banned wording (health claims, denylist categories)
 - G11: Stock/availability claims, commerce heading check, TVPA flavour check
+
+Also provides:
+- inserted_text(edit): Extract the new text from an edit descriptor
+- check_en_ca_spelling(text): Check for US spellings (en-CA, accepts -ize forms)
 """
 from __future__ import annotations
 
@@ -275,3 +279,153 @@ def build_tvpa_allowlist(
             names.append(extracted)
     
     return tuple(names)
+
+
+# ---------------------------------------------------------------------------
+# Inserted text extraction for spelling checks
+# ---------------------------------------------------------------------------
+
+def inserted_text(edit: dict) -> str:
+    """Extract the newly inserted text from an edit descriptor.
+    
+    Different edit modes contribute different text:
+    - insert_sentence: The full sentence being inserted
+    - manual (origin='manual'): The append_text field
+    - phrase_wrap: Empty string (no new words, just wrapping existing text)
+    
+    This is the text that should be checked for spelling issues, as opposed
+    to checking the entire body (which would flag pre-existing words).
+    """
+    if not edit or not isinstance(edit, dict):
+        return ""
+    
+    # Manual mode: append_text is the new content
+    if edit.get("origin") == "manual":
+        return edit.get("append_text", "")
+    
+    # AI insert_sentence mode: the sentence is new content
+    sentence = edit.get("insert_sentence", "")
+    if sentence:
+        return sentence
+    
+    # phrase_wrap mode: no new text is added, just wrapping existing phrase
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# en-CA spelling check (Canadian English)
+# ---------------------------------------------------------------------------
+
+# US spellings to flag for en-CA content.
+# IMPORTANT: -ize forms (minimize, customize, organize, etc.) are ACCEPTED in
+# Canadian English (Canadian Oxford uses -ize), so they are NOT included here.
+# Only clear -our/-re/grey-type differences are flagged.
+#
+# EXCLUDED (ambiguous or incorrect):
+# - vigorous: en-CA is also "vigorous" (not "vigourous")
+# - program: correct for computer programs in en-CA
+# - practice/practise: depends on noun vs verb usage
+# - license/licence: depends on noun vs verb usage
+# - meter: depends on context (measuring device vs unit of length)
+# - dialog/analog: technical usage in computing is acceptable
+_US_TO_EN_CA = {
+    # -or → -our (clear differences)
+    "color": "colour",
+    "colors": "colours",
+    "colored": "coloured",
+    "coloring": "colouring",
+    "colorful": "colourful",
+    "favor": "favour",
+    "favors": "favours",
+    "favored": "favoured",
+    "favoring": "favouring",
+    "favorite": "favourite",
+    "favorites": "favourites",
+    "flavor": "flavour",
+    "flavors": "flavours",
+    "flavored": "flavoured",
+    "flavoring": "flavouring",
+    "honor": "honour",
+    "honors": "honours",
+    "honored": "honoured",
+    "honoring": "honouring",
+    "honorable": "honourable",
+    "humor": "humour",
+    "humors": "humours",
+    "humored": "humoured",
+    "humoring": "humouring",
+    "labor": "labour",
+    "labors": "labours",
+    "labored": "laboured",
+    "laboring": "labouring",
+    "neighbor": "neighbour",
+    "neighbors": "neighbours",
+    "neighboring": "neighbouring",
+    # -er → -re (clear differences)
+    "center": "centre",
+    "centers": "centres",
+    "centered": "centred",
+    "centering": "centring",
+    "liter": "litre",
+    "liters": "litres",
+    "theater": "theatre",
+    "theaters": "theatres",
+    # gray → grey
+    "gray": "grey",
+    "grays": "greys",
+    "grayer": "greyer",
+    "grayest": "greyest",
+    "grayish": "greyish",
+    # Other clear differences
+    "defense": "defence",
+    "offense": "offence",
+    "traveling": "travelling",
+    "traveled": "travelled",
+    "traveler": "traveller",
+    "travelers": "travellers",
+    "canceled": "cancelled",
+    "canceling": "cancelling",
+    "modeling": "modelling",
+    "modeled": "modelled",
+    "labeled": "labelled",
+    "labeling": "labelling",
+    "jewelry": "jewellery",
+}
+
+# Build regex pattern for word-boundary matching
+_US_EN_CA_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _US_TO_EN_CA.keys()) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def check_en_ca_spelling(text: str) -> list[str]:
+    """Check for US English spellings that should be Canadian English.
+    
+    This check is appropriate for Canadian stores that want en-CA content.
+    
+    IMPORTANT: -ize forms (minimize, customize, organize, optimize, etc.) are
+    ACCEPTED in Canadian English and are NOT flagged. Only -our/-re/grey-type
+    differences are checked.
+    
+    Returns a list of issue strings. Empty list means no issues found.
+    Each issue is in the format: "US spelling 'color' should be 'colour'"
+    """
+    if not text:
+        return []
+    
+    issues: list[str] = []
+    seen: set[str] = set()
+    
+    for match in _US_EN_CA_PATTERN.finditer(text):
+        us_word = match.group(1).lower()
+        if us_word in seen:
+            continue
+        seen.add(us_word)
+        
+        en_ca = _US_TO_EN_CA.get(us_word, "")
+        if en_ca:
+            # Preserve the original case in the message
+            issues.append(f"US spelling '{match.group(1)}' should be '{en_ca}'")
+    
+    return issues

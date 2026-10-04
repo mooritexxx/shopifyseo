@@ -39,11 +39,14 @@ def _hash_body(body: str) -> str:
     """SHA-256 hex digest of body text for stale detection."""
     return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
-# (source_type, table, handle_expr, body_col)
+# (source_type, table, handle_expr, body_col, published_filter)
+# published_filter: SQL WHERE clause fragment to exclude unpublished sources
+# Note: Product sources tolerate blank online_store_url (like targets per #48).
+# Product sources require status = 'ACTIVE' (case-insensitive); empty or NULL status is rejected.
 _SUGGESTION_SOURCES = (
-    ("blog_article", "blog_articles", "blog_handle || '/' || handle", "body"),
-    ("product", "products", "handle", "description_html"),
-    ("collection", "collections", "handle", "description_html"),
+    ("blog_article", "blog_articles", "blog_handle || '/' || handle", "body", "is_published = 1"),
+    ("product", "products", "handle", "description_html", "UPPER(COALESCE(status, '')) = 'ACTIVE'"),
+    ("collection", "collections", "handle", "description_html", "COALESCE(api_unreachable, 0) = 0"),
 )
 
 _PROGRESS: dict = {"running": False, "stage": "", "done": 0, "total": 0, "finished_at": None, "error": None}
@@ -212,23 +215,35 @@ def _orphan_target_set(conn: sqlite3.Connection) -> set[tuple[str, str]]:
 
 
 def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: str) -> bool:
-    """Check if source exists and has a non-empty body."""
+    """Check if a source object exists, is published, and has a non-empty body.
+    
+    This matches the published_filter criteria used in _SUGGESTION_SOURCES:
+    - blog_article: is_published = 1
+    - product: status = 'ACTIVE' (case-insensitive); empty/NULL status is rejected
+    - collection: api_unreachable = 0 (or NULL)
+    
+    Note: Product sources tolerate blank online_store_url (like targets per #48).
+    """
     if s_type == "blog_article":
         blog_h, _, article_h = s_handle.partition("/")
         row = conn.execute(
-            "SELECT body FROM blog_articles WHERE blog_handle = ? AND handle = ?",
+            "SELECT body FROM blog_articles WHERE blog_handle = ? AND handle = ? AND is_published = 1",
             (blog_h, article_h),
         ).fetchone()
         return bool(row and row["body"] and row["body"].strip())
     elif s_type == "product":
+        # Product sources require ACTIVE status (case-insensitive), not online_store_url
+        # Empty or NULL status is rejected
         row = conn.execute(
-            "SELECT description_html FROM products WHERE handle = ?",
+            "SELECT description_html FROM products WHERE handle = ? "
+            "AND UPPER(COALESCE(status, '')) = 'ACTIVE'",
             (s_handle,),
         ).fetchone()
         return bool(row and row["description_html"] and row["description_html"].strip())
     elif s_type == "collection":
         row = conn.execute(
-            "SELECT description_html FROM collections WHERE handle = ?",
+            "SELECT description_html FROM collections WHERE handle = ? "
+            "AND COALESCE(api_unreachable, 0) = 0",
             (s_handle,),
         ).fetchone()
         return bool(row and row["description_html"] and row["description_html"].strip())
@@ -326,10 +341,11 @@ def generate_link_suggestions(
             incoming_pending[(r["target_type"], r["target_handle"])] = r["c"]
 
         sources: list[tuple[str, str, str, int]] = []  # (type, handle, body, clicks)
-        for s_type, table, handle_expr, body_col in _SUGGESTION_SOURCES:
+        for s_type, table, handle_expr, body_col, published_filter in _SUGGESTION_SOURCES:
+            # Only include published/active sources - skip unpublished articles, draft products, etc.
             for r in conn.execute(
                 f"SELECT {handle_expr} AS h, {body_col} AS body, COALESCE(gsc_clicks, 0) AS clicks "
-                f"FROM {table} WHERE {body_col} IS NOT NULL AND TRIM({body_col}) != ''"
+                f"FROM {table} WHERE {body_col} IS NOT NULL AND TRIM({body_col}) != '' AND {published_filter}"
             ).fetchall():
                 sources.append((s_type, r["h"], r["body"], r["clicks"]))
 

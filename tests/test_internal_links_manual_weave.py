@@ -1707,8 +1707,8 @@ class TestManualWeavePreviewOnly:
         assert after["ai_edit_json"] is None
         assert after["status"] == "suggested"
     
-    def test_preview_only_predicts_pending_snapshot_409(self, database, live):
-        """S1: preview_only must run the same pending-snapshot check (409 where real submit would 409)."""
+    def test_preview_only_predicts_pending_snapshot_returns_allowed_false(self, database, live):
+        """S1: preview_only returns allowed=false with page_write_pending code (consistent with preview_suggestion)."""
         original = "Health Canada has strict protocols for authorizing nicotine pouches, and Zyn pouches do not hold the required market authorization for legal sale in Canada."
         replacement = f'{original} For the full picture, see <a href="/blogs/canada/zyn-canada-nicotine-pouch-availability">is Zyn legal in Canada?</a>'
         
@@ -1720,16 +1720,17 @@ class TestManualWeavePreviewOnly:
         """)
         database.commit()
         
-        with pytest.raises(LinkConflict) as exc_info:
-            submit_manual_weave(
-                database, 1, BASE,
-                original_sentence=original,
-                replacement_sentence=replacement,
-                fetch_fn=live.fetch,
-                preview_only=True,  # Even with preview_only, should get 409
-            )
+        # preview_only returns allowed=false dict instead of raising LinkConflict
+        result = submit_manual_weave(
+            database, 1, BASE,
+            original_sentence=original,
+            replacement_sentence=replacement,
+            fetch_fn=live.fetch,
+            preview_only=True,
+        )
         
-        assert "pending" in str(exc_info.value).lower() or "reconciliation" in str(exc_info.value).lower()
+        assert result["allowed"] is False
+        assert result.get("code") == "page_write_pending"
     
     def test_preview_only_then_normal_submit_works(self, database, live):
         """After preview_only, a normal submit persists the edit."""

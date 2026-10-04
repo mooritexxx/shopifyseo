@@ -243,6 +243,35 @@ def submit_manual_weave(
         raise LinkConflict("Suggestion not found. Refresh the list.")
     if sug["status"] != "suggested":
         raise LinkConflict(f"Suggestion is {sug['status']}. Refresh the list.")
+    
+    # Check for page-level write lock early (matches preview_suggestion behavior)
+    page_pending = conn.execute(
+        """SELECT 1 FROM link_body_snapshots 
+           WHERE source_type = ? AND source_handle = ? 
+           AND status IN ('prepared', 'needs_reconciliation', 'undo_prepared', 'undo_needs_reconciliation')
+           LIMIT 1""",
+        (sug["source_type"], sug["source_handle"]),
+    ).fetchone()
+    if page_pending:
+        # For preview_only mode, return the same shape as preview_suggestion
+        if preview_only:
+            return {
+                "suggestion_id": suggestion_id,
+                "allowed": False,
+                "reason": "Another write on this page is in progress or needs reconciliation.",
+                "code": "page_write_pending",
+                "old_html": None,
+                "new_html": None,
+                "text_diff": "",
+                "preview_token": None,
+                "preview_only": True,
+            }
+        # For actual submit, raise LinkConflict for 409 response
+        raise LinkConflict(
+            "Another write on this page is in progress or needs reconciliation.",
+            code="page_write_pending"
+        )
+    
     if sug["kind"] != "ai_woven":
         raise ManualWeaveRejected(
             f"Manual weave only applies to ai_woven suggestions, not {sug['kind']}",

@@ -46,6 +46,8 @@ export const indexingRollupSchema = z.object({
   stale_robots_block: z.number().default(0),
   robots_block_current: z.number().default(0),
   crawl_older_than_21d: z.number().default(0),
+  inspection_older_than_7d: z.number().default(0),
+  inspection_total: z.number().default(0),
   robots_alerts: z.array(z.string()).default([]),
   by_type: z.record(z.string(), indexingTypeBucketsSchema)
 });

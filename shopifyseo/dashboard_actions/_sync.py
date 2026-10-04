@@ -596,24 +596,38 @@ def _catalog_row_index_bucket(index_status: str | None, index_coverage: str | No
 
 
 def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool) -> tuple[list[tuple[str, str, str]], int]:
-    """URLs to run URL Inspection on, and how many were skipped as already indexed (only when not force_refresh)."""
-    from ..index_evidence import timestamp
+    """URLs to run URL Inspection on, and how many were skipped as already indexed (only when not force_refresh).
+
+    Not-indexed and never-inspected URLs are selected first with their existing priority.
+    Indexed URLs whose last inspection is older than STALE_INSPECTION_DAYS are added
+    afterward, oldest inspection first, so they rotate back into the inspection queue
+    without exceeding the daily quota.
+    """
+    import time
+    from ..index_evidence import timestamp, STALE_INSPECTION_DAYS
     skipped_indexed = 0
     ranked = []
+    stale_indexed = []
+    stale_cutoff = time.time() - (STALE_INSPECTION_DAYS * 86400)
     for kind, fetch in (
         ('product', dq.fetch_products_for_facts), ('collection', dq.fetch_collections_for_facts),
         ('page', dq.fetch_pages_for_facts), ('blog_article', dq.fetch_blog_articles_for_facts),
     ):
         for raw in fetch(conn):
             row = dict(raw)
-            if not force_refresh and _catalog_row_index_bucket(row.get('index_status'), row.get('index_coverage')) == 'indexed':
-                skipped_indexed += 1
-                continue
             handle = dq.blog_article_composite_handle(row['blog_handle'], row['handle']) if kind == 'blog_article' else row['handle']
+            if not force_refresh and _catalog_row_index_bucket(row.get('index_status'), row.get('index_coverage')) == 'indexed':
+                fetched_ts = timestamp(row.get('index_last_fetched_at'))
+                if fetched_ts is not None and fetched_ts <= stale_cutoff:
+                    stale_indexed.append((fetched_ts, (kind, handle, dq.object_url(kind, handle))))
+                else:
+                    skipped_indexed += 1
+                continue
             priority = {'stale_robots_block': 0, 'robots_block_current': 1}.get(row.get('index_flag'), 2)
             ranked.append(((priority, timestamp(row.get('index_last_crawl_at')) or 0), (kind, handle, dq.object_url(kind, handle))))
     ranked.sort(key=lambda item: item[0])
-    return [target for _, target in ranked], skipped_indexed
+    stale_indexed.sort(key=lambda item: item[0])
+    return [target for _, target in ranked] + [target for _, target in stale_indexed], skipped_indexed
 
 
 # ---------------------------------------------------------------------------

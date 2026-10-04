@@ -295,6 +295,83 @@ def test_rollup_counts_flags_and_crawl_age(conn):
     assert any('P1' in alert for alert in result['robots_alerts'])
 
 
+def test_rollup_inspection_stale_boundary(conn):
+    """Test that rollup counts inspection_older_than_7d correctly at boundary."""
+    import time
+    now = time.time()
+    exactly_7d = now - (7 * 86400)
+    just_over_7d = now - (7 * 86400) - 60
+    just_under_7d = now - (7 * 86400) + 60
+
+    insert_catalog(conn, handle='exactly-7d', index_last_fetched_at=int(exactly_7d))
+    insert_catalog(conn, handle='over-7d', index_last_fetched_at=int(just_over_7d))
+    insert_catalog(conn, handle='under-7d', index_last_fetched_at=int(just_under_7d))
+
+    result = ie.index_evidence_rollup(conn)
+    assert result['inspection_older_than_7d'] == 2
+    assert result['inspection_total'] == 3
+
+
+def test_rollup_inspection_older_than_7d_in_sync_result(conn, monkeypatch):
+    """Test that inspection_older_than_7d appears in the sync result via index_evidence_rollup."""
+    import time
+    from shopifyseo.dashboard_actions import _sync
+    now = time.time()
+    eight_days_ago = now - (8 * 86400)
+
+    insert_catalog(conn, handle='stale', index_last_fetched_at=int(eight_days_ago))
+
+    class Borrow:
+        def __getattr__(self, key):
+            return getattr(conn, key)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_sync, '_db_connect_for_actions', lambda _: Borrow())
+    monkeypatch.setattr(ie, 'fetch_robots_snapshot', lambda c, url: ie.store_snapshot(c, url, 200, 'User-agent: *\nAllow: /'))
+    monkeypatch.setattr(ie, 'reconcile_index_cache', lambda c: 0)
+    monkeypatch.setattr(_sync, '_index_inspection_targets', lambda c, **k: ([], 0))
+    monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
+    monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
+    monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')
+
+    result = _sync.bulk_refresh_index_status(':memory:')
+    assert 'inspection_older_than_7d' in result
+    assert result['inspection_older_than_7d'] == 1
+    assert result['inspection_total'] == 1
+
+
+def test_rollup_stale_inspection_in_summary_endpoint(conn, monkeypatch):
+    """Test that inspection_older_than_7d appears in /api/summary indexing_rollup."""
+    import time
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+    from backend.app.services import dashboard_service
+
+    now = time.time()
+    eight_days_ago = now - (8 * 86400)
+    two_days_ago = now - (2 * 86400)
+
+    insert_catalog(conn, handle='stale', index_last_fetched_at=int(eight_days_ago))
+    insert_catalog(conn, handle='fresh', index_last_fetched_at=int(two_days_ago))
+
+    class Borrow:
+        def __getattr__(self, key):
+            return getattr(conn, key)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dashboard_service, 'open_db_connection', Borrow)
+
+    response = TestClient(app).get('/api/summary')
+    assert response.status_code == 200
+    idx = response.json()['data']['indexing_rollup']
+    assert 'inspection_older_than_7d' in idx
+    assert idx['inspection_older_than_7d'] == 1
+    assert 'inspection_total' in idx
+    assert idx['inspection_total'] == 2
+
+
 def test_signal_card_crawl_and_inspection_times_are_distinct(conn):
     from backend.app.services._catalog_helpers import _signal_cards_for
     row = dict(handle='x', index_status='Not Indexed', index_coverage='Blocked by robots.txt', google_canonical='',

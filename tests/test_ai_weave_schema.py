@@ -221,15 +221,17 @@ class TestOtherProvidersSamePayload:
 class TestGenerateAiAnchorDefaultPath:
     """Regression tests through generate_ai_anchor without injecting call_ai_fn."""
 
-    def test_accepted_reply_with_empty_fields(self):
-        """Accepted reply with fence and empty insert_sentence/insert_after_text."""
+    def test_accepted_reply_with_insert_sentence(self):
+        """Accepted reply with fence and valid insert_sentence/insert_after_text."""
         conn = database()
-        live = Shopify(OLD + '<p>New live text.</p>')
+        live = Shopify(OLD)
         conn.execute("UPDATE link_suggestions SET kind='ai_woven'")
         conn.commit()
         captured = {}
 
-        reply = '```json\n{"anchor_phrase": "ceramic tanks", "insert_sentence": "", "insert_after_text": ""}\n```'
+        # Valid insert_sentence mode reply - locator matches second sentence in OLD (52 chars)
+        # OLD = '<p>Love ceramic tanks and all they offer.</p><p>This is the original second sentence with more text.</p>'
+        reply = '```json\n{"anchor_phrase": "ceramic tanks", "insert_sentence": "Explore ceramic tanks for more options.", "insert_after_text": "This is the original second sentence with more text."}\n```'
 
         def mock_request_json(url, *, method, headers, payload, timeout):
             captured["payload"] = payload
@@ -248,9 +250,13 @@ class TestGenerateAiAnchorDefaultPath:
 
             result = generate_ai_anchor(conn, 1, BASE, fetch_fn=live.fetch)
 
-        assert result["edit"] == {"anchor_phrase": "ceramic tanks"}
+        assert result["edit"]["anchor_phrase"] == "ceramic tanks"
+        assert result["edit"]["insert_sentence"] == "Explore ceramic tanks for more options."
+        assert result["edit"]["insert_after_text"] == "This is the original second sentence with more text."
         row = conn.execute("SELECT ai_edit_json FROM link_suggestions").fetchone()
-        assert json.loads(row["ai_edit_json"]) == {"anchor_phrase": "ceramic tanks"}
+        saved = json.loads(row["ai_edit_json"])
+        assert saved["anchor_phrase"] == "ceramic tanks"
+        assert saved["insert_sentence"] == "Explore ceramic tanks for more options."
 
         rf = captured["payload"]["response_format"]
         assert rf["json_schema"]["name"] == "link_weave_edit"

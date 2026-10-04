@@ -62,8 +62,10 @@ def test_identity_and_attribution(api, actor):
 
 def test_no_unauthenticated_or_spoofed_access(api):
     assert api[2].get('/api/tasks').status_code == 401
+    assert api[2].get('/api/tasks/actors').status_code == 401
     assert api[2].post('/api/tasks', json={}).status_code == 401
     assert api[0]('GET', actor='intruder').status_code == 401
+    assert api[0]('GET', '/actors', actor='intruder').status_code == 401
     assert api[0]('POST', json={'title': 'x', 'outcome': 'y', 'owner': 'jimmy', 'actor': 'salar'}).status_code == 422
 
 

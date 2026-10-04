@@ -156,7 +156,8 @@ def test_target_order_prioritizes_flags_then_crawl(conn):
     for handle, flag, crawl in [('old', '', '2020-01-01'), ('current', 'robots_block_current', '2026-01-01'),
                                 ('stale', 'stale_robots_block', '2026-10-01'), ('new', '', '2026-10-01')]:
         insert_catalog(conn, handle=handle, index_status='Not Indexed', index_flag=flag, index_last_crawl_at=crawl)
-    assert [row[1] for row in _index_inspection_targets(conn, force_refresh=True)[0]] == ['stale', 'current', 'old', 'new']
+    result = _index_inspection_targets(conn, force_refresh=True)
+    assert [row[1] for row in result['targets']] == ['stale', 'current', 'old', 'new']
 
 
 def test_alerts_and_failed_fetch_nonfatal(conn, monkeypatch):
@@ -272,7 +273,7 @@ def test_bulk_sync_fetches_snapshot_and_reconciles_before_targets(conn, monkeypa
     def targets(c, **kwargs):
         assert calls == ['snapshot', 'reconcile']
         calls.append('targets')
-        return [], 0
+        return {'targets': [], 'skipped_indexed': 0, 'stale_reinspect_selected': 0, 'stale_reinspect_deferred_budget': 0}
     monkeypatch.setattr(ie, 'fetch_robots_snapshot', snapshot)
     monkeypatch.setattr(ie, 'reconcile_index_cache', reconcile)
     monkeypatch.setattr(_sync, '_index_inspection_targets', targets)
@@ -330,7 +331,7 @@ def test_rollup_inspection_older_than_7d_in_sync_result(conn, monkeypatch):
     monkeypatch.setattr(_sync, '_db_connect_for_actions', lambda _: Borrow())
     monkeypatch.setattr(ie, 'fetch_robots_snapshot', lambda c, url: ie.store_snapshot(c, url, 200, 'User-agent: *\nAllow: /'))
     monkeypatch.setattr(ie, 'reconcile_index_cache', lambda c: 0)
-    monkeypatch.setattr(_sync, '_index_inspection_targets', lambda c, **k: ([], 0))
+    monkeypatch.setattr(_sync, '_index_inspection_targets', lambda c, **k: {'targets': [], 'skipped_indexed': 0, 'stale_reinspect_selected': 0, 'stale_reinspect_deferred_budget': 0})
     monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
     monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
     monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')

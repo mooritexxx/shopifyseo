@@ -3,6 +3,8 @@
 import sqlite3
 
 from shopifyseo import dashboard_actions as da
+from shopifyseo import dashboard_store as ds
+from shopifyseo.index_evidence import URL_INSPECTION_DAILY_BUDGET
 
 
 class _Row(dict):
@@ -23,9 +25,9 @@ def test_index_inspection_targets_skips_indexed_when_not_force(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    assert skipped == 1
-    assert [t[1] for t in targets] == ["b", "c"]
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    assert result['skipped_indexed'] == 1
+    assert [t[1] for t in result['targets']] == ["b", "c"]
 
 
 def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
@@ -40,9 +42,9 @@ def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "object_url", lambda kind, handle: f"https://example.com/{kind}s/{handle}")
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=True)
-    assert skipped == 0
-    assert targets == all_targets
+    result = da._index_inspection_targets(conn, force_refresh=True)
+    assert result['skipped_indexed'] == 0
+    assert result['targets'] == all_targets
 
 
 def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch):
@@ -56,11 +58,11 @@ def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch):
     ]
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: articles)
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    assert skipped == 1
-    assert len(targets) == 1
-    assert targets[0][0] == "blog_article"
-    assert targets[0][1] == "news/post-2"
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    assert result['skipped_indexed'] == 1
+    assert len(result['targets']) == 1
+    assert result['targets'][0][0] == "blog_article"
+    assert result['targets'][0][1] == "news/post-2"
 
 
 def test_index_rate_cap_does_not_throttle_the_worker_pool() -> None:
@@ -102,9 +104,9 @@ def test_stale_indexed_url_selected_fresh_indexed_skipped(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    assert skipped == 1
-    assert [t[1] for t in targets] == ["stale"]
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    assert result['skipped_indexed'] == 1
+    assert [t[1] for t in result['targets']] == ["stale"]
 
 
 def test_not_indexed_comes_before_stale_indexed(monkeypatch):
@@ -123,8 +125,8 @@ def test_not_indexed_comes_before_stale_indexed(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    handles = [t[1] for t in targets]
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    handles = [t[1] for t in result['targets']]
     assert handles == ["not-indexed", "stale-indexed"]
 
 
@@ -147,8 +149,8 @@ def test_stale_indexed_ordered_oldest_first(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    handles = [t[1] for t in targets]
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    handles = [t[1] for t in result['targets']]
     assert handles == ["stale-10d", "stale-9d", "stale-8d"]
 
 
@@ -175,33 +177,135 @@ def test_existing_priority_order_unchanged(monkeypatch):
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    handles = [t[1] for t in targets]
+    result = da._index_inspection_targets(conn, force_refresh=False)
+    handles = [t[1] for t in result['targets']]
     assert handles == ["stale-block", "current-block", "normal-old", "normal-new", "stale-indexed"]
 
 
-def test_total_selected_includes_all_stale_no_artificial_cap(monkeypatch):
-    """All not-indexed and stale indexed URLs are returned. No artificial cap on the list.
+def test_stale_reinspect_budget_enforcement(monkeypatch):
+    """Stale indexed URLs are capped by the daily budget; non-stale are always included.
 
-    The daily quota is enforced by the rate limiter and Google-side limits, not by
-    truncating the target list.
+    With many stale URLs, plus non-zero used_today, plus non-stale targets, the selected
+    stale count equals exactly the remaining budget, and the deferred count is reported.
     """
     import time
     conn = sqlite3.connect(":memory:")
     now = time.time()
     eight_days_ago = now - (8 * 86400)
 
-    not_indexed = [_Row(handle=f"not-{i}", index_status="Not Indexed", index_coverage="") for i in range(50)]
-    stale_indexed = [_Row(handle=f"stale-{i}", index_status="Indexed", index_coverage="", index_last_fetched_at=int(eight_days_ago - i * 3600)) for i in range(100)]
+    non_stale_count = 50
+    stale_count = 100
+    used_today = 1900
+
+    not_indexed = [_Row(handle=f"not-{i}", index_status="Not Indexed", index_coverage="") for i in range(non_stale_count)]
+    stale_indexed = [_Row(handle=f"stale-{i}", index_status="Indexed", index_coverage="", index_last_fetched_at=int(eight_days_ago - i * 3600)) for i in range(stale_count)]
     monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: not_indexed + stale_indexed)
     monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
 
-    targets, skipped = da._index_inspection_targets(conn, force_refresh=False)
-    assert len(targets) == 150
-    assert skipped == 0
-    not_indexed_handles = [t[1] for t in targets[:50]]
-    stale_handles = [t[1] for t in targets[50:]]
-    assert all(h.startswith("not-") for h in not_indexed_handles)
+    from shopifyseo import index_evidence as ie
+    monkeypatch.setattr(ie, "url_inspection_used_today", lambda c, now_fn=None: used_today)
+
+    result = da._index_inspection_targets(conn, force_refresh=False)
+
+    remaining_budget = URL_INSPECTION_DAILY_BUDGET - used_today - non_stale_count
+    expected_stale_selected = remaining_budget
+    expected_stale_deferred = stale_count - expected_stale_selected
+
+    assert result['stale_reinspect_selected'] == expected_stale_selected
+    assert result['stale_reinspect_deferred_budget'] == expected_stale_deferred
+    assert len(result['targets']) == non_stale_count + expected_stale_selected
+
+    non_stale_handles = [t[1] for t in result['targets'][:non_stale_count]]
+    stale_handles = [t[1] for t in result['targets'][non_stale_count:]]
+    assert all(h.startswith("not-") for h in non_stale_handles)
     assert all(h.startswith("stale-") for h in stale_handles)
+
+    total_selected = non_stale_count + result['stale_reinspect_selected'] + used_today
+    assert total_selected <= URL_INSPECTION_DAILY_BUDGET
+
+
+def test_stale_reinspect_zero_remaining_budget(monkeypatch):
+    """When remaining budget is 0 or negative, 0 stale selected, non-stale list unchanged."""
+    import time
+    conn = sqlite3.connect(":memory:")
+    now = time.time()
+    eight_days_ago = now - (8 * 86400)
+
+    non_stale_count = 50
+    stale_count = 100
+    used_today = URL_INSPECTION_DAILY_BUDGET
+
+    not_indexed = [_Row(handle=f"not-{i}", index_status="Not Indexed", index_coverage="") for i in range(non_stale_count)]
+    stale_indexed = [_Row(handle=f"stale-{i}", index_status="Indexed", index_coverage="", index_last_fetched_at=int(eight_days_ago - i * 3600)) for i in range(stale_count)]
+    monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: not_indexed + stale_indexed)
+    monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
+    monkeypatch.setattr(da.dq, "fetch_blog_articles_for_facts", lambda _c: [])
+
+    from shopifyseo import index_evidence as ie
+    monkeypatch.setattr(ie, "url_inspection_used_today", lambda c, now_fn=None: used_today)
+
+    result = da._index_inspection_targets(conn, force_refresh=False)
+
+    assert result['stale_reinspect_selected'] == 0
+    assert result['stale_reinspect_deferred_budget'] == stale_count
+    assert len(result['targets']) == non_stale_count
+    assert all(t[1].startswith("not-") for t in result['targets'])
+
+
+def test_stale_reinspect_stats_in_sync_status(monkeypatch):
+    """Verify stale reinspect stats appear in /api/sync-status via last_result."""
+    import time
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+    from shopifyseo.dashboard_actions import _sync
+    from shopifyseo.dashboard_actions._state import SYNC_STATE
+    from shopifyseo import index_evidence as ie
+
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    ds.ensure_dashboard_schema(conn)
+
+    now = time.time()
+    eight_days_ago = now - (8 * 86400)
+    two_days_ago = now - (2 * 86400)
+
+    conn.execute(
+        "INSERT INTO products(shopify_id,title,handle,tags_json,options_json,raw_json,synced_at,index_status,index_last_fetched_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("1", "Stale", "stale", "[]", "[]", "{}", "", "Indexed", int(eight_days_ago))
+    )
+    conn.execute(
+        "INSERT INTO products(shopify_id,title,handle,tags_json,options_json,raw_json,synced_at,index_status,index_last_fetched_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("2", "Fresh", "fresh", "[]", "[]", "{}", "", "Indexed", int(two_days_ago))
+    )
+    conn.commit()
+
+    class Borrow:
+        def __getattr__(self, key):
+            return getattr(conn, key)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_sync, '_db_connect_for_actions', lambda _: Borrow())
+    monkeypatch.setattr(ie, 'fetch_robots_snapshot', lambda c, url: ie.store_snapshot(c, url, 200, 'User-agent: *\nAllow: /'))
+    monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
+    monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
+    monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')
+
+    result = _sync.bulk_refresh_index_status(':memory:')
+
+    SYNC_STATE["last_result"] = result
+
+    response = TestClient(app).get('/api/sync-status')
+    assert response.status_code == 200
+    data = response.json()['data']
+    assert 'last_result' in data
+    last_result = data['last_result']
+    assert 'stale_reinspect_selected' in last_result
+    assert 'stale_reinspect_deferred_budget' in last_result
+    assert 'inspection_older_than_7d' in last_result
+    assert 'inspection_total' in last_result
+    assert last_result['inspection_total'] == 2
+    assert last_result['inspection_older_than_7d'] == 1

@@ -595,20 +595,33 @@ def _catalog_row_index_bucket(index_status: str | None, index_coverage: str | No
     )
 
 
-def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool) -> tuple[list[tuple[str, str, str]], int]:
-    """URLs to run URL Inspection on, and how many were skipped as already indexed (only when not force_refresh).
+def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool, now_fn=None) -> dict:
+    """URLs to run URL Inspection on, with budget enforcement for stale re-inspections.
 
-    Not-indexed and never-inspected URLs are selected first with their existing priority.
-    Indexed URLs whose last inspection is older than STALE_INSPECTION_DAYS are added
-    afterward, oldest inspection first, so they rotate back into the inspection queue
-    without exceeding the daily quota.
+    Returns a dict with:
+      - targets: list of (kind, handle, url) tuples to inspect
+      - skipped_indexed: count of indexed URLs skipped (inspected within STALE_INSPECTION_DAYS)
+      - stale_reinspect_selected: count of stale indexed URLs selected for re-inspection
+      - stale_reinspect_deferred_budget: count of stale indexed URLs deferred due to daily budget
+
+    Not-indexed and never-inspected URLs are selected first with their existing priority
+    (stale_robots_block: 0, robots_block_current: 1, others: 2), sorted by crawl time.
+    These are uncapped and always included.
+
+    Indexed URLs whose last inspection is older than STALE_INSPECTION_DAYS are appended
+    afterward, oldest inspection first, but only up to the remaining daily budget:
+    max(0, URL_INSPECTION_DAILY_BUDGET - used_today - len(non_stale_targets)).
+
+    The daily budget resets at midnight America/Los_Angeles (Google's quota reset timezone).
     """
     import time
-    from ..index_evidence import timestamp, STALE_INSPECTION_DAYS
+    from ..index_evidence import (timestamp, STALE_INSPECTION_DAYS, URL_INSPECTION_DAILY_BUDGET,
+                                  url_inspection_used_today)
     skipped_indexed = 0
     ranked = []
     stale_indexed = []
-    stale_cutoff = time.time() - (STALE_INSPECTION_DAYS * 86400)
+    now = now_fn() if now_fn else time.time()
+    stale_cutoff = now - (STALE_INSPECTION_DAYS * 86400)
     for kind, fetch in (
         ('product', dq.fetch_products_for_facts), ('collection', dq.fetch_collections_for_facts),
         ('page', dq.fetch_pages_for_facts), ('blog_article', dq.fetch_blog_articles_for_facts),
@@ -627,7 +640,20 @@ def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool) 
             ranked.append(((priority, timestamp(row.get('index_last_crawl_at')) or 0), (kind, handle, dq.object_url(kind, handle))))
     ranked.sort(key=lambda item: item[0])
     stale_indexed.sort(key=lambda item: item[0])
-    return [target for _, target in ranked] + [target for _, target in stale_indexed], skipped_indexed
+
+    non_stale_targets = [target for _, target in ranked]
+    used_today = url_inspection_used_today(conn, now_fn=now_fn)
+    remaining_budget = max(0, URL_INSPECTION_DAILY_BUDGET - used_today - len(non_stale_targets))
+    stale_to_select = min(len(stale_indexed), remaining_budget)
+    stale_deferred = len(stale_indexed) - stale_to_select
+
+    selected_stale = [target for _, target in stale_indexed[:stale_to_select]]
+    return {
+        'targets': non_stale_targets + selected_stale,
+        'skipped_indexed': skipped_indexed,
+        'stale_reinspect_selected': stale_to_select,
+        'stale_reinspect_deferred_budget': stale_deferred,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -952,14 +978,19 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         "errors": 0,
         "skipped_fresh": 0,
         "skipped_indexed": 0,
+        "stale_reinspect_selected": 0,
+        "stale_reinspect_deferred_budget": 0,
     }
     try:
         from ..index_evidence import fetch_robots_snapshot, reconcile_index_cache, index_evidence_rollup
         fetch_robots_snapshot(conn, dq.object_url('product', ''))
         summary['cache_reconciled'] = reconcile_index_cache(conn)
-        targets, skipped_indexed = _index_inspection_targets(conn, force_refresh=force_refresh)
-        summary["skipped_indexed"] = skipped_indexed
-        SYNC_STATE["index_skipped"] = skipped_indexed
+        target_result = _index_inspection_targets(conn, force_refresh=force_refresh)
+        targets = target_result['targets']
+        summary["skipped_indexed"] = target_result['skipped_indexed']
+        summary["stale_reinspect_selected"] = target_result['stale_reinspect_selected']
+        summary["stale_reinspect_deferred_budget"] = target_result['stale_reinspect_deferred_budget']
+        SYNC_STATE["index_skipped"] = target_result['skipped_indexed']
         # Resolve once. Without these overrides get_url_inspection(refresh=True) runs an
         # uncached sites.list call for every target — one wasted request per URL.
         # On failure fall back to empty overrides so each target reports its own error,

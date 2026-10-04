@@ -19,6 +19,7 @@ import requests
 from .dashboard_status import index_status_info, index_status_bucket_from_strings
 
 PT = ZoneInfo('America/Vancouver')
+LA = ZoneInfo('America/Los_Angeles')
 INDEX_FIELDS = (
     'index_status', 'index_coverage', 'google_canonical', 'index_last_fetched_at',
     'index_last_crawl_at', 'index_robots_state', 'index_page_fetch_state',
@@ -26,6 +27,28 @@ INDEX_FIELDS = (
 )
 INDEX_STORED_FIELDS = INDEX_FIELDS + ('index_flag', 'index_flag_reason')
 TABLES = {'product': 'products', 'collection': 'collections', 'page': 'pages', 'blog_article': 'blog_articles'}
+STALE_INSPECTION_DAYS = 7
+URL_INSPECTION_DAILY_BUDGET = 2000
+
+
+def url_inspection_used_today(conn, *, now_fn=None):
+    """Count URL Inspection fetches recorded today (America/Los_Angeles calendar day).
+
+    Uses the google_api_cache table's fetched_at epoch column. The now_fn parameter
+    is injectable for tests. Returns 0 if the table doesn't exist.
+    """
+    now = now_fn() if now_fn else time.time()
+    la_now = datetime.fromtimestamp(now, LA)
+    la_midnight = la_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day_epoch = int(la_midnight.timestamp())
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM google_api_cache WHERE cache_type='url_inspection' AND fetched_at >= ?",
+            (start_of_day_epoch,)
+        ).fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
 
 
 def timestamp(value):
@@ -242,13 +265,20 @@ def index_sublabel(row):
 
 
 def index_evidence_rollup(conn):
-    counts = dict(stale_robots_block=0, robots_block_current=0, crawl_older_than_21d=0)
+    counts = dict(stale_robots_block=0, robots_block_current=0, crawl_older_than_21d=0,
+                  inspection_older_than_7d=0, inspection_total=0)
+    stale_cutoff = time.time() - (STALE_INSPECTION_DAYS * 86400)
     for table in TABLES.values():
-        for row in conn.execute(f'SELECT index_flag, index_last_crawl_at FROM {table}'):
+        for row in conn.execute(f'SELECT index_flag, index_last_crawl_at, index_last_fetched_at FROM {table}'):
             if row['index_flag'] in counts:
                 counts[row['index_flag']] += 1
-            age = age_days(row['index_last_crawl_at'])
-            counts['crawl_older_than_21d'] += int(age is not None and age > 21)
+            crawl_age = age_days(row['index_last_crawl_at'])
+            counts['crawl_older_than_21d'] += int(crawl_age is not None and crawl_age > 21)
+            fetched_ts = timestamp(row['index_last_fetched_at'])
+            if fetched_ts is not None:
+                counts['inspection_total'] += 1
+                if fetched_ts <= stale_cutoff:
+                    counts['inspection_older_than_7d'] += 1
     alerts = []
     for row in conn.execute('SELECT * FROM robots_snapshots WHERE id IN (SELECT MAX(id) FROM robots_snapshots GROUP BY url)'):
         if row['status_code'] != 200:

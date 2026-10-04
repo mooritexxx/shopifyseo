@@ -213,10 +213,42 @@ def _strip_inter_block_whitespace(html: str) -> str:
     return _strip_html_whitespace("".join(output))
 
 
+def _normalize_entities_in_html(html_str: str) -> str:
+    """Normalize character entity encoding without changing HTML structure.
+    
+    Decodes character entities that Shopify may normalize during save/fetch:
+    - &#x27; and &#39; to ' (apostrophe)
+    - &#x22; and &quot; to " (quote)
+    - &amp; to & (ampersand)
+    
+    Does NOT decode entities that would change HTML structure:
+    - &lt; stays as-is (would create < which starts tags)
+    - &gt; stays as-is (would create > which ends tags)
+    - &nbsp; stays as-is (affects whitespace semantics)
+    
+    This is fail-closed: only known-safe normalizations are applied.
+    """
+    # Only normalize safe character entities, not structural ones
+    result = html_str
+    # Apostrophe variants
+    result = result.replace("&#x27;", "'")
+    result = result.replace("&#39;", "'")
+    result = result.replace("&#X27;", "'")  # uppercase hex
+    # Quote variants
+    result = result.replace("&#x22;", '"')
+    result = result.replace("&#34;", '"')
+    result = result.replace("&#X22;", '"')
+    result = result.replace("&quot;", '"')
+    # Ampersand (note: must be done last to avoid double-decoding)
+    result = result.replace("&amp;", "&")
+    return result
+
+
 def html_equivalent(a: str, b: str) -> bool:
-    """Check if two HTML strings are equivalent, tolerating inter-block whitespace.
+    """Check if two HTML strings are equivalent, tolerating normalization differences.
     
     Returns True when the strings are identical after:
+    - Decoding HTML entities (&#x27; vs ' , &amp; vs &, etc.)
     - Removing whitespace-only runs between two block-level tags
     - Stripping leading/trailing document whitespace
     
@@ -230,11 +262,16 @@ def html_equivalent(a: str, b: str) -> bool:
     - Inside text nodes
     - Inside tags/attributes
     
-    Any other difference (text, attributes, entity encoding, tag names) fails.
+    Any other difference (text, attributes, tag names) after normalization fails.
     """
     if a == b:
         return True
-    return _strip_inter_block_whitespace(a) == _strip_inter_block_whitespace(b)
+    # Normalize entities first, then check whitespace
+    a_norm = _normalize_entities_in_html(a)
+    b_norm = _normalize_entities_in_html(b)
+    if a_norm == b_norm:
+        return True
+    return _strip_inter_block_whitespace(a_norm) == _strip_inter_block_whitespace(b_norm)
 
 
 def ai_enabled_types(conn) -> list[str]:
@@ -559,8 +596,13 @@ class _FullTextExtractor(HTMLParser):
             offset = self._source_offset()
             raw_m = re.match(r"&" + re.escape(name) + r";?", self.html[offset:])
             raw = raw_m.group(0) if raw_m else "&" + name + ";"
-            decoded = html.unescape(raw)
-            if decoded == raw:  # unknown entity: keep literal chars at their raw offsets
+            
+            # Don't pull bare '&word' without semicolon into entity decoding.
+            # Only treat as entity if it has a semicolon OR is a known HTML entity.
+            has_semicolon = raw.endswith(";")
+            decoded = html.unescape(raw) if has_semicolon else raw
+            
+            if decoded == raw:  # unknown entity or no semicolon: keep literal chars at their raw offsets
                 for k, ch in enumerate(raw):
                     self.text_parts.append(ch)
                     self.text_to_html_pos.append(offset + k)
@@ -809,20 +851,44 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         # Find matching paragraphs using normalized comparison
         exact_matches = []
         prefix_matches = []
+        contained_matches = []  # For mid-paragraph sentence locators
+        
         for start, end in parser.paragraphs:
-            p_norm = _normalize_for_matching(visible_text(old[start:end]))
+            p_text = visible_text(old[start:end])
+            p_norm = _normalize_for_matching(p_text)
             if p_norm == loc_norm:
                 exact_matches.append(end)
             elif len(loc_norm) >= 40 and p_norm.startswith(loc_norm):
                 prefix_matches.append(end)
+            elif len(loc_norm) >= 40 and loc_norm in p_norm:
+                # Mid-paragraph sentence match: locator is contained in this paragraph
+                # Check if locator is a full sentence (ends with sentence terminator)
+                if loc_norm and loc_norm[-1] in ".!?":
+                    contained_matches.append(end)
         
-        # Use exact matches if any, otherwise fall back to prefix matches
-        matches = exact_matches if exact_matches else prefix_matches
+        # Use exact matches first, then prefix matches, then contained matches
+        # Contained matches must appear exactly once across all paragraphs
+        if exact_matches:
+            matches = exact_matches
+        elif prefix_matches:
+            matches = prefix_matches
+        elif len(contained_matches) == 1:
+            # Accept mid-paragraph sentence only if unique
+            matches = contained_matches
+        else:
+            matches = []
         
         # Truncate locator for error messages (first 300 chars)
         locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
         
         if len(matches) == 0:
+            # Check if contained_matches > 1 to give a better error
+            if len(contained_matches) > 1:
+                raise LinkConflict(
+                    f"The locator sentence appears in {len(contained_matches)} paragraphs (ambiguous). Generate a new suggestion.",
+                    code="insert_locator_ambiguous",
+                    extra={"insert_after_text": locator_preview, "match_count": len(contained_matches)}
+                )
             raise LinkConflict(
                 "The insertion paragraph was not found in the live body. Generate a new suggestion.",
                 code="insert_locator_no_match",
@@ -849,10 +915,31 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         if match:
             start, end = offset + match.start(), offset + match.end()
             return old[:start] + f'<a href="{href}">' + old[start:end] + "</a>" + old[end:]
-    raise LinkConflict("The anchor phrase is no longer present in eligible live text. Generate a new suggestion.")
+    raise LinkConflict(
+        "The anchor phrase was not found in eligible body text. "
+        "It may be inside a heading, an existing link, or not present.",
+        code="phrase_not_found"
+    )
 
 
 def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
+    """Validate that new HTML matches expected edit and has no conflicts.
+    
+    Checks:
+    1. Exact reconstruction - new HTML must match build_edit(old, edit, url)
+    2. Duplicate anchor - old body must not already contain the exact anchor tag
+    """
+    # Build the expected anchor tag
+    phrase = edit.get("anchor_phrase", "")
+    expected_anchor = f'<a href="{html.escape(url, quote=True)}">{html.escape(phrase)}</a>'
+    
+    # Refuse if old body already contains this exact anchor tag
+    if expected_anchor in old:
+        raise LinkConflict(
+            "The body already contains a link with this exact anchor to the same URL.",
+            code="duplicate_anchor"
+        )
+    
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):

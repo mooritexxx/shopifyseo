@@ -84,9 +84,20 @@ class TestHtmlEquivalentUnit:
         b2 = '<p>Hello </a><strong>world</strong></p>'
         assert not html_equivalent(a2, b2)
     
-    def test_entity_difference_fails(self):
-        """Entity encoding differences are not equivalent."""
-        assert not html_equivalent("<p>A &amp; B</p>", "<p>A & B</p>")
+    def test_safe_entity_normalization_tolerated(self):
+        """Safe character entities (apostrophe, quote, ampersand) are normalized."""
+        # Ampersand encoding is equivalent
+        assert html_equivalent("<p>A &amp; B</p>", "<p>A & B</p>")
+        # Apostrophe encoding is equivalent
+        assert html_equivalent("<p>It&#x27;s</p>", "<p>It's</p>")
+        assert html_equivalent("<p>It&#39;s</p>", "<p>It's</p>")
+        # Quote encoding is equivalent
+        assert html_equivalent("<p>&quot;Hi&quot;</p>", '<p>"Hi"</p>')
+        assert html_equivalent("<p>&#x22;Hi&#x22;</p>", '<p>"Hi"</p>')
+    
+    def test_structural_entity_difference_fails(self):
+        """Structural entities (&lt; &gt;) that would change HTML structure are NOT equivalent."""
+        # &lt; creates actual < which starts tags - not equivalent
         assert not html_equivalent("<p>&lt;tag&gt;</p>", "<p><tag></p>")
     
     def test_pre_whitespace_preserved(self):

@@ -9,12 +9,21 @@ def test_generates_structured_edit_from_live_body():
     conn = database(); live = Shopify(OLD + '<p>New live text.</p>')
     conn.execute("UPDATE link_suggestions SET kind='ai_woven'"); conn.commit()
     def ai(messages, schema):
-        assert live.body in messages[0]['content']
+        # The prompt now contains extracted paragraphs, not raw HTML
+        prompt = messages[0]['content']
+        assert 'Love ceramic tanks' in prompt  # Paragraph content visible
+        assert 'Original second sentence' in prompt
+        assert 'New live text' in prompt
         assert 'revised_body' not in schema['schema']['properties']
-        return {'anchor_phrase':'ceramic tanks'}
+        # Return a valid insert-sentence mode response
+        return {
+            'anchor_phrase': 'ceramic tanks',
+            'insert_sentence': 'Check out ceramic tanks for options.',
+            'insert_after_text': 'Love ceramic tanks.'
+        }
     result = generate_ai_anchor(conn,1,BASE,call_ai_fn=ai,fetch_fn=live.fetch)
     row = conn.execute('SELECT ai_edit_json,ai_anchor_html,source_body_hash FROM link_suggestions').fetchone()
-    assert json.loads(row['ai_edit_json']) == result['edit'] == {'anchor_phrase':'ceramic tanks'}
+    assert json.loads(row['ai_edit_json'])['anchor_phrase'] == 'ceramic tanks'
     assert row['ai_anchor_html'] is None and row['source_body_hash']==body_hash(live.body)
     live.push.assert_not_called()
 
@@ -62,8 +71,17 @@ def test_generation_cannot_change_plan_during_apply(tmp_path):
         other = sqlite3.connect(path)
         other.row_factory = sqlite3.Row
         try:
+            # Use a 2-word anchor (required by new constraints)
             with pytest.raises(LinkConflict, match='changed during generation'):
-                generate_ai_anchor(other, 1, BASE, call_ai_fn=lambda *_: {'anchor_phrase': 'Original'}, fetch_fn=live.fetch)
+                generate_ai_anchor(
+                    other, 1, BASE, 
+                    call_ai_fn=lambda *_: {
+                        'anchor_phrase': 'Original tanks',  # 2 words now required
+                        'insert_sentence': 'Try Original tanks today.',
+                        'insert_after_text': 'Love ceramic tanks.'
+                    }, 
+                    fetch_fn=live.fetch
+                )
             assert other.execute('SELECT ai_edit_json FROM link_suggestions').fetchone()[0] == original_edit
         finally:
             other.close()

@@ -44,6 +44,54 @@ def test_undo_timeout_can_be_reconciled_without_second_write():
     assert live.push.call_count==2 and live.body==OLD
 
 
+def test_undo_tolerates_entity_normalization():
+    """Undo proceeds when live body differs only by entity encoding (&#x27; vs ')."""
+    conn = database()
+    live = Shopify()
+    
+    # Apply the link
+    apply(conn, live)
+    applied_body = live.body
+    
+    # Simulate Shopify normalizing &#x27; to ' in the applied body
+    # The stored new_body has the link, but live has normalized entities
+    normalized_body = applied_body.replace("'", "&#x27;")  # Shopify might return either form
+    
+    # Actually, test the reverse: stored has entities, live has decoded
+    # Insert an apostrophe into the body and then test both directions
+    
+    # Let's modify the stored snapshot to have entities
+    conn.execute(
+        "UPDATE link_body_snapshots SET new_body = replace(new_body, \"'\", '&#x27;')"
+    )
+    conn.commit()
+    
+    # Live has decoded apostrophes (natural in browser)
+    # The stored snapshot has &#x27; but live has '
+    # This should still allow undo because html_equivalent normalizes entities
+    
+    result = undo_suggestion(conn, 1, BASE, fetch_fn=live.fetch, push_fn=live.push)
+    assert result['status'] == 'undone'
+
+
+def test_undo_still_blocks_real_content_changes():
+    """Undo is still blocked when there are real content changes, not just entity encoding."""
+    conn = database()
+    live = Shopify()
+    
+    # Apply the link
+    apply(conn, live)
+    
+    # Simulate real content change (not just entity normalization)
+    live.body = live.body.replace('ceramic tanks', 'MODIFIED CONTENT')
+    
+    with pytest.raises(LinkConflict, match='newer work'):
+        undo_suggestion(conn, 1, BASE, fetch_fn=live.fetch, push_fn=live.push)
+    
+    # Snapshot should remain in 'applied' state
+    assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0] == 'applied'
+
+
 def _conn_with_old_check_constraint() -> sqlite3.Connection:
     """Create a DB with the OLD CHECK constraint (without 'undone').
     

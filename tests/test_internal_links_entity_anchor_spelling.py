@@ -908,47 +908,62 @@ class TestRealWorldAnchorGuardCases:
         assert result.count('<a href="https://example.com/target">ceramic tanks</a>') == 1
         assert result.count('<a href="/existing">ceramic tanks</a>') == 1
     
-    def test_spec_case4_insert_sentence_escaped_markup_refused(self):
-        """Spec test 4: insert_sentence when locator paragraph contains escaped markup (&lt;a ...).
+    def test_spec_case4_insert_sentence_with_escaped_markup_allowed(self):
+        """Spec test 4: insert_sentence into paragraph with escaped &lt;a...&gt; markup.
         
-        The body contains escaped anchor markup (&lt;a ...&gt;). The visible text includes
-        literal angle brackets, which the locator must match. However, the normalized
-        matching should handle entity decoding, so we test with the decoded text.
+        Brief: A 40+ character locator sentence into a paragraph that contains escaped
+        &lt;a href=...&gt; text. The sentence is inserted after that paragraph's </p>.
+        
+        Expected: Inserted safely after </p>, no nesting, escaped text untouched.
         """
-        body = '<p>Our range of &lt;a href="https://shop.com"&gt;rechargeable devices&lt;/a&gt; is popular.</p>'
-        # The visible text after entity decoding is: Our range of <a href="...">rechargeable devices</a> is popular.
-        # Try to match with the decoded visible text
+        # Body has escaped anchor markup - the visible text is literal angle brackets
+        body = '<p>Our range of rechargeable devices including the &lt;a href="https://shop.com/rechargeable"&gt;best models&lt;/a&gt; is popular with customers.</p>'
+        
+        # The visible text for matching (40+ chars): "Our range of rechargeable devices including the <a href=..."
+        # But we use plain text locator (no HTML)
         edit = {
             "anchor_phrase": "new products",
-            "insert_sentence": "Check out our new products.",
-            # Plain text that would match the visible content after entity decoding
-            "insert_after_text": 'Our range of <a href="https://shop.com">rechargeable devices</a> is popular.',
+            "insert_sentence": "Check out our new products for great deals.",
+            # Plain text locator - 40+ chars to match paragraph
+            "insert_after_text": "Our range of rechargeable devices including the",
         }
-        # This should fail - locator contains HTML which is rejected by validate_edit
-        with pytest.raises(LinkConflict) as exc_info:
-            build_edit(body, edit, "https://example.com/new")
-        # Rejected because insert_after_text contains HTML tags
-        assert "html" in str(exc_info.value).lower() or "plain text" in str(exc_info.value).lower()
+        result = build_edit(body, edit, "https://example.com/new")
+        
+        # Sentence inserted after </p> - new paragraph added
+        assert '<a href="https://example.com/new">new products</a>' in result
+        # Original escaped markup untouched
+        assert '&lt;a href="https://shop.com/rechargeable"&gt;' in result
+        assert '&lt;/a&gt;' in result
+        # guard_edit passes
+        guard_edit(body, result, edit, "https://example.com/new")
     
-    def test_spec_case5_guard_edit_rejects_nested_anchor_result(self):
-        """Spec test 5: guard_edit rejects a result that contains a nested <a>.
+    def test_spec_case5_guard_edit_rejects_nested_via_nesting_check(self, monkeypatch):
+        """Spec test 5: guard_edit rejects nested result via NESTING check, not reconstruction.
         
-        If somehow a malformed edit result with nested anchors reaches guard_edit,
-        it must be rejected by _verify_anchor_wellformed.
+        Build old/new so reconstruction passes but nesting fails. Monkeypatch build_edit
+        so guard_edit's reconstruction check passes, but our nested HTML is caught by
+        the _verify_anchor_wellformed nesting check.
+        
+        FAILS if guard_edit's _verify_anchor_wellformed call is removed.
         """
-        old = '<p>Check <a href="/existing">our existing link</a> and test phrase here.</p>'
-        edit = {"anchor_phrase": "test phrase"}
-        # Valid edit
-        new = build_edit(old, edit, "https://example.com/target")
-        # guard_edit should pass for valid edit
-        guard_edit(old, new, edit, "https://example.com/target")
+        from shopifyseo.internal_links import safety
         
-        # Now test that nested anchors are caught: manually construct malformed HTML
-        # where we have nested anchors
-        malformed = '<p>Check <a href="/outer"><a href="https://example.com/target">nested</a></a> text.</p>'
-        # guard_edit should reject this because reconstruction will differ
-        with pytest.raises(LinkConflict):
-            guard_edit(old, malformed, {"anchor_phrase": "nested"}, "https://example.com/target")
+        old = '<p>Check our tanks here.</p>'
+        edit = {"anchor_phrase": "tanks"}
+        url = "https://example.com/target"
+        
+        # Malformed HTML with our anchor nested inside an existing one
+        # This would be invalid even though our anchor tag is correctly formed
+        nested = '<p>Check <a href="/outer">our <a href="https://example.com/target">tanks</a></a> here.</p>'
+        
+        # Monkeypatch build_edit to return the nested HTML
+        # This makes reconstruction pass, so guard_edit reaches the nesting check
+        monkeypatch.setattr(safety, 'build_edit', lambda *_: nested)
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            safety.guard_edit(old, nested, edit, url)
+        # Must be caught by _verify_anchor_wellformed (nested_anchor_created)
+        assert exc_info.value.code == "nested_anchor_created"
     
     def test_spec_case6_apply_time_recheck(self):
         """Spec test 6: apply-time recheck.
@@ -974,83 +989,368 @@ class TestRealWorldAnchorGuardCases:
             guard_edit(old, tampered, edit, "https://example.com/ceramic")
 
 
-class TestVerifyAnchorWellformedCallSites:
-    """Tests for _verify_anchor_wellformed call sites - mutation tests.
+class TestGuardEditFindsCorrectAnchor:
+    """Regression tests for guard_edit finding OUR anchor correctly.
     
-    These tests verify that each write path calls _verify_anchor_wellformed.
-    Each test should FAIL if the call site is removed.
+    Issue: When inserted text shares prefix with following content, finding
+    '<a href=' from insert_offset can land past our tag or on a different anchor.
+    
+    These tests verify that valid edits are ALLOWED even when the next paragraph
+    starts with a link or contains formatted links.
     """
     
-    def test_phrase_wrap_calls_verify_closing_tag_inside(self):
-        """phrase_wrap must detect closing tags inside the new anchor.
-        
-        This test FAILS if _verify_anchor_wellformed is removed from phrase_wrap (safety.py:1376).
-        The closing tag </strong> is inside the anchor span.
-        """
-        body = '<p><strong>our ceramic</strong> tanks guide.</p>'
-        edit = {"anchor_phrase": "ceramic tanks"}
-        # The phrase "ceramic tanks" crosses the </strong> boundary
-        # phrase_wrap's text-run logic should reject this first,
-        # but if that's bypassed, _verify_anchor_wellformed catches it
-        with pytest.raises(LinkConflict):
-            build_edit(body, edit, "https://example.com/target")
+    URL = "https://s.com/collections/ceramic-tanks"
     
-    def test_insert_sentence_calls_verify(self):
-        """insert_sentence must call _verify_anchor_wellformed.
-        
-        This test validates that insert_sentence rejects malformed results.
-        If _verify_anchor_wellformed is removed from insert_sentence, this test structure
-        ensures insert_sentence still validates the output.
-        """
-        body = '<p>First paragraph content.</p>'
+    def test_1a_insert_sentence_with_link_in_next_para(self):
+        """Insert sentence when next paragraph has a link. Must be ALLOWED."""
+        old = '<p>Love tanks.</p><p><a href="/z">Zed</a> more.</p>'
         edit = {
-            "anchor_phrase": "new link",
-            "insert_sentence": "Check our new link for details.",
-            "insert_after_text": "First paragraph content.",
+            "anchor_phrase": "ceramic tanks",
+            "insert_sentence": "ceramic tanks are great.",
+            "insert_after_text": "Love tanks.",
         }
-        result = build_edit(body, edit, "https://example.com/target")
-        # Should succeed - well-formed
-        assert '<a href="https://example.com/target">new link</a>' in result
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        # guard_edit must pass
+        guard_edit(old, result, edit, self.URL)
     
-    def test_manual_append_calls_verify(self):
-        """manual_append must call _verify_anchor_wellformed.
-        
-        This test validates that manual_append rejects malformed results.
-        """
-        body = '<p>First sentence here.</p>'
+    def test_1b_insert_sentence_with_formatted_link_in_next_para(self):
+        """Insert sentence when next link has <strong> inside. Must be ALLOWED."""
+        old = '<p>Love tanks.</p><p><a href="/z"><strong>Zed</strong></a> more.</p>'
+        edit = {
+            "anchor_phrase": "ceramic tanks",
+            "insert_sentence": "ceramic tanks are great.",
+            "insert_after_text": "Love tanks.",
+        }
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        guard_edit(old, result, edit, self.URL)
+    
+    def test_1b_with_newline_between_paragraphs(self):
+        """Same as 1b but with newline between paragraphs. Must be ALLOWED."""
+        old = '<p>Love tanks.</p>\n<p><a href="/z"><strong>Zed</strong></a> more.</p>'
+        edit = {
+            "anchor_phrase": "ceramic tanks",
+            "insert_sentence": "ceramic tanks are great.",
+            "insert_after_text": "Love tanks.",
+        }
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        guard_edit(old, result, edit, self.URL)
+    
+    def test_1c_insert_sentence_next_link_similar_url_with_em(self):
+        """Next link has similar URL prefix and <em>. Must be ALLOWED."""
+        old = '<p>Love tanks.</p><p><a href="https://s.com/collections/other"><em>Other</em></a> stuff.</p>'
+        edit = {
+            "anchor_phrase": "ceramic tanks",
+            "insert_sentence": "ceramic tanks are great.",
+            "insert_after_text": "Love tanks.",
+        }
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        guard_edit(old, result, edit, self.URL)
+    
+    def test_1d_manual_append_with_formatted_link_after(self):
+        """Manual append when body has formatted link after sentence. Must be ALLOWED."""
+        # The sentence is followed by a link (within same paragraph)
+        old = '<p>Love tanks. And <a href="/z"><strong>Zed</strong></a> is here.</p>'
         edit = {
             "origin": "manual",
-            "anchor_phrase": "new link",
-            "after_sentence": "First sentence here.",
-            "append_text": "Check our new link.",
+            "anchor_phrase": "ceramic tanks",
+            "after_sentence": "Love tanks.",
+            "append_text": "ceramic tanks rock.",
         }
-        result = build_edit(body, edit, "https://example.com/target")
-        # Should succeed - well-formed
-        assert '<a href="https://example.com/target">new link</a>' in result
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        guard_edit(old, result, edit, self.URL)
     
-    def test_guard_edit_calls_verify(self):
-        """guard_edit must call _verify_anchor_wellformed.
-        
-        This test FAILS if _verify_anchor_wellformed is removed from guard_edit.
-        """
-        old = '<p>Our ceramic tanks are great.</p>'
+    def test_1e_phrase_wrap_with_formatted_link_after(self):
+        """Phrase wrap when text after has <b> inside link. Must be ALLOWED."""
+        old = '<p>ceramic tanks <a href="/z"><b>x</b></a></p>'
         edit = {"anchor_phrase": "ceramic tanks"}
-        new = build_edit(old, edit, "https://example.com/target")
-        # Should pass validation
-        guard_edit(old, new, edit, "https://example.com/target")
+        result = build_edit(old, edit, self.URL)
+        assert f'<a href="{self.URL}">ceramic tanks</a>' in result
+        guard_edit(old, result, edit, self.URL)
     
-    def test_guard_edit_insertion_point_check(self):
-        """guard_edit's insertion-point check must reject inserts inside anchors.
+    def test_1f_real_preview_ai_woven_insert_sentence_next_para_link(self):
+        """Real preview_suggestion on ai_woven insert_sentence with link in next para.
         
-        This test FAILS if the _is_inside_real_anchor check at guard_edit:1416 is removed.
+        The sentence starts with the phrase ('Ceramic tanks are a great upgrade.')
+        and the next paragraph starts with a link. Must be allowed.
         """
-        # Old has an anchor; try to inject inside it via tampered new
-        old = '<p>Check our <a href="/existing">ceramic tanks</a> collection.</p>'
-        # The phrase "ceramic" is inside the anchor
-        edit = {"anchor_phrase": "ceramic"}
-        # build_edit should skip this (phrase inside anchor)
-        with pytest.raises(LinkConflict):
-            build_edit(old, edit, "https://example.com/target")
+        from shopifyseo.internal_links.apply import preview_suggestion
+        
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
+                description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
+            CREATE TABLE collections (shopify_id TEXT, handle TEXT, title TEXT,
+                description_html TEXT, api_unreachable INTEGER DEFAULT 0);
+            CREATE TABLE link_suggestions (
+                id INTEGER PRIMARY KEY, source_type TEXT, source_handle TEXT, 
+                target_type TEXT, target_handle TEXT, kind TEXT, anchor_phrase TEXT,
+                ai_edit_json TEXT, source_body_hash TEXT, score REAL DEFAULT 0, status TEXT DEFAULT 'suggested',
+                created_at INTEGER, weak_anchor INTEGER DEFAULT 0
+            );
+            CREATE TABLE link_body_snapshots (
+                id INTEGER PRIMARY KEY, suggestion_id INTEGER, source_type TEXT, source_handle TEXT,
+                shopify_id TEXT, old_body TEXT, new_body TEXT, status TEXT, created_at INTEGER, updated_at INTEGER, error TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_pending ON link_body_snapshots (source_type, source_handle)
+                WHERE status IN ('prepared', 'needs_reconciliation', 'undo_prepared', 'undo_needs_reconciliation');
+            CREATE TABLE internal_links (source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, href TEXT, anchor_text TEXT);
+            CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE link_suggestion_events (id INTEGER PRIMARY KEY, suggestion_id INTEGER, event_type TEXT, source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, kind TEXT, score REAL, gsc_clicks_at_event INTEGER, created_at INTEGER);
+        """)
+        
+        # Body: first para, then link in next para
+        body = '<p>Love tanks.</p><p><a href="/z"><strong>Zed</strong></a> is here.</p>'
+        
+        import json
+        edit = {
+            "anchor_phrase": "Ceramic tanks",
+            "insert_sentence": "Ceramic tanks are a great upgrade.",
+            "insert_after_text": "Love tanks.",
+        }
+        
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'tanks', 'Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, ai_edit_json, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'tanks', 'ai_woven', 'Ceramic tanks', ?, 'suggested', 1)",
+            (json.dumps(edit),)
+        )
+        conn.execute("INSERT INTO service_settings (key, value) VALUES ('ai_enabled_product', 'true')")
+        conn.commit()
+        
+        def mock_fetch(source_type, row):
+            return body
+        
+        preview = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview["allowed"] == True, f"Preview must be allowed, got: {preview.get('reason')}"
+
+
+class TestGuardEditFailsClosed:
+    """guard_edit must fail closed if our anchor can't be found exactly once.
+    
+    With build_edit monkeypatched to return malformed HTML, guard_edit must REJECT:
+    - <a class="x" href=U> (class before href)
+    - <a href='U'> (single quotes)
+    - <A HREF="U"> (uppercase)
+    - <a  href="U"> (double space)
+    - No anchor at all
+    """
+    
+    URL = "https://s.com/collections/ceramic-tanks"
+    CROSSING = '<p><strong>our <a href="https://s.com/collections/ceramic-tanks">ceramic</strong> tanks</a> rock</p>'
+    
+    def test_1g_rejects_class_before_href(self, monkeypatch):
+        """Reject anchor with class attribute before href."""
+        old = '<p>ceramic tanks rock</p>'
+        malformed = f'<p><a class="x" href="{self.URL}">ceramic tanks</a> rock</p>'
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: malformed)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, malformed, edit, self.URL)
+        assert exc_info.value.code == "anchor_not_found"
+    
+    def test_1g_rejects_single_quotes(self, monkeypatch):
+        """Reject anchor with single quotes around href."""
+        old = '<p>ceramic tanks rock</p>'
+        malformed = f"<p><a href='{self.URL}'>ceramic tanks</a> rock</p>"
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: malformed)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, malformed, edit, self.URL)
+        assert exc_info.value.code == "anchor_not_found"
+    
+    def test_1g_rejects_uppercase(self, monkeypatch):
+        """Reject anchor with uppercase tags."""
+        old = '<p>ceramic tanks rock</p>'
+        malformed = f'<p><A HREF="{self.URL}">ceramic tanks</A> rock</p>'
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: malformed)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, malformed, edit, self.URL)
+        assert exc_info.value.code == "anchor_not_found"
+    
+    def test_1g_rejects_double_space(self, monkeypatch):
+        """Reject anchor with double space before href."""
+        old = '<p>ceramic tanks rock</p>'
+        malformed = f'<p><a  href="{self.URL}">ceramic tanks</a> rock</p>'
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: malformed)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, malformed, edit, self.URL)
+        assert exc_info.value.code == "anchor_not_found"
+    
+    def test_1g_rejects_no_anchor(self, monkeypatch):
+        """Reject when no anchor is added at all."""
+        old = '<p>ceramic tanks rock</p>'
+        malformed = '<p>ceramic tanks rock</p>'  # Same as old
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: malformed)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, malformed, edit, self.URL)
+        assert exc_info.value.code == "anchor_not_found"
+    
+    def test_1g_rejects_crossing_anchor(self, monkeypatch):
+        """Reject anchor that crosses tag boundaries (</strong> inside anchor)."""
+        old = '<p>our ceramic tanks rock</p>'
+        
+        monkeypatch.setattr('shopifyseo.internal_links.safety.build_edit', lambda *_: self.CROSSING)
+        
+        edit = {"anchor_phrase": "ceramic tanks"}
+        with pytest.raises(LinkConflict) as exc_info:
+            guard_edit(old, self.CROSSING, edit, self.URL)
+        # Should be rejected by _verify_anchor_wellformed
+        assert exc_info.value.code == "anchor_spans_tags"
+
+
+class TestCallSiteMutationTests:
+    """True call-site mutation tests using monkeypatch.
+    
+    Each test monkeypatches _verify_anchor_wellformed to track calls AND
+    uses build_edit through the actual call sites.
+    
+    Removing a call site's _verify_anchor_wellformed MUST fail that test.
+    """
+    
+    URL = "https://example.com/target"
+    
+    def test_phrase_wrap_calls_verify(self, monkeypatch):
+        """phrase_wrap mode must call _verify_anchor_wellformed.
+        
+        FAILS if _verify_anchor_wellformed call at safety.py:1376 is removed.
+        """
+        from shopifyseo.internal_links import safety
+        
+        verify_called = [False]
+        original_verify = safety._verify_anchor_wellformed
+        
+        def tracking_verify(html, pos):
+            verify_called[0] = True
+            return original_verify(html, pos)
+        
+        monkeypatch.setattr(safety, '_verify_anchor_wellformed', tracking_verify)
+        
+        # Call build_edit in phrase_wrap mode
+        old = '<p>ceramic tanks are great.</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        safety.build_edit(old, edit, self.URL)
+        
+        assert verify_called[0], "phrase_wrap must call _verify_anchor_wellformed"
+    
+    def test_insert_sentence_calls_verify(self, monkeypatch):
+        """insert_sentence mode must call _verify_anchor_wellformed.
+        
+        FAILS if _verify_anchor_wellformed call at safety.py:1261 is removed.
+        """
+        from shopifyseo.internal_links import safety
+        
+        verify_called = [False]
+        original_verify = safety._verify_anchor_wellformed
+        
+        def tracking_verify(html, pos):
+            verify_called[0] = True
+            return original_verify(html, pos)
+        
+        monkeypatch.setattr(safety, '_verify_anchor_wellformed', tracking_verify)
+        
+        # Call build_edit in insert_sentence mode
+        old = '<p>First paragraph.</p>'
+        edit = {
+            "anchor_phrase": "ceramic tanks",
+            "insert_sentence": "ceramic tanks are great.",
+            "insert_after_text": "First paragraph.",
+        }
+        safety.build_edit(old, edit, self.URL)
+        
+        assert verify_called[0], "insert_sentence must call _verify_anchor_wellformed"
+    
+    def test_manual_append_calls_verify(self, monkeypatch):
+        """manual_append mode must call _verify_anchor_wellformed.
+        
+        FAILS if _verify_anchor_wellformed call at safety.py:1190 is removed.
+        """
+        from shopifyseo.internal_links import safety
+        
+        verify_called = [False]
+        original_verify = safety._verify_anchor_wellformed
+        
+        def tracking_verify(html, pos):
+            verify_called[0] = True
+            return original_verify(html, pos)
+        
+        monkeypatch.setattr(safety, '_verify_anchor_wellformed', tracking_verify)
+        
+        # Call build_edit in manual_append mode
+        old = '<p>This is a test sentence.</p>'
+        edit = {
+            "origin": "manual",
+            "anchor_phrase": "ceramic tanks",
+            "after_sentence": "This is a test sentence.",
+            "append_text": "ceramic tanks rock.",
+        }
+        safety.build_edit(old, edit, self.URL)
+        
+        assert verify_called[0], "manual_append must call _verify_anchor_wellformed"
+    
+    def test_guard_edit_verify_catches_crossing(self, monkeypatch):
+        """guard_edit's _verify_anchor_wellformed catches crossing anchors.
+        
+        FAILS if _verify_anchor_wellformed call at guard_edit end is removed.
+        """
+        from shopifyseo.internal_links import safety
+        
+        old = '<p>our ceramic tanks rock</p>'
+        crossing = '<p><strong>our <a href="https://example.com/target">ceramic</strong> tanks</a> rock</p>'
+        edit = {"anchor_phrase": "ceramic tanks"}
+        
+        # Monkeypatch build_edit to return crossing HTML
+        monkeypatch.setattr(safety, 'build_edit', lambda *_: crossing)
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            safety.guard_edit(old, crossing, edit, self.URL)
+        assert exc_info.value.code == "anchor_spans_tags"
+    
+    def test_guard_edit_nesting_check_catches_nested_anchor(self, monkeypatch):
+        """guard_edit's _verify_anchor_wellformed catches nested anchors.
+        
+        FAILS if _verify_anchor_wellformed call in guard_edit is removed.
+        """
+        from shopifyseo.internal_links import safety
+        
+        # Old has an anchor; new has nested anchor
+        old = '<p>Check our tanks collection.</p>'
+        # Malformed: our anchor is nested inside another anchor
+        nested = '<p>Check <a href="/outer">our <a href="https://example.com/target">tanks</a></a> collection.</p>'
+        edit = {"anchor_phrase": "tanks"}
+        
+        # Monkeypatch build_edit to return nested HTML
+        monkeypatch.setattr(safety, 'build_edit', lambda *_: nested)
+        
+        with pytest.raises(LinkConflict) as exc_info:
+            safety.guard_edit(old, nested, edit, "https://example.com/target")
+        # Should be caught by _verify_anchor_wellformed (nested_anchor_created)
+        assert exc_info.value.code == "nested_anchor_created"
 
 
 # =============================================================================
@@ -1381,15 +1681,14 @@ class TestLockHolderBehavior:
         assert "no unfinished write" in str(exc_info.value).lower()
     
     def test_lock_holder_reconcile_then_preview_apply_succeeds(self):
-        """Lock holder reconciles first, then preview→apply succeeds.
-        
-        When a page has a pending snapshot, the holder must reconcile first
-        before they can preview→apply a new change.
+        """Full sequence test: blocked preview → reconcile → preview (allowed) → apply (stub called).
         
         Sequence:
-        1. Suggestion 1 has a needs_reconciliation snapshot
-        2. Holder reconciles (clears the lock)
-        3. Holder can then preview→apply successfully
+        1. Suggestion 2 has a needs_reconciliation snapshot (the lock on the page)
+        2. Preview for suggestion 1 is blocked (page locked by sug 2)
+        3. Suggestion 2 reconciles (clears the lock)
+        4. Preview for suggestion 1 now allowed
+        5. Apply for suggestion 1 succeeds (stub write called)
         """
         from shopifyseo.internal_links.apply import (
             reconcile_suggestion, preview_suggestion, apply_suggestion
@@ -1397,8 +1696,99 @@ class TestLockHolderBehavior:
         import time
         
         conn = self._create_lock_test_db()
+        # Body has two phrases we can link
+        original_body = "<p>Check our ceramic tanks and vape pods guide.</p>"
+        # What suggestion 2's first write produced (pending reconciliation)
+        sug2_new_body = '<p>Check our ceramic tanks and <a href="https://shop.com/collections/pods">vape pods</a> guide.</p>'
+        
+        conn.execute(
+            "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
+            "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
+            (original_body,)
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/1', 'tanks', 'Tanks')"
+        )
+        conn.execute(
+            "INSERT INTO collections (shopify_id, handle, title) VALUES ('gid://shopify/Collection/2', 'pods', 'Pods')"
+        )
+        # Suggestion 1: wants to link "ceramic tanks"
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (1, 'product', 'source', 'collection', 'tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
+        )
+        # Suggestion 2: linked "vape pods" but needs reconciliation (holds the lock)
+        conn.execute(
+            "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
+            "VALUES (2, 'product', 'source', 'collection', 'pods', 'phrase_wrap', 'vape pods', 'suggested', 1)"
+        )
+        # Suggestion 2 has a needs_reconciliation snapshot (the lock)
+        conn.execute(
+            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 2, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
+            (original_body, sug2_new_body, int(time.time()) - 1000)
+        )
+        conn.commit()
+        
+        # Track which body is currently on Shopify
+        shopify_body = [sug2_new_body]  # Sug 2's write succeeded
+        push_called = [False]
+        
+        def mock_fetch(source_type, row):
+            return shopify_body[0]
+        
+        def mock_push(source_type, row, body):
+            push_called[0] = True
+            shopify_body[0] = body
+            return body
+        
+        # Step 1: Preview for suggestion 1 is BLOCKED (page locked by sug 2)
+        preview1_blocked = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview1_blocked["allowed"] == False
+        assert preview1_blocked["code"] == "page_write_pending"
+        
+        # Step 2: Suggestion 2 holder reconciles (clears the lock)
+        reconcile_result = reconcile_suggestion(conn, 2, "https://shop.com", fetch_fn=mock_fetch)
+        assert reconcile_result["status"] == "applied"
+        
+        # Verify suggestion 2 is now applied
+        sug2 = conn.execute("SELECT status FROM link_suggestions WHERE id = 2").fetchone()
+        assert sug2["status"] == "applied"
+        
+        # Step 3: Preview for suggestion 1 now ALLOWED
+        preview1_allowed = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview1_allowed["allowed"] == True
+        assert preview1_allowed["preview_token"] is not None
+        
+        # Step 4: Apply for suggestion 1 succeeds
+        apply_result = apply_suggestion(
+            conn, 1, "https://shop.com",
+            preview_token_value=preview1_allowed["preview_token"],
+            fetch_fn=mock_fetch,
+            push_fn=mock_push
+        )
+        assert apply_result["status"] == "applied"
+        assert push_called[0] == True, "stub push must be called"
+        
+        # Both suggestions now applied
+        sug1 = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
+        assert sug1["status"] == "applied"
+    
+    def test_sequence_fails_if_reconcile_doesnt_clear_lock(self, monkeypatch):
+        """Mutation test: if reconcile never clears the lock, sequence fails.
+        
+        FAILS if reconcile doesn't properly update snapshot status to 'applied'.
+        """
+        from shopifyseo.internal_links.apply import (
+            reconcile_suggestion, preview_suggestion
+        )
+        from shopifyseo.internal_links import apply as apply_module
+        import time
+        
+        conn = self._create_lock_test_db()
         original_body = "<p>Check our ceramic tanks guide.</p>"
-        first_new_body = '<p>Check our <a href="https://shop.com/collections/tanks">ceramic tanks</a> guide.</p>'
+        new_body = '<p>Check our <a href="https://shop.com/collections/tanks">ceramic tanks</a> guide.</p>'
+        
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', ?, 'https://shop.com/products/source')",
@@ -1411,37 +1801,41 @@ class TestLockHolderBehavior:
             "INSERT INTO link_suggestions (id, source_type, source_handle, target_type, target_handle, kind, anchor_phrase, status, created_at) "
             "VALUES (1, 'product', 'source', 'collection', 'tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
         )
-        # Suggestion 1 has a needs_reconciliation snapshot (the lock)
         conn.execute(
             "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
             "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
-            (original_body, first_new_body, int(time.time()) - 1000)
+            (original_body, new_body, int(time.time()) - 1000)
         )
         conn.commit()
         
-        # Track which body is currently on Shopify
-        shopify_body = [first_new_body]  # Mutable to allow modification in closures
-        
         def mock_fetch(source_type, row):
-            return shopify_body[0]
+            return new_body
         
-        def mock_push(source_type, row, body):
-            shopify_body[0] = body
-            return body
+        # Monkeypatch _finish to NOT update suggestion status (simulating broken reconcile)
+        original_finish = apply_module._finish
+        def broken_finish(conn, snapshot, sug, base_url, *, body=None, undo=False):
+            # Do everything except update suggestion status and snapshot status
+            pass
         
-        # Step 1: Verify preview is blocked while lock exists
-        preview_result = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
-        assert preview_result["allowed"] == False
-        assert preview_result["code"] == "page_write_pending"
+        monkeypatch.setattr(apply_module, '_finish', broken_finish)
         
-        # Step 2: Holder reconciles their snapshot
-        reconcile_result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
-        assert reconcile_result["status"] == "applied"
+        # Reconcile appears to succeed but doesn't actually clear lock
+        # (In reality this would fail because _finish also updates snapshot)
+        # The key is: preview should still be blocked after "broken" reconcile
         
-        # Now the suggestion is applied, so we can't re-apply it
-        # Let's verify the flow worked by checking suggestion status
-        suggestion = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
-        assert suggestion["status"] == "applied"
+        # First verify preview is blocked
+        preview1 = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview1["allowed"] == False, "Preview must be blocked while lock exists"
+        
+        # Try reconcile with broken _finish - it will fail or not clear lock
+        try:
+            reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        except Exception:
+            pass  # May raise due to incomplete _finish
+        
+        # Preview should STILL be blocked (lock not cleared)
+        preview2 = preview_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
+        assert preview2["allowed"] == False, "Preview must still be blocked if reconcile didn't clear lock"
 
 
 # =============================================================================

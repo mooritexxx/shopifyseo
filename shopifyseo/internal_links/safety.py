@@ -1398,40 +1398,52 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     
     Checks:
     1. Exact reconstruction: new must equal build_edit(old, edit, url)
-    2. Insertion point check: verify our anchor wasn't inserted inside an existing
-       anchor (real or escaped). Pre-existing nesting elsewhere is irrelevant.
-    3. Final wellformedness check: verify the inserted anchor doesn't contain or
+    2. Find our exact anchor: locate the specific anchor tag we added (must exist
+       exactly once more in new than in old). Fail closed if not found.
+    3. Final wellformedness check: verify that specific anchor doesn't contain or
        cross other tags.
+    
+    Note: build_edit already validates that we're not inserting inside existing
+    anchors. The reconstruction check (1) ensures new matches build_edit output.
     """
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):
         raise LinkConflict("Changes outside the approved link insertion are blocked.", text_diff=text_diff(old, new))
     
-    # Check if our insertion point is inside an existing anchor.
-    # This is the second line of defense - build_edit should prevent this,
-    # but we verify here to catch edge cases.
-    # Pre-existing nesting elsewhere must NOT disable this check.
-    insert_offset = _find_inserted_anchor_offset(old, new)
-    if insert_offset is not None:
-        # Check both real anchors and escaped anchors at the insertion point
-        if _is_inside_real_anchor(old, insert_offset):
+    # Find our exact anchor tag. build_edit uses exactly this format:
+    # <a href="{html.escape(url, quote=True)}">
+    our_anchor_tag = f'<a href="{html.escape(url, quote=True)}">'
+    
+    # Count occurrences in old vs new - we must have added exactly one
+    old_count = old.count(our_anchor_tag)
+    new_count = new.count(our_anchor_tag)
+    
+    if new_count != old_count + 1:
+        raise LinkConflict(
+            "Could not locate the inserted anchor exactly once. "
+            "The edit may have been malformed.",
+            code="anchor_not_found"
+        )
+    
+    # Find the position of OUR anchor (the one that's new)
+    # It's the (old_count + 1)th occurrence in new
+    our_anchor_pos = -1
+    search_start = 0
+    for i in range(old_count + 1):
+        pos = new.find(our_anchor_tag, search_start)
+        if pos < 0:
             raise LinkConflict(
-                "The edit would create nested anchor tags (<a> inside <a>), which is invalid HTML.",
-                code="insert_inside_existing_anchor"
+                "Could not locate the inserted anchor. The edit may have been malformed.",
+                code="anchor_not_found"
             )
-        if _is_inside_escaped_anchor(old, insert_offset):
-            raise LinkConflict(
-                "The insertion point is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;).",
-                code="insert_inside_existing_anchor"
-            )
-        
-        # Final wellformedness check: verify the new anchor doesn't span other tags
-        # Find the actual anchor position in new (insert_offset is where old/new diverge,
-        # but the <a href= tag may be further into the new content)
-        anchor_pos_in_new = new.find('<a href=', insert_offset)
-        if anchor_pos_in_new >= 0:
-            _verify_anchor_wellformed(new, anchor_pos_in_new)
+        if i == old_count:
+            # This is our new anchor
+            our_anchor_pos = pos
+        search_start = pos + 1
+    
+    # Final wellformedness check: verify our specific anchor doesn't span other tags
+    _verify_anchor_wellformed(new, our_anchor_pos)
 
 
 def preview_token(binding: dict) -> str:

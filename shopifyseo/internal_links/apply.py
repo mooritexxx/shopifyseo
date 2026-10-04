@@ -13,8 +13,7 @@ from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
 from .graph import extract_links, resolve_internal_target
 from .safety import (LinkConflict, body_hash, build_edit, guard_edit, html_equivalent,
-                     preview_token, require_ai_enabled, text_diff, validate_edit, verify_token,
-                     _verify_anchor_wellformed, _find_inserted_anchor_offset)
+                     preview_token, require_ai_enabled, text_diff, validate_edit, verify_token)
 
 logger = logging.getLogger(__name__)
 _hash_body = body_hash

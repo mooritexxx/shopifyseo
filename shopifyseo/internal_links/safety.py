@@ -502,16 +502,21 @@ def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
     """Verify the inserted anchor at anchor_start is well-formed.
     
     Raises LinkConflict if:
-    - The anchor contains other tags (e.g., <a>...<strong>...</a>)
+    - The anchor contains other start tags (e.g., <a>...<strong>...</a>)
+    - The anchor contains other end tags (e.g., <strong>...<a>...</strong>...</a>)
     - The anchor is nested inside another anchor
     - The anchor is not properly closed before another anchor opens
+    
+    Called from ALL write paths: phrase_wrap, insert_sentence, manual_append,
+    guard_edit, and apply-time recheck.
     """
     class _AnchorChecker(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=False)
             self.in_our_anchor = False
             self.our_anchor_depth = 0
-            self.found_other_tag = False
+            self.found_other_start_tag = False
+            self.found_other_end_tag = False
             self.found_nested_anchor = False
             self.anchor_depth = 0
             self.target_pos = anchor_start
@@ -543,8 +548,8 @@ def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
                 if self.in_our_anchor:
                     self.our_anchor_depth += 1
             elif self.in_our_anchor and tag not in ('br',):
-                # Found a non-anchor tag inside our anchor
-                self.found_other_tag = True
+                # Found a non-anchor start tag inside our anchor
+                self.found_other_start_tag = True
         
         def handle_endtag(self, tag):
             if tag == 'a':
@@ -553,6 +558,10 @@ def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
                     self.our_anchor_depth -= 1
                     if self.our_anchor_depth == 0:
                         self.in_our_anchor = False
+            elif self.in_our_anchor and tag not in ('br',):
+                # Found a non-anchor end tag inside our anchor - bad!
+                # This catches cases like: <strong>our <a>ceramic</strong> tanks</a>
+                self.found_other_end_tag = True
     
     checker = _AnchorChecker()
     try:
@@ -569,9 +578,15 @@ def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
             code="nested_anchor_created"
         )
     
-    if checker.found_other_tag:
+    if checker.found_other_start_tag:
         raise LinkConflict(
             "Link would span across other tags. Generate a new suggestion.",
+            code="anchor_spans_tags"
+        )
+    
+    if checker.found_other_end_tag:
+        raise LinkConflict(
+            "Link would contain a closing tag from outside. Generate a new suggestion.",
             code="anchor_spans_tags"
         )
 
@@ -1167,7 +1182,13 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         )
         insertion = " " + linked_text
         
-        return old[:insert_offset] + insertion + old[insert_offset:]
+        result = old[:insert_offset] + insertion + old[insert_offset:]
+        # Find anchor position: insert_offset + space + position of <a in linked_text
+        anchor_pos = insert_offset + 1 + linked_text.find('<a href=')
+        
+        # Final guard: verify the new anchor is well-formed
+        _verify_anchor_wellformed(result, anchor_pos)
+        return result
     
     # AI insert_sentence mode
     sentence = edit.get("insert_sentence")
@@ -1228,8 +1249,17 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         offset = matches[0]
         # Match the body's block separator style: if it uses newlines between blocks, preserve that
         if "</p>\n<p>" in old or (offset < len(old) and old[offset:offset + 1] == "\n"):
-            return old[:offset] + "\n<p>" + linked + "</p>" + old[offset:]
-        return old[:offset] + "<p>" + linked + "</p>" + old[offset:]
+            result = old[:offset] + "\n<p>" + linked + "</p>" + old[offset:]
+            # Find anchor position: offset + newline + <p> + position of <a in linked
+            anchor_pos = offset + 1 + 3 + linked.find('<a href=')
+        else:
+            result = old[:offset] + "<p>" + linked + "</p>" + old[offset:]
+            # Find anchor position: offset + <p> + position of <a in linked
+            anchor_pos = offset + 3 + linked.find('<a href=')
+        
+        # Final guard: verify the new anchor is well-formed
+        _verify_anchor_wellformed(result, anchor_pos)
+        return result
     
     # phrase_wrap mode: find first safe occurrence (not inside an escaped anchor)
     # CRITICAL: Match must be entirely within ONE contiguous text run.
@@ -1370,6 +1400,8 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     1. Exact reconstruction: new must equal build_edit(old, edit, url)
     2. Insertion point check: verify our anchor wasn't inserted inside an existing
        anchor (real or escaped). Pre-existing nesting elsewhere is irrelevant.
+    3. Final wellformedness check: verify the inserted anchor doesn't contain or
+       cross other tags.
     """
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
@@ -1393,6 +1425,13 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
                 "The insertion point is inside an escaped anchor region (&lt;a&gt;...&lt;/a&gt;).",
                 code="insert_inside_existing_anchor"
             )
+        
+        # Final wellformedness check: verify the new anchor doesn't span other tags
+        # Find the actual anchor position in new (insert_offset is where old/new diverge,
+        # but the <a href= tag may be further into the new content)
+        anchor_pos_in_new = new.find('<a href=', insert_offset)
+        if anchor_pos_in_new >= 0:
+            _verify_anchor_wellformed(new, anchor_pos_in_new)
 
 
 def preview_token(binding: dict) -> str:

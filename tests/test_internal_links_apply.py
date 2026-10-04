@@ -125,13 +125,15 @@ def test_guard_rejects_text_and_invisible_html_changes():
     edit = {'anchor_phrase': 'ceramic tanks'}
     url = BASE + '/collections/ceramic-tanks'
     new = build_edit(old, edit, url)
-    for changed in [new.replace('Original', 'Rewritten'), new.replace('/x.jpg', '/y.jpg'), new.replace('https://source.example', 'https://other.example'), new.replace('<img src="/x.jpg">', '')]:
+    # Use text that exists in OLD - "original" and "sentence" are in the new OLD
+    for changed in [new.replace('original', 'rewritten'), new.replace('/x.jpg', '/y.jpg'), new.replace('https://source.example', 'https://other.example'), new.replace('<img src="/x.jpg">', '')]:
         with pytest.raises(LinkConflict): guard_edit(old, changed, edit, url)
 
 
 def test_structured_sentence_is_spliced_once_preserving_every_original_byte():
     conn = database(); live = Shopify()
-    edit = {'anchor_phrase': 'Ceramic Tanks', 'insert_sentence': 'Explore Ceramic Tanks for more options.', 'insert_after_text': 'Original second sentence.'}
+    # Locator must be 40+ chars and match a sentence in OLD
+    edit = {'anchor_phrase': 'Ceramic Tanks', 'insert_sentence': 'Explore Ceramic Tanks for more options.', 'insert_after_text': 'This is the original second sentence with more text.'}
     conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (json.dumps(edit),)); conn.commit()
     apply(conn, live)
     assert live.body.startswith(OLD)
@@ -152,8 +154,11 @@ def test_invalid_insertions_do_not_push(edit):
 
 
 def test_ambiguous_paragraph_is_rejected():
+    # Locator must be 40+ chars, and it must match 2+ paragraphs to trigger ambiguity
+    # The anchor phrase must be 2-6 words and appear EXACTLY in the sentence (case-sensitive)
+    body = '<p>This is a sentence that appears exactly twice here.</p><p>This is a sentence that appears exactly twice here.</p>'
     with pytest.raises(LinkConflict, match='ambiguous'):
-        build_edit('<p>Same.</p><p>Same.</p>', {'anchor_phrase':'tanks','insert_sentence':'Explore tanks.','insert_after_text':'Same.'}, BASE)
+        build_edit(body, {'anchor_phrase':'Explore tanks','insert_sentence':'Explore tanks today for more options.','insert_after_text':'This is a sentence that appears exactly twice here.'}, BASE)
 
 
 @pytest.mark.parametrize('source_type,resource,field', [('product','product','descriptionHtml'),('collection','collection','descriptionHtml'),('blog_article','article','body')])

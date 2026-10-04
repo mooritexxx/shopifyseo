@@ -433,15 +433,15 @@ class TestNewlineSeparatorInsert:
         conn = database()
         live = Shopify()
         
-        # Body with newline between paragraphs
-        body_with_newlines = "<p>First paragraph.</p>\n<p>Second paragraph.</p>"
+        # Body with newline between paragraphs (locator must be 40+ chars)
+        body_with_newlines = "<p>First paragraph with some extra content here.</p>\n<p>Second paragraph with enough content for locator.</p>"
         live.body = body_with_newlines
         conn.execute("UPDATE products SET description_html = ?", (body_with_newlines,))
         
         edit = {
             "anchor_phrase": "Ceramic Tanks",
             "insert_sentence": "Explore Ceramic Tanks for more options.",
-            "insert_after_text": "Second paragraph.",
+            "insert_after_text": "Second paragraph with enough content for locator.",
         }
         conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (json.dumps(edit),))
         conn.commit()
@@ -457,15 +457,15 @@ class TestNewlineSeparatorInsert:
         conn = database()
         live = Shopify()
         
-        # Body without newlines between paragraphs
-        body_compact = "<p>First paragraph.</p><p>Second paragraph.</p>"
+        # Body without newlines between paragraphs (locator must be 40+ chars)
+        body_compact = "<p>First paragraph with some extra content here.</p><p>Second paragraph with enough content for locator.</p>"
         live.body = body_compact
         conn.execute("UPDATE products SET description_html = ?", (body_compact,))
         
         edit = {
             "anchor_phrase": "Ceramic Tanks",
             "insert_sentence": "Explore Ceramic Tanks for more options.",
-            "insert_after_text": "Second paragraph.",
+            "insert_after_text": "Second paragraph with enough content for locator.",
         }
         conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (json.dumps(edit),))
         conn.commit()

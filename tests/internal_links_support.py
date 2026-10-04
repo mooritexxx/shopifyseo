@@ -5,7 +5,9 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 from shopifyseo.internal_links.apply import preview_suggestion, apply_suggestion
 
 BASE = 'https://s.com'
-OLD = '<p>Love ceramic tanks.</p><p>Original second sentence.</p>'
+# OLD must have sentences that are 40+ chars for locator matching
+# First sentence: 42 chars, Second sentence: 52 chars
+OLD = '<p>We love ceramic tanks and all they offer.</p><p>This is the original second sentence with more text.</p>'
 
 
 def database(path=':memory:'):

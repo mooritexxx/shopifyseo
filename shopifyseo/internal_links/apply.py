@@ -318,14 +318,15 @@ def undo_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None, push_fn=Non
         raise LinkConflict("Another write on this page is in progress or needs reconciliation.") from None
     try:
         current = fetch_fn(sug["source_type"], row)
-        if current != snapshot["new_body"]:
+        if not html_equivalent(current, snapshot["new_body"]):
             raise LinkConflict("The page changed after Apply. Undo would overwrite newer work and was blocked.",
                                text_diff=text_diff(snapshot["new_body"], current))
     except Exception:
         _status(conn, snapshot["id"], "applied")
         raise
     try:
-        if push_fn(sug["source_type"], row, snapshot["old_body"]) != snapshot["old_body"]:
+        restored = push_fn(sug["source_type"], row, snapshot["old_body"])
+        if not html_equivalent(restored, snapshot["old_body"]):
             raise RuntimeError("Shopify did not confirm the restored HTML. Reconciliation is required.")
         _finish(conn, snapshot, sug, base_url, undo=True)
     except Exception:

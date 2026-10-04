@@ -478,26 +478,6 @@ def _is_inside_real_anchor(html_str: str, offset: int) -> bool:
     return depth > 0
 
 
-def _find_inserted_anchor_offset(old: str, new: str) -> int | None:
-    """Find the offset in old where our new anchor was inserted.
-    
-    Compares old and new to find where the new <a href="..."> was added.
-    Returns the offset in `old` where content was inserted, or None if not found.
-    """
-    # Find the first difference between old and new
-    min_len = min(len(old), len(new))
-    diff_start = 0
-    for i in range(min_len):
-        if old[i] != new[i]:
-            diff_start = i
-            break
-    else:
-        diff_start = min_len
-    
-    # The insertion point in old is at diff_start
-    return diff_start if diff_start < len(new) else None
-
-
 def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
     """Verify the inserted anchor at anchor_start is well-formed.
     
@@ -589,35 +569,6 @@ def _verify_anchor_wellformed(html_str: str, anchor_start: int) -> None:
             "Link would contain a closing tag from outside. Generate a new suggestion.",
             code="anchor_spans_tags"
         )
-
-
-def _has_nested_anchors(html_str: str) -> bool:
-    """Check if HTML contains nested <a> tags (real nesting, not escaped).
-    
-    Returns True if any <a> tag opens while another <a> is already open.
-    """
-    class _AnchorNestChecker(HTMLParser):
-        def __init__(self):
-            super().__init__(convert_charrefs=False)
-            self.anchor_depth = 0
-            self.has_nesting = False
-        
-        def handle_starttag(self, tag, attrs):
-            if tag == 'a':
-                if self.anchor_depth > 0:
-                    self.has_nesting = True
-                self.anchor_depth += 1
-        
-        def handle_endtag(self, tag):
-            if tag == 'a':
-                self.anchor_depth = max(0, self.anchor_depth - 1)
-    
-    checker = _AnchorNestChecker()
-    try:
-        checker.feed(html_str)
-    except Exception:
-        pass
-    return checker.has_nesting
 
 
 class BodyParser(HTMLParser):
@@ -719,6 +670,19 @@ def text_diff(old: str, new: str) -> str:
                                         fromfile="Current text", tofile="Proposed text", lineterm=""))
 
 
+AI_RETRIABLE_CODES = frozenset({
+    "ai_empty_anchor", "ai_anchor_too_long", "ai_anchor_word_count",
+    "ai_anchor_not_in_sentence", "ai_anchor_twice", "ai_html_in_output",
+    "ai_missing_sentence", "ai_non_dict_reply",
+})
+
+SAFETY_REFUSAL_CODES = frozenset({
+    "link_conflict", "page_write_pending", "nested_anchor_created",
+    "anchor_spans_tags", "malformed_anchor", "anchor_not_found",
+    "insert_inside_existing_anchor", "duplicate_anchor",
+})
+
+
 def validate_edit(raw: dict) -> dict:
     """Validate and normalize an edit descriptor.
     
@@ -726,19 +690,33 @@ def validate_edit(raw: dict) -> dict:
     - phrase_wrap: just anchor_phrase, wrap existing text
     - insert_sentence: AI-generated sentence insertion after a paragraph
     - manual_append: manual mode with origin="manual", after_sentence, append_text
+    
+    Returns distinct error codes for AI-retriable failures:
+    - ai_empty_anchor: anchor_phrase is empty
+    - ai_anchor_too_long: anchor_phrase > 120 chars
+    - ai_anchor_word_count: anchor not 2-6 words
+    - ai_anchor_not_in_sentence: anchor not found in insert_sentence
+    - ai_anchor_twice: anchor appears more than once in sentence
+    - ai_html_in_output: HTML tags in any field
+    - ai_missing_sentence: insert_sentence or insert_after_text missing for ai_woven
+    - ai_non_dict_reply: AI returned non-dict
     """
     keys = {"anchor_phrase", "insert_sentence", "insert_after_text", "origin", "after_sentence", "append_text"}
-    if not isinstance(raw, dict) or set(raw) - keys:
+    if not isinstance(raw, dict):
+        raise LinkConflict("AI returned non-dict response. Retry.", code="ai_non_dict_reply")
+    if set(raw) - keys:
         raise LinkConflict("Full-body AI responses and unsupported edit fields are blocked. Generate a new suggestion.")
     # Drop empty string values first (AI path may send empty strings for unused fields)
     edit = {k: v.strip() for k, v in raw.items() if isinstance(v, str) and v.strip()}
     if any(v is not None and not isinstance(v, str) for v in raw.values()):
         raise LinkConflict("Link edits must contain plain text.")
     phrase = edit.get("anchor_phrase", "")
-    if not phrase or len(phrase) > 120:
-        raise LinkConflict("A short, exact anchor phrase is required.")
+    if not phrase:
+        raise LinkConflict("The anchor phrase is empty.", code="ai_empty_anchor")
+    if len(phrase) > 120:
+        raise LinkConflict("The anchor phrase is too long (max 120 chars).", code="ai_anchor_too_long")
     if any("<" in v or ">" in v for v in edit.values()):
-        raise LinkConflict("AI edits must contain plain text, never HTML.")
+        raise LinkConflict("AI output contains HTML. Plain text only.", code="ai_html_in_output")
     
     # Check for manual mode
     is_manual = edit.get("origin") == "manual"
@@ -784,8 +762,34 @@ def validate_edit(raw: dict) -> dict:
     if sentence:
         if len(sentence) > 300 or "\n" in sentence or re.search(r"[.!?]\s+\S", sentence):
             raise LinkConflict("Only one short sentence may be added.")
-        if sentence.count(phrase) != 1 or not edit.get("insert_after_text"):
-            raise LinkConflict("The sentence must contain the exact anchor once and identify a paragraph.")
+        
+        # Anchor word count validation (2-6 words)
+        word_count = len(phrase.split())
+        if word_count < 2 or word_count > 6:
+            raise LinkConflict(
+                f"Anchor phrase must be 2-6 words (got {word_count}).",
+                code="ai_anchor_word_count"
+            )
+        
+        # Anchor must appear exactly once in sentence
+        count = sentence.count(phrase)
+        if count == 0:
+            raise LinkConflict(
+                "The anchor phrase is not in the sentence.",
+                code="ai_anchor_not_in_sentence"
+            )
+        if count > 1:
+            raise LinkConflict(
+                "The anchor phrase appears more than once in the sentence.",
+                code="ai_anchor_twice"
+            )
+        
+        # Locator required for insert_sentence mode
+        if not edit.get("insert_after_text"):
+            raise LinkConflict(
+                "insert_sentence requires insert_after_text locator.",
+                code="ai_missing_sentence"
+            )
     elif edit.get("insert_after_text"):
         raise LinkConflict("A paragraph location requires an insertion sentence.")
     return edit
@@ -884,12 +888,208 @@ _BLOCK_SEP = "\x00"
 _BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "br", "td", "th", "tr", "table", "blockquote", "section",
                "article", "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "dd", "dt", "hr"}
 
+# Elements whose text is excluded from AI prompt paragraphs (headings and links)
+_PROMPT_EXCLUDED = {"h1", "h2", "h3", "h4", "h5", "h6", "a", "script", "style", "textarea", "template", "code", "pre"}
+
 
 def _normalize_decoded(text: str) -> str:
     """Like _normalize_for_matching but for already-decoded text (no second unescape)."""
     for a, b in (("\u00a0", " "), ("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'), ("\u2014", "-"), ("\u2013", "-")):
         text = text.replace(a, b)
     return " ".join(text.split())
+
+
+def _normalize_for_prompt(text: str) -> str:
+    """Normalize text for AI prompt: unescape entities EXCEPT structural ones (&lt; &gt;).
+    
+    This is the SAME normalization used for locator matching, ensuring sentences
+    copied verbatim from the prompt will always match.
+    """
+    if not text:
+        return text
+    
+    # Sentinel for &lt; and &gt; - these represent literal < and > in text, not HTML
+    LT_SENTINEL = "\x00LT\x00"
+    GT_SENTINEL = "\x00GT\x00"
+    AMP_LT_SENTINEL = "\x00AMPLT\x00"
+    AMP_GT_SENTINEL = "\x00AMPGT\x00"
+    
+    # Preserve double-escaped entities first
+    text = re.sub(r'&amp;lt;', AMP_LT_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&amp;gt;', AMP_GT_SENTINEL, text, flags=re.IGNORECASE)
+    
+    # Preserve &lt; and &gt; 
+    text = re.sub(r'&lt;', LT_SENTINEL, text, flags=re.IGNORECASE)
+    text = re.sub(r'&gt;', GT_SENTINEL, text, flags=re.IGNORECASE)
+    
+    # Unescape everything else (including &amp; -> &, &#x27; -> ')
+    text = html.unescape(text)
+    
+    # Restore sentinels to their original form (keep as entities in prompt)
+    text = text.replace(AMP_LT_SENTINEL, '&amp;lt;')
+    text = text.replace(AMP_GT_SENTINEL, '&amp;gt;')
+    text = text.replace(LT_SENTINEL, '&lt;')
+    text = text.replace(GT_SENTINEL, '&gt;')
+    
+    # Normalize whitespace and special characters
+    for a, b in (("\u00a0", " "), ("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'), ("\u2014", "-"), ("\u2013", "-")):
+        text = text.replace(a, b)
+    
+    return " ".join(text.split())
+
+
+class _PromptParagraphExtractor(HTMLParser):
+    """Extract paragraph text for AI prompt, excluding headings and link text.
+    
+    This extraction is used BOTH for building the AI prompt AND for locator matching,
+    ensuring that a sentence copied verbatim from the prompt will always match.
+    """
+    
+    def __init__(self, html_str: str):
+        super().__init__(convert_charrefs=False)
+        self.html = html_str
+        self.paragraphs: list[str] = []
+        self.current_para: list[str] = []
+        self.excluded_depth = 0
+        self.tag_stack: list[str] = []
+        self.in_para = False
+        self._lines = [0] + [m.end() for m in re.finditer("\n", html_str)]
+        self.feed(html_str)
+        self.close()
+        self._flush_para()
+    
+    def _source_offset(self) -> int:
+        line, col = self.getpos()
+        return self._lines[line - 1] + col
+    
+    def _flush_para(self):
+        if self.current_para:
+            text = "".join(self.current_para)
+            normalized = _normalize_for_prompt(text)
+            if normalized.strip():
+                self.paragraphs.append(normalized)
+            self.current_para = []
+    
+    def handle_starttag(self, tag, attrs):
+        if tag in ("p", "div", "li", "blockquote", "td", "th", "dd", "dt"):
+            self._flush_para()
+            self.in_para = True
+        if tag == "br":
+            self.current_para.append(" ")
+        if tag in _PROMPT_EXCLUDED:
+            self.excluded_depth += 1
+        if tag not in _VOID:
+            self.tag_stack.append(tag)
+    
+    def handle_endtag(self, tag):
+        if tag in ("p", "div", "li", "blockquote", "td", "th", "dd", "dt"):
+            self._flush_para()
+            self.in_para = False
+        if tag in self.tag_stack:
+            idx = len(self.tag_stack) - 1 - self.tag_stack[::-1].index(tag)
+            popped = self.tag_stack[idx:]
+            self.tag_stack = self.tag_stack[:idx]
+            for t in popped:
+                if t in _PROMPT_EXCLUDED and self.excluded_depth > 0:
+                    self.excluded_depth -= 1
+    
+    def handle_data(self, data):
+        if self.excluded_depth == 0:
+            self.current_para.append(data)
+    
+    def handle_entityref(self, name):
+        if self.excluded_depth == 0:
+            offset = self._source_offset()
+            raw_m = re.match(r"&" + re.escape(name) + r";?", self.html[offset:])
+            raw = raw_m.group(0) if raw_m else "&" + name + ";"
+            self.current_para.append(raw)
+    
+    def handle_charref(self, name):
+        if self.excluded_depth == 0:
+            self.current_para.append(f"&#{name};")
+
+
+def extract_prompt_paragraphs(body: str) -> list[str]:
+    """Extract normalized paragraph text for AI prompt, excluding headings and links.
+    
+    This is the canonical extraction used BOTH for building the AI prompt AND for
+    locator matching. A sentence copied verbatim from this output will always match.
+    
+    Returns:
+        List of normalized paragraph strings, with entities decoded (except &lt;/&gt;),
+        whitespace collapsed, and text inside <a> and heading tags excluded.
+    """
+    if not body:
+        return []
+    return _PromptParagraphExtractor(body).paragraphs
+
+
+def extract_prompt_sentences(body: str) -> list[str]:
+    """Extract individual sentences from body for AI prompt.
+    
+    Sentences are split at ., !, ? followed by whitespace or end.
+    Returns sentences excluding headings and link text.
+    """
+    paragraphs = extract_prompt_paragraphs(body)
+    sentences = []
+    for para in paragraphs:
+        # Split on sentence boundaries
+        parts = re.split(r'(?<=[.!?])\s+', para)
+        for part in parts:
+            part = part.strip()
+            if part:
+                sentences.append(part)
+    return sentences
+
+
+def find_sentence_in_paragraphs(paragraphs: list[str], sentence: str) -> list[tuple[int, int, int]]:
+    """Find all occurrences of a sentence in paragraphs.
+    
+    The sentence must be at sentence boundaries:
+    - Start: beginning of paragraph OR after [.!?] + whitespace
+    - End: ends with [.!?]
+    
+    Returns list of (para_idx, start_in_para, end_in_para) for each match.
+    """
+    sentence_norm = _normalize_for_prompt(sentence)
+    if not sentence_norm:
+        return []
+    
+    matches: list[tuple[int, int, int]] = []
+    
+    for para_idx, para in enumerate(paragraphs):
+        para_norm = _normalize_for_prompt(para)
+        search_start = 0
+        
+        while True:
+            idx = para_norm.find(sentence_norm, search_start)
+            if idx < 0:
+                break
+            
+            end_idx = idx + len(sentence_norm)
+            
+            # Check sentence boundaries
+            # Before: must be start of paragraph or preceded by [.!?] + space
+            before_ok = False
+            if idx == 0:
+                before_ok = True
+            else:
+                before = para_norm[:idx].rstrip()
+                if before and before[-1] in ".!?" and para_norm[idx - 1] == " ":
+                    before_ok = True
+            
+            # After: sentence must end with [.!?] and be followed by space or end
+            after_ok = False
+            if sentence_norm and sentence_norm[-1] in ".!?":
+                if end_idx >= len(para_norm) or para_norm[end_idx] == " ":
+                    after_ok = True
+            
+            if before_ok and after_ok:
+                matches.append((para_idx, idx, end_idx))
+            
+            search_start = idx + 1
+    
+    return matches
 
 
 class _FullTextExtractor(HTMLParser):
@@ -1201,47 +1401,87 @@ def build_edit(old: str, raw: dict, url: str) -> str:
         elif locator_text.endswith("..."):
             locator_text = locator_text[:-3].rstrip()
         
-        # Normalize the locator for matching
-        loc_norm = _normalize_for_matching(locator_text)
+        # Normalize the locator using the SAME function as the prompt
+        loc_norm = _normalize_for_prompt(locator_text)
+        
+        # Truncate locator for error messages (first 300 chars)
+        locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
         
         # S2: Empty or punctuation-only locator must reject (never match spacer paragraphs)
-        # Check if loc_norm contains any alphanumeric characters
         if not loc_norm or not any(c.isalnum() for c in loc_norm):
-            locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
             raise LinkConflict(
                 "The insertion paragraph locator is empty or contains only punctuation. Generate a new suggestion.",
                 code="insert_locator_no_match",
                 extra={"insert_after_text": locator_preview}
             )
         
-        # Find matching paragraphs using normalized comparison
-        exact_matches = []
-        prefix_matches = []
-        for start, end in parser.paragraphs:
-            p_norm = _normalize_for_matching(visible_text(old[start:end]))
-            if p_norm == loc_norm:
-                exact_matches.append(end)
-            elif len(loc_norm) >= 40 and p_norm.startswith(loc_norm):
-                prefix_matches.append(end)
-        
-        # Use exact matches if any, otherwise fall back to prefix matches
-        matches = exact_matches if exact_matches else prefix_matches
-        
-        # Truncate locator for error messages (first 300 chars)
-        locator_preview = raw_locator[:300] if len(raw_locator) > 300 else raw_locator
-        
-        if len(matches) == 0:
+        # Locator must be at least 40 chars to avoid fragment matches
+        if len(loc_norm) < 40:
             raise LinkConflict(
-                "The insertion paragraph was not found in the live body. Generate a new suggestion.",
+                "The locator is too short (min 40 chars). Generate a new suggestion.",
                 code="insert_locator_no_match",
                 extra={"insert_after_text": locator_preview}
             )
-        if len(matches) > 1:
+        
+        # Use shared extraction for consistent matching with AI prompt
+        paragraphs = extract_prompt_paragraphs(old)
+        sentence_matches = find_sentence_in_paragraphs(paragraphs, locator_text)
+        
+        # Also try prefix matching within paragraphs for backwards compatibility
+        prefix_matches_in_paras: list[int] = []
+        for para_idx, para in enumerate(paragraphs):
+            para_norm = _normalize_for_prompt(para)
+            if para_norm.startswith(loc_norm):
+                prefix_matches_in_paras.append(para_idx)
+        
+        # Prefer exact sentence matches, fall back to prefix matches
+        if sentence_matches:
+            match_para_indices = list(set(m[0] for m in sentence_matches))
+        else:
+            match_para_indices = prefix_matches_in_paras
+        
+        if len(match_para_indices) == 0:
             raise LinkConflict(
-                f"The insertion paragraph is ambiguous ({len(matches)} paragraphs match). Generate a new suggestion.",
-                code="insert_locator_ambiguous",
-                extra={"insert_after_text": locator_preview, "match_count": len(matches)}
+                "The locator sentence was not found in eligible body text. It may be inside a heading or link. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
             )
+        if len(match_para_indices) > 1:
+            raise LinkConflict(
+                f"The locator sentence appears in {len(match_para_indices)} paragraphs (ambiguous). Use a more specific locator.",
+                code="insert_locator_ambiguous",
+                extra={"insert_after_text": locator_preview, "match_count": len(match_para_indices)}
+            )
+        
+        # Now find the HTML insertion offset using the original paragraph parser
+        # Find matching paragraphs in original HTML using the same normalization
+        html_matches = []
+        for start, end in parser.paragraphs:
+            p_norm = _normalize_for_prompt(visible_text(old[start:end]))
+            if p_norm == loc_norm or (len(loc_norm) >= 40 and p_norm.startswith(loc_norm)):
+                html_matches.append(end)
+            # Also check if the locator sentence is within this paragraph
+            if sentence_matches:
+                para_text_norm = _normalize_for_prompt(visible_text(old[start:end]))
+                for match in sentence_matches:
+                    if paragraphs[match[0]] in para_text_norm or para_text_norm.startswith(_normalize_for_prompt(locator_text)[:40]):
+                        if end not in html_matches:
+                            html_matches.append(end)
+        
+        if len(html_matches) == 0:
+            raise LinkConflict(
+                "The locator sentence was found in extracted text but not in HTML paragraphs. Generate a new suggestion.",
+                code="insert_locator_no_match",
+                extra={"insert_after_text": locator_preview}
+            )
+        if len(html_matches) > 1:
+            raise LinkConflict(
+                f"The locator matches multiple HTML paragraphs ({len(html_matches)}). Use a more specific locator.",
+                code="insert_locator_ambiguous",
+                extra={"insert_after_text": locator_preview, "match_count": len(html_matches)}
+            )
+        
+        matches = html_matches
         
         # Use quote=False: apostrophes and quotes in text nodes don't need escaping
         # (Shopify stores them as plain characters; escaping causes verify mismatches)
@@ -1297,6 +1537,7 @@ def build_edit(old: str, raw: dict, url: str) -> str:
                 combined_to_html.append(html_offset + i)
         
         # Unescape for matching (Q&amp;A → Q&A)
+        # IMPORTANT: bare &word (no semicolon) must NOT be treated as an entity
         unescaped_text = ""
         unescaped_to_combined: list[int] = []
         i = 0
@@ -1305,14 +1546,20 @@ def build_edit(old: str, raw: dict, url: str) -> str:
                 j = i + 1
                 while j < len(combined_text) and combined_text[j] not in ';&< \t\n':
                     j += 1
+                # Only treat as entity if terminated by semicolon
                 if j < len(combined_text) and combined_text[j] == ';':
                     j += 1
-                entity = combined_text[i:j]
-                decoded = html.unescape(entity)
-                for ch in decoded:
-                    unescaped_text += ch
+                    entity = combined_text[i:j]
+                    decoded = html.unescape(entity)
+                    for ch in decoded:
+                        unescaped_text += ch
+                        unescaped_to_combined.append(i)
+                    i = j
+                else:
+                    # Bare &word without semicolon - pass through literally
+                    unescaped_text += combined_text[i]
                     unescaped_to_combined.append(i)
-                i = j
+                    i += 1
             else:
                 unescaped_text += combined_text[i]
                 unescaped_to_combined.append(i)
@@ -1390,13 +1637,14 @@ def build_edit(old: str, raw: dict, url: str) -> str:
             "No safe occurrence found. Generate a new suggestion or fix the source content.",
             code="insert_inside_existing_anchor"
         )
-    raise LinkConflict("The anchor phrase is no longer present in eligible live text. Generate a new suggestion.")
+    raise LinkConflict("The anchor phrase was not found in eligible body text. Generate a new suggestion.")
 
 
 def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     """Guard against unauthorized changes and structural problems in the edit result.
     
     Checks:
+    0. Duplicate anchor: old must not already contain a link to this URL
     1. Exact reconstruction: new must equal build_edit(old, edit, url)
     2. Find our exact anchor: locate the specific anchor tag we added (must exist
        exactly once more in new than in old). Fail closed if not found.
@@ -1406,17 +1654,24 @@ def guard_edit(old: str, new: str, edit: dict, url: str) -> None:
     Note: build_edit already validates that we're not inserting inside existing
     anchors. The reconstruction check (1) ensures new matches build_edit output.
     """
+    # Find our exact anchor tag. build_edit uses exactly this format:
+    # <a href="{html.escape(url, quote=True)}">
+    our_anchor_tag = f'<a href="{html.escape(url, quote=True)}">'
+    
+    # Check if old body already contains this exact link (duplicate anchor)
+    old_count = old.count(our_anchor_tag)
+    if old_count:
+        raise LinkConflict(
+            "The body already contains a link to this URL.",
+            code="duplicate_anchor"
+        )
+    
     # Exact reconstruction protects images, existing links, attributes and formatting,
     # including changes that would be invisible in a text-only comparison.
     if new != build_edit(old, edit, url):
         raise LinkConflict("Changes outside the approved link insertion are blocked.", text_diff=text_diff(old, new))
     
-    # Find our exact anchor tag. build_edit uses exactly this format:
-    # <a href="{html.escape(url, quote=True)}">
-    our_anchor_tag = f'<a href="{html.escape(url, quote=True)}">'
-    
-    # Count occurrences in old vs new - we must have added exactly one
-    old_count = old.count(our_anchor_tag)
+    # Count occurrences in new - we must have added exactly one
     new_count = new.count(our_anchor_tag)
     
     if new_count != old_count + 1:

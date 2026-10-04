@@ -91,11 +91,12 @@ class TestBuildEditLocatorMatching:
     
     def test_curly_vs_straight_quotes_match(self):
         """Body with curly quotes matches locator with straight quotes."""
-        body = "<p>Don\u2019t miss this \u201camazing\u201d offer today.</p>"
+        # Locator must be 40+ chars
+        body = "<p>Don\u2019t miss this \u201camazing\u201d offer today because it is really great.</p>"
         edit = {
             "anchor_phrase": "Target Collection",
             "insert_sentence": "Check out Target Collection for more.",
-            "insert_after_text": "Don't miss this \"amazing\" offer today."  # straight quotes
+            "insert_after_text": "Don't miss this \"amazing\" offer today because it is really great."  # straight quotes
         }
         
         result = build_edit(body, edit, f"{BASE}/collections/target-collection")
@@ -104,11 +105,12 @@ class TestBuildEditLocatorMatching:
     
     def test_amp_entity_match(self):
         """Body with &amp; matches locator with &."""
-        body = "<p>Salt &amp; Pepper are essential.</p>"
+        # Locator must be 40+ chars
+        body = "<p>Salt &amp; Pepper are essential for cooking great food.</p>"
         edit = {
             "anchor_phrase": "Target Collection",
             "insert_sentence": "See Target Collection for seasonings.",
-            "insert_after_text": "Salt & Pepper are essential."  # unescaped &
+            "insert_after_text": "Salt & Pepper are essential for cooking great food."  # unescaped &
         }
         
         result = build_edit(body, edit, f"{BASE}/collections/target-collection")
@@ -134,27 +136,18 @@ class TestBuildEditLocatorMatching:
         assert "Target Collection" in result
     
     def test_ambiguous_paragraphs_fails(self):
-        """Two paragraphs with same opening sentence fails as ambiguous."""
-        body = "<p>The quick brown fox jumps.</p><p>The quick brown fox jumps over the lazy dog.</p>"
+        """Two paragraphs with same text fails as ambiguous."""
+        # Both paragraphs have the same 40+ char sentence
+        long_sentence = "The quick brown fox jumps over the lazy dog repeatedly."
+        body = f"<p>{long_sentence}</p><p>{long_sentence}</p>"
         edit = {
             "anchor_phrase": "Target Collection",
             "insert_sentence": "See Target Collection.",
-            "insert_after_text": "The quick brown fox jumps."  # Both paragraphs match
-        }
-        
-        # Both paragraphs start with same text, should be ambiguous
-        # Note: exact match on first, but second is longer so also matches
-        # Actually, first is exact match, second is not
-        # Let me create a truly ambiguous case
-        body2 = "<p>Same start here.</p><p>Same start here.</p>"
-        edit2 = {
-            "anchor_phrase": "Target Collection",
-            "insert_sentence": "See Target Collection.",
-            "insert_after_text": "Same start here."
+            "insert_after_text": long_sentence
         }
         
         with pytest.raises(LinkConflict) as exc_info:
-            build_edit(body2, edit2, f"{BASE}/collections/target-collection")
+            build_edit(body, edit, f"{BASE}/collections/target-collection")
         
         assert exc_info.value.code == "insert_locator_ambiguous"
         assert exc_info.value.detail["match_count"] == 2
@@ -190,8 +183,8 @@ class TestBuildEditLocatorMatching:
         
         assert exc_info.value.code == "insert_locator_no_match"
     
-    def test_exact_short_match_works(self):
-        """Short locator that exactly matches a paragraph works."""
+    def test_exact_short_match_fails_40_char_minimum(self):
+        """Short locator (<40 chars) is rejected even if it matches exactly."""
         body = "<p>Short.</p><p>Another paragraph here.</p>"
         edit = {
             "anchor_phrase": "Target Collection",
@@ -199,8 +192,10 @@ class TestBuildEditLocatorMatching:
             "insert_after_text": "Short."
         }
         
-        result = build_edit(body, edit, f"{BASE}/collections/target-collection")
-        assert 'href="' in result
+        with pytest.raises(LinkConflict) as exc_info:
+            build_edit(body, edit, f"{BASE}/collections/target-collection")
+        
+        assert exc_info.value.code == "insert_locator_no_match"
     
     def test_ellipsis_stripped_from_locator(self):
         """Trailing ellipsis is stripped from locator."""
@@ -307,7 +302,9 @@ class TestAiWeaveLocatorErrors:
         """insert_locator_ambiguous error doesn't persist ai_edit_json."""
         conn, live = setup
         
-        body = "<p>Same paragraph.</p><p>Same paragraph.</p>"
+        # Use 40+ char sentence for ambiguity test
+        long_sentence = "This same paragraph text appears twice in the body."
+        body = f"<p>{long_sentence}</p><p>{long_sentence}</p>"
         live.body = body
         conn.execute("UPDATE products SET description_html = ?", (body,))
         conn.commit()
@@ -316,7 +313,7 @@ class TestAiWeaveLocatorErrors:
             return {
                 "anchor_phrase": "Target Collection",
                 "insert_sentence": "See Target Collection.",
-                "insert_after_text": "Same paragraph."
+                "insert_after_text": long_sentence
             }
         
         monkeypatch.setattr("shopifyseo.internal_links.ai_weave._default_call_ai", mock_ai)

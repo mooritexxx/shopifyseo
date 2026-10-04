@@ -14,9 +14,9 @@ from unittest.mock import Mock, patch
 
 from shopifyseo.internal_links.safety import (
     build_edit, guard_edit, html_equivalent, LinkConflict,
-    _is_inside_escaped_anchor, _has_nested_anchors, _find_escaped_anchor_regions,
+    _is_inside_escaped_anchor, _find_escaped_anchor_regions,
     _normalize_text_entities, _normalize_for_entity_comparison,
-    _verify_anchor_wellformed, _find_inserted_anchor_offset,
+    _verify_anchor_wellformed,
 )
 from shopifyseo.internal_links.compliance import (
     inserted_text, check_en_ca_spelling,
@@ -34,11 +34,13 @@ class TestEntitySafeInsert:
     
     def test_insert_sentence_apostrophe_not_escaped(self):
         """Apostrophe in insert_sentence should remain as ' not &#x27;."""
-        old = "<p>First paragraph.</p>"
+        # Locator must be 40+ chars
+        locator = "First paragraph with enough text to meet the minimum."
+        old = f"<p>{locator}</p>"
         edit = {
             "anchor_phrase": "beginner's guide",
             "insert_sentence": "Check out our beginner's guide for tips.",
-            "insert_after_text": "First paragraph.",
+            "insert_after_text": locator,
         }
         result = build_edit(old, edit, "https://example.com/guide")
         assert "beginner's guide" in result
@@ -47,11 +49,13 @@ class TestEntitySafeInsert:
     
     def test_insert_sentence_double_quote_not_escaped(self):
         """Double quote in insert_sentence should remain as " not &quot;."""
-        old = "<p>First paragraph.</p>"
+        # Locator must be 40+ chars
+        locator = "First paragraph with enough text to meet the minimum."
+        old = f"<p>{locator}</p>"
         edit = {
             "anchor_phrase": 'our "best" picks',
             "insert_sentence": 'See our "best" picks for quality.',
-            "insert_after_text": "First paragraph.",
+            "insert_after_text": locator,
         }
         result = build_edit(old, edit, "https://example.com/picks")
         assert 'our "best" picks' in result
@@ -60,11 +64,12 @@ class TestEntitySafeInsert:
     
     def test_manual_weave_apostrophe_not_escaped(self):
         """Apostrophe in manual_weave append_text should remain as ' not &#x27;."""
-        old = "<p>This is a test sentence.</p>"
+        locator = "This is a test sentence with enough text here."
+        old = f"<p>{locator}</p>"
         edit = {
             "origin": "manual",
             "anchor_phrase": "beginner's tips",
-            "after_sentence": "This is a test sentence.",
+            "after_sentence": locator,
             "append_text": "Check our beginner's tips here.",
         }
         result = build_edit(old, edit, "https://example.com/tips")
@@ -73,11 +78,13 @@ class TestEntitySafeInsert:
     
     def test_ampersand_still_escaped(self):
         """& should still be escaped in text nodes."""
-        old = "<p>First paragraph.</p>"
+        # Locator must be 40+ chars
+        locator = "First paragraph with enough text to meet the minimum."
+        old = f"<p>{locator}</p>"
         edit = {
             "anchor_phrase": "Tom & Jerry guide",
             "insert_sentence": "See the Tom & Jerry guide here.",
-            "insert_after_text": "First paragraph.",
+            "insert_after_text": locator,
         }
         result = build_edit(old, edit, "https://example.com/guide")
         assert '<a href="https://example.com/guide">Tom &amp; Jerry guide</a>' in result
@@ -581,25 +588,6 @@ class TestEscapedAnchorDetection:
         assert len(regions) == 1
 
 
-class TestNestedAnchorDetection:
-    """Test detection of nested real anchors."""
-    
-    def test_nested_anchors_detected(self):
-        """Should detect <a> inside <a>."""
-        html = '<a href="/outer"><a href="/inner">nested</a></a>'
-        assert _has_nested_anchors(html)
-    
-    def test_sequential_anchors_ok(self):
-        """Sequential <a> tags should not be flagged as nested."""
-        html = '<a href="/first">first</a> <a href="/second">second</a>'
-        assert not _has_nested_anchors(html)
-    
-    def test_single_anchor_ok(self):
-        """Single anchor should be fine."""
-        html = '<p>Text <a href="/link">link</a> more text</p>'
-        assert not _has_nested_anchors(html)
-
-
 class TestPhraseWrapSkipsEscapedAndKeepsSearching:
     """Test that phrase_wrap skips matches inside anchors and finds safe occurrences."""
     
@@ -815,16 +803,6 @@ class TestVerifyAnchorWellformed:
 class TestGuardEditNestedAnchors:
     """Test guard_edit behavior with nested anchors."""
     
-    def test_has_nested_anchors_detects_nested_structure(self):
-        """_has_nested_anchors should detect <a> inside <a>."""
-        nested_html = '<p>Some <a href="/existing"><a href="/new">nested</a> link</a> text.</p>'
-        assert _has_nested_anchors(nested_html)
-    
-    def test_has_nested_anchors_allows_sequential(self):
-        """Sequential anchors should not be flagged."""
-        sequential_html = '<p>Some <a href="/first">first</a> and <a href="/second">second</a> text.</p>'
-        assert not _has_nested_anchors(sequential_html)
-    
     def test_guard_edit_allows_preexisting_nested_anchors(self):
         """Pre-existing nested anchors in source should not block our edit."""
         old = '<p>Pre-existing <a href="/outer"><a href="/inner">nested</a></a>. New phrase here.</p>'
@@ -1000,14 +978,15 @@ class TestGuardEditFindsCorrectAnchor:
     """
     
     URL = "https://s.com/collections/ceramic-tanks"
+    LOCATOR = "Love tanks and everything about them in life."  # 40+ chars
     
     def test_1a_insert_sentence_with_link_in_next_para(self):
         """Insert sentence when next paragraph has a link. Must be ALLOWED."""
-        old = '<p>Love tanks.</p><p><a href="/z">Zed</a> more.</p>'
+        old = f'<p>{self.LOCATOR}</p><p><a href="/z">Zed</a> more.</p>'
         edit = {
             "anchor_phrase": "ceramic tanks",
             "insert_sentence": "ceramic tanks are great.",
-            "insert_after_text": "Love tanks.",
+            "insert_after_text": self.LOCATOR,
         }
         result = build_edit(old, edit, self.URL)
         assert f'<a href="{self.URL}">ceramic tanks</a>' in result
@@ -1016,11 +995,11 @@ class TestGuardEditFindsCorrectAnchor:
     
     def test_1b_insert_sentence_with_formatted_link_in_next_para(self):
         """Insert sentence when next link has <strong> inside. Must be ALLOWED."""
-        old = '<p>Love tanks.</p><p><a href="/z"><strong>Zed</strong></a> more.</p>'
+        old = f'<p>{self.LOCATOR}</p><p><a href="/z"><strong>Zed</strong></a> more.</p>'
         edit = {
             "anchor_phrase": "ceramic tanks",
             "insert_sentence": "ceramic tanks are great.",
-            "insert_after_text": "Love tanks.",
+            "insert_after_text": self.LOCATOR,
         }
         result = build_edit(old, edit, self.URL)
         assert f'<a href="{self.URL}">ceramic tanks</a>' in result
@@ -1028,11 +1007,11 @@ class TestGuardEditFindsCorrectAnchor:
     
     def test_1b_with_newline_between_paragraphs(self):
         """Same as 1b but with newline between paragraphs. Must be ALLOWED."""
-        old = '<p>Love tanks.</p>\n<p><a href="/z"><strong>Zed</strong></a> more.</p>'
+        old = f'<p>{self.LOCATOR}</p>\n<p><a href="/z"><strong>Zed</strong></a> more.</p>'
         edit = {
             "anchor_phrase": "ceramic tanks",
             "insert_sentence": "ceramic tanks are great.",
-            "insert_after_text": "Love tanks.",
+            "insert_after_text": self.LOCATOR,
         }
         result = build_edit(old, edit, self.URL)
         assert f'<a href="{self.URL}">ceramic tanks</a>' in result
@@ -1040,11 +1019,11 @@ class TestGuardEditFindsCorrectAnchor:
     
     def test_1c_insert_sentence_next_link_similar_url_with_em(self):
         """Next link has similar URL prefix and <em>. Must be ALLOWED."""
-        old = '<p>Love tanks.</p><p><a href="https://s.com/collections/other"><em>Other</em></a> stuff.</p>'
+        old = f'<p>{self.LOCATOR}</p><p><a href="https://s.com/collections/other"><em>Other</em></a> stuff.</p>'
         edit = {
             "anchor_phrase": "ceramic tanks",
             "insert_sentence": "ceramic tanks are great.",
-            "insert_after_text": "Love tanks.",
+            "insert_after_text": self.LOCATOR,
         }
         result = build_edit(old, edit, self.URL)
         assert f'<a href="{self.URL}">ceramic tanks</a>' in result
@@ -1053,11 +1032,12 @@ class TestGuardEditFindsCorrectAnchor:
     def test_1d_manual_append_with_formatted_link_after(self):
         """Manual append when body has formatted link after sentence. Must be ALLOWED."""
         # The sentence is followed by a link (within same paragraph)
-        old = '<p>Love tanks. And <a href="/z"><strong>Zed</strong></a> is here.</p>'
+        locator = "Love tanks with passion in life today."  # 40+ chars
+        old = f'<p>{locator} And <a href="/z"><strong>Zed</strong></a> is here.</p>'
         edit = {
             "origin": "manual",
             "anchor_phrase": "ceramic tanks",
-            "after_sentence": "Love tanks.",
+            "after_sentence": locator,
             "append_text": "ceramic tanks rock.",
         }
         result = build_edit(old, edit, self.URL)
@@ -1104,14 +1084,14 @@ class TestGuardEditFindsCorrectAnchor:
             CREATE TABLE link_suggestion_events (id INTEGER PRIMARY KEY, suggestion_id INTEGER, event_type TEXT, source_type TEXT, source_handle TEXT, target_type TEXT, target_handle TEXT, kind TEXT, score REAL, gsc_clicks_at_event INTEGER, created_at INTEGER);
         """)
         
-        # Body: first para, then link in next para
-        body = '<p>Love tanks.</p><p><a href="/z"><strong>Zed</strong></a> is here.</p>'
+        # Body: first para (40+ chars), then link in next para
+        body = '<p>Love tanks and all they offer here today.</p><p><a href="/z"><strong>Zed</strong></a> is here.</p>'
         
         import json
         edit = {
             "anchor_phrase": "Ceramic tanks",
             "insert_sentence": "Ceramic tanks are a great upgrade.",
-            "insert_after_text": "Love tanks.",
+            "insert_after_text": "Love tanks and all they offer here today.",
         }
         
         conn.execute(
@@ -1274,12 +1254,12 @@ class TestCallSiteMutationTests:
         
         monkeypatch.setattr(safety, '_verify_anchor_wellformed', tracking_verify)
         
-        # Call build_edit in insert_sentence mode
-        old = '<p>First paragraph.</p>'
+        # Call build_edit in insert_sentence mode (locator must be 40+ chars)
+        old = '<p>This is the first paragraph with enough content.</p>'
         edit = {
             "anchor_phrase": "ceramic tanks",
             "insert_sentence": "ceramic tanks are great.",
-            "insert_after_text": "First paragraph.",
+            "insert_after_text": "This is the first paragraph with enough content.",
         }
         safety.build_edit(old, edit, self.URL)
         

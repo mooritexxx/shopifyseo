@@ -177,3 +177,130 @@ def _legacy_product_image_seo_suggested_filename(
         parts.append(vslug)
     parts.extend(["1", suffix])
     return ("-".join(parts) + ".webp").lower()
+
+
+def _catalog_image_row(
+    *,
+    resource_type: str,
+    resource_shopify_id: str,
+    resource_handle: str,
+    resource_title: str,
+    image_row_id: str,
+    url: str,
+    alt_text: str,
+    position: int | None,
+    roles: list[str],
+    role_for: str,
+    variant_labels: list[str],
+    blog_handle: str = "",
+    article_handle: str = "",
+    optimize_supported: bool = False,
+    image_shopify_id: str = "",
+    local_file_cached: bool | None = None,
+    image_width: int | None = None,
+    image_height: int | None = None,
+    cached_mime: str = "",
+    file_size_bytes: int | None = None,
+) -> dict[str, Any]:
+    miss_alt = is_missing_or_generic_alt(alt_text)
+    is_featured = "featured" in roles
+    vjoin = ", ".join(variant_labels[:3]) if variant_labels else None
+    rh = resource_handle or "item"
+    if optimize_supported and resource_type == "product":
+        seed = _product_gallery_seo_suffix_seed(resource_shopify_id, role_for, position, vjoin)
+    elif optimize_supported and resource_type == "collection":
+        seed = f"{resource_shopify_id}|featured"
+    else:
+        seed = (image_shopify_id or "").strip() or (image_row_id or "x")
+    suffix = stable_seo_filename_suffix(seed)
+    suggested_fn = product_image_seo_suggested_filename(
+        product_handle=rh,
+        role=role_for,
+        gallery_position=position,
+        variant_label=vjoin,
+        ext=".webp",
+        collision_suffix=suffix,
+    )
+    acceptable_names = {suggested_fn.lower()}
+    # Media replace assigns a new GID; uploads before slot-based seed used suffix(media_gid).
+    if optimize_supported and resource_type == "product" and (image_shopify_id or "").strip():
+        leg_suf = stable_seo_filename_suffix((image_shopify_id or "").strip())
+        if leg_suf != suffix:
+            acceptable_names.add(
+                product_image_seo_suggested_filename(
+                    product_handle=rh,
+                    role=role_for,
+                    gallery_position=position,
+                    variant_label=vjoin,
+                    ext=".webp",
+                    collision_suffix=leg_suf,
+                ).lower()
+            )
+        acceptable_names.add(
+            _legacy_product_image_seo_suggested_filename(
+                product_handle=rh,
+                role=role_for,
+                gallery_position=position,
+                variant_label=vjoin,
+                collision_suffix=suffix,
+            )
+        )
+        if leg_suf != suffix:
+            acceptable_names.add(
+                _legacy_product_image_seo_suggested_filename(
+                    product_handle=rh,
+                    role=role_for,
+                    gallery_position=position,
+                    variant_label=vjoin,
+                    collision_suffix=leg_suf,
+                )
+            )
+    current_fn = (filename_from_image_url(url) or "").strip()
+    # New optimizations should use the clean SEO template; legacy product names are added above.
+    weak_fn = is_weak_image_filename(url)
+    seo_filename_mismatch = bool(current_fn) and current_fn.lower() not in acceptable_names
+    is_product = resource_type == "product"
+    bad_product_dimensions = (
+        is_product
+        and optimize_supported
+        and image_width is not None
+        and image_height is not None
+        and (image_width != 1000 or image_height != 1000)
+    )
+    fmt = image_format_label_from_url(url)
+    if not fmt:
+        fmt = image_format_label_from_mime((cached_mime or "").strip()) if (cached_mime or "").strip() else ""
+    return {
+        "resource_type": resource_type,
+        "resource_shopify_id": resource_shopify_id,
+        "resource_handle": resource_handle,
+        "resource_title": resource_title,
+        "blog_handle": blog_handle,
+        "article_handle": article_handle,
+        "image_row_id": image_row_id,
+        "image_shopify_id": image_shopify_id,
+        "product_shopify_id": resource_shopify_id if is_product else "",
+        "product_handle": resource_handle if is_product else "",
+        "product_title": resource_title if is_product else "",
+        "url": url,
+        "alt_text": alt_text,
+        "position": position,
+        "roles": roles,
+        "role_for_suggestions": role_for,
+        "variant_labels": variant_labels,
+        "suggested_filename_webp": suggested_fn,
+        "optimize_supported": optimize_supported,
+        "local_file_cached": local_file_cached,
+        "image_width": image_width,
+        "image_height": image_height,
+        "image_format": fmt,
+        "file_size_bytes": file_size_bytes,
+        "flags": {
+            "missing_or_weak_alt": miss_alt,
+            "weak_filename": weak_fn,
+            "seo_filename_mismatch": seo_filename_mismatch,
+            "not_webp": not is_probably_webp_url(url),
+            "bad_dimensions": bad_product_dimensions,
+            "is_featured": is_featured,
+        },
+    }

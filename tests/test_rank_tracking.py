@@ -120,8 +120,12 @@ def test_seed_remove_restore(database):
     with pytest.raises(serp.RankError): svc.save_keyword(conn,'bad','https://evil.example/')
 
 
-def test_list_rankings_latest_job_is_last_inserted_on_created_at_tie(database):
+def test_list_rankings_latest_job_is_last_inserted_on_created_at_tie(database, testdb):
     """SQLite rowid tie-break matches main: last insert wins even when its uuid is smaller."""
+    if testdb.is_postgres:
+        pytest.skip(
+            "rank_jobs.id is TEXT uuid; Postgres has no rowid insertion-order tie-break"
+        )
     conn, _ = database
     stamp = '2026-10-01T00:00:00-07:00'
     conn.execute(

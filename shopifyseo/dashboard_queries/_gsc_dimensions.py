@@ -6,7 +6,6 @@ breakdown table.
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from shopifyseo.db import is_operational_error
@@ -15,7 +14,7 @@ from ._basic_fetchers import _row_factory
 
 
 def fetch_gsc_query_dimension_rows(
-    conn: sqlite3.Connection, object_type: str, object_handle: str
+    conn: Any, object_type: str, object_handle: str
 ) -> list[dict[str, Any]]:
     """Rows from gsc_query_dimension_rows (query × country | device | searchAppearance)."""
     cur = _row_factory(conn).execute(
@@ -31,7 +30,7 @@ def fetch_gsc_query_dimension_rows(
 
 
 def object_keys_with_dimensional_gsc(
-    conn: sqlite3.Connection,
+    conn: Any,
     keys: list[tuple[str, str]],
 ) -> set[tuple[str, str]]:
     """Return (object_type, object_handle) pairs that have at least one Tier B dimensional row."""

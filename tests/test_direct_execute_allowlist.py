@@ -14,6 +14,7 @@ Migration plan:
 - PR3: route 7 sqlite3.connect sites through get_connection()
 - PR4: portable SQL (ON CONFLICT, insert_returning_id, dialect helpers)
 - PR5: write_tx / lock retry (BEGIN IMMEDIATE sites removed from app code)
+- PR6a: dashboard type/dialect cleanup (schema helpers replace PRAGMA / sqlite_master)
 - Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
@@ -66,14 +67,14 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/dashboard_google/_cache.py": 5,
     "shopifyseo/dashboard_google/_ga4.py": 1,
     "shopifyseo/dashboard_google/_gsc.py": 4,
-    "shopifyseo/dashboard_queries/_basic_fetchers.py": 26,
+    "shopifyseo/dashboard_queries/_basic_fetchers.py": 25,
     "shopifyseo/dashboard_queries/_editors.py": 5,
     "shopifyseo/dashboard_queries/_gsc_dimensions.py": 2,
     "shopifyseo/dashboard_queries/_object_detail.py": 14,
     "shopifyseo/dashboard_queries/_seo_facts.py": 2,
     "shopifyseo/dashboard_queries/_text_tokens.py": 4,
     "shopifyseo/dashboard_queries/_urls.py": 4,
-    "shopifyseo/dashboard_store.py": 67,
+    "shopifyseo/dashboard_store.py": 64,
     "shopifyseo/embedding_store.py": 49,
     "shopifyseo/embedding_sync.py": 1,
     "shopifyseo/index_evidence.py": 14,

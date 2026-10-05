@@ -6,7 +6,6 @@ No DB writes; queries are read-only against products / collections / pages.
 from __future__ import annotations
 
 import re
-import sqlite3
 import json
 from typing import Any
 
@@ -136,7 +135,7 @@ def product_row_token_overlap(tokens: frozenset[str], row: dict[str, Any]) -> in
 
 
 def _related_products_by_token_overlap(
-    conn: sqlite3.Connection,
+    conn: Any,
     article_tokens: frozenset[str],
     *,
     limit: int = 20,
@@ -161,7 +160,7 @@ def _related_products_by_token_overlap(
 
 
 def _related_collections_by_token_overlap(
-    conn: sqlite3.Connection,
+    conn: Any,
     article_tokens: frozenset[str],
     *,
     title_fallback_lower: str,
@@ -205,7 +204,7 @@ def _related_collections_by_token_overlap(
 
 
 def _related_pages_by_token_overlap(
-    conn: sqlite3.Connection,
+    conn: Any,
     article_tokens: frozenset[str],
     *,
     exclude_handle: str | None,

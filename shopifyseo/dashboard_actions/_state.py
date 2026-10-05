@@ -1,11 +1,11 @@
 """Shared state, locks, constants, and low-level utilities for dashboard_actions."""
 import logging
 import queue
-import sqlite3
 import threading
 import time
 import uuid
 from collections import deque
+from typing import Any
 
 from ..db import get_connection
 from ..exceptions import AICancelledError, SyncCancelledError
@@ -380,7 +380,7 @@ def _raise_if_sync_cancelled() -> None:
 BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
-def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:
+def _db_connect_for_actions(db_path: str) -> Any:
     return get_connection(
         path=db_path,
         timeout=30,

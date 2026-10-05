@@ -1,11 +1,11 @@
 import json
 import logging
 import os
-import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
+from typing import Any
 from urllib.parse import urlparse
 
 from . import dashboard_google as dg
@@ -15,7 +15,7 @@ from .dashboard_status import index_status_info
 from .index_evidence import (INDEX_FIELDS, INDEX_STORED_FIELDS, extract_inspection_fields,
                              with_index_flag, update_catalog_inspection, ensure_evidence_schema)
 from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
-from .db import get_connection
+from .db import Backend, DictRow, get_backend, get_connection, table_columns, table_ddl, table_exists
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
 
 
@@ -71,35 +71,23 @@ SEO_SIGNAL_COLUMNS = {
 }
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone()
-    return row is not None
-
-
-def _get_table_sql(conn: sqlite3.Connection, table: str) -> str | None:
-    """Return the CREATE TABLE statement for a table, or None if it doesn't exist."""
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone()
-    return row["sql"] if row else None
-
-
-def _migrate_link_suggestions_check_constraint(conn: sqlite3.Connection) -> bool:
+def _migrate_link_suggestions_check_constraint(conn: Any) -> bool:
     """Migrate link_suggestions table if it has the old CHECK constraint (without 'undone').
 
-    SQLite cannot ALTER CHECK constraints, so this recreates the table if needed.
+    SQLite-only path: SQLite cannot ALTER CHECK constraints, so this rebuilds
+    the table when the live CREATE statement still lacks ``'undone'``. New
+    installs already have the expanded CHECK. Non-SQLite backends return
+    False immediately (``get_backend() != Backend.SQLITE``) and execute no
+    DDL. Postgres ``table_ddl()`` reconstructs columns without CHECK text,
+    so the ``'undone'`` probe would otherwise always trigger this rebuild.
     Returns True if migration was performed, False otherwise.
     """
-    if not _table_exists(conn, "link_suggestions"):
+    if get_backend() != Backend.SQLITE:
+        return False
+    if not table_exists(conn, "link_suggestions"):
         return False
 
-    table_sql = _get_table_sql(conn, "link_suggestions")
+    table_sql = table_ddl(conn, "link_suggestions")
     if table_sql is None:
         return False
 
@@ -168,14 +156,14 @@ def _migrate_link_suggestions_check_constraint(conn: sqlite3.Connection) -> bool
     return True
 
 
-def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-    existing = _table_columns(conn, table)
+def _ensure_columns(conn: Any, table: str, columns: dict[str, str]) -> None:
+    existing = table_columns(conn, table)
     for name, col_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
-def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
+def ensure_dashboard_schema(conn: Any) -> None:
     ensure_schema(conn)
     from .opportunity_tasks import ensure_schema as ensure_opportunity_tasks
     ensure_opportunity_tasks(conn)
@@ -866,7 +854,7 @@ def _ga4_pageview_row_for_url(ga4_summary: dict | None, url: str) -> dict | None
 
 
 def _resolve_ga4_metrics_for_url(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     object_type: str,
     handle: str,
@@ -911,7 +899,7 @@ GSC_TREND_SPARKLINE_POINTS = 30
 
 
 def upsert_gsc_page_daily(
-    conn: sqlite3.Connection,
+    conn: Any,
     rows: list[dict],
     targets_by_url: dict[str, tuple[str, str]] | None = None,
     *,
@@ -966,7 +954,7 @@ def _pct_change(current: float, previous: float) -> float | None:
 
 
 def gsc_page_trend_map(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     window_days: int = GSC_TREND_WINDOW_DAYS,
     today: date | None = None,
@@ -1080,7 +1068,7 @@ _SIGNAL_COLUMNS = (
 
 
 def _signal_values_preserving_known(
-    conn: sqlite3.Connection,
+    conn: Any,
     table: str,
     where_sql: str,
     where_params: tuple,
@@ -1136,7 +1124,7 @@ def _signal_values_preserving_known(
     if row is None:
         return fresh
 
-    # Positional access: callers may or may not set row_factory = sqlite3.Row.
+    # Positional access: callers may or may not set a mapping row factory.
     stored = tuple(row)
     merged = list(fresh)
     if not has_gsc:
@@ -1149,7 +1137,7 @@ def _signal_values_preserving_known(
 
 
 def _refresh_object_signals_into_table(
-    conn: sqlite3.Connection,
+    conn: Any,
     table: str,
     object_type: str,
     handle: str,
@@ -1233,7 +1221,7 @@ def _refresh_object_signals_into_table(
 
 
 def _write_gsc_per_url_query_caches(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     url: str,
@@ -1293,7 +1281,7 @@ def _write_gsc_per_url_query_caches(
         )
 
 
-def _refresh_object_pagespeed_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
+def _refresh_object_pagespeed_into_table(conn: Any, table: str, object_type: str, handle: str) -> None:
     url = dq.object_url(object_type, handle)
     dg.invalidate_pagespeed_memory_cache(url)
     mobile = dg.get_pagespeed(conn, url, "mobile", refresh=False, object_type=object_type, object_handle=handle)
@@ -1328,7 +1316,7 @@ def _refresh_object_pagespeed_into_table(conn: sqlite3.Connection, table: str, o
     )
 
 
-def _refresh_object_pagespeed_into_blog_article(conn: sqlite3.Connection, composite_handle: str) -> None:
+def _refresh_object_pagespeed_into_blog_article(conn: Any, composite_handle: str) -> None:
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
         return
@@ -1371,7 +1359,7 @@ def _refresh_object_pagespeed_into_blog_article(conn: sqlite3.Connection, compos
 
 
 def _refresh_gsc_query_dimensions_into_table(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     page_url: str,
@@ -1433,7 +1421,7 @@ def _refresh_gsc_query_dimensions_into_table(
             )
 
 
-def _refresh_object_gsc_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
+def _refresh_object_gsc_into_table(conn: Any, table: str, object_type: str, handle: str) -> None:
     url = dq.object_url(object_type, handle)
     gsc_detail = dg.get_search_console_url_detail(conn, url, refresh=False, object_type=object_type, object_handle=handle)
     gsc_row = (gsc_detail.get("page_rows") or [None])[0] if gsc_detail else None
@@ -1468,13 +1456,13 @@ def _refresh_object_gsc_into_table(conn: sqlite3.Connection, table: str, object_
     )
 
 
-def _refresh_object_index_into_table(conn: sqlite3.Connection, table: str, object_type: str, handle: str) -> None:
+def _refresh_object_index_into_table(conn: Any, table: str, object_type: str, handle: str) -> None:
     url = dq.object_url(object_type, handle)
     inspection_detail = dg.get_url_inspection(conn, url, refresh=False, object_type=object_type, object_handle=handle)
     update_catalog_inspection(conn, object_type, handle, inspection_detail, url=url)
 
 
-def _refresh_object_index_into_blog_article(conn: sqlite3.Connection, composite_handle: str) -> None:
+def _refresh_object_index_into_blog_article(conn: Any, composite_handle: str) -> None:
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
         return
@@ -1487,7 +1475,7 @@ def _refresh_object_index_into_blog_article(conn: sqlite3.Connection, composite_
 
 
 def _refresh_object_ga4_into_table(
-    conn: sqlite3.Connection, table: str, object_type: str, handle: str, *, ga4_refresh: bool = False
+    conn: Any, table: str, object_type: str, handle: str, *, ga4_refresh: bool = False
 ) -> None:
     url = dq.object_url(object_type, handle)
     ga4_sessions, ga4_views, ga4_avg_dur, ga4_fetched_at = _resolve_ga4_metrics_for_url(
@@ -1514,7 +1502,7 @@ def _refresh_object_ga4_into_table(
 
 
 def _refresh_object_ga4_into_blog_article(
-    conn: sqlite3.Connection, composite_handle: str, *, ga4_refresh: bool = False
+    conn: Any, composite_handle: str, *, ga4_refresh: bool = False
 ) -> None:
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
@@ -1555,7 +1543,7 @@ def _parse_blog_article_parts(composite_handle: str) -> tuple[str, str] | None:
 
 
 def _refresh_blog_article_signals_into_table(
-    conn: sqlite3.Connection,
+    conn: Any,
     composite_handle: str,
     *,
     include_query_dimensions: bool = False,
@@ -1635,7 +1623,7 @@ def _refresh_blog_article_signals_into_table(
     )
 
 
-def _refresh_object_gsc_into_blog_article(conn: sqlite3.Connection, composite_handle: str) -> None:
+def _refresh_object_gsc_into_blog_article(conn: Any, composite_handle: str) -> None:
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
         return
@@ -1677,7 +1665,7 @@ def _refresh_object_gsc_into_blog_article(conn: sqlite3.Connection, composite_ha
     )
 
 
-def refresh_object_structured_seo_data(conn: sqlite3.Connection, object_type: str, handle: str, *, snapshot_recommendation: bool = False) -> None:
+def refresh_object_structured_seo_data(conn: Any, object_type: str, handle: str, *, snapshot_recommendation: bool = False) -> None:
     ensure_dashboard_schema(conn)
     if object_type == "blog_article":
         _refresh_blog_article_signals_into_table(conn, handle)
@@ -1692,7 +1680,7 @@ def refresh_object_structured_seo_data(conn: sqlite3.Connection, object_type: st
     conn.commit()
 
 
-def refresh_object_pagespeed_signal_data(conn: sqlite3.Connection, object_type: str, handle: str) -> None:
+def refresh_object_pagespeed_signal_data(conn: Any, object_type: str, handle: str) -> None:
     ensure_dashboard_schema(conn)
     if object_type == "blog_article":
         _refresh_object_pagespeed_into_blog_article(conn, handle)
@@ -1711,7 +1699,7 @@ def _table_for_object_type(object_type: str) -> str:
 
 
 def refresh_gsc_signal_data_for_objects(
-    conn: sqlite3.Connection,
+    conn: Any,
     targets: list[tuple[str, str]],
     *,
     batch_size: int = 10,
@@ -1750,7 +1738,7 @@ def _decode_article_draft_run_json(raw: object, fallback: object) -> object:
         return fallback
 
 
-def article_draft_run_to_dict(row: sqlite3.Row | None) -> dict | None:
+def article_draft_run_to_dict(row: DictRow | None) -> dict | None:
     if not row:
         return None
     out = dict(row)
@@ -1768,7 +1756,7 @@ def article_draft_run_to_dict(row: sqlite3.Row | None) -> dict | None:
     return out
 
 
-def create_article_draft_run(conn: sqlite3.Connection, request_payload: dict) -> str:
+def create_article_draft_run(conn: Any, request_payload: dict) -> str:
     ensure_dashboard_schema(conn)
     run_id = uuid.uuid4().hex
     now_ts = int(time.time())
@@ -1784,13 +1772,13 @@ def create_article_draft_run(conn: sqlite3.Connection, request_payload: dict) ->
     return run_id
 
 
-def get_article_draft_run(conn: sqlite3.Connection, run_id: str) -> dict | None:
+def get_article_draft_run(conn: Any, run_id: str) -> dict | None:
     ensure_dashboard_schema(conn)
     row = conn.execute("SELECT * FROM article_draft_runs WHERE id = ?", (run_id,)).fetchone()
     return article_draft_run_to_dict(row)
 
 
-def update_article_draft_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> None:
+def update_article_draft_run(conn: Any, run_id: str, **fields: object) -> None:
     if not run_id:
         return
     ensure_dashboard_schema(conn)
@@ -1835,7 +1823,7 @@ def update_article_draft_run(conn: sqlite3.Connection, run_id: str, **fields: ob
     conn.commit()
 
 
-def refresh_index_signal_data_for_objects(conn: sqlite3.Connection, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
+def refresh_index_signal_data_for_objects(conn: Any, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
     ensure_dashboard_schema(conn)
     for i, (object_type, handle) in enumerate(targets, 1):
         if object_type == "blog_article":
@@ -1847,7 +1835,7 @@ def refresh_index_signal_data_for_objects(conn: sqlite3.Connection, targets: lis
     conn.commit()
 
 
-def refresh_pagespeed_signal_data_for_objects(conn: sqlite3.Connection, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
+def refresh_pagespeed_signal_data_for_objects(conn: Any, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
     ensure_dashboard_schema(conn)
     for i, (object_type, handle) in enumerate(targets, 1):
         if object_type == "blog_article":
@@ -1859,7 +1847,7 @@ def refresh_pagespeed_signal_data_for_objects(conn: sqlite3.Connection, targets:
     conn.commit()
 
 
-def refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn: sqlite3.Connection) -> int:
+def refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn: Any) -> int:
     """Copy PageSpeed scores from `google_api_cache` into catalog tables (`products`, `collections`, `pages`).
 
     The API stores Lighthouse payloads in `google_api_cache`; list/detail UIs read denormalized columns on those
@@ -1895,7 +1883,7 @@ def refresh_pagespeed_columns_from_cache_for_all_cached_objects(conn: sqlite3.Co
     return len(rows)
 
 
-def refresh_ga4_signal_data_for_objects(conn: sqlite3.Connection, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
+def refresh_ga4_signal_data_for_objects(conn: Any, targets: list[tuple[str, str]], *, batch_size: int = 10) -> None:
     ensure_dashboard_schema(conn)
     for i, (object_type, handle) in enumerate(targets, 1):
         if object_type == "blog_article":
@@ -1908,7 +1896,7 @@ def refresh_ga4_signal_data_for_objects(conn: sqlite3.Connection, targets: list[
 
 
 def refresh_structured_seo_data(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     batch_size: int = 10,
     progress_callback: Callable[[str, int, int], None] | None = None,
@@ -1987,7 +1975,7 @@ def refresh_structured_seo_data(
 BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
-def db_connect() -> sqlite3.Connection:
+def db_connect() -> Any:
     conn = get_connection(
         path=DB_PATH,
         timeout=10,

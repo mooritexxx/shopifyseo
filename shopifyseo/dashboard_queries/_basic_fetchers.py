@@ -6,8 +6,9 @@ SEO scoring lives in :mod:`._seo_facts`; detail joins live in
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
+
+from shopifyseo.db import DictRow, table_columns
 
 from ._urls import object_url
 from ..index_evidence import INDEX_STORED_FIELDS
@@ -18,19 +19,32 @@ from ..product_linkability import linkable_product_sql
 _SEO_SIGNAL_TABLES: tuple[str, ...] = ("products", "collections", "pages", "blog_articles")
 
 
-def _row_factory(conn: sqlite3.Connection) -> sqlite3.Connection:
-    conn.row_factory = sqlite3.Row
+def _mapping_row_factory(cursor, row):
+    """sqlite3 row_factory that produces DictRow (compatible with sqlite3.Row)."""
+    return DictRow.from_values(tuple(col[0] for col in cursor.description), tuple(row))
+
+
+def _row_factory(conn: Any) -> Any:
+    """Ensure key-accessible rows without assigning ``sqlite3.Row``.
+
+    Live SQLite connections from ``get_connection()`` already have a mapping
+    factory (``sqlite3.Row``); leave it so ``DATABASE_URL``-unset matches main.
+    Bare connections (``row_factory is None``) get ``DictRow``. Postgres
+    connections already produce ``DictRow`` and must not be overwritten —
+    psycopg's factory signature differs from sqlite3.
+    """
+    if getattr(conn, "row_factory", None) is not None:
+        return conn
+    conn.row_factory = _mapping_row_factory
     return conn
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+def _column_exists(conn: Any, table: str, column: str) -> bool:
     """Return True if *column* exists in *table*."""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    names = {r[1] if isinstance(r, (list, tuple)) else r["name"] for r in rows}
-    return column in names
+    return column in table_columns(conn, table)
 
 
-def _live_where(conn: sqlite3.Connection, table: str) -> str:
+def _live_where(conn: Any, table: str) -> str:
     """Return a SQL predicate for items live on the Online Store.
 
     The returned string has **no leading AND**. Tables without the requisite
@@ -66,7 +80,7 @@ def _live_where(conn: sqlite3.Connection, table: str) -> str:
     return "1=1"
 
 
-def _catalog_meta_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def _catalog_meta_counts(conn: Any) -> dict[str, int]:
     """Shared missing-meta / thin-body counters used by overview and list views.
 
     Counts only items that are live on the Online Store (per ``_live_where``).
@@ -139,55 +153,55 @@ PAGE_FACT_COLUMNS: tuple[str, ...] = _FACT_COLUMNS_COMMON + ("body",)
 BLOG_ARTICLE_FACT_COLUMNS: tuple[str, ...] = _FACT_COLUMNS_COMMON + ("body", "blog_handle")
 
 
-def fetch_products_for_facts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_products_for_facts(conn: Any) -> list[DictRow]:
     """Products with only the columns the fact/list builders read."""
     return conn.execute(
         f"SELECT {', '.join(PRODUCT_FACT_COLUMNS)} FROM products ORDER BY title"
     ).fetchall()
 
 
-def fetch_collections_for_facts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_collections_for_facts(conn: Any) -> list[DictRow]:
     return conn.execute(
         f"SELECT {', '.join(COLLECTION_FACT_COLUMNS)} FROM collections ORDER BY title"
     ).fetchall()
 
 
-def fetch_pages_for_facts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_pages_for_facts(conn: Any) -> list[DictRow]:
     return conn.execute(
         f"SELECT {', '.join(PAGE_FACT_COLUMNS)} FROM pages ORDER BY title"
     ).fetchall()
 
 
-def fetch_blog_articles_for_facts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_blog_articles_for_facts(conn: Any) -> list[DictRow]:
     return conn.execute(
         f"SELECT {', '.join(BLOG_ARTICLE_FACT_COLUMNS)} FROM blog_articles"
         " ORDER BY blog_handle, title"
     ).fetchall()
 
 
-def fetch_all_products(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_products(conn: Any) -> list[DictRow]:
     return conn.execute("SELECT * FROM products ORDER BY title").fetchall()
 
 
-def fetch_all_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_collections(conn: Any) -> list[DictRow]:
     return conn.execute("SELECT * FROM collections ORDER BY title").fetchall()
 
 
-def fetch_all_pages(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_pages(conn: Any) -> list[DictRow]:
     return conn.execute("SELECT * FROM pages ORDER BY title").fetchall()
 
 
-def fetch_all_blogs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_blogs(conn: Any) -> list[DictRow]:
     return conn.execute("SELECT * FROM blogs ORDER BY title").fetchall()
 
 
-def fetch_all_blog_articles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_blog_articles(conn: Any) -> list[DictRow]:
     return conn.execute(
         "SELECT * FROM blog_articles ORDER BY blog_handle, title"
     ).fetchall()
 
 
-def fetch_all_blog_articles_enriched(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def fetch_all_blog_articles_enriched(conn: Any) -> list[DictRow]:
     """All articles with blog title for cross-blog listings."""
     return conn.execute(
         """
@@ -199,11 +213,11 @@ def fetch_all_blog_articles_enriched(conn: sqlite3.Connection) -> list[sqlite3.R
     ).fetchall()
 
 
-def fetch_blog_by_handle(conn: sqlite3.Connection, handle: str) -> sqlite3.Row | None:
+def fetch_blog_by_handle(conn: Any, handle: str) -> DictRow | None:
     return conn.execute("SELECT * FROM blogs WHERE handle = ?", (handle,)).fetchone()
 
 
-def fetch_articles_by_blog_handle(conn: sqlite3.Connection, blog_handle: str) -> list[sqlite3.Row]:
+def fetch_articles_by_blog_handle(conn: Any, blog_handle: str) -> list[DictRow]:
     return conn.execute(
         """
         SELECT * FROM blog_articles
@@ -214,7 +228,7 @@ def fetch_articles_by_blog_handle(conn: sqlite3.Connection, blog_handle: str) ->
     ).fetchall()
 
 
-def count_blog_articles_missing_meta(conn: sqlite3.Connection) -> int:
+def count_blog_articles_missing_meta(conn: Any) -> int:
     """Published articles missing SEO title or description (either field absent counts as incomplete).
 
     Only counts articles live on the Online Store (``is_published = 1``).
@@ -231,7 +245,7 @@ def count_blog_articles_missing_meta(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
-def fetch_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def fetch_counts(conn: Any) -> dict[str, int]:
     def _count(table: str) -> int:
         row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         return row[0] if row else 0
@@ -250,13 +264,13 @@ def fetch_counts(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def fetch_recent_runs(conn: sqlite3.Connection, limit: int = 5) -> list[sqlite3.Row]:
+def fetch_recent_runs(conn: Any, limit: int = 5) -> list[DictRow]:
     return conn.execute(
         "SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
 
 
-def fetch_overview_metrics(conn: sqlite3.Connection) -> dict[str, int]:
+def fetch_overview_metrics(conn: Any) -> dict[str, int]:
     """Return aggregated metrics matching the OverviewMetrics schema.
 
     Missing-meta and thin-body counts only include items live on the Online
@@ -303,7 +317,7 @@ def fetch_overview_metrics(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def fetch_catalog_meta_metrics(conn: sqlite3.Connection) -> dict[str, int]:
+def fetch_catalog_meta_metrics(conn: Any) -> dict[str, int]:
     """The four missing-meta / thin-body counters from ``fetch_overview_metrics``.
 
     The dashboard's GSC/GA4 keys are recomputed from signal aggregates and
@@ -315,7 +329,7 @@ def fetch_catalog_meta_metrics(conn: sqlite3.Connection) -> dict[str, int]:
     return _catalog_meta_counts(conn)
 
 
-def fetch_signal_totals(conn: sqlite3.Connection) -> dict[str, int]:
+def fetch_signal_totals(conn: Any) -> dict[str, int]:
     """GSC/GA4 rollups straight from the denormalized signal columns.
 
     Mirrors ``summarize_gsc`` / ``summarize_ga4`` over SEO facts exactly -- same
@@ -363,7 +377,7 @@ def fetch_signal_totals(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
-def fetch_index_status_counts(conn: sqlite3.Connection) -> list[tuple[str, str, str, int]]:
+def fetch_index_status_counts(conn: Any) -> list[tuple[str, str, str, int]]:
     """Distinct (object_type, index_status, index_coverage) pairs with row counts.
 
     The bucket classifier is pure over those two strings, so callers can apply
@@ -388,7 +402,7 @@ def fetch_index_status_counts(conn: sqlite3.Connection) -> list[tuple[str, str, 
     return out
 
 
-def fetch_top_organic_pages(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+def fetch_top_organic_pages(conn: Any, limit: int = 10) -> list[dict[str, Any]]:
     """Return the top N entities ranked by GSC clicks across all entity types."""
     rows = conn.execute(
         """

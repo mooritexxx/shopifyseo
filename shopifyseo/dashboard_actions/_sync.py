@@ -5,7 +5,6 @@ PageSpeed bulk logic lives in :mod:`._sync_pagespeed` and is re-exported here
 that resolve these symbols via the ``_sync`` module path (including tests).
 """
 import logging
-import sqlite3
 import threading
 import time
 from typing import Any
@@ -194,7 +193,7 @@ def _start_gsc_query_embedding_sync(db_path: str) -> threading.Thread:
     """Refresh GSC-query embeddings after visible sync completion."""
 
     def _worker() -> None:
-        conn: sqlite3.Connection | None = None
+        conn: Any | None = None
         try:
             conn = _db_connect_for_actions(db_path)
             from ..embedding_store import sync_embeddings
@@ -215,7 +214,7 @@ def _start_internal_link_refresh(db_path: str) -> threading.Thread:
     """Rebuild the internal link graph and suggestions after visible sync completion."""
 
     def _worker() -> None:
-        conn: sqlite3.Connection | None = None
+        conn: Any | None = None
         try:
             conn = _db_connect_for_actions(db_path)
             from ..internal_links.pipeline import generate_link_suggestions
@@ -508,7 +507,7 @@ def _sync_label(scope: str, selected_scopes: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _all_object_targets(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+def _all_object_targets(conn: Any) -> list[tuple[str, str, str]]:
     targets: list[tuple[str, str, str]] = []
     for row in dq.fetch_all_products(conn):
         targets.append(("product", row["handle"], dq.object_url("product", row["handle"])))
@@ -560,7 +559,7 @@ def _ga4_dimension_path_keys(raw_dim: str) -> list[str]:
     return out
 
 
-def _catalog_targets_by_path(conn: sqlite3.Connection) -> dict[str, tuple[str, str, str]]:
+def _catalog_targets_by_path(conn: Any) -> dict[str, tuple[str, str, str]]:
     """Map normalized URL path → first catalog (object_type, handle, canonical_url)."""
     by_path: dict[str, tuple[str, str, str]] = {}
     for kind, handle, url in _all_object_targets(conn):
@@ -596,7 +595,7 @@ def _catalog_row_index_bucket(index_status: str | None, index_coverage: str | No
     )
 
 
-def _index_inspection_targets(conn: sqlite3.Connection, *, force_refresh: bool, now_fn=None) -> dict:
+def _index_inspection_targets(conn: Any, *, force_refresh: bool, now_fn=None) -> dict:
     """URLs to run URL Inspection on, with budget enforcement for stale re-inspections.
 
     Returns a dict with:
@@ -1026,7 +1025,7 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
             rk = catalog_sync_row_key(kind, handle, url)
             ok = False
             err_msg: str | None = None
-            worker_conn: sqlite3.Connection | None = None
+            worker_conn: Any | None = None
             rate_limiter.acquire(_raise_if_sync_cancelled)
             _raise_if_sync_cancelled()
             sync_queue_mark_running("index", rk)

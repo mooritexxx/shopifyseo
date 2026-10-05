@@ -1,7 +1,6 @@
 """Database helper functions for portable operations."""
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
 from typing import Any, Generator
 
@@ -30,7 +29,7 @@ def insert_returning_id(
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
         sql = translate_placeholders(sql, to_postgres=True)
-        cursor = conn.execute(sql, params)
+        cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()
         return row[0] if row else None
     else:
@@ -43,12 +42,16 @@ def write_tx(conn: Any, *, backend: Backend | None = None) -> Generator[Any, Non
     """Context manager for a write transaction.
 
     On SQLite: BEGIN IMMEDIATE to acquire write lock immediately.
-    On PostgreSQL: Uses psycopg's transaction() context manager.
+    On PostgreSQL: Commits any pending transaction first, then uses an explicit
+    transaction block. This matches SQLite behavior where BEGIN raises if a
+    transaction is already open.
     """
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
+        if conn.info.transaction_status != conn.info.transaction_status.__class__.IDLE:
+            conn.commit()
         with conn.transaction():
             yield conn
     else:
@@ -62,36 +65,39 @@ def write_tx(conn: Any, *, backend: Backend | None = None) -> Generator[Any, Non
 
 
 def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bool:
-    """Check if a table exists in the database."""
+    """Check if a table exists (visible via search_path on Postgres)."""
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
         row = conn.execute(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = %s",
+            "SELECT to_regclass(%s) IS NOT NULL",
             (table,),
         ).fetchone()
+        return row[0] if row else False
     else:
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
             (table,),
         ).fetchone()
-    return row is not None
+        return row is not None
 
 
 def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> set[str]:
-    """Get the set of column names for a table."""
+    """Get the set of column names for a table (visible via search_path on Postgres)."""
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
+        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        if row is None or row[0] is None:
+            return set()
+        oid = row[0]
         rows = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = %s",
-            (table,),
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped",
+            (oid,),
         ).fetchall()
-        return {row[0] for row in rows}
+        return {r[0] for r in rows}
     else:
         quoted = table.replace('"', '""')
         rows = conn.execute(f'PRAGMA table_info("{quoted}")').fetchall()

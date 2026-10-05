@@ -41,7 +41,7 @@ def _make_postgres_row_factory():
         columns = tuple(col.name for col in cursor.description)
 
         def make_row(values):
-            return DictRow(dict(zip(columns, values)), columns)
+            return DictRow.from_values(columns, tuple(values))
         return make_row
     return row_factory
 

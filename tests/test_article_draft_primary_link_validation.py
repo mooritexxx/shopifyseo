@@ -1,6 +1,4 @@
 """Tests for the primary authority link hard-fail in generate_article_draft."""
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_ai_engine_parts import _article_draft
@@ -21,13 +19,12 @@ def _disable_phased_article_draft(monkeypatch):
 
 
 @pytest.fixture
-def db_conn(monkeypatch):
+def db_conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",

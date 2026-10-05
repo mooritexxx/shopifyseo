@@ -1,8 +1,6 @@
 """Tests for local product gallery image cache."""
 
 import hashlib
-import sqlite3
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -71,101 +69,111 @@ def test_worker_fetch_force_refresh_skips_conditional_branch(tmp_path: Path) -> 
     assert "If-None-Match" not in (kwargs.get("headers") or {})
 
 
-def test_warm_empty_catalog_no_crash() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "t.sqlite3"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+def test_warm_empty_catalog_no_crash(testdb, tmp_path: Path, monkeypatch) -> None:
+    conn = testdb.connect()
+    try:
         ensure_schema(conn)
         conn.commit()
+    finally:
         conn.close()
-        progress_calls: list[tuple[int, int]] = []
-        stats = warm_product_image_cache(
-            db_path,
-            max_workers=2,
-            progress_callback=lambda d, t: progress_calls.append((d, t)),
-            force_refresh=True,
-        )
-        assert stats["downloaded"] == 0
-        assert stats["skipped"] == 0
-        assert stats["errors"] == 0
-        assert progress_calls == [(0, 0)]
+    # warm_product_image_cache(db_path) calls open_db(path); keep DATABASE_URL unset
+    # and route the opener at testdb. tmp_path dummy is only the on-disk cache root.
+    monkeypatch.setattr(
+        "shopifyseo.shopify_image_cache.open_db",
+        lambda path=None, **k: testdb.connect(),
+    )
+    dummy_db_path = tmp_path / "dummy.sqlite3"
+    progress_calls: list[tuple[int, int]] = []
+    stats = warm_product_image_cache(
+        dummy_db_path,
+        max_workers=2,
+        progress_callback=lambda d, t: progress_calls.append((d, t)),
+        force_refresh=True,
+    )
+    assert stats["downloaded"] == 0
+    assert stats["skipped"] == 0
+    assert stats["errors"] == 0
+    assert progress_calls == [(0, 0)]
 
 
-def test_read_cache_miss() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "t.sqlite3"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+def test_read_cache_miss(testdb, tmp_path: Path) -> None:
+    conn = testdb.connect()
+    try:
         ensure_schema(conn)
         conn.commit()
-        out = read_cached_product_image(db_path, conn, "gid://x/1", "https://cdn.shopify.com/a.jpg")
+        dummy_db_path = tmp_path / "dummy.sqlite3"
+        out = read_cached_product_image(
+            dummy_db_path, conn, "gid://x/1", "https://cdn.shopify.com/a.jpg"
+        )
         assert out is None
+    finally:
         conn.close()
 
 
-def test_invalidate_removes_row(tmp_path: Path) -> None:
-    db_path = tmp_path / "db.sqlite3"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    root = image_cache_root(db_path)
-    root.mkdir(parents=True, exist_ok=True)
-    rel = local_relpath_for("gid://shopify/MediaImage/9")
-    p = root / rel
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"x")
-    h = hashlib.sha256(b"x").hexdigest()
-    conn.execute(
-        """
-        INSERT INTO product_image_file_cache (
-          image_shopify_id, normalized_url, local_relpath, etag, last_modified,
-          content_length, sha256_hex, mime, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?)
-        """,
-        ("gid://shopify/MediaImage/9", "https://cdn.shopify.com/x", rel, None, None, 1, h, "image/jpeg", "2020-01-01"),
-    )
-    conn.commit()
-    invalidate_product_image_cache_entry(db_path, conn, "gid://shopify/MediaImage/9")
-    conn.commit()
-    assert not p.is_file()
-    n = conn.execute("SELECT COUNT(*) FROM product_image_file_cache").fetchone()[0]
-    assert n == 0
-    conn.close()
-
-
-def test_catalog_gallery_image_cached_locally(tmp_path: Path) -> None:
-    db_path = tmp_path / "db.sqlite3"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    root = image_cache_root(db_path)
-    root.mkdir(parents=True, exist_ok=True)
-    gid = "gid://shopify/MediaImage/42"
-    rel = local_relpath_for(gid)
-    p = root / rel
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"img")
-    h = hashlib.sha256(b"img").hexdigest()
-    url = "https://cdn.shopify.com/files/foo.png?v=1"
-    nu = normalize_shopify_image_url(url)
-    conn.execute(
-        """
-        INSERT INTO product_image_file_cache (
-          image_shopify_id, normalized_url, local_relpath, etag, last_modified,
-          content_length, sha256_hex, mime, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?)
-        """,
-        (gid, nu, rel, None, None, 3, h, "image/png", "2020-01-01"),
-    )
-    conn.commit()
-    idx = product_image_file_cache_index(conn)
-    assert catalog_gallery_image_cached_locally(idx, root, image_shopify_id=gid, catalog_image_url=url) is True
-    assert (
-        catalog_gallery_image_cached_locally(
-            idx, root, image_shopify_id=gid, catalog_image_url="https://other.cdn/file.jpg"
+def test_invalidate_removes_row(testdb, tmp_path: Path) -> None:
+    conn = testdb.connect()
+    try:
+        ensure_schema(conn)
+        dummy_db_path = tmp_path / "dummy.sqlite3"
+        root = image_cache_root(dummy_db_path)
+        root.mkdir(parents=True, exist_ok=True)
+        rel = local_relpath_for("gid://shopify/MediaImage/9")
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        h = hashlib.sha256(b"x").hexdigest()
+        conn.execute(
+            """
+            INSERT INTO product_image_file_cache (
+              image_shopify_id, normalized_url, local_relpath, etag, last_modified,
+              content_length, sha256_hex, mime, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            ("gid://shopify/MediaImage/9", "https://cdn.shopify.com/x", rel, None, None, 1, h, "image/jpeg", "2020-01-01"),
         )
-        is False
-    )
-    assert catalog_gallery_image_cached_locally(idx, root, image_shopify_id="gid://missing/1", catalog_image_url=url) is False
-    conn.close()
+        conn.commit()
+        invalidate_product_image_cache_entry(dummy_db_path, conn, "gid://shopify/MediaImage/9")
+        conn.commit()
+        assert not p.is_file()
+        n = conn.execute("SELECT COUNT(*) FROM product_image_file_cache").fetchone()[0]
+        assert n == 0
+    finally:
+        conn.close()
+
+
+def test_catalog_gallery_image_cached_locally(testdb, tmp_path: Path) -> None:
+    conn = testdb.connect()
+    try:
+        ensure_schema(conn)
+        dummy_db_path = tmp_path / "dummy.sqlite3"
+        root = image_cache_root(dummy_db_path)
+        root.mkdir(parents=True, exist_ok=True)
+        gid = "gid://shopify/MediaImage/42"
+        rel = local_relpath_for(gid)
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"img")
+        h = hashlib.sha256(b"img").hexdigest()
+        url = "https://cdn.shopify.com/files/foo.png?v=1"
+        nu = normalize_shopify_image_url(url)
+        conn.execute(
+            """
+            INSERT INTO product_image_file_cache (
+              image_shopify_id, normalized_url, local_relpath, etag, last_modified,
+              content_length, sha256_hex, mime, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (gid, nu, rel, None, None, 3, h, "image/png", "2020-01-01"),
+        )
+        conn.commit()
+        idx = product_image_file_cache_index(conn)
+        assert catalog_gallery_image_cached_locally(idx, root, image_shopify_id=gid, catalog_image_url=url) is True
+        assert (
+            catalog_gallery_image_cached_locally(
+                idx, root, image_shopify_id=gid, catalog_image_url="https://other.cdn/file.jpg"
+            )
+            is False
+        )
+        assert catalog_gallery_image_cached_locally(idx, root, image_shopify_id="gid://missing/1", catalog_image_url=url) is False
+    finally:
+        conn.close()

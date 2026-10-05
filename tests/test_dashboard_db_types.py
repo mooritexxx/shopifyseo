@@ -28,6 +28,7 @@ DASHBOARD_AREA = (
 
 
 def _make_sqlite_row(data: dict) -> sqlite3.Row:
+    # Intentional SQLite: construct a real sqlite3.Row (live still uses sqlite3.Row when DATABASE_URL is unset).
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     cols = ", ".join(data.keys())
@@ -85,6 +86,8 @@ def test_row_as_dict_accepts_dict_sqlite_row_and_dictrow():
 
 
 def test_row_factory_leaves_existing_and_installs_dictrow_when_bare():
+    # Intentional SQLite: needs a bare sqlite3 connection with row_factory is None —
+    # testdb get_connection already installs a factory.
     existing = sqlite3.connect(":memory:")
     existing.row_factory = sqlite3.Row
     existing.execute("CREATE TABLE t (id INTEGER)")
@@ -103,13 +106,11 @@ def test_row_factory_leaves_existing_and_installs_dictrow_when_bare():
     bare.close()
 
 
-def test_column_exists_uses_table_columns(tmp_path):
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE pages (handle TEXT, is_published INTEGER)")
-    assert _column_exists(conn, "pages", "is_published") is True
-    assert _column_exists(conn, "pages", "missing") is False
-    assert "is_published" in table_columns(conn, "pages")
-    conn.close()
+def test_column_exists_uses_table_columns(db_conn):
+    db_conn.execute("CREATE TABLE pages (handle TEXT, is_published INTEGER)")
+    assert _column_exists(db_conn, "pages", "is_published") is True
+    assert _column_exists(db_conn, "pages", "missing") is False
+    assert "is_published" in table_columns(db_conn, "pages")
 
 
 def test_migrate_link_suggestions_is_noop_on_non_sqlite(monkeypatch):

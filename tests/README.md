@@ -22,9 +22,10 @@ When `TEST_DATABASE_URL` is unset, `testdb` / `db_conn` use SQLite. When it is
 `postgresql://…` or `postgres://…`, they use that database.
 
 **Do not set `DATABASE_URL` for the whole suite.** `get_connection(path=tmp)`
-ignores `path` when `DATABASE_URL` is Postgres and would dump every leftover
-SQLite test onto one shared server. Pass `url=` (or use `testdb.connect()`)
-until 7d has converted the leftover `sqlite3.connect` sites.
+ignores `path` when `DATABASE_URL` is Postgres and would dump leftover
+SQLite-only constructors onto one shared server. Pass `url=` (or use
+`testdb.connect()`). Intentional remaining `sqlite3.connect` sites are listed
+below.
 
 ## Local Postgres (box operators)
 
@@ -51,7 +52,7 @@ Live deploy stays on SQLite until Salar approves a `DATABASE_URL` cutover.
 | Job | Backend | What runs |
 | --- | --- | --- |
 | `backend-smoke` | SQLite (`TEST_DATABASE_URL` unset) | All of `tests/` (same deselects as before) |
-| `backend-postgres` | `TEST_DATABASE_URL` → service DB | All of `tests/` on the **`pgvector/pgvector:pg17`** image (PG17 + `vector`). Tests that still call `sqlite3.connect` stay on SQLite; fixture / `test_db_layer.py` Postgres cases actually hit PG |
+| `backend-postgres` | `TEST_DATABASE_URL` → service DB | All of `tests/` on the **`pgvector/pgvector:pg17`** image (PG17 + `vector`). Converted modules hit Postgres; intentional `sqlite3.connect` sites (below) stay on SQLite. Fixture / `test_db_layer.py` Postgres cases use `pg_conn` |
 
 The image matches the box (PostgreSQL 17 + pgvector). The job enables
 `CREATE EXTENSION vector` and does **not** set `DATABASE_URL`.
@@ -59,52 +60,65 @@ The image matches the box (PostgreSQL 17 + pgvector). The job enables
 ## Plan 7b–d
 
 Shared fixtures from 7a. Convert leftover `sqlite3.connect` sites to
-`testdb` / `db_conn` / `db_connect` by area. Until a file is converted, the
-Postgres CI job still opens a SQLite temp file for that test.
+`testdb` / `db_conn` / `db_connect` by area.
 
 **7b (done): dashboard / GSC / API.** Converted 16 modules
 (39 `sqlite3.connect` sites) onto the shared fixtures.
 
-**7c (this PR, done): internal links + embeddings.** Converted 17 files
-(37 `sqlite3.connect` sites) onto the shared fixtures:
+**7c (done): internal links + embeddings.** Converted 17 files
+(37 `sqlite3.connect` sites) onto the shared fixtures. SQLite-only
+CHECK-constraint rewrite / `PRAGMA database_list` cases skip on Postgres
+(production already no-ops those paths via `backend_for_connection`).
 
-- `tests/internal_links_support.py` (shared helper; callers including
-  `test_ai_weave_schema.py` / `test_internal_links_html_equiv.py` now pass
-  `testdb` / `db_conn`)
-- `tests/test_internal_links_undo.py`
-- `tests/test_internal_links_schema.py`
-- `tests/test_internal_links_restore.py`
-- `tests/test_internal_links_pipeline.py`
-- `tests/test_internal_links_phases_b_to_e.py`
-- `tests/test_internal_links_pagination.py`
-- `tests/test_internal_links_apply.py`
-- `tests/test_internal_links_manual_weave.py`
-- `tests/test_internal_links_api.py`
-- `tests/test_internal_links_locator.py`
-- `tests/test_internal_links_ai_weave.py`
-- `tests/test_internal_links_graph.py`
-- `tests/test_internal_links_entity_anchor_spelling.py`
-- `tests/test_embedding_sync.py`
-- `tests/test_embedding_store.py`
+**7d (this PR, done): keyword / rank / team tasks + leftover article,
+catalog, type-guard, and deliberate SQLite cases.** Converted the leftover
+application tests onto the shared fixtures so they hit Postgres when
+`TEST_DATABASE_URL` is set:
 
-SQLite-only CHECK-constraint rewrite / `PRAGMA database_list` cases skip on
-Postgres (production already no-ops those paths via `backend_for_connection`).
-`embedding_status` passes `backend=backend_for_connection(conn)` into
-`group_concat` so `DATABASE_URL` can stay unset.
+- keyword / rank: `test_keyword_research.py`, `test_keyword_clustering.py`,
+  `test_rank_tracking.py`, `test_open_page_rank.py`,
+  `test_cannibalization_check.py`, `test_store_fit.py`,
+  `test_market_context.py`, `test_approve_pending_competitor.py`
+- team / opportunity tasks: `test_team_tasks.py`, `test_opportunity_tasks.py`
+- leftover article: idea save/fetch/inputs/lifecycle/serp/targets/cluster,
+  draft runs/retrieval/phased/serp prompt/primary link/grounding/linkable
+  gate/final content filter, `test_article_partial_update.py`,
+  `test_resolve_idea_targets.py`, `test_ensure_idea_serp_fresh.py`,
+  `test_internal_link_allowlist.py`
+- leftover catalog: `test_catalog_image_work.py`,
+  `test_shopify_image_cache.py`, `test_product_seo_title_real_paths.py`
+- type-guard table/schema cases: `test_column_exists_uses_table_columns`,
+  `test_cluster_table_columns_via_helper`, and the three
+  `test_remaining_areas_db_types.py` helpers now use `db_conn`
 
-`testdb` Postgres connections rewrite SQLite-shaped DDL (`?`, `executescript`,
+`testdb` Postgres connections rewrite SQLite-shaped SQL (`?`, `executescript`,
 AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `REAL`→`DOUBLE PRECISION`,
-`INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`→plan-6 `PG_NOW_TEXT_SQL`, `PRAGMA table_info`)
+`INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`→plan-6
+`PG_NOW_TEXT_SQL`, `last_insert_rowid()`→`lastval()`, `PRAGMA table_info`)
 so those tests hit Postgres while `DATABASE_URL` stays unset. Helpers such as
 `table_columns` / `insert_returning_id` use `backend_for_connection(conn)`
 rather than `DATABASE_URL`.
 
-**Remaining** (`rg` AST `sqlite3.connect(`): **38 files / 70** call sites.
+Team-task `RAISE(ABORT)` append-only triggers are skipped by the testdb
+Postgres adapter (not valid PG); the matching test skips on Postgres.
+Live SQLite still installs them.
 
-| Slice | Scope | Files | Calls |
-| --- | --- | --- | --- |
-| **7c** | Internal links + embeddings (done this PR) | 17 | 37 |
-| **7d** | Keyword / rank / team tasks + leftover article, catalog, type-guard, and deliberate SQLite cases | 38 | 70 |
+**Intentional remaining `sqlite3.connect` (must stay on SQLite):**
 
-Until 7d lands, leftover tests still open SQLite files; they do **not** yet
-prove those areas on Postgres.
+| File | Why |
+| --- | --- |
+| `tests/test_dashboard_db_types.py` `_make_sqlite_row` + bare `row_factory` | Constructs a real `sqlite3.Row` / a connection with `row_factory is None` (testdb `get_connection` already installs a factory) |
+| `tests/test_backend_db_types.py` | Same `sqlite3.Row` / bare-factory type guards |
+| `tests/test_row_get_helper.py` `_make_sqlite_row` | Same `sqlite3.Row` constructor |
+| `tests/test_db_layer.py` | `backend_for_connection(sqlite3)` and SQLite `BEGIN IMMEDIATE` lock contention |
+| `tests/test_connection_sites.py` | File-DB seed for SQLite PRAGMA / `get_connection` kwargs |
+| `tests/test_sqlite_utf8.py` | `ATTACH` + UTF-8 text factory |
+
+These still run during `backend-postgres`; they open SQLite on purpose and do
+not prove those paths on Postgres.
+
+| Slice | Scope | Status |
+| --- | --- | --- |
+| **7b** | Dashboard / GSC / API | done |
+| **7c** | Internal links + embeddings | done |
+| **7d** | Keyword / rank / team + leftovers | done |

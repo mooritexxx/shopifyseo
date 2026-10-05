@@ -1,5 +1,4 @@
 """Approve-pending-competitor upsert (PR 4). Main 500'd after committing the pending removal."""
-import sqlite3
 
 import pytest
 
@@ -25,13 +24,9 @@ PENDING = {
 
 
 @pytest.fixture
-def approve_db(tmp_path, monkeypatch):
-    path = tmp_path / "approve.db"
-
+def approve_db(testdb, monkeypatch):
     def connect():
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return testdb.connect()
 
     conn = connect()
     ensure_dashboard_schema(conn)

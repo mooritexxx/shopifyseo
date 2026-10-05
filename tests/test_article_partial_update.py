@@ -265,13 +265,11 @@ class TestLiveUpdateArticlePartialUpdate:
 class TestApplySavedBlogArticleFieldsPartialUpdate:
     """Test apply_saved_blog_article_fields_from_editor partial update."""
 
-    def test_partial_update_only_updates_provided_fields(self, tmp_path):
+    def test_partial_update_only_updates_provided_fields(self, testdb):
         """Only provided fields should be updated in the DB."""
-        import sqlite3
         from shopifyseo.dashboard_queries._editors import apply_saved_blog_article_fields_from_editor
 
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
+        conn = testdb.connect()
         conn.execute("""
             CREATE TABLE blog_articles (
                 shopify_id TEXT PRIMARY KEY,
@@ -324,13 +322,11 @@ class TestApplySavedBlogArticleFieldsPartialUpdate:
 
         conn.close()
 
-    def test_no_update_when_no_fields_provided(self, tmp_path):
+    def test_no_update_when_no_fields_provided(self, testdb):
         """No update should happen when no fields are provided."""
-        import sqlite3
         from shopifyseo.dashboard_queries._editors import apply_saved_blog_article_fields_from_editor
 
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
+        conn = testdb.connect()
         conn.execute("""
             CREATE TABLE blog_articles (
                 shopify_id TEXT PRIMARY KEY,
@@ -445,14 +441,11 @@ class TestRealSchemaFeaturedImageAlt:
     that mocked tests cannot detect (like the missing column bug in PR #32).
     """
 
-    def test_featured_image_alt_column_exists_in_blog_articles(self, tmp_path):
+    def test_featured_image_alt_column_exists_in_blog_articles(self, testdb):
         """Verify the featured_image_alt column is created by ensure_dashboard_schema."""
-        import sqlite3
         from shopifyseo.dashboard_store import ensure_dashboard_schema
 
-        db_path = tmp_path / "real_schema_test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row  # Required by ensure_dashboard_schema
+        conn = testdb.connect()
 
         # Run the real schema migration
         ensure_dashboard_schema(conn)
@@ -466,15 +459,12 @@ class TestRealSchemaFeaturedImageAlt:
 
         conn.close()
 
-    def test_can_write_featured_image_alt_to_real_schema(self, tmp_path):
+    def test_can_write_featured_image_alt_to_real_schema(self, testdb):
         """Verify we can write featured_image_alt to the real schema."""
-        import sqlite3
         from shopifyseo.dashboard_store import ensure_dashboard_schema
         from shopifyseo.dashboard_queries._editors import apply_saved_blog_article_fields_from_editor
 
-        db_path = tmp_path / "real_schema_test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row  # Required by ensure_dashboard_schema
+        conn = testdb.connect()
 
         # Run the real schema migration
         ensure_dashboard_schema(conn)

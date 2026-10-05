@@ -26,6 +26,7 @@ SERVICES_ROUTERS_AREA = (
 
 
 def _make_sqlite_row(data: dict) -> sqlite3.Row:
+    # Intentional SQLite: construct a real sqlite3.Row (live still uses sqlite3.Row when DATABASE_URL is unset).
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     cols = ", ".join(f"{k} TEXT" for k in data)
@@ -58,6 +59,8 @@ def test_services_routers_have_no_sqlite3_imports_or_attrs():
 
 
 def test_row_factory_leaves_existing_and_installs_dictrow_when_bare():
+    # Intentional SQLite: needs a bare sqlite3 connection with row_factory is None —
+    # testdb get_connection already installs a factory.
     existing = sqlite3.connect(":memory:")
     existing.row_factory = sqlite3.Row
     existing.execute("CREATE TABLE t (id INTEGER)")
@@ -108,11 +111,9 @@ def test_cluster_row_helpers_accept_sqlite_row_and_dictrow():
     assert plan_sqlite["core_keywords"] == plan_dict["core_keywords"] == ["widget"]
 
 
-def test_cluster_table_columns_via_helper():
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE clusters (id INTEGER, name TEXT, priority_score REAL)")
-    cols = table_columns(conn, "clusters")
+def test_cluster_table_columns_via_helper(db_conn):
+    db_conn.execute("CREATE TABLE clusters (id INTEGER, name TEXT, priority_score REAL)")
+    cols = table_columns(db_conn, "clusters")
     assert "priority_score" in cols
     assert "name" in cols
     assert "missing" not in cols
-    conn.close()

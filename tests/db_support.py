@@ -71,6 +71,11 @@ _DATETIME_NOW = re.compile(r"\bdatetime\(\s*'now'\s*\)", re.IGNORECASE)
 # Plan 6 ``PG_NOW_TEXT_SQL`` — must not embed CURRENT_TIMESTAMP. Production
 # execute already rewrites that token to a TEXT expression; wrapping the
 # result in ``AT TIME ZONE`` yields ``timezone(unknown, text)``.
+_LAST_INSERT_ROWID = re.compile(r"\blast_insert_rowid\s*\(\s*\)", re.IGNORECASE)
+_SQLITE_RAISE_TRIGGER = re.compile(
+    r"^\s*CREATE\s+TRIGGER\b.*\bRAISE\s*\(\s*ABORT\s*,",
+    re.IGNORECASE | re.DOTALL,
+)
 _PRAGMA_TABLE_INFO = re.compile(
     r"""^\s*PRAGMA\s+table_info\(\s*(?:["']([^"']+)["']|([A-Za-z_][\w]*))\s*\)\s*;?\s*$""",
     re.IGNORECASE,
@@ -188,7 +193,9 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
     ``INSERT OR REPLACE INTO t (pk, …)`` becomes ``ON CONFLICT (pk) DO UPDATE``.
     ``datetime('now')`` becomes plan-6 ``PG_NOW_TEXT_SQL`` (naive UTC text via
     ``now()``, not ``CURRENT_TIMESTAMP``, so the production token rewrite
-    cannot wrap text in ``AT TIME ZONE``).
+    cannot wrap text in ``AT TIME ZONE``). ``last_insert_rowid()`` becomes
+    ``lastval()`` so leftover tests that read the IDENTITY after INSERT hit
+    Postgres without changing production helpers.
     """
     head = sql.lstrip()[:12].upper()
     if head.startswith("CREATE") or head.startswith("ALTER"):
@@ -208,6 +215,7 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
             sql = _INSERT_OR_REPLACE.sub(rf"INSERT INTO {replace.group(1)} ({replace.group(2)})", sql, count=1)
             sql = sql.rstrip().rstrip(";") + f" ON CONFLICT ({cols[0]}) DO UPDATE SET {assignments}"
     sql = _DATETIME_NOW.sub(PG_NOW_TEXT_SQL, sql)
+    sql = _LAST_INSERT_ROWID.sub("lastval()", sql)
     return sql
 
 
@@ -218,7 +226,8 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
     uses ``?``. This wrap translates placeholders, implements ``executescript``,
     implements ``PRAGMA table_info``, skips other PRAGMA, rolls back a failed
     statement so the next one can run, and rewrites AUTOINCREMENT / INTEGER /
-    BLOB / REAL / INSERT OR IGNORE / INSERT OR REPLACE / ``datetime('now')``.
+    BLOB / REAL / INSERT OR IGNORE / INSERT OR REPLACE / ``datetime('now')`` /
+    ``last_insert_rowid()``.
     Idempotent. The object stays a ``psycopg.Connection`` (isinstance checks
     in 7a fixture tests keep working).
     """
@@ -274,6 +283,10 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
                     table = _pragma_table_name(query)
                     if table:
                         return _pragma_table_info(table)
+                    return _NoopCursor()
+                if _SQLITE_RAISE_TRIGGER.search(query):
+                    # SQLite RAISE(ABORT) trigger bodies are not valid Postgres.
+                    # Testdb-only skip; live SQLite still installs them.
                     return _NoopCursor()
                 query = rewrite_sqlite_ddl_for_postgres(query)
                 if "?" in query:

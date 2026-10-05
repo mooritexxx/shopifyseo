@@ -62,8 +62,9 @@ jobs:
           psql -h localhost -U postgres -d shopifyseo_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Backend tests (TEST_DATABASE_URL → Postgres)
         # Full tests/ tree, same deselects as backend-smoke. Fixture / db-layer
-        # tests hit Postgres; remaining sqlite3.connect sites (plan 7d) still
-        # open SQLite temp files. DATABASE_URL is intentionally unset so
+        # and converted 7b–d modules hit Postgres. Intentional sqlite3.connect
+        # sites (sqlite3.Row constructors, SQLite lock/PRAGMA/UTF-8 ATTACH)
+        # stay on SQLite. DATABASE_URL is intentionally unset so
         # get_connection(path=tmp) does not ignore path and share one PG db.
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shopifyseo_test

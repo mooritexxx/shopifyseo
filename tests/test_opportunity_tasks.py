@@ -1,5 +1,4 @@
 import json
-import sqlite3
 from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
@@ -9,12 +8,9 @@ from shopifyseo.seo_quality import metadata_issues, validate_changed_metadata
 
 
 @pytest.fixture
-def db(tmp_path):
-    path = str(tmp_path / 'tasks.db')
+def db(testdb):
     def connect():
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return testdb.connect()
     conn = connect()
     tasks.ensure_schema(conn)
     conn.execute('CREATE TABLE gsc_query_rows(object_type, object_handle, query, clicks, impressions, ctr, position, fetched_at)')

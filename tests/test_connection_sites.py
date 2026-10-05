@@ -317,6 +317,7 @@ def test_print_summary_preserves_sqlite_settings(tmp_path, monkeypatch, unset_da
     import shopifyseo.shopify_catalog_sync as catalog_init
 
     db_path = tmp_path / "catalog.sqlite3"
+    # SQLite-only on purpose: seed a file DB for print_summary PRAGMA/settings assertions.
     setup = sqlite3.connect(db_path)
     try:
         for table in (

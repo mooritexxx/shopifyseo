@@ -1,6 +1,5 @@
 import csv
 import json
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock
@@ -16,12 +15,9 @@ from shopifyseo.rank_tracking.store import ensure_schema
 
 
 @pytest.fixture
-def database(tmp_path, monkeypatch):
-    path = tmp_path / 'rank.sqlite3'
+def database(testdb, monkeypatch):
     def connect():
-        c = sqlite3.connect(path, timeout=10)
-        c.row_factory = sqlite3.Row
-        return c
+        return testdb.connect()
     conn = connect()
     conn.executescript('''CREATE TABLE service_settings(key TEXT PRIMARY KEY,value TEXT);
         CREATE TABLE api_usage_log(id INTEGER PRIMARY KEY, provider TEXT,model TEXT,call_type TEXT,stage TEXT,

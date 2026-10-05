@@ -7,6 +7,7 @@ from shopifyseo.dashboard_ai_engine_parts.context import _row_get
 
 def _make_sqlite_row(data: dict) -> sqlite3.Row:
     """Create a sqlite3.Row from a dict for testing."""
+    # Intentional SQLite: construct a real sqlite3.Row (live still uses sqlite3.Row when DATABASE_URL is unset).
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     columns = ", ".join(data.keys())

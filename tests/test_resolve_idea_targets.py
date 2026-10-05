@@ -1,6 +1,4 @@
 """Tests for resolve_idea_targets — primary + secondary interlink resolution."""
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_article_ideas import resolve_idea_targets
@@ -8,9 +6,8 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def db_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def db_conn(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     # Seed a few store objects used in the fixtures.
     for handle, title in [("disposable-vapes", "Disposable Vapes"), ("vape-kits", "Vape Kits")]:

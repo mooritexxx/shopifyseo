@@ -1,6 +1,5 @@
 """Tests for task #51: linkable-product gate, topic-relevant link allowlist, commerce-heading gate."""
 import logging
-import sqlite3
 
 import pytest
 
@@ -30,13 +29,12 @@ from shopifyseo.product_linkability import (
 
 
 @pytest.fixture
-def conn(monkeypatch):
+def conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    connection = sqlite3.connect(':memory:')
-    connection.row_factory = sqlite3.Row
+    connection = testdb.connect()
     ensure_dashboard_schema(connection)
     connection.execute("INSERT INTO service_settings (key, value) VALUES ('store_custom_domain', 'https://example.com')")
 
@@ -113,11 +111,10 @@ class TestLinkability:
         assert not is_product_linkable(conn, '')
         assert not is_product_linkable(conn, '   ')
 
-    def test_minimal_schema_works(self, monkeypatch):
+    def test_minimal_schema_works(self, testdb, monkeypatch):
         from shopifyseo.dashboard_ai_engine_parts import config
         monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
-        minimal = sqlite3.connect(':memory:')
-        minimal.row_factory = sqlite3.Row
+        minimal = testdb.connect()
         minimal.execute("CREATE TABLE products (handle TEXT, title TEXT, status TEXT)")
         minimal.execute("INSERT INTO products (handle, title, status) VALUES ('simple', 'Simple Prod', 'ACTIVE')")
         minimal.commit()

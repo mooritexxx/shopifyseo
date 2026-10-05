@@ -1,7 +1,7 @@
 """Real-path tests for product SEO title generation (#115 Round 2).
 
 These tests exercise the actual generation paths with:
-- Real temp SQLite database
+- Isolated testdb (SQLite temp file or Postgres schema)
 - Stubbed AI client (returns controlled responses)
 - Stubbed Shopify write endpoints (raise on call to detect unexpected writes)
 
@@ -14,10 +14,8 @@ A5. API-level warnings through FastAPI TestClient
 D. Page-title enforcement of 42-65 limits
 """
 import json
-import sqlite3
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
 
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 from shopifyseo.dashboard_ai_engine_parts import config
@@ -29,10 +27,9 @@ from shopifyseo.dashboard_ai_engine_parts import providers as providers_module
 # Test Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_test_db(path):
-    """Create a test database with minimal required schema and a product."""
-    conn = sqlite3.connect(str(path), timeout=10)
-    conn.row_factory = sqlite3.Row
+def _make_test_db(testdb):
+    """Create a testdb connection with dashboard schema."""
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     return conn
 
@@ -123,12 +120,11 @@ def _get_latest_recommendation(conn, object_type, handle):
 
 
 @pytest.fixture
-def test_db(tmp_path):
+def test_db(testdb):
     """Create a temporary test database."""
-    path = tmp_path / "test.sqlite"
-    conn = _make_test_db(path)
+    conn = _make_test_db(testdb)
     _insert_ai_settings(conn)
-    yield conn, path
+    yield conn, testdb
     conn.close()
 
 
@@ -740,23 +736,20 @@ class TestAPIWarnings:
     LONG_HANDLE = "glubble-api-warning"
     
     @pytest.fixture
-    def api_client(self, tmp_path, monkeypatch, mock_store_identity, mock_ai_client):
+    def api_client(self, testdb, monkeypatch, mock_store_identity, mock_ai_client):
         """Create a FastAPI test client with mocked dependencies."""
         from fastapi.testclient import TestClient
         from backend.app.main import app
         from backend.app import db as db_module
         from backend.app.services import product_service
         
-        path = tmp_path / "api_warnings.sqlite"
-        conn = _make_test_db(path)
+        conn = _make_test_db(testdb)
         _insert_ai_settings(conn)
         _insert_test_product(conn, self.LONG_HANDLE, self.LONG_PRODUCT_NAME)
         conn.close()
         
         def connect():
-            c = sqlite3.connect(str(path), timeout=10)
-            c.row_factory = sqlite3.Row
-            return c
+            return testdb.connect()
         
         # Patch open_db_connection in db module and product_service
         monkeypatch.setattr(db_module, "open_db_connection", connect)

@@ -1,6 +1,4 @@
 """Tests for update_article_idea_targets — editor write path with allowlist guard."""
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_article_ideas import (
@@ -12,9 +10,8 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def db_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def db_conn(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",

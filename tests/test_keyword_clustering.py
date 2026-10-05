@@ -23,10 +23,10 @@ from backend.app.services.keyword_clustering import (
 )
 
 
-def _make_test_db() -> sqlite3.Connection:
-    """Create an in-memory DB with the cluster tables."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _make_test_db(source):
+    """Create an isolated DB with the cluster tables."""
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS clusters (
@@ -121,19 +121,18 @@ def _make_test_db() -> sqlite3.Connection:
     return conn
 
 
-def test_cluster_tables_exist():
+def test_cluster_tables_exist(testdb):
     """Verify the test DB helper creates the expected tables."""
-    conn = _make_test_db()
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-    tables = [row[0] for row in cursor.fetchall()]
-    assert "clusters" in tables
-    assert "cluster_keywords" in tables
+    from shopifyseo.db import table_exists
+    conn = _make_test_db(testdb)
+    assert table_exists(conn, "clusters")
+    assert table_exists(conn, "cluster_keywords")
     conn.close()
 
 
-def test_cluster_cascade_delete():
+def test_cluster_cascade_delete(testdb):
     """Deleting a cluster cascades to cluster_keywords."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO clusters (name, content_type, primary_keyword, content_brief, generated_at) VALUES (?, ?, ?, ?, ?)",
         ("Test", "blog_post", "kw1", "Brief", "2026-01-01T00:00:00Z"),
@@ -605,8 +604,8 @@ def test_detect_vendor_no_match():
 # --- load_clusters / _migrate_json_to_db tests ---
 
 
-def test_load_clusters_from_db():
-    conn = _make_test_db()
+def test_load_clusters_from_db(testdb):
+    conn = _make_test_db(testdb)
     conn.execute(
         """INSERT INTO clusters
            (name, content_type, primary_keyword, content_brief, total_volume, avg_difficulty, avg_opportunity,
@@ -650,8 +649,8 @@ def test_load_clusters_from_db():
     conn.close()
 
 
-def test_load_clusters_null_match():
-    conn = _make_test_db()
+def test_load_clusters_null_match(testdb):
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO clusters (name, content_type, primary_keyword, content_brief, generated_at) VALUES (?, ?, ?, ?, ?)",
         ("Test", "blog_post", "kw1", "Brief", "2026-01-01T00:00:00Z"),
@@ -662,8 +661,8 @@ def test_load_clusters_null_match():
     conn.close()
 
 
-def test_load_clusters_new_match():
-    conn = _make_test_db()
+def test_load_clusters_new_match(testdb):
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO clusters (name, content_type, primary_keyword, content_brief, match_type, match_handle, match_title, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ("Test", "blog_post", "kw1", "Brief", "new", "", "", "2026-01-01T00:00:00Z"),
@@ -674,15 +673,15 @@ def test_load_clusters_new_match():
     conn.close()
 
 
-def test_load_clusters_empty_db():
-    conn = _make_test_db()
+def test_load_clusters_empty_db(testdb):
+    conn = _make_test_db(testdb)
     data = load_clusters(conn)
     assert data == {"clusters": [], "generated_at": None}
     conn.close()
 
 
-def test_migrate_json_to_db():
-    conn = _make_test_db()
+def test_migrate_json_to_db(testdb):
+    conn = _make_test_db(testdb)
     json_data = json.dumps({
         "clusters": [
             {
@@ -726,8 +725,8 @@ def test_migrate_json_to_db():
     conn.close()
 
 
-def test_migrate_no_json_no_data():
-    conn = _make_test_db()
+def test_migrate_no_json_no_data(testdb):
+    conn = _make_test_db(testdb)
     data = load_clusters(conn)
     assert data == {"clusters": [], "generated_at": None}
     conn.close()
@@ -756,9 +755,9 @@ def _insert_cluster(conn, name, content_type="collection_page", primary_keyword=
     return cluster_id
 
 
-def test_detail_with_suggested_match():
+def test_detail_with_suggested_match(testdb):
     """Collection match appears in related_urls with coverage."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA collection.", ["nova canada", "nova bottle"],
                           match_type="collection", match_handle="nova", match_title="NOVA")
@@ -782,9 +781,9 @@ def test_detail_with_suggested_match():
     conn.close()
 
 
-def test_detail_vendor_products():
+def test_detail_vendor_products(testdb):
     """Vendor products appear with source 'vendor'."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA collection.", ["nova canada", "nova loop"],
                           match_type="new", match_handle="", match_title="")
@@ -801,9 +800,9 @@ def test_detail_vendor_products():
     conn.close()
 
 
-def test_detail_collection_products():
+def test_detail_collection_products(testdb):
     """Products in matched collection appear with source 'collection_products'."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "Bottles", "collection_page", "travel bottle",
                           "Travel bottles.", ["travel bottle", "cheap travel"],
                           match_type="collection", match_handle="bottles", match_title="Bottles")
@@ -827,9 +826,9 @@ def test_detail_collection_products():
     conn.close()
 
 
-def test_detail_deduplication():
+def test_detail_deduplication(testdb):
     """Product via vendor+collection appears once with 'vendor' source (higher priority)."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA collection.", ["nova canada"],
                           match_type="collection", match_handle="nova", match_title="NOVA")
@@ -853,17 +852,17 @@ def test_detail_deduplication():
     conn.close()
 
 
-def test_detail_cluster_not_found():
+def test_detail_cluster_not_found(testdb):
     """Raises ValueError for nonexistent cluster id."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     with pytest.raises(ValueError):
         get_cluster_detail(conn, 9999)
     conn.close()
 
 
-def test_detail_no_related_urls():
+def test_detail_no_related_urls(testdb):
     """Cluster with match_type 'new' and no vendor returns empty related_urls."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "New Topic", "blog_post", "bottle guide",
                           "Guide.", ["bottle guide"],
                           match_type="new", match_handle="", match_title="")
@@ -872,9 +871,9 @@ def test_detail_no_related_urls():
     conn.close()
 
 
-def test_detail_none_match_skips_suggested():
+def test_detail_none_match_skips_suggested(testdb):
     """match_type NULL means no suggested match URL."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "Orphan", "blog_post", "random kw",
                           "Brief.", ["random kw"])
     result = get_cluster_detail(conn, cid)
@@ -883,9 +882,9 @@ def test_detail_none_match_skips_suggested():
     conn.close()
 
 
-def test_detail_product_coverage_uses_title():
+def test_detail_product_coverage_uses_title(testdb):
     """Product coverage includes title field (4 fields total)."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova loop",
                           "NOVA.", ["nova loop"],
                           match_type="new", match_handle="", match_title="")
@@ -904,9 +903,9 @@ def test_detail_product_coverage_uses_title():
     conn.close()
 
 
-def test_detail_sorted_by_coverage():
+def test_detail_sorted_by_coverage(testdb):
     """Related URLs are sorted by coverage found descending."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA.", ["nova canada", "nova bottle", "nova loop"],
                           match_type="new", match_handle="", match_title="")
@@ -1012,9 +1011,9 @@ def test_format_cluster_context_missing_metrics():
 # --- _find_clusters_for_product tests ---
 
 
-def test_find_clusters_for_product_vendor_match():
+def test_find_clusters_for_product_vendor_match(testdb):
     """Finds cluster when product vendor appears in cluster name."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA collection.", ["nova canada", "nova bottle"],
                           match_type="collection", match_handle="nova", match_title="NOVA")
@@ -1031,9 +1030,9 @@ def test_find_clusters_for_product_vendor_match():
     conn.close()
 
 
-def test_find_clusters_for_product_collection_membership():
+def test_find_clusters_for_product_collection_membership(testdb):
     """Finds cluster via collection membership when product is in matched collection."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "Travel Bottles", "collection_page", "travel bottle",
                           "Travel bottles.", ["travel bottle", "cheap travel"],
                           match_type="collection", match_handle="bottles", match_title="Bottles")
@@ -1063,9 +1062,9 @@ def test_find_clusters_for_product_collection_membership():
     conn.close()
 
 
-def test_find_clusters_for_product_deduplication():
+def test_find_clusters_for_product_deduplication(testdb):
     """Same cluster found via vendor and collection appears only once."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "NOVA Brand", "collection_page", "nova canada",
                           "NOVA collection.", ["nova canada"],
                           match_type="collection", match_handle="nova", match_title="NOVA")
@@ -1094,9 +1093,9 @@ def test_find_clusters_for_product_deduplication():
     conn.close()
 
 
-def test_find_clusters_for_product_no_matches():
+def test_find_clusters_for_product_no_matches(testdb):
     """Returns empty list when no clusters relate to the product."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     _insert_cluster(conn, "Alpine", "collection_page", "alpine",
                     "Alpine.", ["alpine"],
                     match_type="collection", match_handle="alpine", match_title="Alpine")
@@ -1112,9 +1111,9 @@ def test_find_clusters_for_product_no_matches():
     conn.close()
 
 
-def test_find_clusters_for_product_caps_at_three():
+def test_find_clusters_for_product_caps_at_three(testdb):
     """Returns at most 3 clusters even if more match."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     clusters_list = []
     for i in range(5):
         cid = _insert_cluster(conn, f"NOVA Cluster {i}", "collection_page", f"nova kw{i}",
@@ -1132,9 +1131,9 @@ def test_find_clusters_for_product_caps_at_three():
     conn.close()
 
 
-def test_find_clusters_for_product_empty_vendor_uses_collection():
+def test_find_clusters_for_product_empty_vendor_uses_collection(testdb):
     """Empty vendor skips vendor path but still finds via collection membership."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "Travel Bottles", "collection_page", "travel bottle",
                           "Travel bottles.", ["travel bottle"],
                           match_type="collection", match_handle="bottles", match_title="Bottles")
@@ -1164,9 +1163,9 @@ def test_find_clusters_for_product_empty_vendor_uses_collection():
     conn.close()
 
 
-def test_find_clusters_for_product_not_in_db():
+def test_find_clusters_for_product_not_in_db(testdb):
     """Product handle not in DB returns empty (collection path finds nothing)."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "Travel Bottles", "collection_page", "travel bottle",
                           "Travel bottles.", ["travel bottle"],
                           match_type="collection", match_handle="bottles", match_title="Bottles")
@@ -1182,9 +1181,9 @@ def test_find_clusters_for_product_not_in_db():
     conn.close()
 
 
-def test_find_clusters_for_product_short_vendor_skipped():
+def test_find_clusters_for_product_short_vendor_skipped(testdb):
     """Vendor shorter than 3 characters skips vendor path."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cid = _insert_cluster(conn, "BC Bottles", "collection_page", "bc bottle",
                           "BC bottles.", ["bc bottle"])
     clusters_data = {"clusters": [
@@ -1202,9 +1201,9 @@ def test_find_clusters_for_product_short_vendor_skipped():
 # --- enrich_clusters_with_coverage aggregate tests ---
 
 
-def test_enrich_coverage_includes_vendor_products():
+def test_enrich_coverage_includes_vendor_products(testdb):
     """Coverage should find keywords that appear in vendor product content but not in the collection."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO products (shopify_id, title, handle, vendor, seo_title, seo_description, description_html) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (100, "Greenleaf XROS", "greenleaf-xros", "Greenleaf", "", "", "<p>best greenleaf filter kit for beginners</p>"),
@@ -1234,9 +1233,9 @@ def test_enrich_coverage_includes_vendor_products():
     assert cov["total"] == 3
 
 
-def test_enrich_coverage_includes_collection_products():
+def test_enrich_coverage_includes_collection_products(testdb):
     """Coverage should find keywords in products that belong to the matched collection."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO collections (shopify_id, title, handle, seo_title, seo_description, description_html) VALUES (?, ?, ?, ?, ?, ?)",
         (200, "Filter Kits", "filter-kits", "", "", "<p>All filter kits</p>"),
@@ -1269,9 +1268,9 @@ def test_enrich_coverage_includes_collection_products():
     assert cov["total"] == 3
 
 
-def test_enrich_coverage_deduplicates_products():
+def test_enrich_coverage_deduplicates_products(testdb):
     """A product found via both vendor and collection membership should not double its content."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO collections (shopify_id, title, handle, seo_title, seo_description, description_html) VALUES (?, ?, ?, ?, ?, ?)",
         (200, "Greenleaf", "greenleaf-collection", "", "", ""),
@@ -1304,9 +1303,9 @@ def test_enrich_coverage_deduplicates_products():
     assert cov["total"] == 1
 
 
-def test_enrich_coverage_vendor_only_when_no_page_match():
+def test_enrich_coverage_vendor_only_when_no_page_match(testdb):
     """With match_type 'new', aggregate still includes vendor product content."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO products (shopify_id, title, handle, vendor, seo_title, seo_description, description_html) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (100, "Sierra Pulse", "sierra-pulse", "Sierra", "", "", "<p>sierra travel bottle canada</p>"),
@@ -1331,9 +1330,9 @@ def test_enrich_coverage_vendor_only_when_no_page_match():
     assert cov["total"] == 2
 
 
-def test_enrich_coverage_no_related_urls_returns_none():
+def test_enrich_coverage_no_related_urls_returns_none(testdb):
     """Cluster with match_type 'new' and no vendor should return None coverage."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     cluster_id = _insert_cluster(
         conn,
         name="Random Topic",
@@ -1349,9 +1348,9 @@ def test_enrich_coverage_no_related_urls_returns_none():
     assert cluster["keyword_coverage"] is None
 
 
-def test_enrich_coverage_no_regression_collection_only():
+def test_enrich_coverage_no_regression_collection_only(testdb):
     """Cluster matched to a collection with keywords in collection content still works."""
-    conn = _make_test_db()
+    conn = _make_test_db(testdb)
     conn.execute(
         "INSERT INTO collections (shopify_id, title, handle, seo_title, seo_description, description_html) VALUES (?, ?, ?, ?, ?, ?)",
         (200, "Alpine", "alpine", "Alpine Bottles", "Buy alpine travel bottle", "<p>alpine canada best prices</p>"),
@@ -1563,7 +1562,7 @@ def test_get_matched_cluster_keywords_no_match():
     assert kw_map == {}
 
 
-def test_generate_clusters_reads_approved_from_db(monkeypatch):
+def test_generate_clusters_reads_approved_from_db(monkeypatch, testdb):
     """keyword_metrics is the source of truth for 'approved' — a stale
     target_keywords JSON blob must not leak into the LLM prompt."""
     import time as _time
@@ -1571,8 +1570,7 @@ def test_generate_clusters_reads_approved_from_db(monkeypatch):
     from shopifyseo import market_context
     from shopifyseo.dashboard_store import ensure_dashboard_schema
 
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
 
     now = int(_time.time())
@@ -1646,11 +1644,11 @@ def test_generate_clusters_reads_approved_from_db(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_dedupe_db() -> sqlite3.Connection:
-    """In-memory DB with the full dashboard schema (includes embeddings)."""
+def _make_dedupe_db(source):
+    """Isolated DB with the full dashboard schema (includes embeddings)."""
     from shopifyseo.dashboard_store import ensure_dashboard_schema
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     ensure_dashboard_schema(conn)
     return conn
 
@@ -1676,26 +1674,26 @@ def _kw(keyword: str, opportunity: float = 50.0, volume: int = 100, **extra) -> 
     return {"keyword": keyword, "opportunity": opportunity, "volume": volume, **extra}
 
 
-def test_collapse_near_duplicates_under_two_passes_through():
+def test_collapse_near_duplicates_under_two_passes_through(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     canonicals, aliases = collapse_near_duplicates([_kw("only")], conn)
     assert [c["keyword"] for c in canonicals] == ["only"]
     assert aliases == {}
 
 
-def test_collapse_near_duplicates_no_embeddings_passthrough():
+def test_collapse_near_duplicates_no_embeddings_passthrough(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     approved = [_kw("a"), _kw("b")]
     canonicals, aliases = collapse_near_duplicates(approved, conn)
     assert sorted(c["keyword"] for c in canonicals) == ["a", "b"]
     assert aliases == {}
 
 
-def test_collapse_near_duplicates_similar_pair_collapses():
+def test_collapse_near_duplicates_similar_pair_collapses(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     # Nearly-parallel vectors — cosine ≈ 1.0
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "vape pens", [0.999, 0.001, 0.0, 0.0])
@@ -1709,9 +1707,9 @@ def test_collapse_near_duplicates_similar_pair_collapses():
     assert aliases == {"vape pen": ["vape pens"]}
 
 
-def test_collapse_near_duplicates_distinct_pair_no_collapse():
+def test_collapse_near_duplicates_distinct_pair_no_collapse(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     # Orthogonal vectors — cosine = 0
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "protein bar", [0.0, 1.0, 0.0, 0.0])
@@ -1722,9 +1720,9 @@ def test_collapse_near_duplicates_distinct_pair_no_collapse():
     assert aliases == {}
 
 
-def test_collapse_near_duplicates_picks_highest_opportunity_canonical():
+def test_collapse_near_duplicates_picks_highest_opportunity_canonical(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.999, 0.001])
     _insert_keyword_embedding(conn, "c", [0.998, 0.002])
@@ -1739,9 +1737,9 @@ def test_collapse_near_duplicates_picks_highest_opportunity_canonical():
     assert set(aliases["b"]) == {"a", "c"}
 
 
-def test_collapse_near_duplicates_canonical_tiebreak_by_volume():
+def test_collapse_near_duplicates_canonical_tiebreak_by_volume(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.999, 0.001])
 
@@ -1753,9 +1751,9 @@ def test_collapse_near_duplicates_canonical_tiebreak_by_volume():
     assert [c["keyword"] for c in canonicals] == ["b"]
 
 
-def test_collapse_near_duplicates_missing_embedding_stays_singleton():
+def test_collapse_near_duplicates_missing_embedding_stays_singleton(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.999, 0.001])
     # "c" has no embedding — should pass through as its own canonical.
@@ -1769,10 +1767,10 @@ def test_collapse_near_duplicates_missing_embedding_stays_singleton():
     assert len(canonicals) == 2
 
 
-def test_collapse_near_duplicates_threshold_override_via_service_settings():
+def test_collapse_near_duplicates_threshold_override_via_service_settings(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
     from shopifyseo.dashboard_google import set_service_setting
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.85, 0.527])  # cosine ≈ 0.85
 
@@ -1785,10 +1783,10 @@ def test_collapse_near_duplicates_threshold_override_via_service_settings():
     assert aliases == {"a": ["b"]}
 
 
-def test_collapse_near_duplicates_threshold_of_one_disables():
+def test_collapse_near_duplicates_threshold_of_one_disables(testdb):
     """Threshold ≥ 1.0 short-circuits; nothing collapses."""
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.999, 0.001])
 
@@ -1798,10 +1796,10 @@ def test_collapse_near_duplicates_threshold_of_one_disables():
     assert aliases == {}
 
 
-def test_collapse_near_duplicates_bad_setting_falls_back_to_default():
+def test_collapse_near_duplicates_bad_setting_falls_back_to_default(testdb):
     from backend.app.services.keyword_clustering._dedupe import collapse_near_duplicates
     from shopifyseo.dashboard_google import set_service_setting
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.999, 0.001])
 
@@ -1813,13 +1811,13 @@ def test_collapse_near_duplicates_bad_setting_falls_back_to_default():
     assert [c["keyword"] for c in canonicals] == ["a"]
 
 
-def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
+def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch, testdb):
     """LLM sees only the canonical; the cluster's output keywords include aliases."""
     import time as _time
     from backend.app.services.keyword_clustering import _generation
     from shopifyseo import market_context
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     now = int(_time.time())
     conn.executemany(
         "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
@@ -1903,18 +1901,18 @@ def test_generate_clusters_expands_aliases_into_cluster_keywords(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_pre_cluster_under_two_returns_trivial():
+def test_pre_cluster_under_two_returns_trivial(testdb):
     from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     assert pre_cluster([], conn) == []
     single = [_kw("only", **{"parent_topic": "vape"})]
     assert pre_cluster(single, conn) == [single]
 
 
-def test_pre_cluster_groups_by_parent_topic_without_embeddings():
+def test_pre_cluster_groups_by_parent_topic_without_embeddings(testdb):
     """With no embeddings, parent_topic groups become seed buckets + orphan bucket."""
     from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     approved = [
         _kw("vape pen", parent_topic="vape"),
         _kw("vape mod", parent_topic="vape"),
@@ -1931,10 +1929,10 @@ def test_pre_cluster_groups_by_parent_topic_without_embeddings():
     ]
 
 
-def test_pre_cluster_assigns_orphan_to_best_centroid():
+def test_pre_cluster_assigns_orphan_to_best_centroid(testdb):
     """An orphan that's embedding-similar to a seed bucket joins it."""
     from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "vape mod", [0.95, 0.05, 0.0])
     _insert_keyword_embedding(conn, "vape juice", [0.9, 0.1, 0.0])  # orphan, close to vape
@@ -1951,10 +1949,10 @@ def test_pre_cluster_assigns_orphan_to_best_centroid():
     assert {"vape juice", "vape mod", "vape pen"} <= {k["keyword"] for k in vape_bucket}
 
 
-def test_pre_cluster_merges_similar_orphans_into_new_bucket():
+def test_pre_cluster_merges_similar_orphans_into_new_bucket(testdb):
     """Orphans that don't match any seed but are similar to each other cluster together."""
     from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     # Seed bucket (nutrition) — intentionally distant from the orphans.
     _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
     # Two orphans close to each other but far from "protein bar".
@@ -1971,10 +1969,10 @@ def test_pre_cluster_merges_similar_orphans_into_new_bucket():
     assert {k["keyword"] for k in wicker_bucket} == {"wicker basket", "wicker hamper"}
 
 
-def test_pre_cluster_orphans_without_embeddings_fall_back_to_one_bucket():
+def test_pre_cluster_orphans_without_embeddings_fall_back_to_one_bucket(testdb):
     """Embedding-less orphans land together in a fallback bucket (legacy behavior)."""
     from backend.app.services.keyword_clustering._pre_cluster import pre_cluster
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0])
     # "stray-a" and "stray-b" have no embedding.
     approved = [
@@ -1987,10 +1985,10 @@ def test_pre_cluster_orphans_without_embeddings_fall_back_to_one_bucket():
     assert {k["keyword"] for k in fallback} == {"stray-a", "stray-b"}
 
 
-def test_entity_detection_normalizes_key_vape_brands():
+def test_entity_detection_normalizes_key_vape_brands(testdb):
     from backend.app.services.keyword_clustering._planning import detect_entities, load_entity_rules
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     rules = load_entity_rules(conn)
     assert detect_entities("elf bar flavours", rules) == ["ELFBAR"]
     assert detect_entities("elfbar bc10000", rules) == ["ELFBAR"]
@@ -1999,10 +1997,10 @@ def test_entity_detection_normalizes_key_vape_brands():
     assert detect_entities("stlth geek bar 80k", rules) == ["STLTH x GEEK BAR"]
 
 
-def test_safe_partition_keeps_competing_brands_apart_without_parent_topics():
+def test_safe_partition_keeps_competing_brands_apart_without_parent_topics(testdb):
     from backend.app.services.keyword_clustering._planning import partition_keywords_for_generation
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     keywords = [
         _kw("elf bars", opportunity=95.0, intent="transactional", parent_topic=""),
         _kw("elfbar flavours", opportunity=85.0, intent="commercial", parent_topic=""),
@@ -2018,10 +2016,10 @@ def test_safe_partition_keeps_competing_brands_apart_without_parent_topics():
         assert not ({"caliburn g3"} & bucket and ({"elf bars", "elfbar flavours", "geek bar", "geek bar flavours"} & bucket))
 
 
-def test_repair_splits_mixed_brand_cluster_and_caps_generation_tiers():
+def test_repair_splits_mixed_brand_cluster_and_caps_generation_tiers(testdb):
     from backend.app.services.keyword_clustering._planning import repair_and_enrich_clusters
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     keywords = [
         "elf bars",
         "elfbar flavours",
@@ -2059,13 +2057,13 @@ def test_repair_splits_mixed_brand_cluster_and_caps_generation_tiers():
         assert cluster["quality_score"] >= 68.0
 
 
-def test_generate_clusters_parallel_calls_llm_per_bucket(monkeypatch):
+def test_generate_clusters_parallel_calls_llm_per_bucket(monkeypatch, testdb):
     """Two parent_topic groups → two LLM clustering calls, each with its own payload."""
     import time as _time
     from backend.app.services.keyword_clustering import _generation
     from shopifyseo import market_context
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     now = int(_time.time())
     conn.executemany(
         "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
@@ -2130,13 +2128,13 @@ def test_generate_clusters_parallel_calls_llm_per_bucket(monkeypatch):
     conn.close()
 
 
-def test_generate_clusters_cross_bucket_dedupe_by_primary_keyword(monkeypatch):
+def test_generate_clusters_cross_bucket_dedupe_by_primary_keyword(monkeypatch, testdb):
     """Same primary_keyword in two buckets → collapse, keeping higher-opportunity version."""
     import time as _time
     from backend.app.services.keyword_clustering import _generation
     from shopifyseo import market_context
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     now = int(_time.time())
     conn.executemany(
         "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
@@ -2194,14 +2192,14 @@ def test_generate_clusters_cross_bucket_dedupe_by_primary_keyword(monkeypatch):
     conn.close()
 
 
-def test_generate_clusters_legacy_mode_single_llm_call(monkeypatch):
+def test_generate_clusters_legacy_mode_single_llm_call(monkeypatch, testdb):
     """clustering_mode=legacy falls back to one LLM call over all canonicals."""
     import time as _time
     from backend.app.services.keyword_clustering import _generation
     from shopifyseo import market_context
     from shopifyseo.dashboard_google import set_service_setting
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     now = int(_time.time())
     conn.executemany(
         "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "
@@ -2278,9 +2276,9 @@ def _km(keyword: str, opportunity: float = 50.0, volume: int = 100) -> dict:
     }
 
 
-def test_merge_similar_clusters_collapses_near_identical_primaries():
+def test_merge_similar_clusters_collapses_near_identical_primaries(testdb):
     from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "geek bar", [1.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "geek bars flavours", [0.99, 0.01, 0.0])
     _insert_keyword_embedding(conn, "arizer solo", [0.0, 1.0, 0.0])
@@ -2310,9 +2308,9 @@ def test_merge_similar_clusters_collapses_near_identical_primaries():
     }
 
 
-def test_merge_similar_clusters_leaves_distinct_primaries_alone():
+def test_merge_similar_clusters_leaves_distinct_primaries_alone(testdb):
     from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "protein bar", [0.0, 0.0, 1.0])
 
@@ -2325,9 +2323,9 @@ def test_merge_similar_clusters_leaves_distinct_primaries_alone():
     assert {c["name"] for c in out} == {"Vape", "Protein"}
 
 
-def test_merge_similar_clusters_missing_embeddings_passthrough():
+def test_merge_similar_clusters_missing_embeddings_passthrough(testdb):
     from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     # No embeddings inserted — cluster primaries have no vectors.
     clusters = [
         _cluster("A", "foo", ["foo"]),
@@ -2338,10 +2336,10 @@ def test_merge_similar_clusters_missing_embeddings_passthrough():
     assert {c["name"] for c in out} == {"A", "B"}
 
 
-def test_merge_similar_clusters_transitive_chain_merges_all():
+def test_merge_similar_clusters_transitive_chain_merges_all(testdb):
     """A~B, B~C, A not directly ~C → all three collapse via union-find."""
     from backend.app.services.keyword_clustering._postprocess import merge_similar_clusters
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "b", [0.93, 0.37])
     _insert_keyword_embedding(conn, "c", [0.75, 0.66])  # sim(a,c) < 0.85, sim(b,c) ≥ 0.85
@@ -2357,9 +2355,9 @@ def test_merge_similar_clusters_transitive_chain_merges_all():
     assert set(k.lower() for k in out[0]["keywords"]) == {"a", "b", "c"}
 
 
-def test_fold_singletons_folds_into_similar_cluster():
+def test_fold_singletons_folds_into_similar_cluster(testdb):
     from backend.app.services.keyword_clustering._postprocess import fold_singletons
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0, 0.0])
     _insert_keyword_embedding(conn, "vape pens", [0.98, 0.02, 0.0])
     _insert_keyword_embedding(conn, "vape mod", [0.95, 0.05, 0.0])
@@ -2381,10 +2379,10 @@ def test_fold_singletons_folds_into_similar_cluster():
     assert set(k.lower() for k in vapes["keywords"]) == {"vape pen", "vape pens", "vape mod"}
 
 
-def test_fold_singletons_keeps_unique_singletons():
+def test_fold_singletons_keeps_unique_singletons(testdb):
     """Singleton with no similar non-singleton neighbor stays as-is."""
     from backend.app.services.keyword_clustering._postprocess import fold_singletons
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "vape pen", [1.0, 0.0])
     _insert_keyword_embedding(conn, "yoga mat", [0.0, 1.0])
 
@@ -2397,10 +2395,10 @@ def test_fold_singletons_keeps_unique_singletons():
     assert {c["name"] for c in out} == {"Vapes", "Yoga"}
 
 
-def test_fold_singletons_two_similar_singletons_no_target_both_stay():
+def test_fold_singletons_two_similar_singletons_no_target_both_stay(testdb):
     """Two singletons similar to each other but no non-singleton target → neither folds."""
     from backend.app.services.keyword_clustering._postprocess import fold_singletons
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     _insert_keyword_embedding(conn, "a", [1.0, 0.0])
     _insert_keyword_embedding(conn, "a2", [0.99, 0.01])
 
@@ -2413,9 +2411,9 @@ def test_fold_singletons_two_similar_singletons_no_target_both_stay():
     assert {c["name"] for c in out} == {"A", "A2"}
 
 
-def test_fold_singletons_missing_embedding_passthrough():
+def test_fold_singletons_missing_embedding_passthrough(testdb):
     from backend.app.services.keyword_clustering._postprocess import fold_singletons
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     clusters = [
         _cluster("A", "a", ["a", "a2"]),
         _cluster("B", "b", ["b"]),
@@ -2425,13 +2423,13 @@ def test_fold_singletons_missing_embedding_passthrough():
     assert {c["name"] for c in out} == {"A", "B"}
 
 
-def test_generate_clusters_runs_post_processing(monkeypatch):
+def test_generate_clusters_runs_post_processing(monkeypatch, testdb):
     """End-to-end: duplicate-primary + singleton both get cleaned up."""
     import time as _time
     from backend.app.services.keyword_clustering import _generation
     from shopifyseo import market_context
 
-    conn = _make_dedupe_db()
+    conn = _make_dedupe_db(testdb)
     now = int(_time.time())
     conn.executemany(
         "INSERT INTO keyword_metrics (keyword, volume, difficulty, opportunity, "

@@ -9,7 +9,7 @@ import sqlite3
 import time
 from urllib.parse import urlparse
 
-from shopifyseo.db import insert_returning_id
+from shopifyseo.db import insert_returning_id, is_integrity_error
 
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
@@ -261,7 +261,9 @@ def apply_suggestion(conn, suggestion_id, base_url, *, preview_token_value="", f
             (suggestion_id, sug["source_type"], sug["source_handle"], row["shopify_id"], old, new, now, now),
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except Exception as exc:
+        if not is_integrity_error(exc):
+            raise
         conn.rollback()
         raise LinkConflict("Another write on this page is in progress or needs reconciliation.") from None
     try:
@@ -318,7 +320,9 @@ def undo_suggestion(conn, suggestion_id, base_url, *, fetch_fn=None, push_fn=Non
         if not changed:
             raise LinkConflict("Another undo is in progress.")
         conn.commit()
-    except sqlite3.IntegrityError:
+    except Exception as exc:
+        if not is_integrity_error(exc):
+            raise
         conn.rollback()
         raise LinkConflict("Another write on this page is in progress or needs reconciliation.") from None
     try:

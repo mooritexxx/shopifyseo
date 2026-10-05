@@ -7,6 +7,12 @@ from typing import Any, Generator, Sequence
 from .backend import Backend, get_backend
 from .compat import _translate_placeholders
 
+# Transaction-scoped advisory lock keys for Postgres (pg_advisory_xact_lock).
+# SQLite ignores these: BEGIN IMMEDIATE already exclusive-locks the database.
+# Chosen as stable 32-bit ints (not hash(), which is process-randomized).
+LOCK_RANK_JOBS = 0x52414E4B  # 'RANK' — rank_jobs / rank_one_running
+LOCK_TEAM_TASKS = 0x5441534B  # 'TASK' — versioned team task writes
+
 
 def _resolve_backend(backend: Backend | None) -> Backend:
     return get_backend() if backend is None else backend
@@ -110,13 +116,25 @@ def insert_returning_id(
 
 
 @contextmanager
-def write_tx(conn: Any, *, backend: Backend | None = None) -> Generator[Any, None, None]:
+def write_tx(
+    conn: Any,
+    *,
+    backend: Backend | None = None,
+    lock_key: int | None = None,
+    for_update: str | None = None,
+    for_update_params: Sequence[Any] = (),
+) -> Generator[Any, None, None]:
     """Context manager for a write transaction.
 
-    On SQLite: BEGIN IMMEDIATE to acquire write lock immediately.
-    On PostgreSQL: Commits any pending transaction first, then uses an explicit
-    transaction block. This matches SQLite behavior where BEGIN raises if a
-    transaction is already open.
+    On SQLite: ``BEGIN IMMEDIATE`` to acquire the write lock immediately.
+    ``lock_key`` and ``for_update`` are ignored so SQLite locking matches main.
+
+    On PostgreSQL: commits any pending transaction first, then opens an
+    explicit transaction block. When ``lock_key`` is set, acquires
+    ``pg_advisory_xact_lock(lock_key)`` for the transaction (used for
+    single-writer slots such as ``rank_one_running``). When ``for_update``
+    is set, runs that ``SELECT … FOR UPDATE`` (``?`` placeholders) after
+    the advisory lock.
     """
     if backend is None:
         backend = get_backend()
@@ -125,6 +143,18 @@ def write_tx(conn: Any, *, backend: Backend | None = None) -> Generator[Any, Non
         if conn.info.transaction_status != conn.info.transaction_status.__class__.IDLE:
             conn.commit()
         with conn.transaction():
+            if lock_key is not None or for_update:
+                from .execute import execute as db_execute
+                if lock_key is not None:
+                    db_execute(
+                        conn,
+                        "SELECT pg_advisory_xact_lock(?)",
+                        (int(lock_key),),
+                        backend=backend,
+                    )
+                if for_update:
+                    params = tuple(for_update_params) if for_update_params else None
+                    db_execute(conn, for_update, params, backend=backend)
             yield conn
     else:
         conn.execute("BEGIN IMMEDIATE")

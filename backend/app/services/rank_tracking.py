@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.db import open_db_connection
-from shopifyseo.db import order_inserted
+from shopifyseo.db import LOCK_RANK_JOBS, order_inserted, write_tx
 from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankCancelled, RankError, check_term,
                                           clean_url, is_target, remaining_credits, url_identity)
 
@@ -134,12 +134,17 @@ def start_job(conn, ids, max_pages, request_key, weekly=False, launch=True):
     if duplicate:
         return dict(job_id=duplicate['id'], status=duplicate['status'], skipped=True)
     details = estimate(conn, ids, max_pages)
-    conn.execute('BEGIN IMMEDIATE')
-    try:
+    # SQLite: write_tx takes the immediate write lock. Postgres: advisory lock +
+    # FOR UPDATE on the running-job slot so rank_one_running stays single-writer.
+    with write_tx(
+        conn,
+        lock_key=LOCK_RANK_JOBS,
+        for_update="SELECT id FROM rank_jobs WHERE status = ? FOR UPDATE",
+        for_update_params=('running',),
+    ):
         # Recheck inside the write lock: two tabs/schedulers cannot reserve the same budget.
         duplicate = conn.execute('SELECT * FROM rank_jobs WHERE request_key=? OR weekly_date=?', (request_key, weekly_date)).fetchone()
         if duplicate:
-            conn.rollback()
             return dict(job_id=duplicate['id'], status=duplicate['status'], skipped=True)
         terms = keywords(conn, details['keyword_ids'])
         u = usage(conn)
@@ -152,10 +157,6 @@ def start_job(conn, ids, max_pages, request_key, weekly=False, launch=True):
         job_id = str(uuid.uuid4())
         conn.execute('''INSERT INTO rank_jobs(id,request_key,weekly_date,status,keyword_ids,max_pages,reserved,created_at)
             VALUES (?,?,?,'running',?,?,?,?)''', (job_id, request_key, weekly_date, json.dumps([t['id'] for t in terms]), max_pages, details['searches_worst_case'], now()))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
     if launch:
         try:
             threading.Thread(target=run_job, args=(job_id, terms, max_pages, setting(conn, 'serpapi_api_key')),
@@ -169,39 +170,33 @@ def start_job(conn, ids, max_pages, request_key, weekly=False, launch=True):
 
 def stop_job(conn, job_id):
     # Keep the running reservation until in-flight requests have settled.
-    conn.execute('BEGIN IMMEDIATE')
-    try:
+    with write_tx(conn, lock_key=LOCK_RANK_JOBS):
         job = conn.execute('SELECT status FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
         if not job:
             raise RankError('Ranking job not found.')
         if job['status'] == 'running':
             conn.execute('UPDATE rank_jobs SET cancel_requested=1 WHERE id=?', (job_id,))
-        conn.commit()
         return dict(job_id=job_id, status='stopping' if job['status'] == 'running' else job['status'])
-    except Exception:
-        conn.rollback()
-        raise
 
 
 def record_request(job_id, keyword_id):
     conn = open_db_connection()
     try:
-        conn.execute('BEGIN IMMEDIATE')
-        job = conn.execute('SELECT status,reserved,cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
-        if job and job['cancel_requested']:
-            raise RankCancelled('Check stopped by user.')
-        if not job or job['status'] != 'running' or job['reserved'] < 1:
-            raise RankError('Ranking job no longer has a request reservation.')
-        current_usage = usage(conn)
-        if current_usage['month_used'] >= current_usage['monthly_budget']:
-            raise RankError('Monthly ranking budget reached.')
-        stamp = now()
-        conn.execute('INSERT INTO rank_requests(job_id,keyword_id,requested_at,month) VALUES (?,?,?,?)', (job_id, keyword_id, stamp, stamp[:7]))
-        conn.execute('UPDATE rank_jobs SET reserved=reserved-1 WHERE id=?', (job_id,))
-        # Use the existing API Usage ledger; cost is unknown under the subscription.
-        conn.execute('''INSERT INTO api_usage_log(provider,model,call_type,stage,input_tokens,output_tokens,total_tokens,estimated_cost_usd)
-            VALUES ('serpapi','google','rank_check','rank_tracking',0,0,0,0)''')
-        conn.commit()
+        with write_tx(conn, lock_key=LOCK_RANK_JOBS):
+            job = conn.execute('SELECT status,reserved,cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()
+            if job and job['cancel_requested']:
+                raise RankCancelled('Check stopped by user.')
+            if not job or job['status'] != 'running' or job['reserved'] < 1:
+                raise RankError('Ranking job no longer has a request reservation.')
+            current_usage = usage(conn)
+            if current_usage['month_used'] >= current_usage['monthly_budget']:
+                raise RankError('Monthly ranking budget reached.')
+            stamp = now()
+            conn.execute('INSERT INTO rank_requests(job_id,keyword_id,requested_at,month) VALUES (?,?,?,?)', (job_id, keyword_id, stamp, stamp[:7]))
+            conn.execute('UPDATE rank_jobs SET reserved=reserved-1 WHERE id=?', (job_id,))
+            # Use the existing API Usage ledger; cost is unknown under the subscription.
+            conn.execute('''INSERT INTO api_usage_log(provider,model,call_type,stage,input_tokens,output_tokens,total_tokens,estimated_cost_usd)
+                VALUES ('serpapi','google','rank_check','rank_tracking',0,0,0,0)''')
     finally:
         conn.close()
 
@@ -231,17 +226,16 @@ def run_job(job_id, terms, max_pages, key):
         error = 'Ranking worker interrupted. Unfinished keywords have unknown results.'
     conn = open_db_connection()
     try:
-        conn.execute('BEGIN IMMEDIATE')
-        cancelled = conn.execute('SELECT cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()[0]
-        # Also create unknown outcomes for keywords lost to a worker failure.
-        for term in terms:
-            if not conn.execute('SELECT 1 FROM rank_checks WHERE job_id=? AND keyword_id=?', (job_id,term['id'])).fetchone():
-                insert_interrupted(conn,job_id,term['id'],cancelled=cancelled)
-        failed = conn.execute("SELECT count(*) FROM rank_checks WHERE job_id=? AND status='error'", (job_id,)).fetchone()[0]
-        conn.execute('UPDATE rank_jobs SET status=?,reserved=0,finished_at=?,error=? WHERE id=?',
-                     ('cancelled' if cancelled else ('error' if error or failed else 'complete'), now(),
-                      None if cancelled else error or (f'{failed} keyword checks failed. See history.' if failed else None), job_id))
-        conn.commit()
+        with write_tx(conn, lock_key=LOCK_RANK_JOBS):
+            cancelled = conn.execute('SELECT cancel_requested FROM rank_jobs WHERE id=?', (job_id,)).fetchone()[0]
+            # Also create unknown outcomes for keywords lost to a worker failure.
+            for term in terms:
+                if not conn.execute('SELECT 1 FROM rank_checks WHERE job_id=? AND keyword_id=?', (job_id,term['id'])).fetchone():
+                    insert_interrupted(conn,job_id,term['id'],cancelled=cancelled)
+            failed = conn.execute("SELECT count(*) FROM rank_checks WHERE job_id=? AND status='error'", (job_id,)).fetchone()[0]
+            conn.execute('UPDATE rank_jobs SET status=?,reserved=0,finished_at=?,error=? WHERE id=?',
+                         ('cancelled' if cancelled else ('error' if error or failed else 'complete'), now(),
+                          None if cancelled else error or (f'{failed} keyword checks failed. See history.' if failed else None), job_id))
     finally:
         conn.close()
 

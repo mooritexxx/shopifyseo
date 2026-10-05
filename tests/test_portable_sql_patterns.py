@@ -33,6 +33,7 @@ PATTERNS = {
     "lastrowid": re.compile(r"\blastrowid\b"),
     "last_insert_rowid": re.compile(r"\blast_insert_rowid\b"),
     "COLLATE NOCASE": re.compile(r"COLLATE\s+NOCASE", re.IGNORECASE),
+    "BEGIN IMMEDIATE": re.compile(r"BEGIN\s+IMMEDIATE", re.IGNORECASE),
 }
 
 

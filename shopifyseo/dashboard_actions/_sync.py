@@ -32,6 +32,7 @@ from ..shopify_catalog_sync import (
     sync_pages,
     sync_products,
 )
+from shopifyseo.db import is_lock_error, is_operational_error
 from ..catalog_image_work import count_catalog_image_urls_discover
 from ..shopify_catalog_sync.discovery import MAX_SHOPIFY_PAGE_SIZE, discover_shopify_catalog
 from ..shopify_image_cache import count_catalog_images_for_cache, warm_product_image_cache
@@ -962,8 +963,13 @@ def _retry_on_db_lock(fn, *args, attempts: int = 4, **kwargs):
     for attempt in range(1, attempts + 1):
         try:
             return fn(*args, **kwargs)
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or attempt == attempts:
+        except Exception as exc:
+            # SQLite: keep the existing "locked" substring (matches main).
+            # Postgres / mapped: LockError and lock SQLSTATEs via is_lock_error.
+            locked = is_lock_error(exc) or (
+                is_operational_error(exc) and "locked" in str(exc).lower()
+            )
+            if not locked or attempt == attempts:
                 raise
             logger.warning("DB locked (attempt %s/%s); retrying in %.0fs", attempt, attempts, delay)
             _time.sleep(delay)

@@ -12,7 +12,8 @@ The allowlist helps ensure:
 Migration plan:
 - PR2: Infrastructure + team_tasks.py + api_usage.py
 - PR3: route 7 sqlite3.connect sites through get_connection()
-- PR4 (this PR): portable SQL (ON CONFLICT, insert_returning_id, dialect helpers)
+- PR4: portable SQL (ON CONFLICT, insert_returning_id, dialect helpers)
+- PR5: write_tx / lock retry (BEGIN IMMEDIATE sites removed from app code)
 - Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
@@ -49,8 +50,8 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "backend/app/services/open_page_rank.py": 8,
     "backend/app/services/opportunities_service.py": 6,
     "backend/app/services/overview_results.py": 2,
-    "backend/app/services/rank_tracking.py": 42,
-    "backend/app/services/team_tasks.py": 9,
+    "backend/app/services/rank_tracking.py": 38,
+    "backend/app/services/team_tasks.py": 6,
     # shopifyseo library
     "shopifyseo/api_usage.py": 11,
     "shopifyseo/article_draft_retrieval.py": 8,

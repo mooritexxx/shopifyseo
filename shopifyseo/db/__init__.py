@@ -8,7 +8,17 @@ Backend is selected via DATABASE_URL environment variable:
 from .backend import Backend, InvalidDatabaseURL, get_backend, is_postgres, is_sqlite, parse_database_url
 from .compat import DictRow
 from .connect import BUSY_TIMEOUT_MS, connect, connect_postgres, connect_sqlite
-from .exceptions import DatabaseError, IntegrityError, LockError, OperationalError, ProgrammingError
+from .exceptions import (
+    DatabaseError,
+    IntegrityError,
+    LockError,
+    OperationalError,
+    ProgrammingError,
+    is_integrity_error,
+    is_lock_error,
+    is_operational_error,
+    map_exception,
+)
 from .execute import execute, executemany, get_connection
 from .helpers import (
     busy_timeout,
@@ -18,6 +28,8 @@ from .helpers import (
     insert_returning_id,
     journal_mode,
     like_ci,
+    LOCK_RANK_JOBS,
+    LOCK_TEAM_TASKS,
     on_conflict_do_nothing,
     on_conflict_do_update,
     order_ci,
@@ -61,6 +73,8 @@ __all__ = [
     "DictRow",
     # Helpers
     "insert_returning_id",
+    "LOCK_RANK_JOBS",
+    "LOCK_TEAM_TASKS",
     "group_concat",
     "like_ci",
     "order_ci",
@@ -92,4 +106,8 @@ __all__ = [
     "OperationalError",
     "LockError",
     "ProgrammingError",
+    "map_exception",
+    "is_integrity_error",
+    "is_lock_error",
+    "is_operational_error",
 ]

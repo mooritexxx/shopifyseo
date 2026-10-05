@@ -68,6 +68,13 @@ frontend/.vite/
 frontend/.vitest/
 *.local
 
+# CoS-owned Postgres cutover secrets (never commit)
+pg.env
+*.pg.env
+
+# Local cutover work dirs written by scripts/pg_cutover.sh
+tmp/
+
 # Database
 *.sqlite3
 *.sqlite3-shm

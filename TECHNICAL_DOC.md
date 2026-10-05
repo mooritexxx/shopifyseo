@@ -820,6 +820,7 @@ which rows match.
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
 | `dashboard_queries/_basic_fetchers.py` | `*_FACT_COLUMNS` + `fetch_*_for_facts` (narrow reads for list/fact paths), `fetch_signal_totals`, `fetch_index_status_counts`, `fetch_catalog_meta_metrics` (SQL rollups for the dashboard) |
 | `backend/app/db.py`                   | `open_db_connection`; schema migration + `apply_runtime_settings` run **once per DB path**, not per connection |
+| `shopifyseo/cutover/`                 | Plan 8 cutover helpers (`sqlite_pre_fix`, verify, identity resync, `pg_to_sqlite_delta`). Invoked by `scripts/pg_cutover.sh`; never sets live `DATABASE_URL`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `shopifyseo/db/`                      | SQLite/Postgres portability: `execute`, `insert_returning_id`, `write_tx` (SQLite immediate write lock; Postgres `BEGIN` + optional `pg_advisory_xact_lock` / `FOR UPDATE`), `group_concat`, `like_ci`, `order_ci`, `order_inserted`, `on_conflict_do_nothing` / `on_conflict_do_update`, schema helpers (`table_exists` / `table_columns` / `table_ddl`), timestamp parity (`now_text` / `now_text_sql` / `now_epoch` / `as_epoch_seconds` / `nullif_empty` / `empty_to_null`; Postgres session `timezone=UTC`; `CURRENT_TIMESTAMP` rewritten to naive UTC `YYYY-MM-DD HH:MM:SS` text on PG only), mapped `IntegrityError` / `LockError` / `OperationalError` (`map_exception`, `is_*`). Dashboard store/queries/actions, backend services/routers, internal_links, catalog_sync, dashboard_google, dashboard_ai_engine_parts, embedding_store, and app-DB scripts use `DictRow` + `Any` connections (not `sqlite3.Row` / `sqlite3.Connection`). `shopifyseo/sqlite_retry.py` retries SQLite lock errors and PG SQLSTATEs 40001/40P01/55P03. Live stays on SQLite while `DATABASE_URL` is unset. |
 
 
@@ -835,6 +836,10 @@ which rows match.
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
 | `dev-restart-local.sh`              | Developer convenience — restart local dev server / Vite build                             |
 | `run_serp_competitors_from_seeds.py` | CLI runner for DataForSEO SERP-based competitor discovery from seed keywords             |
+| `pg_cutover.sh`                     | Plan 8 cutover runner (backup → pgloader → fixups → NOT VALID FKs → sequences → ANALYZE → verify). Does **not** set live `DATABASE_URL` or restart uvicorn. See [docs/pg-cutover.md](docs/pg-cutover.md) |
+| `pg_to_sqlite_delta.py`             | Plan 8 rollback helper: export PG rows newer than `cutover_mark.json` onto a SQLite **copy** (refuses the live catalog by default) |
+| `ensure-postgres.sh`                | Optional box-level PG17 + pgvector install. **Not** on the live app start path |
+| `pg_cutover/`                       | pgloader load file, `post_load_*.sql`, verify/resync CLIs, `pg_env.example` (no secrets) |
 
 
 ---
@@ -971,6 +976,7 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |
 | `DATABASE_URL`                                        | Production backend switch. Unset/empty = SQLite (live default until cutover). `postgresql://` / `postgres://` = Postgres via `shopifyseo.db.connect()`. Not set in CI. |
 | `TEST_DATABASE_URL`                                   | Pytest dual-backend fixture (`tests/conftest.py`). Unset = SQLite temp files. Postgres URL = `testdb` / `db_conn` / `pg_conn` via `shopifyseo.db.get_connection` (UTC + timestamp parity). CI `backend-postgres` uses image `pgvector/pgvector:pg17` (PG17 + `vector`), db `shopifyseo_test`. Box operators: test cluster on **127.0.0.1:5433**, db `shopifyseo_test` — see `tests/README.md`. |
+| `CUTOVER_DATABASE_URL` / `PG*`                        | CoS-owned cutover tooling only (`scripts/pg_cutover.sh`, sourced from `/home/box/.config/shopifyseo/pg.env` at run time). **Not** the live app switch. Never commit `pg.env`. See [docs/pg-cutover.md](docs/pg-cutover.md). |
 
 ---
 

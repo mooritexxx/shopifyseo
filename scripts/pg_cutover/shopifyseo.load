@@ -1,0 +1,40 @@
+-- pgloader command file for the ShopifySEO catalog.
+-- Placeholders __SQLITE_URI__ and __POSTGRES_URI__ are substituted by
+-- scripts/pg_cutover.sh. Do not put passwords in this file.
+--
+-- Foreign keys are omitted here so cluster_keywords orphans (and any other
+-- leftover SQLite FK gaps) can load. post_load_constraints.sql adds FKs as
+-- NOT VALID. Sequences are reset again after load via shopifyseo.cutover.
+
+LOAD DATABASE
+    FROM __SQLITE_URI__
+    INTO __POSTGRES_URI__
+
+WITH include drop, create tables, create indexes, reset sequences,
+     no foreign keys,
+     workers = 4, concurrency = 1,
+     multiple readers per thread, rows per range = 50000
+
+SET PostgreSQL PARAMETERS
+    maintenance_work_mem to '256MB',
+    work_mem to '32MB'
+
+CAST type integer to bigint drop typemod,
+     type tinyint to smallint drop typemod,
+     type smallint to smallint drop typemod,
+     type bigint to bigint drop typemod,
+     type float to double precision drop typemod,
+     type real to double precision drop typemod,
+     type double to double precision drop typemod,
+     type numeric to numeric drop typemod,
+     type text to text drop typemod,
+     type varchar to text drop typemod,
+     type blob to bytea drop typemod,
+     type clob to text drop typemod,
+     column keyword_metrics.updated_at to bigint using empty-string-to-null
+
+EXCLUDING TABLE NAMES MATCHING ~/sqlite_/, ~/sqlite_sequence/
+
+BEFORE LOAD DO
+    $$ CREATE EXTENSION IF NOT EXISTS vector; $$
+;

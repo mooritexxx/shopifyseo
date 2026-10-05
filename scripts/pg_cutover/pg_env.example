@@ -1,0 +1,28 @@
+# CoS-owned cutover secrets. Copy outside the repo, never commit.
+# Suggested path: /home/box/.config/shopifyseo/pg.env
+# chmod 600
+#
+# scripts/pg_cutover.sh sources this file into ITS OWN process only.
+# Do NOT source this file before ./start_app.sh or uvicorn.
+# This file must NOT be required to contain DATABASE_URL. Live uvicorn
+# stays on SQLite until Salar approves the production switch.
+
+# libpq / psql (used by pgloader, psql, and the Python verifiers)
+PGHOST=127.0.0.1
+PGPORT=5432
+PGUSER=shopifyseo
+# PGPASSWORD=
+PGDATABASE=shopifyseo_cutover_dryrun
+
+# Full URL for Python helpers (psycopg). Prefer this over DATABASE_URL so a
+# later `source pg.env` cannot flip the live app.
+CUTOVER_DATABASE_URL=postgresql://shopifyseo@127.0.0.1:5432/shopifyseo_cutover_dryrun
+
+# SQLite catalog to copy and load FROM (read-only for the live file).
+# SQLITE_PATH=/var/lib/shopifyseo/shopify_catalog.sqlite3
+
+# Database name used by --apply-load (still does not set live DATABASE_URL).
+# CUTOVER_LIVE_DATABASE=shopifyseo
+
+# Optional pgloader binary
+# PGLOADER=pgloader

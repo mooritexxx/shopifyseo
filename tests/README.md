@@ -94,10 +94,11 @@ application tests onto the shared fixtures so they hit Postgres when
 `testdb` Postgres connections rewrite SQLite-shaped SQL (`?`, `executescript`,
 AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `REAL`→`DOUBLE PRECISION`,
 `INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`→plan-6
-`PG_NOW_TEXT_SQL`, `last_insert_rowid()`→`lastval()`, `PRAGMA table_info`)
-so those tests hit Postgres while `DATABASE_URL` stays unset. Helpers such as
-`table_columns` / `insert_returning_id` use `backend_for_connection(conn)`
-rather than `DATABASE_URL`.
+`PG_NOW_TEXT_SQL`, `last_insert_rowid()`→`lastval()`, two-arg `ROUND(x, n)`→
+`ROUND((x)::numeric, n)`, `PRAGMA table_info`) so those tests hit Postgres
+while `DATABASE_URL` stays unset. Helpers such as `table_columns` /
+`insert_returning_id` / `order_ci` / `order_inserted` use
+`backend_for_connection(conn)` rather than `DATABASE_URL`.
 
 Team-task `RAISE(ABORT)` append-only triggers are skipped by the testdb
 Postgres adapter (not valid PG); the matching test skips on Postgres.

@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.db import open_db_connection
-from shopifyseo.db import LOCK_RANK_JOBS, order_inserted, write_tx
+from shopifyseo.db import LOCK_RANK_JOBS, backend_for_connection, order_inserted, write_tx
 from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankCancelled, RankError, check_term,
                                           clean_url, is_target, remaining_credits, url_identity)
 
@@ -103,7 +103,7 @@ def list_rankings(conn):
     # (schema migration is out of scope), so equal created_at ties break on
     # uuid lexicographic order, not insertion order.
     job = conn.execute(
-        f'SELECT * FROM rank_jobs ORDER BY created_at DESC,{order_inserted()} DESC LIMIT 1'
+        f'SELECT * FROM rank_jobs ORDER BY created_at DESC,{order_inserted(backend=backend_for_connection(conn))} DESC LIMIT 1'
     ).fetchone()
     return dict(items=items, profile=PROFILE, **usage(conn), job=dict(job) if job else None)
 

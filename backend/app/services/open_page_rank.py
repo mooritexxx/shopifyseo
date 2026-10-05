@@ -13,8 +13,8 @@ to synthesize one — unknown keyword difficulty stays unknown (see
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
+from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_http import HttpRequestError, request_json
@@ -31,7 +31,7 @@ OPR_BATCH_SIZE = 100
 OPR_BATCH_DELAY_SEC = 1.1
 
 
-def get_open_page_rank_key(conn: sqlite3.Connection) -> str:
+def get_open_page_rank_key(conn: Any) -> str:
     return (get_service_setting(conn, OPR_SETTING_KEY) or "").strip()
 
 
@@ -122,7 +122,7 @@ def _raise_opr_http_error(status: int | None, body: str) -> None:
     raise RuntimeError(f"Open PageRank HTTP error ({status or '?'}): {body}") from None
 
 
-def resolve_site_domain(conn: sqlite3.Connection) -> str:
+def resolve_site_domain(conn: Any) -> str:
     """Storefront domain to score: the custom domain, else the myshopify host."""
     for key in ("store_custom_domain", "shopify_shop"):
         raw = (get_service_setting(conn, key) or "").strip().lower()
@@ -208,7 +208,7 @@ def fetch_site_authority(api_key: str, domain: str) -> dict:
     }
 
 
-def refresh_site_authority(conn: sqlite3.Connection) -> dict:
+def refresh_site_authority(conn: Any) -> dict:
     """Fetch and persist the storefront's own authority plus monthly history."""
     api_key = get_open_page_rank_key(conn)
     if not api_key:
@@ -259,7 +259,7 @@ def refresh_site_authority(conn: sqlite3.Connection) -> dict:
     return load_site_authority(conn)
 
 
-def load_site_authority(conn: sqlite3.Connection) -> dict:
+def load_site_authority(conn: Any) -> dict:
     """Read the stored storefront authority snapshot + history for the dashboard."""
     domain = resolve_site_domain(conn)
     if not domain:
@@ -293,7 +293,7 @@ def load_site_authority(conn: sqlite3.Connection) -> dict:
     }
 
 
-def competitor_authority_benchmark(conn: sqlite3.Connection) -> dict:
+def competitor_authority_benchmark(conn: Any) -> dict:
     """Scored-competitor context so the dashboard card is useful before indexing."""
     row = conn.execute(
         """
@@ -315,7 +315,7 @@ def competitor_authority_benchmark(conn: sqlite3.Connection) -> dict:
     }
 
 
-def refresh_competitor_authority(conn: sqlite3.Connection) -> dict:
+def refresh_competitor_authority(conn: Any) -> dict:
     """Fetch Open PageRank authority for every competitor domain and store it.
 
     Returns ``{"checked": n, "scored": n, "unknown": n}``. Domains absent from the

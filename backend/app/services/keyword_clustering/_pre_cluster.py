@@ -22,7 +22,7 @@ Strategy:
 from __future__ import annotations
 
 import logging
-import sqlite3
+from typing import Any
 
 from ._dedupe import _UnionFind
 from ._helpers import _group_by_parent_topic
@@ -35,7 +35,7 @@ DEFAULT_MERGE_THRESHOLD = 0.7
 
 def pre_cluster(
     canonicals: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     assign_threshold: float = DEFAULT_ASSIGN_THRESHOLD,
     merge_threshold: float = DEFAULT_MERGE_THRESHOLD,

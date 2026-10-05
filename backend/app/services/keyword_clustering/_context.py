@@ -1,5 +1,5 @@
 """Cluster context lookup — format matched clusters for LLM prompts."""
-import sqlite3
+from typing import Any
 
 _MIN_VENDOR_LENGTH = 3
 
@@ -97,7 +97,7 @@ def _format_cluster_context(
 
 
 def _find_clusters_for_product(
-    conn: sqlite3.Connection,
+    conn: Any,
     product_handle: str,
     product_vendor: str,
     clusters_data: dict,
@@ -202,7 +202,7 @@ def _get_matched_cluster_keywords(
     target_data: dict,
     object_type: str,
     handle: str,
-    conn: sqlite3.Connection | None = None,
+    conn: Any | None = None,
     vendor: str = "",
 ) -> tuple[str | None, list[str], str, dict[str, dict]]:
     """Load cluster context and return raw keyword data alongside the formatted string.

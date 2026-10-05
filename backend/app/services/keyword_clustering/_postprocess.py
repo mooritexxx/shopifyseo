@@ -23,7 +23,6 @@ Enhanced behavior (2026-09):
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting
@@ -46,7 +45,7 @@ SAME_ENTITY_ROLE_MERGE_THRESHOLD = 0.65
 SAME_ENTITY_FOLD_THRESHOLD = 0.60
 
 
-def _resolve_threshold(conn: sqlite3.Connection, key: str, default: float) -> float:
+def _resolve_threshold(conn: Any, key: str, default: float) -> float:
     raw = get_service_setting(conn, key, "")
     if not raw:
         return default
@@ -112,7 +111,7 @@ def _same_entity_and_role(
     return left_entity == right_entity and left_role == right_role
 
 
-def _load_primary_vectors(clusters: list[dict], conn: sqlite3.Connection):
+def _load_primary_vectors(clusters: list[dict], conn: Any):
     """Return (numpy_module, list[vec | None]) keyed positionally to clusters.
 
     Returns (None, None) if numpy or the embeddings table is unavailable.
@@ -164,7 +163,7 @@ def _merge_two(winner: dict, loser: dict, keywords_map: dict[str, dict]) -> dict
 
 def merge_similar_clusters(
     clusters: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     keywords_map: dict[str, dict],
     *,
     threshold: float | None = None,
@@ -260,7 +259,7 @@ def merge_similar_clusters(
 
 def fold_singletons(
     clusters: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     keywords_map: dict[str, dict],
     *,
     threshold: float | None = None,

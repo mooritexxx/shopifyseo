@@ -11,8 +11,6 @@ import logging
 import time
 from typing import Any, Callable
 
-import sqlite3
-
 from backend.app.services.google_ads_lab_service import invoke_keyword_planning_rpc
 from shopifyseo.market_context import get_primary_country_code
 
@@ -55,7 +53,7 @@ _PLANNER_BATCH_SIZE = 2000
 _PLANNER_QPS_DELAY_SEC = 1.15
 
 
-def _geo_target_constants(conn: sqlite3.Connection) -> list[str]:
+def _geo_target_constants(conn: Any) -> list[str]:
     iso = (get_primary_country_code(conn) or "CA").strip().upper()
     crit = _GEO_CRITERION_ID_BY_COUNTRY.get(iso, "2124")
     return [f"geoTargetConstants/{crit}"]
@@ -90,7 +88,7 @@ def _parse_planner_row(row: dict[str, Any]) -> tuple[str, int | None, str | None
 
 
 def refresh_google_ads_planner_metrics(
-    conn: sqlite3.Connection,
+    conn: Any,
     keywords: list[str],
     *,
     on_progress: Callable[[str], None] | None = None,

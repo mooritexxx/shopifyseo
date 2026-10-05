@@ -15,6 +15,7 @@ Migration plan:
 - PR4: portable SQL (ON CONFLICT, insert_returning_id, dialect helpers)
 - PR5: write_tx / lock retry (BEGIN IMMEDIATE sites removed from app code)
 - PR6a: dashboard type/dialect cleanup (schema helpers replace PRAGMA / sqlite_master)
+- PR6b: backend services/routers type/dialect cleanup (schema helpers replace PRAGMA)
 - Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
@@ -41,9 +42,9 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "backend/app/services/keyword_clustering/_context.py": 1,
     "backend/app/services/keyword_clustering/_crud.py": 14,
     "backend/app/services/keyword_clustering/_gaps.py": 6,
-    "backend/app/services/keyword_clustering/_generation.py": 6,
+    "backend/app/services/keyword_clustering/_generation.py": 5,
     "backend/app/services/keyword_clustering/_planning.py": 3,
-    "backend/app/services/keyword_clustering/_storage.py": 10,
+    "backend/app/services/keyword_clustering/_storage.py": 8,
     "backend/app/services/keyword_clustering/_store_fit.py": 1,
     "backend/app/services/keyword_research/competitor_blocklist.py": 3,
     "backend/app/services/keyword_research/keyword_db.py": 20,

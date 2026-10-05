@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
 import shopifyseo.dashboard_ai as dai
@@ -40,7 +39,7 @@ def _normalize_settings_override(overrides: dict[str, Any] | None) -> dict[str, 
     return out
 
 
-def _shopify_runtime_ready(conn: sqlite3.Connection) -> bool:
+def _shopify_runtime_ready(conn: Any) -> bool:
     """True when Admin API credentials and shop hostname are available (DB or env)."""
     shop, _ = runtime_setting(conn, "SHOPIFY_SHOP", "shopify_shop")
     cid, _ = runtime_setting(conn, "SHOPIFY_CLIENT_ID", "shopify_client_id")
@@ -48,7 +47,7 @@ def _shopify_runtime_ready(conn: sqlite3.Connection) -> bool:
     return bool(shop.strip() and cid.strip() and csec.strip())
 
 
-def get_sync_scope_readiness(conn: sqlite3.Connection) -> dict[str, bool]:
+def get_sync_scope_readiness(conn: Any) -> dict[str, bool]:
     """Which sync pipeline steps can run given current credentials and OAuth state."""
     shopify_ok = _shopify_runtime_ready(conn)
     google_ok = dg.google_configured() and bool(dg.get_service_token(conn, "search_console"))

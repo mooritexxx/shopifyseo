@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -55,7 +54,7 @@ def _as_int_dim(v: Any) -> int | None:
     return i if i > 0 else None
 
 
-def _featured_url_by_product(conn: sqlite3.Connection) -> dict[str, str]:
+def _featured_url_by_product(conn: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     for row in conn.execute(
         "SELECT shopify_id, featured_image_json FROM products WHERE featured_image_json IS NOT NULL AND featured_image_json != ''"
@@ -70,7 +69,7 @@ def _featured_url_by_product(conn: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
-def _variants_by_product(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str, str]]]:
+def _variants_by_product(conn: Any) -> dict[str, list[tuple[str, str, str]]]:
     m: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
     for row in conn.execute(
         "SELECT product_shopify_id, shopify_id, title, image_json FROM product_variants WHERE image_json IS NOT NULL AND image_json != ''"
@@ -117,7 +116,7 @@ def _role_and_variants(
 
 
 def _product_gallery_norm_urls(
-    conn: sqlite3.Connection,
+    conn: Any,
     product_id: str,
     featured_by_product: dict[str, str],
 ) -> set[str]:
@@ -374,7 +373,7 @@ def list_catalog_image_seo_rows(
 
 
 def _list_catalog_image_seo_rows_impl(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     limit: int = 50,
     offset: int = 0,

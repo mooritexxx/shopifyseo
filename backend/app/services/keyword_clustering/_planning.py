@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import sqlite3
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -190,7 +189,7 @@ def _collection_entity_candidate(title: str) -> str:
     return first
 
 
-def load_entity_rules(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def load_entity_rules(conn: Any) -> list[dict[str, Any]]:
     """Build brand/entity aliases from static known terms plus Shopify catalog data."""
     rules: dict[str, dict[str, Any]] = {}
 
@@ -391,7 +390,7 @@ def clusters_can_merge(
 
 def partition_keywords_for_generation(
     keywords: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     max_bucket_size: int = 60,
 ) -> tuple[list[list[dict]], list[dict[str, Any]]]:
@@ -474,7 +473,7 @@ def cluster_profile(
     keywords_map: dict[str, dict],
     entity_rules: list[dict[str, Any]],
     *,
-    conn: sqlite3.Connection | None,
+    conn: Any | None,
 ) -> dict[str, Any]:
     profiles = _cluster_profiles(cluster, keywords_map, entity_rules)
     if not profiles:
@@ -543,7 +542,7 @@ def cluster_profile(
     }
 
 
-def _cannibalization_risk(conn: sqlite3.Connection | None, keywords: list[str]) -> str:
+def _cannibalization_risk(conn: Any | None, keywords: list[str]) -> str:
     if conn is None or not keywords:
         return "none"
     pages: Counter[tuple[str, str]] = Counter()
@@ -669,7 +668,7 @@ def _build_content_brief(cluster: dict, profile: dict[str, Any], tiers: dict[str
 
 def enrich_cluster_for_content(
     cluster: dict,
-    conn: sqlite3.Connection,
+    conn: Any,
     keywords_map: dict[str, dict],
     entity_rules: list[dict[str, Any]],
     *,
@@ -818,7 +817,7 @@ def _split_cluster(cluster: dict, keywords_map: dict[str, dict], entity_rules: l
 
 def repair_and_enrich_clusters(
     clusters: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     keywords_map: dict[str, dict],
 ) -> list[dict]:
     """Split unsafe clusters and attach content-generation metadata."""

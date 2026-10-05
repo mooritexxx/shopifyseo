@@ -7,9 +7,8 @@ DataForSEO when metrics are ingested; column name is historical.
 import concurrent.futures
 import json
 import logging
-import sqlite3
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from backend.app.services.keyword_research.keyword_db import (
     load_approved_keywords,
@@ -21,7 +20,7 @@ from shopifyseo.dashboard_ai_engine_parts.generation import (
     ai_settings,
 )
 from shopifyseo.dashboard_google import get_service_setting
-from shopifyseo.db import insert_returning_id
+from shopifyseo.db import insert_returning_id, table_columns
 
 from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
@@ -102,7 +101,7 @@ MATCHING_SCHEMA = {
 }
 
 
-def _load_keyword_vector_lookup(conn: sqlite3.Connection):
+def _load_keyword_vector_lookup(conn: Any):
     """Load normalized keyword embedding vectors, or return an empty lookup."""
     try:
         import numpy as np
@@ -191,7 +190,7 @@ def _bucket_to_prompt(bucket: list[dict], country_name: str) -> tuple[str, str]:
 
 
 def _match_clusters_to_pages(
-    conn: sqlite3.Connection,
+    conn: Any,
     clusters: list[dict],
     settings: dict,
 ) -> list[dict]:
@@ -310,7 +309,7 @@ def _match_clusters_to_pages(
 
 
 def generate_clusters(
-    conn: sqlite3.Connection,
+    conn: Any,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Generate keyword clusters from approved target keywords using LLM."""
@@ -486,7 +485,7 @@ def generate_clusters(
     # 8. Save to DB
     generated_at = datetime.now(timezone.utc).isoformat()
     conn.execute("DELETE FROM clusters")  # CASCADE deletes cluster_keywords
-    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    cluster_cols = table_columns(conn, "clusters")
     for cluster in clusters:
         sm = cluster.get("suggested_match")
         match_type = sm.get("match_type") if sm else None

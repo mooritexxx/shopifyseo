@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import date, timedelta
 from typing import Any
 
@@ -188,7 +187,7 @@ def serialize_opportunity(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _attach_gsc_segment_flags(conn: sqlite3.Connection, object_type: str, items: list[dict[str, Any]]) -> None:
+def _attach_gsc_segment_flags(conn: Any, object_type: str, items: list[dict[str, Any]]) -> None:
     if not items:
         return
     keys = [(object_type, it["handle"]) for it in items]
@@ -254,7 +253,7 @@ def get_object_inspection_link(object_type: str, handle: str) -> tuple[bool, str
 
 
 def _signal_cards_for(
-    conn: sqlite3.Connection,
+    conn: Any,
     kind: str,
     current: dict[str, Any],
     *,

@@ -68,7 +68,7 @@ PYTHONPATH=. python -m pytest tests/ -q
 cd frontend && npm test
 ```
 
-CI (`backend-smoke`) runs the full `tests/` tree against **SQLite** (`TEST_DATABASE_URL` unset). `backend-postgres` runs the same tree with `TEST_DATABASE_URL` pointing at a **`pgvector/pgvector:pg17`** service (PG17 + `vector`). Dual-backend fixtures are documented in [`tests/README.md`](tests/README.md). Do not set live `DATABASE_URL` for tests; leftover `sqlite3.connect` sites (plan 7c–d) still expect SQLite temp files.
+CI (`backend-smoke`) runs the full `tests/` tree against **SQLite** (`TEST_DATABASE_URL` unset). `backend-postgres` runs the same tree with `TEST_DATABASE_URL` pointing at a **`pgvector/pgvector:pg17`** service (PG17 + `vector`). Dual-backend fixtures are documented in [`tests/README.md`](tests/README.md). Do not set live `DATABASE_URL` for tests; leftover `sqlite3.connect` sites (plan 7d) still expect SQLite temp files.
 
 Box operators who want a local Postgres test cluster should use port **5433** and database `shopifyseo_test` (keep 5432 for the live cluster). See `tests/README.md`.
 

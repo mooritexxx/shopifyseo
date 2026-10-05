@@ -1,6 +1,5 @@
 """Unit tests for embedding_store — embed, store, retrieve, prune round-trip."""
 
-import sqlite3
 import struct
 from unittest.mock import patch, MagicMock
 
@@ -31,10 +30,10 @@ from shopifyseo.embedding_store import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_conn(path: str = ":memory:") -> sqlite3.Connection:
-    """SQLite (in-memory by default) with all required tables."""
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
+def _make_conn(source):
+    """Seed testdb with all required embedding tables."""
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     conn.execute("""
         CREATE TABLE embeddings (
             object_type TEXT NOT NULL,
@@ -157,8 +156,8 @@ class TestHelpers:
 
 
 class TestBuildGscQueriesText:
-    def test_includes_catalog_title_and_path(self):
-        conn = _make_conn()
+    def test_includes_catalog_title_and_path(self, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, seo_title, seo_description, description_html, tags_json, status) "
             "VALUES ('1', 'p1', 'Super Vape', '', '', '', '[]', 'ACTIVE')",
@@ -175,8 +174,8 @@ class TestBuildGscQueriesText:
 
 
 class TestBuildEmbedText:
-    def test_product(self):
-        conn = _make_conn()
+    def test_product(self, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, seo_title, seo_description, description_html, tags_json, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -190,8 +189,8 @@ class TestBuildEmbedText:
         assert "SEO A" in text
         assert "Body A" in text
 
-    def test_page(self):
-        conn = _make_conn()
+    def test_page(self, db_conn):
+        conn = _make_conn(db_conn)
         row = {"title": "Page T", "seo_title": "SEO T", "seo_description": "Desc T", "body": "<p>Page body</p>"}
         text = build_embed_text("page", row)
         assert "Page T" in text
@@ -230,8 +229,8 @@ class TestDedupByHandle:
 
 
 class TestPrune:
-    def test_prunes_orphan_products(self):
-        conn = _make_conn()
+    def test_prunes_orphan_products(self, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('exists', 'P', 'ACTIVE')")
         _insert_embedding(conn, "product", "exists")
         _insert_embedding(conn, "product", "gone")
@@ -245,8 +244,8 @@ class TestPrune:
 
 
 class TestRetrieveRelatedByHandle:
-    def test_returns_similar(self):
-        conn = _make_conn()
+    def test_returns_similar(self, db_conn):
+        conn = _make_conn(db_conn)
         base_vec = np.random.randn(EMBEDDING_DIMS).astype(np.float32)
         base_vec /= np.linalg.norm(base_vec)
         _insert_embedding(conn, "product", "query-prod", base_vec)
@@ -261,15 +260,15 @@ class TestRetrieveRelatedByHandle:
         assert len(results) >= 1
         assert results[0]["object_handle"] == "similar-prod"
 
-    def test_returns_empty_when_no_embedding(self):
-        conn = _make_conn()
+    def test_returns_empty_when_no_embedding(self, db_conn):
+        conn = _make_conn(db_conn)
         results = retrieve_related_by_handle(conn, "product", "nonexistent", top_k=5)
         assert results == []
 
 
 class TestFindSemanticKeywordMatches:
-    def test_finds_keywords(self):
-        conn = _make_conn()
+    def test_finds_keywords(self, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute(
             "INSERT INTO keyword_metrics (keyword, parent_topic, intent, volume, difficulty, status) VALUES (?, ?, ?, ?, ?, ?)",
             ("disposable vape", "vaping", "commercial", 5000, 30, "approved"),
@@ -290,8 +289,8 @@ class TestFindSemanticKeywordMatches:
 
 class TestSyncEmbeddings:
     @patch("shopifyseo.embedding_store.embed_batch")
-    def test_sync_products_calls_api(self, mock_embed):
-        conn = _make_conn()
+    def test_sync_products_calls_api(self, mock_embed, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, seo_title, seo_description, description_html, tags_json, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -308,8 +307,8 @@ class TestSyncEmbeddings:
         mock_embed.assert_called_once()
 
     @patch("shopifyseo.embedding_store.embed_batch")
-    def test_sync_skips_unchanged(self, mock_embed):
-        conn = _make_conn()
+    def test_sync_skips_unchanged(self, mock_embed, db_conn):
+        conn = _make_conn(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, seo_title, seo_description, description_html, tags_json, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -329,17 +328,16 @@ class TestSyncEmbeddings:
         assert result["embedded"] == 0
         mock_embed.assert_not_called()
 
-    def test_sync_no_api_key(self):
-        conn = _make_conn()
+    def test_sync_no_api_key(self, db_conn):
+        conn = _make_conn(db_conn)
         result = sync_embeddings(conn, object_type="product")
         assert result.get("reason") == "no_api_key"
         assert result["embedded"] == 0
 
-    def test_commits_stale_chunk_delete_when_nothing_new_to_embed(self, tmp_path):
+    def test_commits_stale_chunk_delete_when_nothing_new_to_embed(self, testdb):
         """A shrunk object (fewer chunks than before) must durably lose its trailing
         chunks even when the surviving chunks are unchanged and nothing gets embedded."""
-        db_path = str(tmp_path / "embeddings_commit.sqlite3")
-        conn = _make_conn(db_path)
+        conn = _make_conn(testdb)
         conn.execute(
             "INSERT INTO blog_articles (handle, blog_handle, title, seo_title, seo_description, body) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -368,7 +366,7 @@ class TestSyncEmbeddings:
         assert result["skipped"] == len(surviving)
         conn.close()
 
-        reconn = sqlite3.connect(db_path)
+        reconn = testdb.connect()
         remaining = [
             r[0]
             for r in reconn.execute(
@@ -382,8 +380,8 @@ class TestSyncEmbeddings:
 
 
 class TestCannibalization:
-    def test_finds_similar_pages(self):
-        conn = _make_conn()
+    def test_finds_similar_pages(self, db_conn):
+        conn = _make_conn(db_conn)
         base_vec = np.random.randn(EMBEDDING_DIMS).astype(np.float32)
         base_vec /= np.linalg.norm(base_vec)
 
@@ -395,8 +393,8 @@ class TestCannibalization:
         assert len(results) >= 1
         assert results[0]["content_similarity"] > 0.5
 
-    def test_no_candidates_below_threshold(self):
-        conn = _make_conn()
+    def test_no_candidates_below_threshold(self, db_conn):
+        conn = _make_conn(db_conn)
         _insert_embedding(conn, "product", "prod-a", np.random.randn(EMBEDDING_DIMS).astype(np.float32))
         _insert_embedding(conn, "product", "prod-b", np.random.randn(EMBEDDING_DIMS).astype(np.float32))
         results = find_cannibalization_candidates(conn, threshold=0.99)
@@ -406,9 +404,9 @@ class TestCannibalization:
 class TestEmbeddingStatus:
     """Test embedding_status() coverage calculations."""
 
-    def test_coverage_capped_at_100_percent(self):
+    def test_coverage_capped_at_100_percent(self, db_conn):
         """When embedded > source (orphans exist), coverage must not exceed 100%."""
-        conn = _make_conn()
+        conn = _make_conn(db_conn)
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
         conn.commit()
@@ -424,9 +422,9 @@ class TestEmbeddingStatus:
         assert product_type["source_objects"] == 2
         assert product_type["coverage_pct"] == 100.0
 
-    def test_coverage_normal_case(self):
+    def test_coverage_normal_case(self, db_conn):
         """Normal case where embedded <= source."""
-        conn = _make_conn()
+        conn = _make_conn(db_conn)
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('p1', 'P1', 'ACTIVE')")
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('p2', 'P2', 'ACTIVE')")
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('p3', 'P3', 'ACTIVE')")
@@ -441,9 +439,9 @@ class TestEmbeddingStatus:
         assert product_type["source_objects"] == 4
         assert product_type["coverage_pct"] == 50.0
 
-    def test_coverage_zero_source(self):
+    def test_coverage_zero_source(self, db_conn):
         """Coverage is 0 when source is empty."""
-        conn = _make_conn()
+        conn = _make_conn(db_conn)
         _insert_embedding(conn, "product", "orphan")
 
         status = embedding_status(conn)
@@ -452,9 +450,9 @@ class TestEmbeddingStatus:
         assert product_type["source_objects"] == 0
         assert product_type["coverage_pct"] == 0.0
 
-    def test_prune_reduces_orphans_before_status(self):
+    def test_prune_reduces_orphans_before_status(self, db_conn):
         """Verify prune removes orphans so coverage stays accurate after sync."""
-        conn = _make_conn()
+        conn = _make_conn(db_conn)
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('exists', 'P', 'ACTIVE')")
         conn.commit()
         _insert_embedding(conn, "product", "exists")

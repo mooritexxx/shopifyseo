@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from shopifyseo.db import Backend, NOW_TEXT_PATTERN, get_connection, table_columns, table_exists
-from db_support import make_testdb, postgres_test_url, resolve_backend
+from shopifyseo.db import Backend, NOW_TEXT_PATTERN, PG_NOW_TEXT_SQL, get_connection, table_columns, table_exists
+from db_support import make_testdb, postgres_test_url, resolve_backend, rewrite_sqlite_ddl_for_postgres
 
 
 class TestPostgresTestUrlHelper:
@@ -180,6 +180,43 @@ class TestDbConnFixture:
         db_conn.commit()
         rows = db_conn.execute("SELECT val FROM many_probe ORDER BY id").fetchall()
         assert [r["val"] for r in rows] == ["a", "b"]
+
+    def test_datetime_now_rewrites_to_plan6_now_text(self) -> None:
+        out = rewrite_sqlite_ddl_for_postgres(
+            "INSERT INTO t (ts) VALUES (datetime('now'))"
+        )
+        assert "datetime" not in out.lower()
+        assert "CURRENT_TIMESTAMP" not in out
+        assert PG_NOW_TEXT_SQL in out
+
+    def test_insert_or_replace_and_datetime_now(self, testdb, db_conn) -> None:
+        db_conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
+        db_conn.execute(
+            "INSERT OR REPLACE INTO service_settings (key, value) VALUES ('k', 'v1')"
+        )
+        db_conn.execute(
+            "INSERT OR REPLACE INTO service_settings (key, value) VALUES ('k', 'v2')"
+        )
+        db_conn.execute(
+            "INSERT INTO service_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+            ("ts", "1"),
+        )
+        db_conn.commit()
+        assert db_conn.execute("SELECT value FROM service_settings WHERE key = 'k'").fetchone()[0] == "v2"
+        ts = db_conn.execute("SELECT updated_at FROM service_settings WHERE key = 'ts'").fetchone()[0]
+        assert NOW_TEXT_PATTERN.match(ts)
+
+    def test_real_scores_round_trip(self, testdb, db_conn) -> None:
+        db_conn.execute("CREATE TABLE score_probe (id INTEGER PRIMARY KEY, score REAL)")
+        db_conn.executemany(
+            "INSERT INTO score_probe (id, score) VALUES (?, ?)",
+            [(1, 100), (2, 99), (3, 99)],
+        )
+        db_conn.commit()
+        rows = db_conn.execute(
+            "SELECT id FROM score_probe ORDER BY score DESC, id ASC"
+        ).fetchall()
+        assert [r[0] for r in rows] == [1, 2, 3]
 
     def test_blob_and_wide_integer_ddl(self, testdb, db_conn) -> None:
         db_conn.execute(

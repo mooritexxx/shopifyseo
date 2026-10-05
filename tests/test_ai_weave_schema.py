@@ -221,9 +221,9 @@ class TestOtherProvidersSamePayload:
 class TestGenerateAiAnchorDefaultPath:
     """Regression tests through generate_ai_anchor without injecting call_ai_fn."""
 
-    def test_accepted_reply_with_empty_fields(self):
+    def test_accepted_reply_with_empty_fields(self, db_conn):
         """Accepted reply with fence and empty insert_sentence/insert_after_text."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify(OLD + '<p>New live text.</p>')
         conn.execute("UPDATE link_suggestions SET kind='ai_woven'")
         conn.commit()
@@ -260,9 +260,9 @@ class TestGenerateAiAnchorDefaultPath:
         db_body = conn.execute("SELECT description_html FROM products WHERE handle='source'").fetchone()[0]
         assert db_body == OLD
 
-    def test_extra_url_key_still_blocked(self):
+    def test_extra_url_key_still_blocked(self, db_conn):
         """Probe reply with extra `url` key is still rejected."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify(OLD)
         conn.execute("UPDATE link_suggestions SET kind='ai_woven'")
         conn.commit()

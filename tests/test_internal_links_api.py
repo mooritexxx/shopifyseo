@@ -1,5 +1,4 @@
 """HTTP contracts, isolated from the real database and all external writes."""
-import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -11,10 +10,10 @@ from shopifyseo.internal_links import shopify_io, ai_weave, pipeline
 
 
 @pytest.fixture
-def api(tmp_path,monkeypatch):
-    path=tmp_path/'api.sqlite'; conn=database(path)
+def api(testdb, monkeypatch):
+    conn=database(testdb)
     def connect():
-        c=sqlite3.connect(path); c.row_factory=sqlite3.Row; return c
+        return testdb.connect()
     monkeypatch.setattr(router,'open_db_connection',connect)
     monkeypatch.setattr(router,'_base_url',lambda _:BASE)
     monkeypatch.setattr(pipeline,'generate_link_suggestions',Mock(return_value=0))

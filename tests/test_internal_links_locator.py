@@ -1,6 +1,5 @@
 """Tests for AI insert locator normalization and error codes."""
 import json
-import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -16,10 +15,10 @@ from shopifyseo.internal_links.safety import LinkConflict, build_edit, _normaliz
 BASE = "https://example.myshopify.com"
 
 
-def make_database(path=":memory:"):
+def make_database(source):
     """Create a test database with ai_woven suggestion."""
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     ensure_dashboard_schema(conn)
     
     conn.execute(
@@ -260,9 +259,8 @@ class TestAiWeaveLocatorErrors:
     """Tests for locator errors through generate_ai_anchor."""
     
     @pytest.fixture
-    def setup(self, tmp_path, monkeypatch):
-        path = tmp_path / "test.sqlite"
-        conn = make_database(path)
+    def setup(self, testdb, monkeypatch):
+        conn = make_database(testdb)
         live = MockShopify()
         
         # Disable actual AI
@@ -338,9 +336,8 @@ class TestApiLocatorErrors:
     """Tests for locator errors through the HTTP API."""
     
     @pytest.fixture
-    def api(self, tmp_path, monkeypatch):
-        path = tmp_path / "api.sqlite"
-        conn = make_database(path)
+    def api(self, testdb, monkeypatch):
+        conn = make_database(testdb)
         
         body = "<p>Actual paragraph content here.</p>"
         conn.execute("UPDATE products SET description_html = ?", (body,))
@@ -349,9 +346,7 @@ class TestApiLocatorErrors:
         live = MockShopify(body)
         
         def connect():
-            c = sqlite3.connect(path, timeout=10)
-            c.row_factory = sqlite3.Row
-            return c
+            return testdb.connect()
         
         monkeypatch.setattr(router, "open_db_connection", connect)
         monkeypatch.setattr(router, "_base_url", lambda _: BASE)

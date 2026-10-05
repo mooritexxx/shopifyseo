@@ -1,5 +1,3 @@
-import hashlib
-import sqlite3
 import pytest
 from internal_links_support import BASE, OLD, Shopify, apply, database
 from shopifyseo.dashboard_store import _migrate_link_suggestions_check_constraint
@@ -7,8 +5,8 @@ from shopifyseo.internal_links.apply import undo_suggestion, reconcile_suggestio
 from shopifyseo.internal_links.safety import LinkConflict, body_hash as _hash_body
 
 
-def test_undo_restores_exact_snapshot_and_local_body():
-    conn=database(); live=Shopify(OLD + '<img src="/x.jpg">')
+def test_undo_restores_exact_snapshot_and_local_body(db_conn):
+    conn=database(db_conn); live=Shopify(OLD + '<img src="/x.jpg">')
     before=live.body
     apply(conn,live)
     result=undo_suggestion(conn,1,BASE,fetch_fn=live.fetch,push_fn=live.push)
@@ -17,8 +15,8 @@ def test_undo_restores_exact_snapshot_and_local_body():
     assert conn.execute('SELECT COUNT(*) FROM internal_links').fetchone()[0]==0
 
 
-def test_undo_blocks_later_edits():
-    conn=database(); live=Shopify(); apply(conn,live)
+def test_undo_blocks_later_edits(db_conn):
+    conn=database(db_conn); live=Shopify(); apply(conn,live)
     live.body += '<p>Newer work.</p>'
     with pytest.raises(LinkConflict,match='newer work'):
         undo_suggestion(conn,1,BASE,fetch_fn=live.fetch,push_fn=live.push)
@@ -26,16 +24,16 @@ def test_undo_blocks_later_edits():
     assert conn.execute('SELECT status FROM link_body_snapshots').fetchone()[0]=='applied'
 
 
-def test_legacy_undo_without_backup_cannot_overwrite_live():
-    conn=database(); live=Shopify()
+def test_legacy_undo_without_backup_cannot_overwrite_live(db_conn):
+    conn=database(db_conn); live=Shopify()
     conn.execute("UPDATE link_suggestions SET status='applied'"); conn.commit()
     with pytest.raises(LinkConflict,match='no backup'):
         undo_suggestion(conn,1,BASE,fetch_fn=live.fetch,push_fn=live.push)
     live.push.assert_not_called()
 
 
-def test_undo_timeout_can_be_reconciled_without_second_write():
-    conn=database(); live=Shopify(); apply(conn,live)
+def test_undo_timeout_can_be_reconciled_without_second_write(db_conn):
+    conn=database(db_conn); live=Shopify(); apply(conn,live)
     def timeout(*args): live._push(*args); raise TimeoutError()
     live.push.side_effect=timeout
     with pytest.raises(TimeoutError): undo_suggestion(conn,1,BASE,fetch_fn=live.fetch,push_fn=live.push)
@@ -44,15 +42,13 @@ def test_undo_timeout_can_be_reconciled_without_second_write():
     assert live.push.call_count==2 and live.body==OLD
 
 
-def _conn_with_old_check_constraint() -> sqlite3.Connection:
-    """Create a DB with the OLD CHECK constraint (without 'undone').
+def _conn_with_old_check_constraint(conn):
+    """Seed a DB with the OLD CHECK constraint (without 'undone').
     
     This simulates a production DB created before PR #24 added the 'undone' status.
     """
     body = '<p>Love <a href="https://s.com/collections/ceramic-tanks">ceramic tanks</a>.</p>'
     body_hash = _hash_body(body)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
     # Use the OLD schema that doesn't include 'undone' in the CHECK
     conn.executescript(
         """
@@ -116,9 +112,11 @@ def _conn_with_old_check_constraint() -> sqlite3.Connection:
     return conn
 
 
-def test_migration_adds_undone_to_check_constraint():
+def test_migration_adds_undone_to_check_constraint(testdb, db_conn):
     """Test that _migrate_link_suggestions_check_constraint correctly updates the CHECK."""
-    conn = _conn_with_old_check_constraint()
+    if testdb.is_postgres:
+        pytest.skip("sqlite_master CHECK rewrite is SQLite-only; Postgres no-ops via backend_for_connection")
+    conn = _conn_with_old_check_constraint(db_conn)
     
     # Verify old schema doesn't have 'undone'
     table_sql = conn.execute(
@@ -149,9 +147,11 @@ def test_migration_adds_undone_to_check_constraint():
     assert idx is not None
 
 
-def test_migration_is_idempotent():
+def test_migration_is_idempotent(testdb, db_conn):
     """Test that running migration multiple times is safe."""
-    conn = _conn_with_old_check_constraint()
+    if testdb.is_postgres:
+        pytest.skip("sqlite_master CHECK rewrite is SQLite-only; Postgres no-ops via backend_for_connection")
+    conn = _conn_with_old_check_constraint(db_conn)
     
     # Run migration first time
     migrated1 = _migrate_link_suggestions_check_constraint(conn)
@@ -166,11 +166,8 @@ def test_migration_is_idempotent():
     assert row is not None
 
 
-def test_migration_skips_when_table_missing():
+def test_migration_skips_when_table_missing(db_conn):
     """Test that migration handles missing table gracefully."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    
-    # No link_suggestions table
-    migrated = _migrate_link_suggestions_check_constraint(conn)
+    # Empty testdb has no link_suggestions table
+    migrated = _migrate_link_suggestions_check_constraint(db_conn)
     assert migrated is False

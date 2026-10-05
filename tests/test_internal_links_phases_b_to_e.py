@@ -5,16 +5,13 @@ Phase D: Event logging, outcomes
 Phase E: Auto-apply
 """
 
-import sqlite3
 import time
 
 import pytest
 
 
-def _make_test_db() -> sqlite3.Connection:
-    """Create test database with all required tables."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _make_test_db(conn):
+    """Seed testdb with all required IL tables."""
     conn.executescript(
         """
         CREATE TABLE products (shopify_id TEXT, handle TEXT PRIMARY KEY, title TEXT, status TEXT,
@@ -95,11 +92,11 @@ def _make_test_db() -> sqlite3.Connection:
 class TestPhaseAUnreachableCollections:
     """Phase A: api_unreachable collection handling."""
 
-    def test_unreachable_collection_excluded_from_targets(self):
+    def test_unreachable_collection_excluded_from_targets(self, db_conn):
         """Collections marked api_unreachable should not be valid link targets."""
         from shopifyseo.internal_links.pipeline import _target_exists_and_published
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute("INSERT INTO collections (handle, title) VALUES ('reachable', 'Reachable')")
         conn.execute("INSERT INTO collections (handle, title, api_unreachable) VALUES ('ghost', 'Ghost', 1)")
         conn.commit()
@@ -107,11 +104,11 @@ class TestPhaseAUnreachableCollections:
         assert _target_exists_and_published(conn, "collection", "reachable") is True
         assert _target_exists_and_published(conn, "collection", "ghost") is False
 
-    def test_unreachable_collection_excluded_from_orphans(self):
+    def test_unreachable_collection_excluded_from_orphans(self, db_conn):
         """Unreachable collections should not appear in orphan list."""
         from shopifyseo.internal_links.pipeline import _orphan_targets
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute("INSERT INTO collections (handle, title, gsc_clicks) VALUES ('visible', 'Visible', 100)")
         conn.execute("INSERT INTO collections (handle, title, api_unreachable) VALUES ('ghost', 'Ghost', 1)")
         conn.commit()
@@ -126,11 +123,11 @@ class TestPhaseAUnreachableCollections:
 class TestPhaseBWeakAnchors:
     """Phase B: Weak anchor blocking in pipeline."""
 
-    def test_weak_anchor_flag_set_on_suggestions(self):
+    def test_weak_anchor_flag_set_on_suggestions(self, db_conn):
         """Pipeline should set weak_anchor=1 for single-word generic anchors."""
         from shopifyseo.internal_links.pipeline import generate_link_suggestions
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         # Body contains "products" - a weak single-word anchor
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, gsc_clicks) "
@@ -157,11 +154,11 @@ class TestPhaseBWeakAnchors:
         # (base score + orphan bonus before penalty; penalty reduces it)
         assert row["score"] > 0
 
-    def test_strong_anchor_not_penalized(self):
+    def test_strong_anchor_not_penalized(self, db_conn):
         """Multi-word phrase anchors should not be marked weak."""
         from shopifyseo.internal_links.pipeline import generate_link_suggestions
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, gsc_clicks) "
             "VALUES ('news', 'post', 'Post', '<p>Check out our ceramic tanks collection.</p>', 100)"
@@ -188,11 +185,11 @@ class TestPhaseBWeakAnchors:
 class TestPhaseBSmarterOrphans:
     """Phase B: Smarter orphan detection."""
 
-    def test_product_linked_from_collection_not_orphan(self):
+    def test_product_linked_from_collection_not_orphan(self, db_conn):
         """Products linked from collection pages are not true orphans."""
         from shopifyseo.internal_links.pipeline import _orphan_targets
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('widget', 'Widget', 'ACTIVE')")
         conn.execute("INSERT INTO products (handle, title, status) VALUES ('gadget', 'Gadget', 'ACTIVE')")
         # widget has inbound from collection, gadget doesn't
@@ -212,12 +209,12 @@ class TestPhaseBSmarterOrphans:
 class TestPhaseDEventLogging:
     """Phase D: Event logging for measurement."""
 
-    def test_apply_logs_event(self):
+    def test_apply_logs_event(self, db_conn):
         """Applying a suggestion should log an event."""
         import hashlib
         from shopifyseo.internal_links.apply import apply_suggestion
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         body = "<p>Check out ceramic tanks today.</p>"
         body_hash = hashlib.sha256(body.encode()).hexdigest()
         
@@ -253,12 +250,12 @@ class TestPhaseDEventLogging:
         assert event["source_type"] == "blog_article"
         assert event["target_handle"] == "ceramic-tanks"
 
-    def test_undo_logs_event(self):
+    def test_undo_logs_event(self, db_conn):
         """Undoing a suggestion should log an event."""
         import hashlib
         from shopifyseo.internal_links.apply import apply_suggestion, undo_suggestion
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         body = "<p>Check out ceramic tanks today.</p>"
         body_hash = hashlib.sha256(body.encode()).hexdigest()
         
@@ -299,11 +296,11 @@ class TestPhaseDEventLogging:
 class TestPhaseCWriteTime:
     """Phase C: Write-time link prioritization tests."""
 
-    def test_prioritize_targets_for_write_time_orphans_first(self):
+    def test_prioritize_targets_for_write_time_orphans_first(self, db_conn):
         """Orphan pages should be moved to top of their type group."""
         from shopifyseo.internal_links.write_time import prioritize_targets_for_write_time
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         # Create two products - one with inbound links (not orphan), one without (orphan)
         conn.execute("INSERT INTO products (handle, title) VALUES ('linked-product', 'Linked Product')")
         conn.execute("INSERT INTO products (handle, title) VALUES ('orphan-product', 'Orphan Product')")
@@ -329,11 +326,11 @@ class TestPhaseCWriteTime:
         assert result[0]["handle"] == "orphan-product"
         assert result[1]["handle"] == "linked-product"
 
-    def test_prioritize_targets_type_ordering(self):
+    def test_prioritize_targets_type_ordering(self, db_conn):
         """Products should be prioritized over collections, collections over pages."""
         from shopifyseo.internal_links.write_time import prioritize_targets_for_write_time
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute("INSERT INTO products (handle, title) VALUES ('test-product', 'Test Product')")
         conn.execute("INSERT INTO collections (handle, title) VALUES ('test-collection', 'Test Collection')")
         conn.execute("INSERT INTO pages (handle, title) VALUES ('test-page', 'Test Page')")
@@ -352,18 +349,18 @@ class TestPhaseCWriteTime:
         assert result[1]["type"] == "collection"
         assert result[2]["type"] == "page"
 
-    def test_ai_body_links_disabled_by_default(self):
+    def test_ai_body_links_disabled_by_default(self, db_conn):
         """AI body links setting should be disabled by default."""
         from shopifyseo.internal_links.write_time import is_ai_body_links_enabled
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         assert is_ai_body_links_enabled(conn) is False
 
-    def test_ai_body_links_enabled_when_set(self):
+    def test_ai_body_links_enabled_when_set(self, db_conn):
         """AI body links should be enabled when setting is '1'."""
         from shopifyseo.internal_links.write_time import is_ai_body_links_enabled
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute(
             "INSERT INTO service_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
             ("internal_link_ai_body_links_enabled", "1"),
@@ -372,11 +369,11 @@ class TestPhaseCWriteTime:
 
         assert is_ai_body_links_enabled(conn) is True
 
-    def test_enhance_prompt_context_skips_when_disabled(self):
+    def test_enhance_prompt_context_skips_when_disabled(self, db_conn):
         """enhance_prompt_context_with_prioritized_links should skip when disabled."""
         from shopifyseo.internal_links.write_time import enhance_prompt_context_with_prioritized_links
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         original_targets = [
             {"type": "page", "handle": "test-page", "title": "Test Page"},
             {"type": "product", "handle": "test-product", "title": "Test Product"},
@@ -388,11 +385,11 @@ class TestPhaseCWriteTime:
         # Should be unchanged (still page first) because setting is disabled
         assert result["approved_internal_link_targets"][0]["type"] == "page"
 
-    def test_enhance_prompt_context_prioritizes_when_enabled(self):
+    def test_enhance_prompt_context_prioritizes_when_enabled(self, db_conn):
         """enhance_prompt_context_with_prioritized_links should prioritize when enabled."""
         from shopifyseo.internal_links.write_time import enhance_prompt_context_with_prioritized_links
 
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         conn.execute("INSERT INTO products (handle, title) VALUES ('test-product', 'Test Product')")
         conn.execute("INSERT INTO pages (handle, title) VALUES ('test-page', 'Test Page')")
         conn.execute(
@@ -416,22 +413,22 @@ class TestPhaseCWriteTime:
 class TestPhaseEAutoApply:
     """Phase E: Auto-apply settings and logic."""
 
-    def test_auto_apply_disabled_by_default(self):
+    def test_auto_apply_disabled_by_default(self, db_conn):
         """Auto-apply should be disabled by default."""
         from shopifyseo.internal_links.auto_apply import get_auto_apply_settings
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         settings = get_auto_apply_settings(conn)
         
         assert settings["enabled"] is False
         assert "phrase_wrap" in settings["kinds"]
         assert "ai_woven" not in settings["kinds"]
 
-    def test_auto_apply_respects_min_score(self):
+    def test_auto_apply_respects_min_score(self, db_conn):
         """Auto-apply should only consider suggestions above min_score."""
         from shopifyseo.internal_links.auto_apply import find_auto_apply_candidates
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         now = int(time.time())
         
         # Insert suggestions with different scores
@@ -466,11 +463,11 @@ class TestPhaseEAutoApply:
         assert len(candidates) == 1
         assert candidates[0]["target_handle"] == "tanks"
 
-    def test_auto_apply_excludes_weak_anchors(self):
+    def test_auto_apply_excludes_weak_anchors(self, db_conn):
         """Auto-apply should not apply suggestions with weak anchors."""
         from shopifyseo.internal_links.auto_apply import find_auto_apply_candidates
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         now = int(time.time())
         
         # Insert suggestion with weak anchor
@@ -494,11 +491,11 @@ class TestPhaseEAutoApply:
         # Weak anchor suggestion should not be a candidate
         assert len(candidates) == 0
 
-    def test_auto_apply_never_applies_ai_woven(self):
+    def test_auto_apply_never_applies_ai_woven(self, db_conn):
         """Auto-apply should never apply ai_woven suggestions."""
         from shopifyseo.internal_links.auto_apply import find_auto_apply_candidates
         
-        conn = _make_test_db()
+        conn = _make_test_db(db_conn)
         now = int(time.time())
         
         # Insert ai_woven suggestion with high score

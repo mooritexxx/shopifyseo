@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from enum import Enum
+from typing import Any
 
 
 class Backend(Enum):
@@ -69,6 +71,34 @@ def get_backend() -> Backend:
     """Return the active backend based on DATABASE_URL."""
     backend, _ = parse_database_url()
     return backend
+
+
+def backend_for_connection(conn: Any, *, backend: Backend | None = None) -> Backend:
+    """Return the backend for ``conn``, ignoring ``DATABASE_URL`` when possible.
+
+    Plan 7a keeps ``DATABASE_URL`` unset in the Postgres CI job so leftover
+    ``sqlite3.connect`` tests still open temp files. Converted tests open a
+    real Postgres connection via ``TEST_DATABASE_URL`` / ``testdb``; helpers
+    that only called ``get_backend()`` would then take the SQLite path
+    (PRAGMA, ``lastrowid``) on a psycopg connection. Prefer the live
+    connection type, then ``get_backend()``.
+
+    Test helpers sometimes wrap the live connection (``Borrow`` / TestClient
+    proxies). Those objects are not ``psycopg.Connection`` instances, so also
+    treat ``conn.info.vendor == "PostgreSQL"`` as Postgres (``__getattr__``
+    forwards to the real connection).
+    """
+    if backend is not None:
+        return backend
+    if isinstance(conn, sqlite3.Connection):
+        return Backend.SQLITE
+    module = type(conn).__module__
+    if module == "psycopg" or module.startswith("psycopg."):
+        return Backend.POSTGRES
+    info = getattr(conn, "info", None)
+    if getattr(info, "vendor", None) == "PostgreSQL":
+        return Backend.POSTGRES
+    return get_backend()
 
 
 def is_postgres() -> bool:

@@ -1,6 +1,5 @@
 """Inspection evidence regressions; all Google requests mocked, robots fixture captured 2026-10-02."""
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -22,23 +21,20 @@ def payload(crawl=CRAWL):
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(':memory:', check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    ds.ensure_dashboard_schema(c)
-    yield c
-    c.close()
+def conn(db_conn):
+    ds.ensure_dashboard_schema(db_conn)
+    return db_conn
 
 
 def insert_catalog(conn, kind='product', handle='x', **values):
     table = ie.TABLES[kind]
-    row = dict(title=handle, handle=handle, raw_json='{}', synced_at='')
+    row = dict(shopify_id=handle, title=handle, handle=handle, raw_json='{}', synced_at='')
     if kind in {'product', 'blog_article'}:
         row['tags_json'] = '[]'
     if kind == 'product':
         row['options_json'] = '[]'
     if kind == 'blog_article':
-        conn.execute("INSERT OR IGNORE INTO blogs(shopify_id,title,handle,tags_json,raw_json,synced_at) VALUES ('1','News','news','[]','{}','')")
+        conn.execute("INSERT INTO blogs(shopify_id,title,handle,tags_json,raw_json,synced_at) VALUES ('1','News','news','[]','{}','') ON CONFLICT DO NOTHING")
         row.update(blog_shopify_id='1', blog_handle=handle.split('/')[0], handle=handle.split('/')[1])
     row.update(values)
     conn.execute(f"INSERT INTO {table}({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))

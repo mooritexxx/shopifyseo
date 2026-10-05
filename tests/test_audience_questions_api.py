@@ -10,13 +10,9 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def conn():
-    import sqlite3
-
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    ensure_dashboard_schema(c)
-    return c
+def conn(db_conn):
+    ensure_dashboard_schema(db_conn)
+    return db_conn
 
 
 def test_related_searches_from_payload_position_and_query():

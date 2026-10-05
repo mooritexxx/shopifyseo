@@ -5,24 +5,23 @@ and `count_blog_articles_missing_meta` count only items that are live on the
 Online Store, per the definitions in `_live_where`.
 """
 
-import sqlite3
+from typing import Any
 
 from shopifyseo import dashboard_queries as dq
+from shopifyseo.db import table_columns
 from shopifyseo.shopify_catalog_sync import db as sync_db
 from shopifyseo.shopify_catalog_sync.pages import upsert_page
 from shopifyseo.shopify_catalog_sync.queries import PAGES_QUERY, PAGE_QUERY
 
 
-def _ensure_api_unreachable_column(conn: sqlite3.Connection) -> None:
+def _ensure_api_unreachable_column(conn: Any) -> None:
     """Add collections.api_unreachable if not present (normally added by dashboard_store)."""
-    rows = conn.execute("PRAGMA table_info(collections)").fetchall()
-    names = {r[1] if isinstance(r, (list, tuple)) else r["name"] for r in rows}
-    if "api_unreachable" not in names:
+    if "api_unreachable" not in table_columns(conn, "collections"):
         conn.execute("ALTER TABLE collections ADD COLUMN api_unreachable INTEGER DEFAULT 0")
 
 
 def _insert_product(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     handle: str,
     *,
@@ -70,7 +69,7 @@ def _insert_product(
 
 
 def _insert_collection(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     handle: str,
     *,
@@ -102,7 +101,7 @@ def _insert_collection(
 
 
 def _insert_page(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     handle: str,
     *,
@@ -134,7 +133,7 @@ def _insert_page(
     )
 
 
-def _ensure_blog_exists(conn: sqlite3.Connection, blog_shopify_id: str, blog_handle: str) -> None:
+def _ensure_blog_exists(conn: Any, blog_shopify_id: str, blog_handle: str) -> None:
     """Insert the parent blog if it doesn't exist (required by FK constraint)."""
     row = conn.execute("SELECT 1 FROM blogs WHERE shopify_id = ?", (blog_shopify_id,)).fetchone()
     if not row:
@@ -150,7 +149,7 @@ def _ensure_blog_exists(conn: sqlite3.Connection, blog_shopify_id: str, blog_han
 
 
 def _insert_article(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     handle: str,
     blog_shopify_id: str = "blog-1",
@@ -191,16 +190,15 @@ def _insert_article(
     )
 
 
-def _create_schema(conn: sqlite3.Connection) -> None:
+def _create_schema(conn: Any) -> None:
     """Create full schema using sync_db.ensure_schema, plus api_unreachable."""
     sync_db.ensure_schema(conn)
     _ensure_api_unreachable_column(conn)
 
 
-def test_unpublished_items_excluded():
+def test_unpublished_items_excluded(db_conn):
     """Unpublished items with missing meta are NOT counted."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     _insert_product(conn, "p1", "unpub-prod-url", online_store_url="", seo_title="", seo_description="")
@@ -225,10 +223,9 @@ def test_unpublished_items_excluded():
     assert dq.count_blog_articles_missing_meta(conn) == 0
 
 
-def test_published_items_missing_meta_counted():
+def test_published_items_missing_meta_counted(db_conn):
     """Published items with missing meta ARE counted."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     _insert_product(conn, "p1", "active-prod", status="ACTIVE", online_store_url="https://x.com/p", seo_title="", seo_description="")
@@ -250,10 +247,9 @@ def test_published_items_missing_meta_counted():
     assert dq.count_blog_articles_missing_meta(conn) == 1
 
 
-def test_null_is_published_treated_as_live():
+def test_null_is_published_treated_as_live(db_conn):
     """Legacy pages with is_published IS NULL are counted (unknown = live)."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     _insert_page(conn, "pg1", "legacy-page", is_published=None, seo_title="", seo_description="")
@@ -265,10 +261,9 @@ def test_null_is_published_treated_as_live():
     assert metrics["products_missing_meta"] == 1
 
 
-def test_three_page_scenario():
+def test_three_page_scenario(db_conn):
     """The 19-page scenario: 3 unpublished with missing meta, 16 published with full meta."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     for i in range(16):
@@ -297,10 +292,9 @@ def test_three_page_scenario():
     assert metrics2["pages_missing_meta"] == 3
 
 
-def test_products_thin_body_excludes_unpublished():
+def test_products_thin_body_excludes_unpublished(db_conn):
     """Unpublished products with short body are NOT counted in products_thin_body."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     _insert_product(conn, "p1", "unpub-thin", status="DRAFT", online_store_url="", description_html="<p>Short</p>", seo_title="Has title", seo_description="Has desc")
@@ -311,10 +305,9 @@ def test_products_thin_body_excludes_unpublished():
     assert metrics["products_thin_body"] == 1
 
 
-def test_upsert_page_stores_is_published():
+def test_upsert_page_stores_is_published(db_conn):
     """upsert_page correctly stores is_published from the API payload."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     _create_schema(conn)
 
     upsert_page(
@@ -375,10 +368,9 @@ def test_pages_query_contains_is_published():
     assert "publishedAt" in PAGE_QUERY
 
 
-def test_schema_tolerance_missing_columns():
+def test_schema_tolerance_missing_columns(db_conn):
     """Functions still work when schema lacks is_published/online_store_url/api_unreachable."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
 
     conn.executescript(
         """

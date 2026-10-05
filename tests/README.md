@@ -56,15 +56,45 @@ Live deploy stays on SQLite until Salar approves a `DATABASE_URL` cutover.
 The image matches the box (PostgreSQL 17 + pgvector). The job enables
 `CREATE EXTENSION vector` and does **not** set `DATABASE_URL`.
 
-## Plan 7b–d (out of this PR)
+## Plan 7b–d
 
-**70 files** (69 test modules plus `tests/internal_links_support.py`) still call
-`sqlite3.connect` (**145** AST call sites). Convert them to `testdb` / `db_conn`
-by area. Current list:
+Shared fixtures from 7a. Convert leftover `sqlite3.connect` sites to
+`testdb` / `db_conn` / `db_connect` by area. Until a file is converted, the
+Postgres CI job still opens a SQLite temp file for that test.
 
-```bash
-rg -l 'sqlite3\.connect\(' tests
-```
+**7b (this PR, done): dashboard / GSC / API.** Converted 16 modules
+(39 `sqlite3.connect` sites) onto the shared fixtures:
 
-Until those land, the Postgres CI job is green because leftover tests still
-open SQLite files; they do **not** yet prove the app on Postgres.
+- `tests/test_index_inspection_targets.py`
+- `tests/test_overview_live_meta_counts.py`
+- `tests/test_gsc_property_breakdown_cache.py`
+- `tests/test_gsc_url_sync_queue.py`
+- `tests/test_gsc_query_rows_materialization.py`
+- `tests/test_gsc_page_daily_trend.py`
+- `tests/test_gsc_cache_only_no_network.py`
+- `tests/test_dashboard_queries_related.py`
+- `tests/test_inspection_link_signal_cards.py`
+- `tests/test_overview_results.py`
+- `tests/test_index_evidence.py`
+- `tests/test_audience_questions_api.py`
+- `tests/test_api_usage_summary.py`
+- `tests/test_pagespeed_rate_limit_behavior.py`
+- `tests/test_pagespeed_error_counting.py`
+- `tests/test_signal_column_preservation.py`
+
+`testdb` Postgres connections rewrite SQLite-shaped DDL (`?`, `executescript`,
+AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `INSERT OR IGNORE`,
+`PRAGMA table_info`) so those tests hit Postgres while `DATABASE_URL` stays
+unset. Helpers such as `table_columns` / `insert_returning_id` use
+`backend_for_connection(conn)` rather than `DATABASE_URL`.
+
+**Remaining** (`rg -l 'sqlite3\.connect\(' tests`): **54 files / 107** AST
+call sites.
+
+| Slice | Scope | Files | Calls |
+| --- | --- | --- | --- |
+| **7c** | Internal links + embeddings (`test_internal_links_*.py`, `internal_links_support.py`, `test_embedding_*.py`) | 17 | 38 |
+| **7d** | Keyword / rank / team tasks + leftover article, catalog, type-guard, and deliberate SQLite cases | 37 | 69 |
+
+Until 7c–d land, leftover tests still open SQLite files; they do **not** yet
+prove those areas on Postgres.

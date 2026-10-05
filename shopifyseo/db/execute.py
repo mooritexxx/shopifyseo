@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Sequence
 
-from .backend import Backend, get_backend, parse_database_url
+from .backend import Backend, backend_for_connection, parse_database_url
 from .compat import _translate_placeholders
 from .timestamps import rewrite_current_timestamp_for_postgres
 
@@ -53,7 +53,7 @@ def execute(
         Cursor object from the execution
     """
     if backend is None:
-        backend = get_backend()
+        backend = backend_for_connection(conn)
 
     translated_sql = _translate_sql(sql, params, backend)
 
@@ -81,7 +81,7 @@ def executemany(
         Cursor object from the execution
     """
     if backend is None:
-        backend = get_backend()
+        backend = backend_for_connection(conn)
 
     translated_sql = _translate_sql(sql, (), backend) if backend == Backend.POSTGRES else sql
 
@@ -103,6 +103,7 @@ def get_connection(
     text_factory: bool = True,
     autocommit: bool = False,
     create_parents: bool = True,
+    check_same_thread: bool = True,
 ) -> Any:
     """Get a database connection based on DATABASE_URL or default SQLite.
 
@@ -123,6 +124,9 @@ def get_connection(
         autocommit: Enable autocommit (PostgreSQL autocommit; SQLite isolation_level=None)
         create_parents: Create the SQLite file's parent directory (sites that
             never mkdir must pass False)
+        check_same_thread: SQLite ``check_same_thread`` (default True, matching
+            ``sqlite3.connect``). Testdb fixtures pass False so TestClient
+            tests can share the connection.
 
     Returns:
         sqlite3.Connection for SQLite, psycopg connection for PostgreSQL
@@ -146,6 +150,7 @@ def get_connection(
         busy_timeout_ms=busy_timeout_ms,
         text_factory=text_factory,
         create_parents=create_parents,
+        check_same_thread=check_same_thread,
     )
     if autocommit:
         conn.isolation_level = None

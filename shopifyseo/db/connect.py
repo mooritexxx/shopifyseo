@@ -55,6 +55,7 @@ def connect_sqlite(
     busy_timeout_ms: int = BUSY_TIMEOUT_MS,
     text_factory: bool = True,
     create_parents: bool = True,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open a SQLite connection with standard configuration."""
     if path is None:
@@ -63,7 +64,7 @@ def connect_sqlite(
     path = Path(path)
     if create_parents:
         path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=timeout)
+    conn = sqlite3.connect(path, timeout=timeout, check_same_thread=check_same_thread)
     return _configure_sqlite_connection(
         conn,
         row_factory=row_factory,
@@ -128,4 +129,5 @@ def connect(
         wal_mode=wal_mode,
         busy_timeout_ms=busy_timeout_ms,
         text_factory=text_factory,
+        check_same_thread=True,
     )

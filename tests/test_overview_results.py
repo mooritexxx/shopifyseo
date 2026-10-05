@@ -1,15 +1,14 @@
-import sqlite3
 from datetime import date, timedelta
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+import pytest
 from backend.app.main import app
 from backend.app.services.overview_results import change_results
 from shopifyseo import opportunity_tasks as tasks
 
 
-def make_db():
-    conn = sqlite3.connect(':memory:', check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+def make_db(db_conn):
+    conn = db_conn
     tasks.ensure_schema(conn)
     conn.execute('CREATE TABLE gsc_page_daily(date TEXT,object_type TEXT,object_handle TEXT,clicks INTEGER,impressions INTEGER)')
     conn.execute("INSERT INTO seo_opportunity_tasks(id,object_type,object_handle,status,reviewed_json) VALUES(1,'product','test','reviewed','{\"seo_title\":\"Approved\"}')")
@@ -25,8 +24,8 @@ def populate(conn):
     conn.commit()
 
 
-def test_confirmed_save_records_immutable_date_and_preserves_task_contract():
-    conn = make_db()
+def test_confirmed_save_records_immutable_date_and_preserves_task_contract(db_conn):
+    conn = make_db(db_conn)
     before = set(tasks.get_task(conn,1))
     tasks.record_applied(conn,'product','test',{'seo_title':'Wrong'})
     assert conn.execute('SELECT COUNT(*) FROM seo_change_events').fetchone()[0]==0
@@ -38,19 +37,20 @@ def test_confirmed_save_records_immutable_date_and_preserves_task_contract():
     assert set(tasks.get_task(conn,1))==before
 
 
-def test_equal_windows_exclude_save_day_and_wait_for_lag():
-    conn=make_db(); populate(conn)
+def test_equal_windows_exclude_save_day_and_wait_for_lag(db_conn):
+    conn=make_db(db_conn); populate(conn)
     assert change_results(conn,date(2026,9,17))['items'][0]['state']=='waiting'
     row=change_results(conn,date(2026,9,18))['items'][0]
     assert row['state']=='ready'
     assert row['before']['clicks']==14 and row['after']['clicks']==28
-    assert row['before']['ctr']==row['after']['ctr']==.01
+    assert float(row['before']['ctr']) == pytest.approx(0.01)
+    assert float(row['after']['ctr']) == pytest.approx(0.01)
     conn.execute("DELETE FROM gsc_page_daily WHERE date='2026-09-03'")
     assert change_results(conn,date(2026,9,18))['items'][0]['state']=='insufficient'
 
 
-def test_old_task_date_not_inferred_and_zero_impressions_not_comparable():
-    conn=make_db()
+def test_old_task_date_not_inferred_and_zero_impressions_not_comparable(db_conn):
+    conn=make_db(db_conn)
     conn.execute("UPDATE seo_opportunity_tasks SET status='monitoring'")
     assert change_results(conn)['items'][0]['state']=='unknown_date'
     populate(conn)
@@ -58,8 +58,8 @@ def test_old_task_date_not_inferred_and_zero_impressions_not_comparable():
     assert change_results(conn,date(2026,9,18))['items'][0]['state']=='insufficient'
 
 
-def test_http_retains_comparison_fields():
-    conn=make_db(); populate(conn)
+def test_http_retains_comparison_fields(db_conn):
+    conn=make_db(db_conn); populate(conn)
     # Endpoint owns connection lifetime; return a proxy that preserves the fixture.
     class Connection:
         def execute(self,*args): return conn.execute(*args)
@@ -72,8 +72,8 @@ def test_http_retains_comparison_fields():
     assert item['before']['days']==14 and item['applied_at']=='2026-09-01 12:00:00'
 
 
-def test_application_date_uses_search_console_pacific_day():
-    conn=make_db(); populate(conn)
+def test_application_date_uses_search_console_pacific_day(db_conn):
+    conn=make_db(db_conn); populate(conn)
     conn.execute("UPDATE seo_change_events SET applied_at='2026-09-02 01:00:00'")
     item=change_results(conn,date(2026,9,18))['items'][0]
     assert item['applied_date']=='2026-09-01'

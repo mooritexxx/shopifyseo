@@ -19,6 +19,7 @@ from shopifyseo.db import (
     InvalidDatabaseURL,
     LockError,
     OperationalError,
+    backend_for_connection,
     connect,
     connect_sqlite,
     get_backend,
@@ -133,6 +134,40 @@ class TestBackendHelpers:
         with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://localhost/db"}):
             assert is_postgres() is True
             assert is_sqlite() is False
+
+
+class TestBackendForConnection:
+    """Prefer the live connection type over DATABASE_URL (plan 7b CI pattern)."""
+
+    def test_sqlite_connection_even_if_database_url_is_postgres(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://localhost/db"}):
+                assert backend_for_connection(conn) is Backend.SQLITE
+        finally:
+            conn.close()
+
+    def test_explicit_backend_wins(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            assert backend_for_connection(conn, backend=Backend.POSTGRES) is Backend.POSTGRES
+        finally:
+            conn.close()
+
+    def test_postgres_connection_even_if_database_url_unset(self, pg_conn):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABASE_URL", None)
+            assert get_backend() is Backend.SQLITE
+            assert backend_for_connection(pg_conn) is Backend.POSTGRES
+
+    def test_postgres_borrow_proxy_even_if_database_url_unset(self, pg_conn):
+        class Borrow:
+            def __getattr__(self, key):
+                return getattr(pg_conn, key)
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABASE_URL", None)
+            assert backend_for_connection(Borrow()) is Backend.POSTGRES
 
 
 class TestTranslatePlaceholders:

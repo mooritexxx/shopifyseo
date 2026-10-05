@@ -26,7 +26,7 @@ import pytest
 
 ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     # Backend app layer
-    "backend/app/db.py": 1,
+    "backend/app/db.py": 2,
     "backend/app/routers/article_ideas.py": 1,
     "backend/app/routers/blogs.py": 12,
     "backend/app/routers/internal_links.py": 27,

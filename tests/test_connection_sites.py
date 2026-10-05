@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from shopifyseo.sqlite_utf8 import utf8_text_factory
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -32,12 +34,14 @@ GET_DB_PATH = {
     "synchronous": 2,
     "busy_timeout": 30000,
     "foreign_keys": 1,
+    "text_factory": utf8_text_factory,
     "timeout": 10,
 }
 
 # backend/app/db.py open_db_connection: connect(timeout=10), sqlite3.Row,
-# PRAGMA busy_timeout=30000, PRAGMA synchronous=NORMAL (1),
-# _bootstrap_once PRAGMA journal_mode=WAL. ensure_schema sets foreign_keys=ON.
+# PRAGMA busy_timeout=30000, PRAGMA synchronous=NORMAL (1) at the site,
+# _bootstrap_once PRAGMA journal_mode=WAL (first call only).
+# ensure_schema sets foreign_keys=ON on first call.
 OPEN_DB_CONNECTION = {
     "row_factory": sqlite3.Row,
     "isolation_level": "",
@@ -45,6 +49,7 @@ OPEN_DB_CONNECTION = {
     "synchronous": 1,
     "busy_timeout": 30000,
     "foreign_keys": 1,
+    "text_factory": utf8_text_factory,
     "timeout": 10,
 }
 
@@ -58,6 +63,7 @@ DB_CONNECT = {
     "synchronous": 1,
     "busy_timeout": 30000,
     "foreign_keys": 1,
+    "text_factory": utf8_text_factory,
     "timeout": 10,
 }
 
@@ -71,6 +77,7 @@ BOOTSTRAP_RUNTIME_SETTINGS = {
     "synchronous": 2,
     "busy_timeout": 30000,
     "foreign_keys": 1,
+    "text_factory": utf8_text_factory,
     "timeout": 10,
 }
 
@@ -84,6 +91,7 @@ DB_CONNECT_FOR_ACTIONS = {
     "synchronous": 1,
     "busy_timeout": 30000,
     "foreign_keys": 0,
+    "text_factory": utf8_text_factory,
     "timeout": 30,
 }
 
@@ -98,6 +106,7 @@ PRINT_SUMMARY = {
     "synchronous": 2,
     "busy_timeout": 5000,
     "foreign_keys": 0,
+    "text_factory": utf8_text_factory,
     "timeout": 5.0,
 }
 
@@ -111,6 +120,7 @@ OPEN_DB = {
     "synchronous": 1,
     "busy_timeout": 30000,
     "foreign_keys": 1,
+    "text_factory": utf8_text_factory,
     "timeout": 30,
 }
 
@@ -132,6 +142,7 @@ def snapshot_settings(conn):
         "synchronous": int(_pragma(conn, "synchronous")),
         "busy_timeout": int(_pragma(conn, "busy_timeout")),
         "foreign_keys": int(_pragma(conn, "foreign_keys")),
+        "text_factory": conn.text_factory,
     }
     if hasattr(conn, "timeout"):
         settings["timeout"] = conn.timeout
@@ -146,6 +157,7 @@ def assert_settings(actual, expected):
         "synchronous",
         "busy_timeout",
         "foreign_keys",
+        "text_factory",
     ):
         assert actual[key] == expected[key], f"{key}: {actual[key]!r} != {expected[key]!r}"
     if "timeout" in actual:
@@ -222,6 +234,32 @@ def test_open_db_connection_preserves_sqlite_settings(tmp_path, monkeypatch, uns
             assert_settings(snapshot_settings(conn), OPEN_DB_CONNECTION)
         finally:
             conn.close()
+
+        import importlib
+
+        connect_mod = importlib.import_module("shopifyseo.db.connect")
+        traced = []
+        real_connect = connect_mod.sqlite3.connect
+
+        def traced_connect(*args, **kwargs):
+            traced_conn = real_connect(*args, **kwargs)
+
+            def _trace(sql):
+                if str(sql).upper().lstrip().startswith("PRAGMA"):
+                    traced.append(sql)
+
+            traced_conn.set_trace_callback(_trace)
+            return traced_conn
+
+        monkeypatch.setattr(connect_mod.sqlite3, "connect", traced_connect)
+        conn2 = app_db.open_db_connection()
+        try:
+            assert traced == [
+                "PRAGMA busy_timeout = 30000",
+                "PRAGMA synchronous = NORMAL",
+            ]
+        finally:
+            conn2.close()
     finally:
         app_db._bootstrapped_paths.clear()
 

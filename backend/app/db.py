@@ -67,11 +67,12 @@ def open_db_connection():
         path=path,
         timeout=10,
         row_factory=True,
-        wal_mode=True,
+        wal_mode=False,
         busy_timeout_ms=BUSY_TIMEOUT_MS,
         text_factory=True,
         create_parents=False,
     )
+    conn.execute("PRAGMA synchronous = NORMAL")
     _bootstrap_once(conn, path)
     return conn
 

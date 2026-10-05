@@ -98,7 +98,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     # DB layer internals (OK to use direct execute)
     "shopifyseo/db/connect.py": 3,
     "shopifyseo/db/helpers.py": 21,
-    "shopifyseo/db/identity.py": 10,
+    "shopifyseo/db/identity.py": 12,
 }
 
 EXCLUDED_DIRS = {

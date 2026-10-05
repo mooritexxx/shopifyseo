@@ -1127,28 +1127,42 @@ class TestGetConnection:
                     conn.close()
 
     def test_get_connection_postgres_url(self, pg_url):
-        """get_connection() returns PostgreSQL connection when URL is postgres://."""
+        """get_connection() with a postgresql:// URL returns a psycopg connection."""
+        import psycopg
+
         conn = get_connection(url=pg_url)
         try:
+            assert isinstance(conn, psycopg.Connection)
+            assert not isinstance(conn, sqlite3.Connection)
             row = conn.execute("SELECT 1 AS val").fetchone()
             assert row["val"] == 1
         finally:
             conn.close()
 
     def test_get_connection_postgres_creates_no_file(self, pg_url):
-        """get_connection() with postgres URL creates no file or directory on disk."""
+        """get_connection() with a postgresql:// URL creates nothing on disk."""
+        import psycopg
+
         with tempfile.TemporaryDirectory() as tmpdir:
             check_dir = Path(tmpdir)
-            before_files = set(check_dir.iterdir())
-            conn = get_connection(url=pg_url, path=check_dir / "should_not_exist.db")
+            decoy = check_dir / "should_not_exist.db"
+            cwd_before = {p.name for p in Path.cwd().iterdir()}
+            conn = get_connection(url=pg_url, path=decoy)
             try:
+                assert isinstance(conn, psycopg.Connection)
                 row = conn.execute("SELECT 1 AS val").fetchone()
                 assert row["val"] == 1
             finally:
                 conn.close()
-            after_files = set(check_dir.iterdir())
-            new_files = after_files - before_files
-            assert len(new_files) == 0, f"Unexpected files created: {new_files}"
+            assert not decoy.exists()
+            assert list(check_dir.iterdir()) == []
+            cwd_after = {p.name for p in Path.cwd().iterdir()}
+            leaked = [
+                name
+                for name in (cwd_after - cwd_before)
+                if "postgresql" in name.lower() or name.endswith(".db")
+            ]
+            assert leaked == [], f"Unexpected files created from PG URL: {leaked}"
 
 
 class TestTableDdl:
@@ -1294,6 +1308,19 @@ class TestBusyTimeout:
                 assert timeout == 30000
             finally:
                 conn.close()
+
+    def test_get_connection_sqlite_busy_timeout_default_30000(self):
+        """get_connection() on SQLite applies PRAGMA busy_timeout = 30000."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABASE_URL", None)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                conn = get_connection(path=Path(tmpdir) / "test.db")
+                try:
+                    row = conn.execute("PRAGMA busy_timeout").fetchone()
+                    assert row[0] == 30000
+                    assert busy_timeout(conn, backend=Backend.SQLITE) == 30000
+                finally:
+                    conn.close()
 
     def test_busy_timeout_postgres(self, pg_conn):
         """busy_timeout() returns lock_timeout on PostgreSQL."""
@@ -1457,7 +1484,7 @@ class TestIdentityColumnHelpers:
             conn.close()
 
     def test_resync_all_sequences_skips_composite_pk(self, pg_url):
-        """resync_all_sequences() skips tables with composite primary keys."""
+        """resync_all_sequences() skips composite PKs like cluster_keywords (int + text)."""
         from shopifyseo.db import connect_postgres
         conn = connect_postgres(pg_url)
         try:
@@ -1465,8 +1492,9 @@ class TestIdentityColumnHelpers:
             conn.commit()
             conn.execute("""
                 CREATE TABLE _test_composite_pk (
-                    a_id INTEGER, b_id INTEGER, name TEXT,
-                    PRIMARY KEY (a_id, b_id)
+                    cluster_id INTEGER NOT NULL,
+                    keyword TEXT NOT NULL,
+                    PRIMARY KEY (cluster_id, keyword)
                 )
             """)
             conn.commit()
@@ -1475,6 +1503,126 @@ class TestIdentityColumnHelpers:
             assert "_test_composite_pk" not in table_names
         finally:
             conn.execute("DROP TABLE IF EXISTS _test_composite_pk")
+            conn.commit()
+            conn.close()
+
+    def test_resync_mixed_tables_savepoint_and_max_plus_one(self, pg_url):
+        """Real-PG coverage: mixed sequences, composite PK, reserved name, max+1.
+
+        A composite-PK table in the explicit list must not abort the
+        transaction; the following valid table is still resynced.
+        """
+        from shopifyseo.db import connect_postgres
+        from psycopg import sql
+
+        conn = connect_postgres(pg_url)
+        tables = {
+            "with_seq": "_test_mixed_with_seq",
+            "no_seq": "_test_mixed_no_seq",
+            "composite": "_test_mixed_composite",
+        }
+        reserved = "order"
+        try:
+            for name in tables.values():
+                conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(name)))
+            conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(reserved)))
+            conn.commit()
+
+            conn.execute(
+                f"CREATE TABLE {tables['with_seq']} (id SERIAL PRIMARY KEY, name TEXT)"
+            )
+            conn.execute(
+                f"CREATE TABLE {tables['no_seq']} (id INTEGER PRIMARY KEY, name TEXT)"
+            )
+            conn.execute(f"""
+                CREATE TABLE {tables['composite']} (
+                    cluster_id INTEGER NOT NULL,
+                    keyword TEXT NOT NULL,
+                    PRIMARY KEY (cluster_id, keyword)
+                )
+            """)
+            conn.execute(
+                sql.SQL(
+                    "CREATE TABLE {} (id SERIAL PRIMARY KEY, name TEXT)"
+                ).format(sql.Identifier(reserved))
+            )
+            conn.commit()
+
+            conn.execute(
+                f"INSERT INTO {tables['with_seq']} (id, name) VALUES (10, 'a')"
+            )
+            conn.execute(
+                f"INSERT INTO {tables['no_seq']} (id, name) VALUES (20, 'b')"
+            )
+            conn.execute(
+                f"INSERT INTO {tables['composite']} (cluster_id, keyword) VALUES (1, 'kw')"
+            )
+            conn.execute(
+                sql.SQL("INSERT INTO {} (id, name) VALUES (30, 'c')").format(
+                    sql.Identifier(reserved)
+                )
+            )
+            conn.commit()
+
+            # Composite PK first in the explicit list, then a valid table.
+            listed = resync_all_sequences(
+                conn,
+                tables=[
+                    (tables["composite"], "id"),
+                    (tables["with_seq"], "id"),
+                ],
+                backend=Backend.POSTGRES,
+            )
+            listed_map = {r.table: r for r in listed}
+            assert listed_map[tables["composite"]].error is not None
+            assert listed_map[tables["with_seq"]].error is None
+            assert listed_map[tables["with_seq"]].new_value == 11
+            still_ok = conn.execute("SELECT 1 AS ok").fetchone()
+            assert still_ok["ok"] == 1
+
+            discovered = resync_all_sequences(conn, backend=Backend.POSTGRES)
+            discovered_map = {r.table: r for r in discovered}
+            assert tables["composite"] not in discovered_map
+            assert tables["with_seq"] in discovered_map
+            assert reserved in discovered_map
+            assert tables["no_seq"] in discovered_map
+            assert discovered_map[tables["with_seq"]].error is None
+            assert discovered_map[tables["with_seq"]].new_value == 11
+            assert discovered_map[reserved].error is None
+            assert discovered_map[reserved].new_value == 31
+            assert discovered_map[tables["no_seq"]].error is not None
+
+            ensured = ensure_identity(conn, tables["no_seq"], "id", backend=Backend.POSTGRES)
+            assert ensured.error is None
+            assert ensured.new_value == 21
+
+            conn.execute(f"INSERT INTO {tables['with_seq']} (name) VALUES ('auto')")
+            conn.execute(f"INSERT INTO {tables['no_seq']} (name) VALUES ('auto')")
+            conn.execute(
+                sql.SQL("INSERT INTO {} (name) VALUES ('auto')").format(
+                    sql.Identifier(reserved)
+                )
+            )
+            conn.commit()
+
+            with_seq_id = conn.execute(
+                f"SELECT id FROM {tables['with_seq']} WHERE name = 'auto'"
+            ).fetchone()["id"]
+            no_seq_id = conn.execute(
+                f"SELECT id FROM {tables['no_seq']} WHERE name = 'auto'"
+            ).fetchone()["id"]
+            reserved_id = conn.execute(
+                sql.SQL("SELECT id FROM {} WHERE name = 'auto'").format(
+                    sql.Identifier(reserved)
+                )
+            ).fetchone()["id"]
+            assert with_seq_id == 11
+            assert no_seq_id == 21
+            assert reserved_id == 31
+        finally:
+            for name in tables.values():
+                conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(name)))
+            conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(reserved)))
             conn.commit()
             conn.close()
 

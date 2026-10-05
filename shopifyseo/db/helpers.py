@@ -80,7 +80,10 @@ def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bo
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relname = %s
               AND c.relkind = 'r'
-              AND n.nspname = current_schema()
+              AND (
+                  n.nspname = current_schema()
+                  OR starts_with(n.nspname, 'pg_temp')
+              )
             """,
             (table,),
         ).fetchone()
@@ -173,7 +176,10 @@ def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) 
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relname = %s
               AND c.relkind = 'i'
-              AND n.nspname = current_schema()
+              AND (
+                  n.nspname = current_schema()
+                  OR starts_with(n.nspname, 'pg_temp')
+              )
             """,
             (index_name,),
         ).fetchone()

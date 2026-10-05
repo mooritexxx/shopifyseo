@@ -9,6 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.db import open_db_connection
+from shopifyseo.db import order_inserted
 from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankCancelled, RankError, check_term,
                                           clean_url, is_target, remaining_credits, url_identity)
 
@@ -96,7 +97,14 @@ def list_rankings(conn):
                     target_mismatch=bool(current and current['status'] == 'ok' and current['ranking_url'] and row['target_url'] and url_identity(current['ranking_url']) != url_identity(row['target_url'])),
                     top_competitor=next((current[k] for k in ('top1_domain','top2_domain','top3_domain') if current[k] and current[k] != PROFILE['domain'] and not current[k].endswith('.'+PROFILE['domain'])), None) if current else None)
         items.append(item)
-    job = conn.execute('SELECT * FROM rank_jobs ORDER BY created_at DESC,id DESC LIMIT 1').fetchone()
+    # SQLite: order_inserted() is the monotonic insertion-order key (matches
+    # main: last-inserted wins when created_at ties).
+    # Postgres: rank_jobs.id is a TEXT uuid with no monotonic insertion column
+    # (schema migration is out of scope), so equal created_at ties break on
+    # uuid lexicographic order, not insertion order.
+    job = conn.execute(
+        f'SELECT * FROM rank_jobs ORDER BY created_at DESC,{order_inserted()} DESC LIMIT 1'
+    ).fetchone()
     return dict(items=items, profile=PROFILE, **usage(conn), job=dict(job) if job else None)
 
 

@@ -51,6 +51,20 @@ def order_ci(expr: str, *, backend: Backend | None = None) -> str:
     return f"{expr} COLLATE NOCASE"
 
 
+def order_inserted(*, id_column: str = "id", backend: Backend | None = None) -> str:
+    """ORDER BY key that prefers insertion order.
+
+    SQLite: ``rowid`` (monotonic; same tie-break as main).
+    PostgreSQL: ``id_column`` (default ``id``). INTEGER / IDENTITY PKs match
+    insertion order. TEXT uuid PKs (``rank_jobs.id``) have no monotonic
+    insertion column without a schema migration — the uuid is then
+    lexicographic, not last-inserted. Call sites must document that residual.
+    """
+    if _resolve_backend(backend) == Backend.POSTGRES:
+        return id_column
+    return "rowid"
+
+
 def on_conflict_do_nothing(target: str | None = None) -> str:
     """Portable UPSERT ignore clause. ``target`` is the unique index/constraint column list."""
     if target:

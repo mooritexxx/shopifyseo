@@ -957,6 +957,7 @@ from shopifyseo.db import (
     group_concat,
     like_ci,
     order_ci,
+    order_inserted,
     on_conflict_do_nothing,
     on_conflict_do_update,
 )
@@ -2213,6 +2214,40 @@ class TestRowidToIdOrdering:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
             conn.close()
+
+
+class TestOrderInserted:
+    """TEXT uuid PKs (rank_jobs): SQLite rowid preserves last-inserted; Postgres uses id."""
+
+    def test_sqlite_last_insert_wins_when_uuid_is_smaller(self):
+        assert order_inserted(backend=Backend.SQLITE) == "rowid"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute(
+                    "CREATE TABLE rank_jobs (id TEXT PRIMARY KEY, created_at TEXT, name TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO rank_jobs(id, created_at, name) VALUES ('zzzz', '2026-01-01', 'first')"
+                )
+                conn.execute(
+                    "INSERT INTO rank_jobs(id, created_at, name) VALUES ('aaaa', '2026-01-01', 'second')"
+                )
+                by_id = conn.execute(
+                    "SELECT name FROM rank_jobs ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()["name"]
+                by_inserted = conn.execute(
+                    f"SELECT name FROM rank_jobs ORDER BY created_at DESC, "
+                    f"{order_inserted(backend=Backend.SQLITE)} DESC LIMIT 1"
+                ).fetchone()["name"]
+                assert by_id == "first"
+                assert by_inserted == "second"
+            finally:
+                conn.close()
+
+    def test_postgres_fragment_is_id_column(self):
+        assert order_inserted(backend=Backend.POSTGRES) == "id"
+        assert order_inserted(id_column="job_id", backend=Backend.POSTGRES) == "job_id"
 
 
 class TestCollateAndLikeHelpers:

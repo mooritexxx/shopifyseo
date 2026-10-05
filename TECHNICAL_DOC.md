@@ -969,6 +969,8 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | `service_settings` + `shopifyseo/dashboard_config.py` | DB-stored settings; `apply_runtime_settings` mirrors selected keys into `os.environ`                                                       |
 | `SHOPIFY_CATALOG_DB_PATH`                             | SQLite file path override                                                                                                                  |
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |
+| `DATABASE_URL`                                        | Production backend switch. Unset/empty = SQLite (live default until cutover). `postgresql://` / `postgres://` = Postgres via `shopifyseo.db.connect()`. Not set in CI. |
+| `TEST_DATABASE_URL`                                   | Pytest dual-backend fixture (`tests/conftest.py`). Unset = SQLite temp files. Postgres URL = `testdb` / `db_conn` / `pg_conn` via `shopifyseo.db.get_connection` (UTC + timestamp parity). CI `backend-postgres` uses image `pgvector/pgvector:pg17` (PG17 + `vector`), db `shopifyseo_test`. Box operators: test cluster on **127.0.0.1:5433**, db `shopifyseo_test` — see `tests/README.md`. |
 
 ---
 

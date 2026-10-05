@@ -674,21 +674,9 @@ class TestExistingDbPath:
                 importlib.reload(backend.app.db)
 
 
-# PostgreSQL tests - skipped unless TEST_DATABASE_URL is set
-@pytest.fixture
-def pg_url():
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url or not url.startswith(("postgresql://", "postgres://")):
-        pytest.skip("TEST_DATABASE_URL not set to a PostgreSQL URL")
-    return url
-
-
-@pytest.fixture
-def pg_conn(pg_url):
-    from shopifyseo.db import connect_postgres
-    conn = connect_postgres(pg_url)
-    yield conn
-    conn.close()
+# PostgreSQL tests — skipped unless TEST_DATABASE_URL is set.
+# pg_url / pg_conn come from tests/conftest.py (plan 7a) and open via
+# shopifyseo.db.get_connection (timezone=UTC + CURRENT_TIMESTAMP parity).
 
 
 class TestPostgresConnection:

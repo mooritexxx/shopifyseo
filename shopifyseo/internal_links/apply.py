@@ -5,11 +5,11 @@ import difflib
 import json
 import logging
 import re
-import sqlite3
 import time
+from typing import Any
 from urllib.parse import urlparse
 
-from shopifyseo.db import insert_returning_id, is_integrity_error
+from shopifyseo.db import DictRow, insert_returning_id, is_integrity_error
 
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
@@ -26,8 +26,8 @@ _SOURCE_META = {
 }
 
 def _log_suggestion_event(
-    conn: sqlite3.Connection,
-    suggestion: sqlite3.Row | dict,
+    conn: Any,
+    suggestion: DictRow | dict,
     event_type: str,
 ) -> None:
     """Log an event to link_suggestion_events for measurement (Phase D).

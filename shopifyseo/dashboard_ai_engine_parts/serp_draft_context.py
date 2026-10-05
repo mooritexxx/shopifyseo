@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from typing import Any
+
+from shopifyseo.db import DictRow
 
 from .faq_content_filter import filter_paa_questions, filter_paa_hierarchy
 
@@ -594,7 +595,7 @@ def build_serp_appendix_and_retrieval_boost(
 
 
 def parse_idea_serp_row_from_db(
-    row: tuple[Any, ...] | sqlite3.Row | None,
+    row: tuple[Any, ...] | DictRow | None,
     *,
     column_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:

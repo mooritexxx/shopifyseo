@@ -1,12 +1,13 @@
-import sqlite3
+import sys
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import sys
-sys.path.insert(0, '/Users/home/Projects/shopifyseo')
-from shopifyseo.dashboard_google._auth import get_google_access_token, google_api_get, HttpRequestError
+from pathlib import Path
 
-conn = sqlite3.connect('/Users/home/Projects/shopifyseo/shopify_catalog.sqlite3')
-conn.row_factory = sqlite3.Row
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shopifyseo.dashboard_google._auth import get_google_access_token, google_api_get, HttpRequestError
+from shopifyseo.db import get_connection
+
+conn = get_connection(path="/Users/home/Projects/shopifyseo/shopify_catalog.sqlite3")
 token = get_google_access_token(conn)
 
 cursor = conn.cursor()

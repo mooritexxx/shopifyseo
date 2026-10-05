@@ -11,9 +11,8 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
-import sqlite3
 from html.parser import HTMLParser
-from typing import Callable
+from typing import Any, Callable
 
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
@@ -192,7 +191,7 @@ def _extract_addition(original_sentence: str, replacement_sentence: str) -> str:
 
 
 def submit_manual_weave(
-    conn: sqlite3.Connection,
+    conn: Any,
     suggestion_id: int,
     base_url: str,
     original_sentence: str,

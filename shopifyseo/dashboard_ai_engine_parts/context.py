@@ -1,8 +1,8 @@
 import json
 import logging
 import re
-import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 UTC = timezone.utc
 
 from .. import dashboard_google as dg
@@ -15,8 +15,8 @@ _log = logging.getLogger(__name__)
 def _row_get(row, key: str, default=None):
     """Safely extract a key from sqlite3.Row, dict, or Mapping.
 
-    sqlite3.Row supports bracket access (row["key"]) but not .get().
-    This helper converts Row to dict first, enabling safe key extraction.
+    Live SQLite ``sqlite3.Row`` from ``get_connection()`` supports bracket
+    access (row["key"]) but not .get(). This helper converts Row to dict first.
     """
     if row is None:
         return default
@@ -27,7 +27,7 @@ def _row_get(row, key: str, default=None):
     return default
 
 
-def setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+def setting(conn: Any, key: str, default: str = "") -> str:
     value = dg.get_service_setting(conn, key)
     return value.strip() if isinstance(value, str) else default
 
@@ -84,7 +84,7 @@ def cluster_query_rows(query_rows: list[dict], country_name: str = "canada") -> 
     return output[:8]
 
 
-def _fetch_keyword_context(conn: sqlite3.Connection, object_type: str, handle: str, *, limit: int = 15) -> list[dict]:
+def _fetch_keyword_context(conn: Any, object_type: str, handle: str, *, limit: int = 15) -> list[dict]:
     """Load enriched keyword data mapped to this object via keyword_page_map."""
     try:
         rows = conn.execute(
@@ -106,7 +106,7 @@ def _fetch_keyword_context(conn: sqlite3.Connection, object_type: str, handle: s
         return []
 
 
-def _fetch_competitor_gaps(conn: sqlite3.Connection, object_type: str, handle: str, *, limit: int = 10) -> list[dict]:
+def _fetch_competitor_gaps(conn: Any, object_type: str, handle: str, *, limit: int = 10) -> list[dict]:
     """Load competitor gap keywords relevant to this object."""
     try:
         rows = conn.execute(
@@ -149,7 +149,7 @@ _RAG_TYPE_QUOTAS = {
 }
 
 
-def _fetch_rag_context(conn: sqlite3.Connection, object_type: str, handle: str) -> dict:
+def _fetch_rag_context(conn: Any, object_type: str, handle: str) -> dict:
     """Retrieve RAG context for an object. Returns empty dicts on failure."""
     result: dict = {"similar_objects": [], "semantic_keywords": [], "competitor_content": []}
     try:
@@ -186,7 +186,7 @@ def _fetch_rag_context(conn: sqlite3.Connection, object_type: str, handle: str) 
     return result
 
 
-def object_context(conn: sqlite3.Connection, object_type: str, handle: str) -> dict:
+def object_context(conn: Any, object_type: str, handle: str) -> dict:
     from shopifyseo.market_context import get_primary_country_code, country_display_name
     _mkt_code = get_primary_country_code(conn)
     _mkt_name = country_display_name(_mkt_code)

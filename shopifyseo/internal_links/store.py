@@ -1,8 +1,10 @@
 """Durable backups and write reservations for internal-link body edits."""
 
+from shopifyseo.db import table_columns
+
 
 def ensure_schema(conn):
-    columns = {r[1] for r in conn.execute("PRAGMA table_info(link_suggestions)")}
+    columns = table_columns(conn, "link_suggestions")
     if "ai_edit_json" not in columns:
         conn.execute("ALTER TABLE link_suggestions ADD COLUMN ai_edit_json TEXT")
         # Legacy whole-body responses must never become applicable again.

@@ -6,13 +6,14 @@ that external code can reassign them via ``dg.GOOGLE_CLIENT_ID = …``.
 Functions here that need those values use _pkg() to look them up at call time,
 avoiding circular imports while always seeing the current value.
 """
-
 import json
 import secrets
-import sqlite3
 import sys
 import threading
 import time
+from typing import Any
+
+from shopifyseo.db import DictRow
 
 from ..dashboard_http import HttpRequestError, request_json
 
@@ -71,11 +72,11 @@ def _pkg():
 
 # -- Service tokens & settings ------------------------------------------------
 
-def get_service_token(conn: sqlite3.Connection, service: str) -> sqlite3.Row | None:
+def get_service_token(conn: Any, service: str) -> DictRow | None:
     return conn.execute("SELECT * FROM service_tokens WHERE service = ?", (service,)).fetchone()
 
 
-def set_service_token(conn: sqlite3.Connection, service: str, payload: dict) -> None:
+def set_service_token(conn: Any, service: str, payload: dict) -> None:
     # Refresh-token responses often omit `scope`; never wipe previously granted scopes.
     merged = dict(payload)
     existing = get_service_token(conn, service)
@@ -111,7 +112,7 @@ def set_service_token(conn: sqlite3.Connection, service: str, payload: dict) -> 
     _token_cache_put(service, payload.get("access_token", ""), expires_at)
 
 
-def get_service_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+def get_service_setting(conn: Any, key: str, default: str = "") -> str:
     row = conn.execute("SELECT value FROM service_settings WHERE key = ?", (key,)).fetchone()
     if not row:
         return default
@@ -120,7 +121,7 @@ def get_service_setting(conn: sqlite3.Connection, key: str, default: str = "") -
     return default if val is None else val
 
 
-def set_service_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+def set_service_setting(conn: Any, key: str, value: str) -> None:
     conn.execute(
         """
         INSERT INTO service_settings(key, value, updated_at)
@@ -176,10 +177,10 @@ def google_refresh_token(refresh_token: str) -> dict:
     )
 
 
-def get_google_access_token(conn: sqlite3.Connection) -> str:
+def get_google_access_token(conn: Any) -> str:
     service = "search_console"
 
-    def _fresh_from_row(token: sqlite3.Row | None, now_ts: int) -> str | None:
+    def _fresh_from_row(token: DictRow | None, now_ts: int) -> str | None:
         if not token or not token["access_token"] or not token["expires_at"]:
             return None
         if token["expires_at"] <= now_ts + _TOKEN_FRESHNESS_MARGIN_SECONDS:
@@ -217,7 +218,7 @@ def get_google_access_token(conn: sqlite3.Connection) -> str:
         return payload["access_token"]
 
 
-def google_token_has_scope(conn: sqlite3.Connection, scope: str) -> bool:
+def google_token_has_scope(conn: Any, scope: str) -> bool:
     token = get_service_token(conn, "search_console")
     if not token:
         return False

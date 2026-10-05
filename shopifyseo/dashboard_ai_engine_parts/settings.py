@@ -1,4 +1,4 @@
-import sqlite3
+from typing import Any
 
 from .config import (
     DEFAULT_GENERATION_MODEL,
@@ -16,7 +16,7 @@ from .config import (
 from .context import setting
 
 
-def ai_settings(conn: sqlite3.Connection, overrides: dict[str, str] | None = None) -> dict:
+def ai_settings(conn: Any, overrides: dict[str, str] | None = None) -> dict:
     overrides = overrides or {}
 
     def setting_with_override(key: str, default: str = "") -> str:
@@ -88,7 +88,7 @@ def ai_settings(conn: sqlite3.Connection, overrides: dict[str, str] | None = Non
     }
 
 
-def ai_configured(conn: sqlite3.Connection) -> bool:
+def ai_configured(conn: Any) -> bool:
     settings = ai_settings(conn)
     providers = {
         settings["generation_provider"],

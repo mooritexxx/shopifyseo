@@ -4,12 +4,11 @@ SQLite-backed persistent cache with in-memory TTL metadata. All cache schema
 management and read/write helpers live here so other submodules can import them
 without circular dependencies.
 """
-
 import json
-import sqlite3
 import time
+from typing import Any
 
-from shopifyseo.db import is_operational_error
+from shopifyseo.db import DictRow, is_operational_error
 
 
 # -- Cache TTLs (seconds) -----------------------------------------------------
@@ -46,7 +45,7 @@ GSC_QUERY_PAGE_ROW_CAP = 25000
 
 # -- Schema -------------------------------------------------------------------
 
-def ensure_google_cache_schema(conn: sqlite3.Connection) -> None:
+def ensure_google_cache_schema(conn: Any) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS google_api_cache (
@@ -78,7 +77,7 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-def _run_with_cache_schema(conn: sqlite3.Connection, run):
+def _run_with_cache_schema(conn: Any, run):
     """Run a google_api_cache statement, creating the schema only if it is actually missing.
 
     ``ensure_google_cache_schema`` used to run on every read and write. Besides parsing
@@ -101,7 +100,7 @@ def _run_with_cache_schema(conn: sqlite3.Connection, run):
         return run()
 
 
-def _get_cache_row(conn: sqlite3.Connection, cache_key: str) -> sqlite3.Row | None:
+def _get_cache_row(conn: Any, cache_key: str) -> DictRow | None:
     return _run_with_cache_schema(
         conn,
         lambda: conn.execute(
@@ -115,7 +114,7 @@ def _get_cache_row(conn: sqlite3.Connection, cache_key: str) -> sqlite3.Row | No
     )
 
 
-def _cache_meta(row: sqlite3.Row | None) -> dict:
+def _cache_meta(row: DictRow | None) -> dict:
     if not row:
         return {"exists": False, "stale": True, "fetched_at": None, "expires_at": None}
     now_ts = _now_ts()
@@ -127,7 +126,7 @@ def _cache_meta(row: sqlite3.Row | None) -> dict:
     }
 
 
-def _load_cached_payload(conn: sqlite3.Connection, cache_key: str) -> tuple[dict | None, dict]:
+def _load_cached_payload(conn: Any, cache_key: str) -> tuple[dict | None, dict]:
     row = _get_cache_row(conn, cache_key)
     if not row:
         return None, _cache_meta(None)
@@ -144,7 +143,7 @@ def _load_cached_payload(conn: sqlite3.Connection, cache_key: str) -> tuple[dict
 
 
 def _write_cache_payload(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     cache_key: str,
     cache_type: str,

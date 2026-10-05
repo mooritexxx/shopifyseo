@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
 
 from shopifyseo.dashboard_http import HttpRequestError
@@ -11,7 +10,7 @@ from shopifyseo.shopify_theme_assets import fetch_main_theme_id
 from shopifyseo.theme_template_images import collect_template_image_urls_for_pages
 
 
-def enrich_pages_template_images(conn: sqlite3.Connection) -> dict[str, Any]:
+def enrich_pages_template_images(conn: Any) -> dict[str, Any]:
     """Parse templates/page*.json for each page's templateSuffix; store URLs in template_images_json.
 
     Requires Shopify Admin **read_themes** (REST). If the API is unavailable, returns ok=False and skips updates.

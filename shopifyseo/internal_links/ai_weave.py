@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+from typing import Any
 
 from ..dashboard_queries._urls import object_url_with_base
 from .apply import _hash_body, _load_source_row
@@ -57,7 +57,7 @@ def _default_call_ai(messages: list[dict], json_schema: dict) -> dict:
     return _call_ai(settings, provider, model, messages, 120, json_schema=json_schema, stage="link_weave")
 
 
-def _target_title(conn: sqlite3.Connection, t_type: str, t_handle: str) -> str:
+def _target_title(conn: Any, t_type: str, t_handle: str) -> str:
     if t_type == "blog_article":
         blog_h, _, article_h = t_handle.partition("/")
         row = conn.execute(

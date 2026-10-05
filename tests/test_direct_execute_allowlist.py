@@ -16,6 +16,7 @@ Migration plan:
 - PR5: write_tx / lock retry (BEGIN IMMEDIATE sites removed from app code)
 - PR6a: dashboard type/dialect cleanup (schema helpers replace PRAGMA / sqlite_master)
 - PR6b: backend services/routers type/dialect cleanup (schema helpers replace PRAGMA)
+- PR6c: remaining-area type/dialect cleanup (schema helpers replace PRAGMA)
 - Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
@@ -59,8 +60,8 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/article_draft_retrieval.py": 8,
     "shopifyseo/catalog_image_work.py": 6,
     "shopifyseo/dashboard_actions/_sync_pagespeed.py": 1,
-    "shopifyseo/dashboard_ai_engine_parts/_article_draft.py": 14,
-    "shopifyseo/dashboard_ai_engine_parts/_article_ideas.py": 4,
+    "shopifyseo/dashboard_ai_engine_parts/_article_draft.py": 13,
+    "shopifyseo/dashboard_ai_engine_parts/_article_ideas.py": 3,
     "shopifyseo/dashboard_ai_engine_parts/context.py": 8,
     "shopifyseo/dashboard_ai_engine_parts/generation.py": 1,
     "shopifyseo/dashboard_article_ideas.py": 55,
@@ -86,7 +87,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/internal_links/manual_weave.py": 7,
     "shopifyseo/internal_links/pipeline.py": 24,
     "shopifyseo/internal_links/safety.py": 1,
-    "shopifyseo/internal_links/store.py": 8,
+    "shopifyseo/internal_links/store.py": 7,
     "shopifyseo/internal_links/write_time.py": 4,
     "shopifyseo/opportunity_tasks.py": 17,
     "shopifyseo/product_linkability.py": 4,
@@ -94,7 +95,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/shopify_catalog_sync/__init__.py": 11,
     "shopifyseo/shopify_catalog_sync/blogs.py": 13,
     "shopifyseo/shopify_catalog_sync/collections.py": 9,
-    "shopifyseo/shopify_catalog_sync/db.py": 10,
+    "shopifyseo/shopify_catalog_sync/db.py": 9,
     "shopifyseo/shopify_catalog_sync/page_template_enrichment.py": 2,
     "shopifyseo/shopify_catalog_sync/pages.py": 1,
     "shopifyseo/shopify_catalog_sync/products.py": 11,

@@ -1,5 +1,5 @@
-import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .db import (
     now_iso,
@@ -13,7 +13,7 @@ from .db import (
 from .page_template_enrichment import enrich_pages_template_images
 
 
-def upsert_page(conn: sqlite3.Connection, page: dict, synced_at: str) -> None:
+def upsert_page(conn: Any, page: dict, synced_at: str) -> None:
     is_published_raw = page.get("isPublished")
     if is_published_raw is None:
         is_published = None
@@ -80,7 +80,7 @@ def sync_pages(
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         if pages is None:
             pages = fetch_all_pages(page_size)
@@ -148,7 +148,7 @@ def sync_page(db_path: Path, page_id: str) -> dict:
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         page = fetch_page_by_id(page_id)
         if not page:

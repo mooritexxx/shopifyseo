@@ -1,8 +1,7 @@
 """Google Analytics 4 data fetching, caching, and aggregation."""
-
-import sqlite3
 import sys
 from datetime import date, timedelta
+from typing import Any
 from urllib.parse import urlparse
 
 from ._cache import (
@@ -31,7 +30,7 @@ def _ga4_overview_cache_key(property_id: str, period_mode: str, anchor: str) -> 
     return f"ga4_property_overview_v2::{period_mode}::{anchor}::{property_id}"
 
 
-def delete_ga4_overview_cache(conn: sqlite3.Connection) -> None:
+def delete_ga4_overview_cache(conn: Any) -> None:
     """Invalidate GA4 property overview time-series (e.g. after a manual GA4 refresh)."""
     ensure_google_cache_schema(conn)
     conn.execute("DELETE FROM google_api_cache WHERE cache_type = ?", ("ga4_property_overview",))
@@ -73,7 +72,7 @@ def _ga4_metric_values_float(metric_values: list, index: int) -> float:
 # -- Daily analytics fetching & rollup ----------------------------------------
 
 def _fetch_ga4_daily_analytics(
-    conn: sqlite3.Connection,
+    conn: Any,
     property_id: str,
     start: date,
     end: date,
@@ -165,7 +164,7 @@ def _rollup_ga4_window(
 # -- GA4 property overview (time-series) -------------------------------------
 
 def get_ga4_property_overview_cached(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     property_id: str,
     period_mode: str,
@@ -250,7 +249,7 @@ def get_ga4_property_overview_cached(
 
 # -- GA4 properties list ------------------------------------------------------
 
-def get_ga4_properties(conn: sqlite3.Connection) -> dict:
+def get_ga4_properties(conn: Any) -> dict:
     """List GA4 properties via the Admin API. Returns {properties, error, activation_url}."""
     import json
     from ..dashboard_http import HttpRequestError
@@ -341,7 +340,7 @@ def ga4_report_page_path_from_row(row: dict) -> str:
     return (dims[0].get("value") or "").strip()
 
 
-def get_ga4_summary(conn: sqlite3.Connection, refresh: bool = False) -> dict:
+def get_ga4_summary(conn: Any, refresh: bool = False) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     property_id = get_service_setting(conn, "ga4_property_id")
     if not property_id:
@@ -492,7 +491,7 @@ def _ga4_pick_path_for_url(
 
 
 def get_ga4_url_detail(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     *,
     refresh: bool = False,
@@ -661,7 +660,7 @@ def ga4_url_detail_from_index(index: dict, url: str, *, start_date: date, end_da
 
 
 def write_ga4_url_detail_cache(
-    conn: sqlite3.Connection,
+    conn: Any,
     payload: dict,
     *,
     property_id: str,
@@ -694,7 +693,7 @@ def ga4_summary_window() -> tuple[date, date]:
     return end_date - timedelta(days=27), end_date
 
 
-def ga4_url_cache_stale(conn: sqlite3.Connection, url: str) -> bool:
+def ga4_url_cache_stale(conn: Any, url: str) -> bool:
     """True when there is no non-expired ga4_url cache for this URL (current 28-day window)."""
     property_id = get_service_setting(conn, "ga4_property_id")
     if not property_id:

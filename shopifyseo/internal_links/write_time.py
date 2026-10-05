@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-import sqlite3
 from typing import Any
 
 from .pipeline import TARGET_VALUE, ORPHAN_BOOST, _orphan_target_set, _get_sim_threshold
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def select_write_time_links(
-    conn: sqlite3.Connection,
+    conn: Any,
     source_type: str,
     source_handle: str,
     top_k: int = 5,
@@ -101,7 +100,7 @@ def select_write_time_links(
     return scored[:top_k]
 
 
-def _get_target_title(conn: sqlite3.Connection, t_type: str, t_handle: str) -> str | None:
+def _get_target_title(conn: Any, t_type: str, t_handle: str) -> str | None:
     """Get title for a target, returning None if not found or unreachable."""
     if t_type == "product":
         row = conn.execute(
@@ -146,7 +145,7 @@ def format_links_for_prompt(links: list[dict[str, Any]], max_links: int = 5) -> 
 
 
 def get_minimum_link_count(
-    conn: sqlite3.Connection,
+    conn: Any,
     content_type: str = "blog_article",
     has_primary_link: bool = False,
 ) -> int:
@@ -175,7 +174,7 @@ def get_minimum_link_count(
 
 
 def prioritize_targets_for_write_time(
-    conn: sqlite3.Connection,
+    conn: Any,
     link_targets: list[dict],
 ) -> list[dict]:
     """Reorder link targets using internal-link pipeline scoring philosophy.
@@ -220,7 +219,7 @@ def prioritize_targets_for_write_time(
     return sorted(link_targets, key=_target_key)
 
 
-def is_ai_body_links_enabled(conn: sqlite3.Connection) -> bool:
+def is_ai_body_links_enabled(conn: Any) -> bool:
     """Check if AI body internal links are enabled in settings."""
     from ..dashboard_google import get_service_setting
     
@@ -232,7 +231,7 @@ def is_ai_body_links_enabled(conn: sqlite3.Connection) -> bool:
 
 
 def enhance_prompt_context_with_prioritized_links(
-    conn: sqlite3.Connection,
+    conn: Any,
     prompt_ctx: dict,
     object_type: str,
 ) -> dict:

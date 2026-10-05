@@ -13,8 +13,13 @@ the matched cluster's name (existing non-empty names are left unchanged).
 """
 
 import argparse
-import sqlite3
+import sys
 from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shopifyseo.db import get_connection  # noqa: E402
 
 
 def default_db_path() -> Path:
@@ -22,7 +27,7 @@ def default_db_path() -> Path:
 
 
 def resolve_cluster_id(
-    conn: sqlite3.Connection, pk: str, linked_name: str
+    conn: Any, pk: str, linked_name: str
 ) -> int | None:
     cur = conn.execute(
         """
@@ -66,7 +71,7 @@ def resolve_cluster_id(
     return None
 
 
-def cluster_display_name(conn: sqlite3.Connection, cluster_id: int) -> str:
+def cluster_display_name(conn: Any, cluster_id: int) -> str:
     cur = conn.execute("SELECT name FROM clusters WHERE id = ?", (cluster_id,))
     row = cur.fetchone()
     return (row[0] or "") if row else ""
@@ -82,8 +87,7 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    conn = get_connection(path=args.db)
 
     cur = conn.execute(
         """

@@ -4,8 +4,9 @@ import html as html_module
 import json
 import logging
 import re
-import sqlite3
 from typing import Any, Callable
+
+from shopifyseo.db import table_columns
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ def _normalized_relevance_text(value: str) -> str:
 
 
 def _relevance_context(
-    conn: sqlite3.Connection, topic: str, primary_target: dict | None
+    conn: Any, topic: str, primary_target: dict | None
 ) -> tuple[str, str, set[str]]:
     """Extract relevance context for brand/collection matching.
 
@@ -300,7 +301,7 @@ def _topic_relevance_score(title: str, topic: str, brand: str) -> int:
 
 
 def focus_product_handles(
-    conn: sqlite3.Connection,
+    conn: Any,
     topic: str,
     primary_target: dict | None,
     *,
@@ -321,7 +322,7 @@ def focus_product_handles(
 
     Parameters
     ----------
-    conn : sqlite3.Connection
+    conn : Any
         Database connection.
     topic : str
         The article topic (e.g. "Best STLTH 60K Flavours in Canada").
@@ -372,7 +373,7 @@ def focus_product_handles(
 
 
 def relevant_product_repair_targets(
-    conn: sqlite3.Connection, topic: str, primary_target: dict | None, approved_targets: list[dict],
+    conn: Any, topic: str, primary_target: dict | None, approved_targets: list[dict],
 ) -> list[dict]:
     """Select only approved products with catalog evidence of brand/collection relevance.
 
@@ -421,7 +422,7 @@ def relevant_product_repair_targets(
 
 
 def generate_article_draft(
-    conn: sqlite3.Connection,
+    conn: Any,
     topic: str,
     keywords: list[str | dict] | None = None,
     author_name: str = "",
@@ -525,7 +526,7 @@ def generate_article_draft(
         try:
             from backend.app.services.keyword_clustering import compute_seo_gaps
 
-            cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+            cluster_cols = table_columns(conn, "clusters")
             tier_select = (
                 ", core_keywords_json, supporting_keywords_json, extended_keywords_json, cluster_role, cluster_intent"
                 if "core_keywords_json" in cluster_cols
@@ -3104,7 +3105,7 @@ def generate_article_draft(
     }
 
 
-def ensure_link_titles(body_html: str, conn: sqlite3.Connection) -> str:
+def ensure_link_titles(body_html: str, conn: Any) -> str:
     """Post-process article body HTML to fill in missing ``title`` attributes on ``<a>`` tags.
 
     Matches each link's href against collections, products, pages, and blog articles

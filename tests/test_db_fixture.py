@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from shopifyseo.db import Backend, NOW_TEXT_PATTERN, get_connection, table_exists
+from shopifyseo.db import Backend, NOW_TEXT_PATTERN, get_connection, table_columns, table_exists
 from db_support import make_testdb, postgres_test_url, resolve_backend
 
 
@@ -146,6 +146,40 @@ class TestDbConnFixture:
         assert table_exists(
             db_conn_module, "module_probe", backend=testdb_module.backend
         ) is True
+
+    def test_question_placeholders_and_table_columns_follow_connection(self, testdb, db_conn) -> None:
+        """Plan 7b: leftover ``?`` SQL and ``table_columns(conn)`` must work with DATABASE_URL unset."""
+        db_conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)")
+        db_conn.execute("INSERT INTO items (id, val) VALUES (?, ?)", (1, "ok"))
+        db_conn.commit()
+        row = db_conn.execute("SELECT val FROM items WHERE id = ?", (1,)).fetchone()
+        assert row["val"] == "ok"
+        cols = table_columns(db_conn, "items")
+        assert "id" in cols and "val" in cols
+
+    def test_executescript_and_autoincrement_on_testdb(self, testdb, db_conn) -> None:
+        db_conn.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS seq_probe (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO seq_probe (name) VALUES ('a');
+            """
+        )
+        row = db_conn.execute("SELECT name FROM seq_probe WHERE id = ?", (1,)).fetchone()
+        assert row["name"] == "a"
+
+    def test_executemany_question_placeholders(self, testdb, db_conn) -> None:
+        db_conn.execute("CREATE TABLE many_probe (id INTEGER PRIMARY KEY, val TEXT)")
+        db_conn.executemany(
+            "INSERT INTO many_probe (id, val) VALUES (?, ?)",
+            [(1, "a"), (2, "b")],
+        )
+        db_conn.commit()
+        rows = db_conn.execute("SELECT val FROM many_probe ORDER BY id").fetchall()
+        assert [r["val"] for r in rows] == ["a", "b"]
 
 
 @pytest.mark.postgres

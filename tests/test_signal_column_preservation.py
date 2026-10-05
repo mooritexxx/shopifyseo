@@ -5,8 +5,6 @@ and a failed scope leaves objects without a payload. Neither should destroy the 
 value, which is the only copy.
 """
 
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_store import _signal_values_preserving_known
@@ -27,17 +25,14 @@ FULL_IDX = {"indexingState": "INDEXING_ALLOWED", "coverageState": "Submitted and
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    c.execute(f"CREATE TABLE products (handle TEXT PRIMARY KEY, {SIGNAL_COLS})")
-    c.execute(
+def conn(db_conn):
+    db_conn.execute(f"CREATE TABLE products (handle TEXT PRIMARY KEY, {SIGNAL_COLS})")
+    db_conn.execute(
         f"INSERT INTO products VALUES ('w', {', '.join('?' * len(STORED))})",
         STORED,
     )
-    c.commit()
-    yield c
-    c.close()
+    db_conn.commit()
+    return db_conn
 
 
 def _values(conn, **overrides):

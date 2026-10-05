@@ -1,6 +1,5 @@
 """Tests for usage summary split between LLM and DataForSEO."""
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,10 +8,8 @@ from shopifyseo.api_usage import _DEFAULT_PRICING, _lookup_pricing, get_usage_su
 
 
 @pytest.fixture()
-def conn() -> sqlite3.Connection:
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    c.execute(
+def conn(db_conn):
+    db_conn.execute(
         """
         CREATE TABLE api_usage_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,7 +25,7 @@ def conn() -> sqlite3.Connection:
         )
         """
     )
-    return c
+    return db_conn
 
 
 def test_lookup_pricing_prefers_most_specific_key_for_flash_image() -> None:
@@ -58,7 +55,7 @@ def test_lookup_pricing_unknown_model_falls_back_to_default() -> None:
     assert _lookup_pricing("some-unlisted-provider-model") == _DEFAULT_PRICING
 
 
-def test_log_api_usage_cost_override_skips_gemini_pricing(conn: sqlite3.Connection) -> None:
+def test_log_api_usage_cost_override_skips_gemini_pricing(conn) -> None:
     log_api_usage(
         provider="dataforseo",
         model="/dataforseo_labs/google/keyword_ideas/live",
@@ -75,7 +72,7 @@ def test_log_api_usage_cost_override_skips_gemini_pricing(conn: sqlite3.Connecti
     assert abs(row["estimated_cost_usd"] - 0.042) < 1e-9
 
 
-def test_get_usage_summary_splits_llm_and_seo(conn: sqlite3.Connection) -> None:
+def test_get_usage_summary_splits_llm_and_seo(conn) -> None:
     now = datetime.now(timezone.utc)
     ts_a = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
     ts_b = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")

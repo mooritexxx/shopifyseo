@@ -1,7 +1,6 @@
 """PageSpeed rate-limit behavior tests."""
 
 import json
-import sqlite3
 
 import pytest
 
@@ -13,15 +12,13 @@ from shopifyseo.dashboard_google._cache import ensure_google_cache_schema
 from shopifyseo.dashboard_http import HttpRequestError
 
 
-def _memory_cache_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    ensure_google_cache_schema(conn)
-    return conn
+def _memory_cache_conn(db_conn):
+    ensure_google_cache_schema(db_conn)
+    return db_conn
 
 
 def _insert_pagespeed_cache_row(
-    conn: sqlite3.Connection,
+    conn,
     *,
     cache_key: str,
     object_type: str,
@@ -52,8 +49,8 @@ def _insert_pagespeed_cache_row(
     conn.commit()
 
 
-def test_pagespeed_target_counts_waits_for_rate_limit_cooldown_then_requeues(monkeypatch):
-    conn = _memory_cache_conn()
+def test_pagespeed_target_counts_waits_for_rate_limit_cooldown_then_requeues(monkeypatch, db_conn):
+    conn = _memory_cache_conn(db_conn)
     now_ts = 2_000_000_000
     url = "https://example.com/products/widget"
     monkeypatch.setattr(_sync.time, "time", lambda: now_ts)
@@ -97,9 +94,9 @@ def test_pagespeed_target_counts_waits_for_rate_limit_cooldown_then_requeues(mon
     assert queued_targets == [("product", "widget", url, "mobile")]
 
 
-def test_pagespeed_target_counts_pairs_mobile_desktop_when_cache_empty(monkeypatch):
+def test_pagespeed_target_counts_pairs_mobile_desktop_when_cache_empty(monkeypatch, db_conn):
     """Every catalog object should enqueue two PSI jobs (mobile + desktop) when neither cache row exists."""
-    conn = _memory_cache_conn()
+    conn = _memory_cache_conn(db_conn)
     now_ts = 2_000_000_000
     url = "https://example.com/products/widget"
     monkeypatch.setattr(_sync.time, "time", lambda: now_ts)
@@ -113,8 +110,8 @@ def test_pagespeed_target_counts_pairs_mobile_desktop_when_cache_empty(monkeypat
     ]
 
 
-def test_pagespeed_target_counts_pairs_strategies_per_object(monkeypatch):
-    conn = _memory_cache_conn()
+def test_pagespeed_target_counts_pairs_strategies_per_object(monkeypatch, db_conn):
+    conn = _memory_cache_conn(db_conn)
     now_ts = 2_000_000_100
     u1 = "https://example.com/p1"
     u2 = "https://example.com/p2"
@@ -201,8 +198,8 @@ def test_pagespeed_bulk_max_inflight_matches_worker_pool():
     assert _sync._pagespeed_bulk_max_inflight() == PAGESPEED_SYNC_WORKERS
 
 
-def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatch):
-    conn = _memory_cache_conn()
+def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatch, db_conn):
+    conn = _memory_cache_conn(db_conn)
     url = "https://example.com/p"
     calls = {"slowdown": 0, "fetch": 0, "get": 0}
 
@@ -240,8 +237,8 @@ def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatc
     assert out.get("_cache", {}).get("rate_limited") is None
 
 
-def test_get_pagespeed_hybrid_429_requeue_marker_on_second_429(monkeypatch):
-    conn = _memory_cache_conn()
+def test_get_pagespeed_hybrid_429_requeue_marker_on_second_429(monkeypatch, db_conn):
+    conn = _memory_cache_conn(db_conn)
     url = "https://example.com/p"
     calls = {"get": 0}
 
@@ -272,8 +269,8 @@ def test_get_pagespeed_hybrid_429_requeue_marker_on_second_429(monkeypatch):
     assert out["_cache"].get("requeue_429") is True
 
 
-def test_get_pagespeed_hybrid_429_final_pass_persists_rate_limit(monkeypatch):
-    conn = _memory_cache_conn()
+def test_get_pagespeed_hybrid_429_final_pass_persists_rate_limit(monkeypatch, db_conn):
+    conn = _memory_cache_conn(db_conn)
     url = "https://example.com/p"
 
     def _fetch(*_a, **_k):

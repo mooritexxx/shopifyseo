@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Generator, Sequence
 
-from .backend import Backend, get_backend
+from .backend import Backend, backend_for_connection, get_backend
 from .compat import _translate_placeholders
 from .timestamps import rewrite_current_timestamp_for_postgres
 
@@ -17,6 +17,10 @@ LOCK_TEAM_TASKS = 0x5441534B  # 'TASK' — versioned team task writes
 
 def _resolve_backend(backend: Backend | None) -> Backend:
     return get_backend() if backend is None else backend
+
+
+def _resolve_conn_backend(conn: Any, backend: Backend | None) -> Backend:
+    return backend_for_connection(conn, backend=backend)
 
 
 def group_concat(
@@ -102,7 +106,7 @@ def insert_returning_id(
     The SQL should NOT include RETURNING clause.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
@@ -143,7 +147,7 @@ def write_tx(
     the advisory lock.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         if conn.info.transaction_status != conn.info.transaction_status.__class__.IDLE:
@@ -183,7 +187,7 @@ def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bo
     to avoid matching views, sequences, or tables in other schemas.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute(
@@ -211,7 +215,7 @@ def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bo
 def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> set[str]:
     """Get the set of column names for a table (visible via search_path on Postgres)."""
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
@@ -236,7 +240,7 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
     On PostgreSQL: reconstructs DDL from pg_catalog (simplified version).
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
@@ -279,7 +283,7 @@ def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) 
     to avoid matching indexes in other schemas.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute(
@@ -310,7 +314,7 @@ def foreign_keys_enabled(conn: Any, *, backend: Backend | None = None) -> bool:
     On SQLite: checks PRAGMA foreign_keys setting.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         return True
@@ -327,7 +331,7 @@ def set_foreign_keys(conn: Any, enabled: bool, *, backend: Backend | None = None
     On SQLite: Sets PRAGMA foreign_keys.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend != Backend.POSTGRES:
         conn.execute(f"PRAGMA foreign_keys = {'ON' if enabled else 'OFF'}")
@@ -340,7 +344,7 @@ def journal_mode(conn: Any, *, backend: Backend | None = None) -> str:
     On SQLite: Returns the journal_mode PRAGMA value.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute("SHOW wal_level").fetchone()
@@ -358,7 +362,7 @@ def busy_timeout(conn: Any, *, backend: Backend | None = None) -> int:
     On SQLite: Returns busy_timeout PRAGMA value.
     """
     if backend is None:
-        backend = get_backend()
+        backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
         row = conn.execute(

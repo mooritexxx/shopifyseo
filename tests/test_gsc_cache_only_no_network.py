@@ -1,7 +1,5 @@
 """Cache-only GSC reads must not refresh OAuth or call Google."""
 
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_google import _gsc
@@ -9,15 +7,13 @@ from shopifyseo import dashboard_store
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    ensure_dashboard_schema(conn)
-    return conn
+def _prepare(db_conn):
+    ensure_dashboard_schema(db_conn)
+    return db_conn
 
 
-def test_gsc_url_detail_cache_only_without_site_does_not_call_google(monkeypatch) -> None:
-    conn = _conn()
+def test_gsc_url_detail_cache_only_without_site_does_not_call_google(monkeypatch, db_conn) -> None:
+    conn = _prepare(db_conn)
     monkeypatch.setattr(
         _gsc,
         "get_search_console_sites",
@@ -34,11 +30,10 @@ def test_gsc_url_detail_cache_only_without_site_does_not_call_google(monkeypatch
 
     assert out["site_url"] == ""
     assert out["_cache"]["exists"] is False
-    conn.close()
 
 
-def test_url_inspection_cache_only_without_site_does_not_call_google(monkeypatch) -> None:
-    conn = _conn()
+def test_url_inspection_cache_only_without_site_does_not_call_google(monkeypatch, db_conn) -> None:
+    conn = _prepare(db_conn)
     monkeypatch.setattr(
         _gsc,
         "get_search_console_sites",
@@ -55,11 +50,10 @@ def test_url_inspection_cache_only_without_site_does_not_call_google(monkeypatch
 
     assert out["site_url"] == ""
     assert out["_cache"]["exists"] is False
-    conn.close()
 
 
-def test_gsc_signal_refresh_can_skip_embedding_sync(monkeypatch) -> None:
-    conn = _conn()
+def test_gsc_signal_refresh_can_skip_embedding_sync(monkeypatch, db_conn) -> None:
+    conn = _prepare(db_conn)
     called = {}
 
     monkeypatch.setattr(
@@ -88,11 +82,10 @@ def test_gsc_signal_refresh_can_skip_embedding_sync(monkeypatch) -> None:
     )
 
     assert called["row_refreshed"] is True
-    conn.close()
 
 
-def test_gsc_query_cache_dimensions_are_opt_in(monkeypatch) -> None:
-    conn = _conn()
+def test_gsc_query_cache_dimensions_are_opt_in(monkeypatch, db_conn) -> None:
+    conn = _prepare(db_conn)
     calls: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -119,4 +112,3 @@ def test_gsc_query_cache_dimensions_are_opt_in(monkeypatch) -> None:
         include_query_dimensions=True,
     )
     assert calls == [("product", "widget")]
-    conn.close()

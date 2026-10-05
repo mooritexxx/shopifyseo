@@ -5,7 +5,15 @@ Backend is selected via DATABASE_URL environment variable:
 - postgresql:// or postgres://: PostgreSQL via psycopg
 - sqlite:///path or file:path or bare path: SQLite
 """
-from .backend import Backend, InvalidDatabaseURL, get_backend, is_postgres, is_sqlite, parse_database_url
+from .backend import (
+    Backend,
+    InvalidDatabaseURL,
+    backend_for_connection,
+    get_backend,
+    is_postgres,
+    is_sqlite,
+    parse_database_url,
+)
 from .compat import DictRow
 from .connect import BUSY_TIMEOUT_MS, connect, connect_postgres, connect_sqlite
 from .exceptions import (
@@ -68,6 +76,7 @@ __all__ = [
     "Backend",
     "InvalidDatabaseURL",
     "get_backend",
+    "backend_for_connection",
     "is_postgres",
     "is_sqlite",
     "parse_database_url",

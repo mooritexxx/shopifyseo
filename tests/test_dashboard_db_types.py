@@ -116,7 +116,7 @@ def test_migrate_link_suggestions_is_noop_on_non_sqlite(monkeypatch):
     """Non-SQLite backends must return False and execute no DDL."""
     import shopifyseo.dashboard_store as ds
 
-    monkeypatch.setattr(ds, "get_backend", lambda: Backend.POSTGRES)
+    monkeypatch.setattr(ds, "backend_for_connection", lambda _conn: Backend.POSTGRES)
 
     class RecordingConn:
         def __init__(self) -> None:

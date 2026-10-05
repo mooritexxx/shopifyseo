@@ -1,7 +1,5 @@
 """Tests for index sync target selection (skip already-indexed URLs unless force refresh)."""
 
-import sqlite3
-
 from shopifyseo import dashboard_actions as da
 from shopifyseo import dashboard_store as ds
 from shopifyseo.index_evidence import URL_INSPECTION_DAILY_BUDGET
@@ -12,8 +10,8 @@ class _Row(dict):
         return self.get(key)
 
 
-def test_index_inspection_targets_skips_indexed_when_not_force(monkeypatch):
-    conn = sqlite3.connect(":memory:")
+def test_index_inspection_targets_skips_indexed_when_not_force(monkeypatch, db_conn):
+    conn = db_conn
 
     products = [
         _Row(handle="a", index_status="Indexed", index_coverage=""),
@@ -30,8 +28,8 @@ def test_index_inspection_targets_skips_indexed_when_not_force(monkeypatch):
     assert [t[1] for t in result['targets']] == ["b", "c"]
 
 
-def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
-    conn = sqlite3.connect(":memory:")
+def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch, db_conn):
+    conn = db_conn
     all_targets = [
         ("product", "a", "https://example.com/products/a"),
         ("collection", "c", "https://example.com/collections/c"),
@@ -47,8 +45,8 @@ def test_index_inspection_targets_force_refresh_uses_all_targets(monkeypatch):
     assert result['targets'] == all_targets
 
 
-def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch):
-    conn = sqlite3.connect(":memory:")
+def test_index_inspection_targets_blog_article_skips_indexed(monkeypatch, db_conn):
+    conn = db_conn
     monkeypatch.setattr(da.dq, "fetch_products_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_collections_for_facts", lambda _c: [])
     monkeypatch.setattr(da.dq, "fetch_pages_for_facts", lambda _c: [])
@@ -87,10 +85,10 @@ def test_index_rate_cap_does_not_throttle_the_worker_pool() -> None:
     assert achievable_per_min <= 600, "worker pool could exceed the documented API rate limit"
 
 
-def test_stale_indexed_url_selected_fresh_indexed_skipped(monkeypatch):
+def test_stale_indexed_url_selected_fresh_indexed_skipped(monkeypatch, db_conn):
     """An indexed URL inspected 8 days ago is selected. One inspected 2 days ago is not."""
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     eight_days_ago = now - (8 * 86400)
     two_days_ago = now - (2 * 86400)
@@ -109,10 +107,10 @@ def test_stale_indexed_url_selected_fresh_indexed_skipped(monkeypatch):
     assert [t[1] for t in result['targets']] == ["stale"]
 
 
-def test_not_indexed_comes_before_stale_indexed(monkeypatch):
+def test_not_indexed_comes_before_stale_indexed(monkeypatch, db_conn):
     """Not-indexed URLs still come before stale indexed URLs."""
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     eight_days_ago = now - (8 * 86400)
 
@@ -130,10 +128,10 @@ def test_not_indexed_comes_before_stale_indexed(monkeypatch):
     assert handles == ["not-indexed", "stale-indexed"]
 
 
-def test_stale_indexed_ordered_oldest_first(monkeypatch):
+def test_stale_indexed_ordered_oldest_first(monkeypatch, db_conn):
     """Stale indexed URLs are ordered oldest inspection first."""
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     ten_days_ago = now - (10 * 86400)
     eight_days_ago = now - (8 * 86400)
@@ -154,14 +152,14 @@ def test_stale_indexed_ordered_oldest_first(monkeypatch):
     assert handles == ["stale-10d", "stale-9d", "stale-8d"]
 
 
-def test_existing_priority_order_unchanged(monkeypatch):
+def test_existing_priority_order_unchanged(monkeypatch, db_conn):
     """The existing priority order for not-indexed URLs is preserved exactly.
 
     Priority order: stale_robots_block (0), robots_block_current (1), then others (2).
     Within each priority, sorted by crawl time ascending.
     """
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     eight_days_ago = now - (8 * 86400)
 
@@ -182,14 +180,14 @@ def test_existing_priority_order_unchanged(monkeypatch):
     assert handles == ["stale-block", "current-block", "normal-old", "normal-new", "stale-indexed"]
 
 
-def test_stale_reinspect_budget_enforcement(monkeypatch):
+def test_stale_reinspect_budget_enforcement(monkeypatch, db_conn):
     """Stale indexed URLs are capped by the daily budget; non-stale are always included.
 
     With many stale URLs, plus non-zero used_today, plus non-stale targets, the selected
     stale count equals exactly the remaining budget, and the deferred count is reported.
     """
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     eight_days_ago = now - (8 * 86400)
 
@@ -226,10 +224,10 @@ def test_stale_reinspect_budget_enforcement(monkeypatch):
     assert total_selected <= URL_INSPECTION_DAILY_BUDGET
 
 
-def test_stale_reinspect_zero_remaining_budget(monkeypatch):
+def test_stale_reinspect_zero_remaining_budget(monkeypatch, db_conn):
     """When remaining budget is 0 or negative, 0 stale selected, non-stale list unchanged."""
     import time
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     now = time.time()
     eight_days_ago = now - (8 * 86400)
 
@@ -255,7 +253,7 @@ def test_stale_reinspect_zero_remaining_budget(monkeypatch):
     assert all(t[1].startswith("not-") for t in result['targets'])
 
 
-def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, tmp_path):
+def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, db_connect):
     """Verify stale reinspect stats appear in /api/sync-status via the real sync code path.
 
     Uses _run_selected_sync_steps with "index" scope, which stores result["index"] and
@@ -270,11 +268,10 @@ def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, tmp_pat
     from shopifyseo import index_evidence as ie
     from shopifyseo.dashboard_google import _cache as google_cache
 
-    db_path = str(tmp_path / "test.db")
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = db_connect()
     ds.ensure_dashboard_schema(conn)
     google_cache.ensure_google_cache_schema(conn)
+    monkeypatch.setattr(_sync, "_db_connect_for_actions", lambda _path: db_connect())
 
     now = time.time()
     eight_days_ago = now - (8 * 86400)
@@ -310,7 +307,7 @@ def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, tmp_pat
             SYNC_STATE["running"] = False
             SYNC_STATE["last_result"] = None
 
-        result = _sync.run_sync(db_path, scope="index", selected_scopes=["index"], force_refresh=False)
+        result = _sync.run_sync("unused.db", scope="index", selected_scopes=["index"], force_refresh=False)
 
         response = TestClient(app).get('/api/sync-status')
         assert response.status_code == 200
@@ -346,10 +343,9 @@ def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, tmp_pat
     finally:
         SYNC_STATE.clear()
         SYNC_STATE.update(old_state)
-        conn.close()
 
 
-def test_url_inspection_used_today_counts_real_cache_rows(tmp_path):
+def test_url_inspection_used_today_counts_real_cache_rows(db_conn):
     """Test url_inspection_used_today with real DB rows and injectable clock.
 
     Rows fetched today (LA time) count. Rows from before LA midnight do not.
@@ -369,9 +365,7 @@ def test_url_inspection_used_today_counts_real_cache_rows(tmp_path):
     one_minute_before_midnight = la_midnight_epoch - 60
     one_minute_after_midnight = la_midnight_epoch + 60
 
-    db_path = str(tmp_path / "test.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     google_cache.ensure_google_cache_schema(conn)
 
     conn.execute(
@@ -395,10 +389,9 @@ def test_url_inspection_used_today_counts_real_cache_rows(tmp_path):
     count = url_inspection_used_today(conn, now_fn=lambda: fake_now_epoch)
 
     assert count == 2, f"Expected 2 (key2 and key3 are today), got {count}"
-    conn.close()
 
 
-def test_real_used_today_reduces_stale_selection(tmp_path, monkeypatch):
+def test_real_used_today_reduces_stale_selection(monkeypatch, db_conn):
     """Test that the REAL url_inspection_used_today helper (not a stub) reduces stale selection.
 
     Insert cache rows for today, then verify that the real helper counts them and
@@ -417,9 +410,7 @@ def test_real_used_today_reduces_stale_selection(tmp_path, monkeypatch):
     start_of_today = int(la_midnight.timestamp())
     eight_days_ago = now - (8 * 86400)
 
-    db_path = str(tmp_path / "test.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = db_conn
     ds.ensure_dashboard_schema(conn)
     google_cache.ensure_google_cache_schema(conn)
 
@@ -448,5 +439,3 @@ def test_real_used_today_reduces_stale_selection(tmp_path, monkeypatch):
     assert remaining == 2, f"Remaining budget should be 2 (2000-1995-3), got {remaining}"
     assert result['stale_reinspect_selected'] == 2, f"Expected 2 stale selected (remaining budget), got {result['stale_reinspect_selected']}"
     assert result['stale_reinspect_deferred_budget'] == 8, f"Expected 8 stale deferred, got {result['stale_reinspect_deferred_budget']}"
-
-    conn.close()

@@ -15,7 +15,7 @@ from .dashboard_status import index_status_info
 from .index_evidence import (INDEX_FIELDS, INDEX_STORED_FIELDS, extract_inspection_fields,
                              with_index_flag, update_catalog_inspection, ensure_evidence_schema)
 from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
-from .db import Backend, DictRow, get_backend, get_connection, table_columns, table_ddl, table_exists
+from .db import Backend, DictRow, backend_for_connection, get_connection, table_columns, table_ddl, table_exists
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
 
 
@@ -77,12 +77,14 @@ def _migrate_link_suggestions_check_constraint(conn: Any) -> bool:
     SQLite-only path: SQLite cannot ALTER CHECK constraints, so this rebuilds
     the table when the live CREATE statement still lacks ``'undone'``. New
     installs already have the expanded CHECK. Non-SQLite backends return
-    False immediately (``get_backend() != Backend.SQLITE``) and execute no
-    DDL. Postgres ``table_ddl()`` reconstructs columns without CHECK text,
-    so the ``'undone'`` probe would otherwise always trigger this rebuild.
-    Returns True if migration was performed, False otherwise.
+    False immediately when ``backend_for_connection(conn)`` is not SQLite
+    and execute no DDL. Plan 7b testdb Postgres connections keep
+    ``DATABASE_URL`` unset, so ``get_backend()`` would still look like
+    SQLite. Postgres ``table_ddl()`` reconstructs columns without CHECK
+    text, so the ``'undone'`` probe would otherwise always trigger this
+    rebuild. Returns True if migration was performed, False otherwise.
     """
-    if get_backend() != Backend.SQLITE:
+    if backend_for_connection(conn) != Backend.SQLITE:
         return False
     if not table_exists(conn, "link_suggestions"):
         return False

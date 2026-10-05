@@ -1,10 +1,9 @@
-import sqlite3
 from datetime import date
 
 from shopifyseo import dashboard_google as dg
 
 
-def test_fetch_gsc_property_breakdown_sorts_by_impressions_not_api_order(monkeypatch):
+def test_fetch_gsc_property_breakdown_sorts_by_impressions_not_api_order(monkeypatch, db_conn):
     # The live searchAnalytics/query v3 API ignores the orderBys we send and always
     # returns rows clicks-descending. Confirm the client re-sorts by impressions so
     # callers reading rows[0] as "top bucket" (e.g. the Overview segment tile) get
@@ -20,7 +19,7 @@ def test_fetch_gsc_property_breakdown_sorts_by_impressions_not_api_order(monkeyp
             ]
         },
     )
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     rows, err = dg._gsc._fetch_gsc_property_breakdown(
         conn, "sc-domain:example.com", date(2026, 8, 1), date(2026, 8, 14), dimension="searchAppearance"
     )
@@ -40,8 +39,8 @@ def test_top_bucket_impressions_pct_vs_prior_none_without_prior_cache():
     assert dg._top_bucket_impressions_pct_vs_prior(cur, None) is None
 
 
-def test_delete_search_console_overview_cache_clears_tier_a_types():
-    conn = sqlite3.connect(":memory:")
+def test_delete_search_console_overview_cache_clears_tier_a_types(db_conn):
+    conn = db_conn
     dg.ensure_google_cache_schema(conn)
     types = (
         "search_console_overview",
@@ -66,8 +65,8 @@ def test_delete_search_console_overview_cache_clears_tier_a_types():
     assert conn.execute("SELECT COUNT(*) FROM google_api_cache").fetchone()[0] == 0
 
 
-def test_delete_search_console_overview_timeseries_only_keeps_tier_a_rows():
-    conn = sqlite3.connect(":memory:")
+def test_delete_search_console_overview_timeseries_only_keeps_tier_a_rows(db_conn):
+    conn = db_conn
     dg.ensure_google_cache_schema(conn)
     conn.execute(
         """
@@ -95,7 +94,7 @@ def test_delete_search_console_overview_timeseries_only_keeps_tier_a_rows():
     assert row[0] == "gsc_property_country"
 
 
-def test_refresh_gsc_property_breakdowns_for_site_skips_empty_url(monkeypatch):
+def test_refresh_gsc_property_breakdowns_for_site_skips_empty_url(monkeypatch, db_conn):
     calls: list[str] = []
 
     def fake(_conn, **kwargs):
@@ -103,13 +102,13 @@ def test_refresh_gsc_property_breakdowns_for_site_skips_empty_url(monkeypatch):
         return {}
 
     monkeypatch.setattr(dg._gsc, "get_gsc_property_breakdowns_cached", fake)
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     dg.refresh_gsc_property_breakdowns_for_site(conn, "")
     dg.refresh_gsc_property_breakdowns_for_site(conn, "   ")
     assert calls == []
 
 
-def test_refresh_gsc_property_breakdowns_refreshes_four_period_modes(monkeypatch):
+def test_refresh_gsc_property_breakdowns_refreshes_four_period_modes(monkeypatch, db_conn):
     calls: list[str] = []
 
     def fake(_conn, *, site_url, period_mode, anchor, current_start, current_end, refresh=False, **kwargs):
@@ -119,7 +118,7 @@ def test_refresh_gsc_property_breakdowns_refreshes_four_period_modes(monkeypatch
         return {}
 
     monkeypatch.setattr(dg._gsc, "get_gsc_property_breakdowns_cached", fake)
-    conn = sqlite3.connect(":memory:")
+    conn = db_conn
     dg.refresh_gsc_property_breakdowns_for_site(conn, "https://example.com/")
     assert set(calls) == {"mtd", "full_months", "since_2026_02_15", "rolling_30d"}
     assert len(calls) == 4

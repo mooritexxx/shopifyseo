@@ -1,12 +1,12 @@
 """Tests for token-overlap related catalog ranking (articles / pages)."""
 
 import json
-import sqlite3
+from typing import Any
 
 from shopifyseo import dashboard_queries as dq
 
 
-def _minimal_catalog_schema(conn: sqlite3.Connection) -> None:
+def _minimal_catalog_schema(conn: Any) -> None:
     conn.executescript(
         """
         CREATE TABLE products (
@@ -38,9 +38,8 @@ def _minimal_catalog_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def test_related_products_prefers_token_overlap_over_alphabetical_order():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_related_products_prefers_token_overlap_over_alphabetical_order(db_conn):
+    conn = db_conn
     _minimal_catalog_schema(conn)
     conn.execute(
         "INSERT INTO products VALUES ('1','ABT Berry Ice Disposable','abt-berry','ABT','Disposable','ACTIVE','[]','')",
@@ -66,9 +65,8 @@ def test_related_products_prefers_token_overlap_over_alphabetical_order():
     assert [p["handle"] for p in rel][:1] == ["uwell-cal"]
 
 
-def test_related_pages_respects_exclude_handle_and_overlap():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_related_pages_respects_exclude_handle_and_overlap(db_conn):
+    conn = db_conn
     _minimal_catalog_schema(conn)
     conn.execute(
         "INSERT INTO pages VALUES ('1','Shipping Info','shipping','<p>Free shipping details</p>','','')",
@@ -93,9 +91,8 @@ def test_related_pages_respects_exclude_handle_and_overlap():
     assert "shipping" in handles or "contact" in handles
 
 
-def test_related_collections_uses_token_overlap_first():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_related_collections_uses_token_overlap_first(db_conn):
+    conn = db_conn
     _minimal_catalog_schema(conn)
     conn.execute(
         "INSERT INTO collections VALUES ('1','Disposable Vapes Sale','disp-sale','','')",

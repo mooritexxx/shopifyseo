@@ -1,5 +1,3 @@
-import sqlite3
-
 from backend.app.services._catalog_helpers import _signal_cards_for
 
 
@@ -42,8 +40,8 @@ def _signals(inspection_detail: dict | None) -> dict:
     }
 
 
-def test_index_card_omits_generic_search_console_href_when_no_inspection_deep_link():
-    conn = sqlite3.connect(":memory:")
+def test_index_card_omits_generic_search_console_href_when_no_inspection_deep_link(db_conn):
+    conn = db_conn
     cards = _signal_cards_for(
         conn,
         "product",
@@ -56,8 +54,8 @@ def test_index_card_omits_generic_search_console_href_when_no_inspection_deep_li
     assert index_card["action_href"] is None
 
 
-def test_index_card_keeps_cached_inspection_deep_link():
-    conn = sqlite3.connect(":memory:")
+def test_index_card_keeps_cached_inspection_deep_link(db_conn):
+    conn = db_conn
     deep_link = "https://search.google.com/search-console/inspect?resource_id=x&id=y"
     cards = _signal_cards_for(
         conn,

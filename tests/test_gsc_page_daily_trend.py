@@ -1,6 +1,5 @@
 """Daily per-page history storage and trend computation."""
 
-import sqlite3
 from datetime import date, timedelta
 
 import pytest
@@ -16,12 +15,9 @@ TODAY = date(2026, 7, 25)
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    ensure_dashboard_schema(c)
-    yield c
-    c.close()
+def conn(db_conn):
+    ensure_dashboard_schema(db_conn)
+    return db_conn
 
 
 def _rows(url: str, start: date, days: int, clicks: int, impressions: int = 0):

@@ -72,7 +72,7 @@ def ensure_schema(conn):
     # A marker prevents deleted/deactivated seed keywords reappearing on restart.
     seeded = conn.execute("SELECT value FROM service_settings WHERE key='rank_tracking_seeded'").fetchone()
     if not seeded:
-        conn.executemany('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT(term) DO NOTHING', [(t,) for t in TERMS])
+        conn.executemany('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT DO NOTHING', [(t,) for t in TERMS])
         conn.execute("INSERT INTO service_settings(key,value) VALUES ('rank_tracking_seeded','1')")
-    conn.execute("INSERT INTO service_settings(key,value) VALUES ('serpapi_rank_monthly_budget','250') ON CONFLICT(key) DO NOTHING")
+    conn.execute("INSERT INTO service_settings(key,value) VALUES ('serpapi_rank_monthly_budget','250') ON CONFLICT DO NOTHING")
     conn.commit()

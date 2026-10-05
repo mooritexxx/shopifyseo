@@ -267,7 +267,7 @@ def import_baseline(conn, path):
             if not row.get('source','').startswith('serpapi google.ca Toronto desktop'):
                 raise RankError('Only the supplied SerpApi baseline format is supported; GSC is not a rank.')
             term = ' '.join(row['term'].lower().split())
-            conn.execute('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT(term) DO NOTHING', (term,))
+            conn.execute('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT DO NOTHING', (term,))
             keyword_id = conn.execute('SELECT id FROM tracked_keywords WHERE term=?', (term,)).fetchone()[0]
             stamp = datetime.fromisoformat(row['checked_at_pt']).astimezone(TZ).isoformat(timespec='seconds')
             identity = hashlib.sha256(f"legacy-serpapi:{term}:{stamp}".encode()).hexdigest()

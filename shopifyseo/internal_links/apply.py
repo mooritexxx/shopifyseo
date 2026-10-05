@@ -218,7 +218,7 @@ def _update_local(conn, sug, body, base_url, event):
         if target:
             conn.execute("INSERT INTO internal_links "
                          "(source_type, source_handle, target_type, target_handle, anchor_text, href) VALUES (?,?,?,?,?,?) "
-                         "ON CONFLICT(source_type, source_handle, target_type, target_handle, href) DO NOTHING",
+                         "ON CONFLICT DO NOTHING",
                          (sug["source_type"], sug["source_handle"], *target, anchor, href))
     conn.execute("UPDATE link_suggestions SET status = ?, applied_at = ? WHERE id = ?",
                  ("undone" if event == "undo" else "applied", int(time.time()), sug["id"]))

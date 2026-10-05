@@ -674,7 +674,7 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
             SELECT id, linked_blog_handle, linked_article_handle, shopify_article_id, '', created_at
             FROM article_ideas
             WHERE linked_article_handle != '' AND linked_blog_handle != ''
-            ON CONFLICT(idea_id, blog_handle, article_handle) DO NOTHING
+            ON CONFLICT DO NOTHING
             """
         )
         conn.commit()

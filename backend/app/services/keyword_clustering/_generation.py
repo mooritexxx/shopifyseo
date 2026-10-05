@@ -579,7 +579,7 @@ def generate_clusters(
         for kw in cluster.get("keywords", []):
             conn.execute(
                 "INSERT INTO cluster_keywords (cluster_id, keyword) VALUES (?, ?) "
-                "ON CONFLICT(cluster_id, keyword) DO NOTHING",
+                "ON CONFLICT DO NOTHING",
                 (cluster_id, kw),
             )
     conn.commit()

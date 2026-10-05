@@ -513,7 +513,7 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
                      labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
                      is_manual, updated_at)
                 VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?)
-                ON CONFLICT(domain) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (d, is_man, now_stub),
             )

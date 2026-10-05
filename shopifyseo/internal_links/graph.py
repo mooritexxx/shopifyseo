@@ -88,7 +88,7 @@ def rebuild_internal_link_graph(conn: sqlite3.Connection, base_url: str | None =
                     "INSERT INTO internal_links "
                     "(source_type, source_handle, target_type, target_handle, anchor_text, href) "
                     "VALUES (?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(source_type, source_handle, target_type, target_handle, href) DO NOTHING",
+                    "ON CONFLICT DO NOTHING",
                     (source_type, row["src_handle"], target[0], target[1], anchor_text, href),
                 )
                 inserted += 1

@@ -1376,7 +1376,7 @@ def link_idea_to_article(
         """INSERT INTO idea_articles
            (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
            VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(idea_id, blog_handle, article_handle) DO NOTHING""",
+           ON CONFLICT DO NOTHING""",
         (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, int(_time.time())),
     )
     # Legacy columns: keep first article for backward compat. Do not change status — approved ideas stay approved.
@@ -1405,7 +1405,7 @@ def save_article_target_keywords(
             """INSERT INTO article_target_keywords
                (blog_handle, article_handle, keyword, is_primary, source)
                VALUES (?, ?, ?, 1, 'idea')
-               ON CONFLICT(blog_handle, article_handle, keyword) DO NOTHING""",
+               ON CONFLICT DO NOTHING""",
             (blog_handle, article_handle, primary_keyword.strip().lower()),
         )
     for kw in supporting_keywords:
@@ -1415,7 +1415,7 @@ def save_article_target_keywords(
                 """INSERT INTO article_target_keywords
                    (blog_handle, article_handle, keyword, is_primary, source)
                    VALUES (?, ?, ?, 0, 'idea')
-                   ON CONFLICT(blog_handle, article_handle, keyword) DO NOTHING""",
+                   ON CONFLICT DO NOTHING""",
                 (blog_handle, article_handle, kw_clean),
             )
     conn.commit()

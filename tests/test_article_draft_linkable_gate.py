@@ -439,6 +439,8 @@ class TestPatchRoute:
         captured_allowed_keys = []
 
         class MockConn:
+            """Proxy so backend_for_connection still sees the live testdb (psycopg info)."""
+
             def __init__(self, real_conn):
                 self._conn = real_conn
 
@@ -447,6 +449,9 @@ class TestPatchRoute:
 
             def close(self):
                 pass
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
 
         mock_conn = MockConn(conn)
 

@@ -225,6 +225,23 @@ class TestDbConnFixture:
         row = db_conn.execute("SELECT last_insert_rowid()").fetchone()
         assert int(row[0]) == 1
 
+    def test_bool_params_and_total_changes_on_testdb(self, testdb, db_conn) -> None:
+        db_conn.execute(
+            "CREATE TABLE flag_probe (id INTEGER PRIMARY KEY, flag INTEGER NOT NULL DEFAULT 0)"
+        )
+        before = getattr(db_conn, "total_changes", 0)
+        db_conn.execute(
+            "INSERT INTO flag_probe (id, flag) VALUES (?, ?)",
+            (1, True),
+        )
+        db_conn.commit()
+        row = db_conn.execute("SELECT flag FROM flag_probe WHERE id = 1").fetchone()
+        assert int(row[0]) == 1
+        assert getattr(db_conn, "total_changes", before + 1) >= before + 1
+        after_insert = db_conn.total_changes
+        db_conn.execute("SELECT flag FROM flag_probe WHERE id = 1")
+        assert db_conn.total_changes == after_insert
+
     def test_insert_or_replace_and_datetime_now(self, testdb, db_conn) -> None:
         db_conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
         db_conn.execute(

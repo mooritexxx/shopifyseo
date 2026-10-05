@@ -197,6 +197,8 @@ cd frontend && npm run build
 ```
 
 For a deeper technical reference see [TECHNICAL_DOC.md](TECHNICAL_DOC.md).
+PostgreSQL cutover tooling (dry-run only; live stays on SQLite) is documented in
+[docs/pg-cutover.md](docs/pg-cutover.md).
 
 ---
 

@@ -46,6 +46,9 @@ PYTHONPATH=. python -m pytest tests/test_db_layer.py tests/test_db_fixture.py -q
 
 Live deploy stays on SQLite until Salar approves a `DATABASE_URL` cutover.
 `TEST_DATABASE_URL` is tests-only and is not sourced from `/home/box/.config/shopifyseo/pg.env`.
+Cutover **tooling** (pgloader runner, orphan flag, rollback delta) lives in
+[`docs/pg-cutover.md`](../docs/pg-cutover.md) and `tests/test_pg_cutover_tooling.py`.
+Those scripts never flip live uvicorn to Postgres.
 
 ## CI
 

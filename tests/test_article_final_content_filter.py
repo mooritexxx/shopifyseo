@@ -1,7 +1,6 @@
 """Regression evidence from the Sep 25/26/30 FAQ trial and Sep 29 copy cleanup."""
 import html
 import logging
-import sqlite3
 
 import pytest
 
@@ -130,18 +129,17 @@ def test_distinct_product_link_gate(links, count):
 
 
 @pytest.fixture
-def conn(monkeypatch):
+def conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    connection = sqlite3.connect(':memory:')
-    connection.row_factory = sqlite3.Row
+    connection = testdb.connect()
     ensure_dashboard_schema(connection)
     connection.execute("INSERT INTO service_settings (key, value) VALUES ('store_custom_domain', 'https://example.com')")
     connection.executemany(
-        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
-        [(f'p{i}', f'Product {i}') for i in range(3)])
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, ?, '[]', '[]', '{}', '')",
+        [(f'gid://shopify/Product/{i}', f'p{i}', f'Product {i}') for i in range(3)])
     connection.commit()
     from shopifyseo.dashboard_ai_engine_parts.settings import ai_settings
     monkeypatch.setattr(_article_draft, 'ai_settings', lambda c: {**ai_settings(c), 'article_draft_phased': False})
@@ -355,7 +353,7 @@ def test_product_repair_uses_same_brand_and_ignores_stock(conn, monkeypatch):
     """
     conn.execute("UPDATE products SET vendor = 'Fog', total_inventory = 5, status = 'ACTIVE'")
     conn.execute("UPDATE products SET total_inventory = 0 WHERE handle = 'p0'")
-    conn.execute("INSERT INTO products (handle,title,vendor,status,tags_json,options_json,raw_json,synced_at) VALUES ('unrelated','Unrelated','Other','ACTIVE','[]','[]','{}','')")
+    conn.execute("INSERT INTO products (shopify_id,handle,title,vendor,status,tags_json,options_json,raw_json,synced_at) VALUES ('gid://shopify/Product/unrelated','unrelated','Unrelated','Other','ACTIVE','[]','[]','{}','')")
     conn.commit()
     calls = []
     def ai(*args, stage='', **kwargs):
@@ -393,18 +391,11 @@ def test_insufficient_relevant_products_cannot_be_padded_by_ai(conn, monkeypatch
         _article_draft.generate_article_draft(conn, 'Fog Pro X')
 
 
-def test_failed_body_is_saved_and_resume_preserves_rejected_faq_gate(conn, monkeypatch, tmp_path):
+def test_failed_body_is_saved_and_resume_preserves_rejected_faq_gate(conn, monkeypatch, testdb, db_connect):
     from shopifyseo import dashboard_store as store
-    path = tmp_path / 'draft.sqlite3'
-    disk = sqlite3.connect(path)
-    conn.backup(disk)
-    disk.row_factory = sqlite3.Row
+    disk = testdb.connect()
     run_id = store.create_article_draft_run(disk, {'topic': 'Fog Pro X'})
-    def connect():
-        db = sqlite3.connect(path)
-        db.row_factory = sqlite3.Row
-        return db
-    monkeypatch.setattr(store, 'db_connect', connect)
+    monkeypatch.setattr(store, 'db_connect', db_connect)
     body = PRODUCT_LINKS + FILLER + '<h3>Is beast mode vape good?</h3><p>Reject.</p>'
     stages = []
     def ai(*args, stage='', **kwargs):
@@ -413,22 +404,22 @@ def test_failed_body_is_saved_and_resume_preserves_rejected_faq_gate(conn, monke
     monkeypatch.setattr(_article_draft, '_call_ai', ai)
     with pytest.raises(RuntimeError, match='All FAQ candidates were rejected'):
         _article_draft.generate_article_draft(disk, 'Fog Pro X', draft_run_id=run_id)
-    with connect() as read:
+    with db_connect() as read:
         saved = store.get_article_draft_run(read, run_id)
     assert 'Product details.' in saved['body']
     assert saved['validation_summary']['had_faq_candidates']
     assert not saved['checkpoints']['content']['validated']
     assert saved['checkpoints']['pre_validation']['body'] == body
     with pytest.raises(RuntimeError, match='All FAQ candidates were rejected'):
-        _article_draft.generate_article_draft(connect(), 'Fog Pro X', draft_run_id=run_id, resume_run=saved)
+        _article_draft.generate_article_draft(db_connect(), 'Fog Pro X', draft_run_id=run_id, resume_run=saved)
     assert stages.count('article_draft') == 1
     def repaired(*args, stage='', **kwargs):
         assert stage == 'article_draft_append_repair'
         return {'append_html': '<h3>Which flavours are available?</h3><p>Berry.</p>'}
     monkeypatch.setattr(_article_draft, '_call_ai', repaired)
-    result = _article_draft.generate_article_draft(connect(), 'Fog Pro X', draft_run_id=run_id, resume_run=saved)
+    result = _article_draft.generate_article_draft(db_connect(), 'Fog Pro X', draft_run_id=run_id, resume_run=saved)
     assert 'Which flavours are available?' in result['body']
-    with connect() as read:
+    with db_connect() as read:
         validated = store.get_article_draft_run(read, run_id)
     assert validated['checkpoints']['content']['validated']
     assert validated['validation_summary']['ok']

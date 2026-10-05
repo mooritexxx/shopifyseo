@@ -1,15 +1,13 @@
 """Tests for article draft retrieval query + hybrid RAG merge (plan phases 0–2)."""
 
-import sqlite3
-
 from shopifyseo.article_draft_retrieval import (
     build_article_draft_retrieval_query,
     merge_embedding_rag_with_token_overlap,
 )
 
 
-def test_build_article_draft_retrieval_query_includes_keywords_and_cluster():
-    conn = sqlite3.connect(":memory:")
+def test_build_article_draft_retrieval_query_includes_keywords_and_cluster(testdb):
+    conn = testdb.connect()
     conn.execute(
         """
         CREATE TABLE clusters (
@@ -56,10 +54,9 @@ def test_build_article_draft_retrieval_query_appends_extra_terms_within_budget()
     assert "long-tail related query two" in lowered
 
 
-def test_merge_embedding_rag_boosts_on_topic_product_over_higher_cosine_noise():
+def test_merge_embedding_rag_boosts_on_topic_product_over_higher_cosine_noise(testdb):
     """Embedding-only leader with no token overlap loses to weaker cosine + strong overlap."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     conn.execute(
         """
         CREATE TABLE products (
@@ -107,8 +104,8 @@ def test_merge_embedding_rag_boosts_on_topic_product_over_higher_cosine_noise():
     assert handles[0] == "uwell-cal", f"expected on-topic product first, got {handles}"
 
 
-def test_merge_embedding_falls_back_when_query_has_no_tokens():
-    conn = sqlite3.connect(":memory:")
+def test_merge_embedding_falls_back_when_query_has_no_tokens(testdb):
+    conn = testdb.connect()
     conn.execute(
         "CREATE TABLE products (shopify_id TEXT, title TEXT, handle TEXT UNIQUE, vendor TEXT, product_type TEXT, status TEXT, tags_json TEXT, seo_title TEXT)"
     )

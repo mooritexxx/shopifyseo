@@ -30,13 +30,11 @@ def test_count_discover_empty_payloads() -> None:
     )
 
 
-def test_count_db_empty_schema(tmp_path) -> None:
-    import sqlite3
-
-    db_path = tmp_path / "t.sqlite3"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    conn.commit()
-    assert count_catalog_images_for_cache_db(conn) == 0
-    conn.close()
+def test_count_db_empty_schema(testdb) -> None:
+    conn = testdb.connect()
+    try:
+        ensure_schema(conn)
+        conn.commit()
+        assert count_catalog_images_for_cache_db(conn) == 0
+    finally:
+        conn.close()

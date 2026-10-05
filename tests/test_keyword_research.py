@@ -357,10 +357,9 @@ def test_match_gsc_containment_shorter_in_longer():
     assert match_gsc_queries("geek bar canada", gsc_data) is None
 
 
-def test_get_service_setting_null_value_returns_default():
+def test_get_service_setting_null_value_returns_default(testdb):
     """SQLite rows with NULL value must not be passed to json.loads as None."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, NULL)",
@@ -370,9 +369,8 @@ def test_get_service_setting_null_value_returns_default():
     assert get_service_setting(conn, TARGET_KEY, "{}") == "{}"
 
 
-def test_load_target_keywords_null_blob_returns_empty():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_load_target_keywords_null_blob_returns_empty(testdb):
+    conn = testdb.connect()
     conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, NULL)",
@@ -383,10 +381,9 @@ def test_load_target_keywords_null_blob_returns_empty():
     assert data == {"last_run": None, "unit_cost": 0, "items": [], "total": 0}
 
 
-def test_load_target_keywords_fills_missing_content_type_key():
+def test_load_target_keywords_fills_missing_content_type_key(testdb):
     """Manual JSON rows that omit content_type must not break GET /target."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT)")
     blob = {
         "items": [
@@ -420,9 +417,8 @@ def test_normalize_target_keyword_item_for_insert_uses_vocabulary():
     assert commercial["content_type"] == "Comparison / Buying guide"
 
 
-def test_upsert_target_keyword_always_sets_content_type():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_upsert_target_keyword_always_sets_content_type(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     row = upsert_target_keyword(conn, "canadian vape store", intent="navigational")
     assert row["content_type"] == "Brand page"
@@ -433,9 +429,9 @@ def test_upsert_target_keyword_always_sets_content_type():
     assert row2["content_type"] == "Brand page"
 
 
-def _make_keyword_metrics_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _make_keyword_metrics_db(source):
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     ensure_dashboard_schema(conn)
     return conn
 
@@ -477,8 +473,8 @@ def _insert_keyword_metric(conn: sqlite3.Connection, **fields) -> None:
     conn.commit()
 
 
-def test_load_approved_keywords_filters_by_status():
-    conn = _make_keyword_metrics_db()
+def test_load_approved_keywords_filters_by_status(testdb):
+    conn = _make_keyword_metrics_db(testdb)
     _insert_keyword_metric(conn, keyword="kw-new", status="new", volume=100)
     _insert_keyword_metric(conn, keyword="kw-approved", status="approved", volume=200)
     _insert_keyword_metric(conn, keyword="kw-dismissed", status="dismissed", volume=300)
@@ -489,8 +485,8 @@ def test_load_approved_keywords_filters_by_status():
     assert items[0]["volume"] == 200
 
 
-def test_load_approved_keywords_parses_json_columns():
-    conn = _make_keyword_metrics_db()
+def test_load_approved_keywords_parses_json_columns(testdb):
+    conn = _make_keyword_metrics_db(testdb)
     _insert_keyword_metric(
         conn,
         keyword="vape pen",
@@ -508,9 +504,9 @@ def test_load_approved_keywords_parses_json_columns():
     assert kw["serp_features"] == {"featured_snippet": 1, "people_also_ask": 2}
 
 
-def test_load_approved_keywords_aliases_content_type_label():
+def test_load_approved_keywords_aliases_content_type_label(testdb):
     """Clustering code expects `content_type`, DB column is `content_type_label`."""
-    conn = _make_keyword_metrics_db()
+    conn = _make_keyword_metrics_db(testdb)
     _insert_keyword_metric(
         conn,
         keyword="buy vape",
@@ -522,35 +518,33 @@ def test_load_approved_keywords_aliases_content_type_label():
     assert items[0]["content_type"] == "Product / Collection page"
 
 
-def test_load_approved_keywords_empty_db():
-    conn = _make_keyword_metrics_db()
+def test_load_approved_keywords_empty_db(testdb):
+    conn = _make_keyword_metrics_db(testdb)
     assert load_approved_keywords(conn) == []
 
 
-def test_sync_keyword_metrics_updated_at_is_epoch_integer():
+def test_sync_keyword_metrics_updated_at_is_epoch_integer(testdb):
     """keyword_metrics.updated_at is INTEGER epoch, not CURRENT_TIMESTAMP text."""
-    conn = _make_keyword_metrics_db()
+    conn = _make_keyword_metrics_db(testdb)
     upsert_target_keyword(conn, "epoch kw", status="approved")
     row = conn.execute(
-        "SELECT updated_at, typeof(updated_at) AS t FROM keyword_metrics WHERE keyword = ?",
+        "SELECT updated_at FROM keyword_metrics WHERE keyword = ?",
         ("epoch kw",),
     ).fetchone()
-    assert row["t"] == "integer"
     assert isinstance(row["updated_at"], int)
     assert row["updated_at"] > 1_700_000_000
     # Re-sync must not switch the column to TEXT (the live 3-row mixed-type bug).
     sync_keyword_metrics_to_db(conn)
     row2 = conn.execute(
-        "SELECT updated_at, typeof(updated_at) AS t FROM keyword_metrics WHERE keyword = ?",
+        "SELECT updated_at FROM keyword_metrics WHERE keyword = ?",
         ("epoch kw",),
     ).fetchone()
-    assert row2["t"] == "integer"
     assert isinstance(row2["updated_at"], int)
 
 
-def test_load_approved_keywords_survives_bad_json():
+def test_load_approved_keywords_survives_bad_json(testdb):
     """Corrupt JSON in a column should not crash — keep the raw string."""
-    conn = _make_keyword_metrics_db()
+    conn = _make_keyword_metrics_db(testdb)
     conn.execute(
         "INSERT INTO keyword_metrics (keyword, status, intent_raw, seed_keywords, serp_features) "
         "VALUES (?, 'approved', ?, ?, ?)",
@@ -564,8 +558,8 @@ def test_load_approved_keywords_survives_bad_json():
     assert isinstance(items[0]["intent_raw"], str)
 
 
-def test_sync_competitor_top_pages_from_keyword_metrics_limits_per_domain():
-    conn = _make_keyword_metrics_db()
+def test_sync_competitor_top_pages_from_keyword_metrics_limits_per_domain(testdb):
+    conn = _make_keyword_metrics_db(testdb)
     for i in range(60):
         _insert_keyword_metric(
             conn,

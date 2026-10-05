@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.db import open_db_connection
-from shopifyseo.db import order_ci
+from shopifyseo.db import backend_for_connection, order_ci
 from shopifyseo.catalog_image_work import catalog_url_cache_key_from_norm
 from shopifyseo.dashboard_ai_engine_parts.images import vision_suggest_catalog_image_alt
 from shopifyseo.dashboard_ai_engine_parts.settings import ai_settings
@@ -421,7 +421,7 @@ def _list_catalog_image_seo_rows_impl(
                pi.width, pi.height, p.handle, p.title
         FROM product_images pi
         JOIN products p ON p.shopify_id = pi.product_shopify_id
-        ORDER BY {order_ci('p.handle')}, COALESCE(pi.position, 9999), pi.shopify_id
+        ORDER BY {order_ci('p.handle', backend=backend_for_connection(conn))}, COALESCE(pi.position, 9999), pi.shopify_id
         """
     ).fetchall()
     for r in rows:

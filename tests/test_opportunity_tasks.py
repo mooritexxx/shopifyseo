@@ -1,5 +1,4 @@
 import json
-import sqlite3
 from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
@@ -9,15 +8,16 @@ from shopifyseo.seo_quality import metadata_issues, validate_changed_metadata
 
 
 @pytest.fixture
-def db(tmp_path):
-    path = str(tmp_path / 'tasks.db')
+def db(testdb):
     def connect():
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return testdb.connect()
     conn = connect()
     tasks.ensure_schema(conn)
-    conn.execute('CREATE TABLE gsc_query_rows(object_type, object_handle, query, clicks, impressions, ctr, position, fetched_at)')
+    conn.execute(
+        'CREATE TABLE gsc_query_rows('
+        'object_type TEXT, object_handle TEXT, query TEXT, clicks INTEGER, '
+        'impressions INTEGER, ctr REAL, position REAL, fetched_at INTEGER)'
+    )
     conn.executemany('INSERT INTO gsc_query_rows VALUES(?,?,?,?,?,?,?,?)', [('product','test','primary',5,1000,.005,2,123),('product','test','secondary',3,300,.01,12,123)])
     conn.commit()
     yield conn, connect

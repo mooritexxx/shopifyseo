@@ -1,7 +1,5 @@
 """SERP-informed draft: prompt wiring with mocked AI."""
 
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_ai_engine_parts import _article_draft
@@ -21,25 +19,24 @@ def _disable_phased_article_draft(monkeypatch):
 
 
 @pytest.fixture
-def db_conn(monkeypatch):
+def db_conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",
         ("store_custom_domain", "https://example.com"),
     )
     conn.execute(
-        "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
-        ("pods", "Pod Kits"),
+        "INSERT INTO collections (shopify_id, handle, title, raw_json, synced_at) VALUES (?, ?, ?, '{}', '')",
+        ("gid://shopify/Collection/1", "pods", "Pod Kits"),
     )
     conn.executemany(
-        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
-        [(f"product-{i}", f"Product {i}") for i in range(3)],
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, ?, '[]', '[]', '{}', '')",
+        [(f"gid://shopify/Product/{i}", f"product-{i}", f"Product {i}") for i in range(3)],
     )
     conn.commit()
     return conn

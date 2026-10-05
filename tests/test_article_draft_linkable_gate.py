@@ -1,6 +1,5 @@
 """Tests for task #51: linkable-product gate, topic-relevant link allowlist, commerce-heading gate."""
 import logging
-import sqlite3
 
 import pytest
 
@@ -30,13 +29,12 @@ from shopifyseo.product_linkability import (
 
 
 @pytest.fixture
-def conn(monkeypatch):
+def conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    connection = sqlite3.connect(':memory:')
-    connection.row_factory = sqlite3.Row
+    connection = testdb.connect()
     ensure_dashboard_schema(connection)
     connection.execute("INSERT INTO service_settings (key, value) VALUES ('store_custom_domain', 'https://example.com')")
 
@@ -87,22 +85,22 @@ class TestLinkability:
         assert is_product_linkable(conn, 'zed-mango')
 
     def test_draft_status_not_linkable(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('draft-prod', 'Draft Product', 'X', 'DRAFT', 'https://example.com/products/draft-prod', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/draft-prod', 'draft-prod', 'Draft Product', 'X', 'DRAFT', 'https://example.com/products/draft-prod', '[]', '[]', '{}', '')")
         conn.commit()
         assert not is_product_linkable(conn, 'draft-prod')
 
     def test_archived_status_not_linkable(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('archived-prod', 'Archived Product', 'X', 'ARCHIVED', 'https://example.com/products/archived-prod', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/archived-prod', 'archived-prod', 'Archived Product', 'X', 'ARCHIVED', 'https://example.com/products/archived-prod', '[]', '[]', '{}', '')")
         conn.commit()
         assert not is_product_linkable(conn, 'archived-prod')
 
     def test_empty_online_store_url_not_linkable(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('no-url-prod', 'No URL Product', 'X', 'ACTIVE', '', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/no-url-prod', 'no-url-prod', 'No URL Product', 'X', 'ACTIVE', '', '[]', '[]', '{}', '')")
         conn.commit()
         assert not is_product_linkable(conn, 'no-url-prod')
 
     def test_null_url_legacy_is_linkable(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('null-url-prod', 'Null URL Product', 'X', 'ACTIVE', NULL, '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/null-url-prod', 'null-url-prod', 'Null URL Product', 'X', 'ACTIVE', NULL, '[]', '[]', '{}', '')")
         conn.commit()
         assert is_product_linkable(conn, 'null-url-prod')
 
@@ -113,11 +111,10 @@ class TestLinkability:
         assert not is_product_linkable(conn, '')
         assert not is_product_linkable(conn, '   ')
 
-    def test_minimal_schema_works(self, monkeypatch):
+    def test_minimal_schema_works(self, testdb, monkeypatch):
         from shopifyseo.dashboard_ai_engine_parts import config
         monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
-        minimal = sqlite3.connect(':memory:')
-        minimal.row_factory = sqlite3.Row
+        minimal = testdb.connect()
         minimal.execute("CREATE TABLE products (handle TEXT, title TEXT, status TEXT)")
         minimal.execute("INSERT INTO products (handle, title, status) VALUES ('simple', 'Simple Prod', 'ACTIVE')")
         minimal.commit()
@@ -208,7 +205,7 @@ class TestTopicRelevantAllowlist:
         assert 'nonexistent-2' not in product_handles
 
     def test_unlinkable_priority_handles_ignored(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('draft-zed', 'Draft ZED', 'ZED', 'DRAFT', '', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/draft-zed', 'draft-zed', 'Draft ZED', 'ZED', 'DRAFT', '', '[]', '[]', '{}', '')")
         conn.commit()
         targets, _, _ = build_store_internal_link_allowlist(
             conn, 'https://example.com',
@@ -256,14 +253,14 @@ class TestStockIgnored:
         assert len(focus) == 5
 
     def test_draft_secondary_dropped(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('draft-sec', 'Draft Secondary', 'ZED', 'DRAFT', 'https://example.com/products/draft-sec', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/draft-sec', 'draft-sec', 'Draft Secondary', 'ZED', 'DRAFT', 'https://example.com/products/draft-sec', '[]', '[]', '{}', '')")
         conn.commit()
         assert not is_product_linkable(conn, 'draft-sec')
 
 
 class TestUnlinkableLinkGap:
     def test_unlinkable_gap_fires_for_draft(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('unlinkable-p', 'Unlinkable', 'X', 'DRAFT', '', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/unlinkable-p', 'unlinkable-p', 'Unlinkable', 'X', 'DRAFT', '', '[]', '[]', '{}', '')")
         conn.commit()
         linkable = linkable_product_handles(conn)
         body = '<a href="/products/unlinkable-p">Link</a>'
@@ -425,12 +422,12 @@ class TestTargetExistsAndPublished:
         assert row['total_inventory'] == 0
 
     def test_draft_product_is_false(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('draft-test', 'Draft', 'X', 'DRAFT', 'https://example.com/products/draft-test', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/draft-test', 'draft-test', 'Draft', 'X', 'DRAFT', 'https://example.com/products/draft-test', '[]', '[]', '{}', '')")
         conn.commit()
         assert not _target_exists_and_published(conn, 'product', 'draft-test')
 
     def test_empty_url_product_is_false(self, conn):
-        conn.execute("INSERT INTO products (handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('no-url-test', 'No URL', 'X', 'ACTIVE', '', '[]', '[]', '{}', '')")
+        conn.execute("INSERT INTO products (shopify_id, handle, title, vendor, status, online_store_url, tags_json, options_json, raw_json, synced_at) VALUES ('gid://shopify/Product/no-url-test', 'no-url-test', 'No URL', 'X', 'ACTIVE', '', '[]', '[]', '{}', '')")
         conn.commit()
         assert not _target_exists_and_published(conn, 'product', 'no-url-test')
 
@@ -442,6 +439,8 @@ class TestPatchRoute:
         captured_allowed_keys = []
 
         class MockConn:
+            """Proxy so backend_for_connection still sees the live testdb (psycopg info)."""
+
             def __init__(self, real_conn):
                 self._conn = real_conn
 
@@ -450,6 +449,9 @@ class TestPatchRoute:
 
             def close(self):
                 pass
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
 
         mock_conn = MockConn(conn)
 
@@ -621,9 +623,9 @@ class TestExistingTestCompatibility:
                 (h, f'Product {i}', inv, f'fog-id-{i}'),
             )
         conn.execute(
-            "INSERT INTO products (handle, title, vendor, status, total_inventory, online_store_url, "
+            "INSERT INTO products (shopify_id, handle, title, vendor, status, total_inventory, online_store_url, "
             "tags_json, options_json, raw_json, synced_at) "
-            "VALUES ('unrelated', 'Unrelated', 'Other', 'ACTIVE', 100, 'https://example.com/products/unrelated', "
+            "VALUES ('gid://shopify/Product/unrelated', 'unrelated', 'Unrelated', 'Other', 'ACTIVE', 100, 'https://example.com/products/unrelated', "
             "'[]', '[]', '{}', '')"
         )
         conn.commit()

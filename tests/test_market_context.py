@@ -28,9 +28,8 @@ def _reset_cache():
 
 
 @pytest.fixture
-def conn() -> sqlite3.Connection:
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
+def conn(testdb) -> sqlite3.Connection:
+    c = testdb.connect()
     c.execute(
         "CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
     )

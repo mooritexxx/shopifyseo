@@ -9,9 +9,8 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def idea_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def idea_conn(testdb) -> sqlite3.Connection:
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     return conn
 

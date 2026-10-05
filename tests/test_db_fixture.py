@@ -189,6 +189,59 @@ class TestDbConnFixture:
         assert "CURRENT_TIMESTAMP" not in out
         assert PG_NOW_TEXT_SQL in out
 
+    def test_round_two_arg_rewrites_to_numeric(self) -> None:
+        out = rewrite_sqlite_ddl_for_postgres("SELECT ROUND(AVG(score), 2) FROM t")
+        assert "::numeric" in out.lower()
+        assert "ROUND(" in out.upper() or "round(" in out
+
+    def test_last_insert_rowid_rewrites_to_lastval(self) -> None:
+        out = rewrite_sqlite_ddl_for_postgres("SELECT last_insert_rowid()")
+        assert "last_insert_rowid" not in out.lower()
+        assert "lastval()" in out.lower()
+
+    def test_sqlite_raise_trigger_is_skipped_on_postgres(self, testdb, db_conn) -> None:
+        db_conn.executescript(
+            """
+            CREATE TABLE ev (id INTEGER PRIMARY KEY, actor TEXT);
+            CREATE TRIGGER IF NOT EXISTS ev_no_update BEFORE UPDATE ON ev
+            BEGIN SELECT RAISE(ABORT, 'Task history is append-only'); END;
+            INSERT INTO ev (actor) VALUES ('a');
+            """
+        )
+        if testdb.is_postgres:
+            db_conn.execute("UPDATE ev SET actor = 'b'")
+            db_conn.commit()
+            assert db_conn.execute("SELECT actor FROM ev").fetchone()[0] == "b"
+        else:
+            with pytest.raises(Exception, match="append-only"):
+                db_conn.execute("UPDATE ev SET actor = 'b'")
+
+    def test_last_insert_rowid_after_identity_insert(self, testdb, db_conn) -> None:
+        db_conn.execute(
+            "CREATE TABLE id_probe (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+        )
+        db_conn.execute("INSERT INTO id_probe (name) VALUES (?)", ("a",))
+        db_conn.commit()
+        row = db_conn.execute("SELECT last_insert_rowid()").fetchone()
+        assert int(row[0]) == 1
+
+    def test_bool_params_and_total_changes_on_testdb(self, testdb, db_conn) -> None:
+        db_conn.execute(
+            "CREATE TABLE flag_probe (id INTEGER PRIMARY KEY, flag INTEGER NOT NULL DEFAULT 0)"
+        )
+        before = getattr(db_conn, "total_changes", 0)
+        db_conn.execute(
+            "INSERT INTO flag_probe (id, flag) VALUES (?, ?)",
+            (1, True),
+        )
+        db_conn.commit()
+        row = db_conn.execute("SELECT flag FROM flag_probe WHERE id = 1").fetchone()
+        assert int(row[0]) == 1
+        assert getattr(db_conn, "total_changes", before + 1) >= before + 1
+        after_insert = db_conn.total_changes
+        db_conn.execute("SELECT flag FROM flag_probe WHERE id = 1")
+        assert db_conn.total_changes == after_insert
+
     def test_insert_or_replace_and_datetime_now(self, testdb, db_conn) -> None:
         db_conn.execute("CREATE TABLE service_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
         db_conn.execute(
@@ -224,11 +277,11 @@ class TestDbConnFixture:
         )
         db_conn.execute(
             "INSERT INTO cache_probe (id, blob, expires_at) VALUES (?, ?, ?)",
-            (1, b"\x00\x01", 9_999_999_999),
+            (1, b"\\x00\\x01", 9_999_999_999),
         )
         db_conn.commit()
         row = db_conn.execute("SELECT blob, expires_at FROM cache_probe WHERE id = ?", (1,)).fetchone()
-        assert bytes(row["blob"]) == b"\x00\x01"
+        assert bytes(row["blob"]) == b"\\x00\\x01"
         assert int(row["expires_at"]) == 9_999_999_999
 
     def test_pragma_table_info_reports_columns(self, testdb, db_conn) -> None:

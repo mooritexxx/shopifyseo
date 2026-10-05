@@ -1,7 +1,5 @@
 """Tests for storefront internal URL allowlist and article body link sanitizer."""
 
-import sqlite3
-
 from shopifyseo.dashboard_ai_engine_parts.generation import sanitize_article_internal_links
 from shopifyseo.dashboard_queries import build_store_internal_link_allowlist, object_url_with_base
 
@@ -13,9 +11,8 @@ def test_object_url_with_base_collection_and_blog():
     assert object_url_with_base("https://example-store.myshopify.com", "product", "sku-1") == "https://example-store.myshopify.com/products/sku-1"
 
 
-def _memory_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _memory_conn(testdb):
+    conn = testdb.connect()
     conn.executescript(
         """
         CREATE TABLE collections (handle TEXT NOT NULL, title TEXT);
@@ -27,8 +24,8 @@ def _memory_conn() -> sqlite3.Connection:
     return conn
 
 
-def test_build_allowlist_orders_rag_collections_first():
-    conn = _memory_conn()
+def test_build_allowlist_orders_rag_collections_first(testdb):
+    conn = _memory_conn(testdb)
     conn.execute("INSERT INTO collections (handle, title) VALUES ('z-col', 'Zebra'), ('a-col', 'Alpha')")
     conn.commit()
     rag = [

@@ -17,6 +17,7 @@ def test_configure_sqlite_text_decode_reads_attached_recovered_catalog():
     if not catalog.exists():
         pytest.skip("shopify_catalog.sqlite3 not in workspace")
 
+    # SQLite-only on purpose: ATTACH + UTF-8 text factory.
     mem = sqlite3.connect(":memory:")
     mem.execute("ATTACH DATABASE ? AS cat", (str(catalog),))
     mem.row_factory = sqlite3.Row

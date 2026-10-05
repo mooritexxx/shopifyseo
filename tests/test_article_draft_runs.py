@@ -1,5 +1,3 @@
-import sqlite3
-
 from shopifyseo.dashboard_store import (
     create_article_draft_run,
     ensure_dashboard_schema,
@@ -8,9 +6,8 @@ from shopifyseo.dashboard_store import (
 )
 
 
-def test_article_draft_run_persists_json_checkpoints():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_article_draft_run_persists_json_checkpoints(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
 
     run_id = create_article_draft_run(conn, {"topic": "Disposable vape guide"})

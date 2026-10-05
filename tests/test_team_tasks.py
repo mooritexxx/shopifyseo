@@ -12,12 +12,9 @@ from backend.app.services.task_identity import ACTORS
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch):
-    path = tmp_path / 'team.db'
+def api(testdb, tmp_path, monkeypatch):
     def connect():
-        conn = sqlite3.connect(path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return testdb.connect()
     conn = connect()
     service.ensure_schema(conn)
     conn.execute('CREATE TABLE seo_opportunity_tasks(id INTEGER PRIMARY KEY)')
@@ -265,7 +262,12 @@ def test_stale_done_and_filtered_views(api):
     assert value(api[0]('GET', '/events?since=2000-01-01T00:00:00Z&limit=1'))['total'] == 5
 
 
-def test_history_is_append_only_even_at_database_layer(api):
+def test_history_is_append_only_even_at_database_layer(api, testdb):
+    if testdb.is_postgres:
+        pytest.skip(
+            "SQLite RAISE(ABORT) append-only triggers are skipped by the testdb "
+            "Postgres adapter (not valid PG SQL)"
+        )
     create(api)
     conn = api[1]()
     for sql in ('DELETE FROM team_task_events', "UPDATE team_task_events SET actor='salar'"):

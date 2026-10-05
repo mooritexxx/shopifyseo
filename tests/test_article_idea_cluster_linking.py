@@ -1,7 +1,5 @@
 """Tests for automatic article idea cluster linkage."""
 
-import sqlite3
-
 from shopifyseo.dashboard_ai_engine_parts._article_ideas import (
     _best_cluster_for_idea,
     _cluster_keywords_snapshot,
@@ -45,9 +43,8 @@ def test_best_cluster_for_idea_repairs_missing_cluster_id():
     assert chosen["name"] == "Disposable Vapes"
 
 
-def test_cluster_keywords_snapshot_includes_all_cluster_keywords_with_metrics():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def test_cluster_keywords_snapshot_includes_all_cluster_keywords_with_metrics(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     conn.execute(
         """

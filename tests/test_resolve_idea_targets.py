@@ -1,6 +1,4 @@
 """Tests for resolve_idea_targets — primary + secondary interlink resolution."""
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_article_ideas import resolve_idea_targets
@@ -8,21 +6,20 @@ from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 @pytest.fixture
-def db_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def db_conn(testdb):
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     # Seed a few store objects used in the fixtures.
     for handle, title in [("disposable-vapes", "Disposable Vapes"), ("vape-kits", "Vape Kits")]:
         conn.execute(
-            "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
-            (handle, title),
+            "INSERT INTO collections (shopify_id, handle, title, raw_json, synced_at) VALUES (?, ?, ?, '{}', '')",
+            (f"gid://shopify/Collection/{handle}", handle, title),
         )
     for handle, title in [("elfbar-bc5000", "Elfbar BC5000"), ("lost-mary-os5000", "Lost Mary OS5000")]:
         conn.execute(
-            "INSERT INTO products (handle, title, status, tags_json, options_json, raw_json, synced_at) "
-            "VALUES (?, ?, 'ACTIVE', '[]', '[]', '{}', '')",
-            (handle, title),
+            "INSERT INTO products (shopify_id, handle, title, status, tags_json, options_json, raw_json, synced_at) "
+            "VALUES (?, ?, ?, 'ACTIVE', '[]', '[]', '{}', '')",
+            (f"gid://shopify/Product/{handle}", handle, title),
         )
     conn.commit()
     return conn

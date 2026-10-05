@@ -8,7 +8,6 @@ must match main: live connections still use sqlite3.Row from get_connection().
 from __future__ import annotations
 
 import ast
-import sqlite3
 from pathlib import Path
 
 from shopifyseo.db import table_columns
@@ -46,31 +45,25 @@ def test_remaining_area_has_no_sqlite3_imports_or_attrs():
         raise AssertionError("sqlite3 still referenced in remaining areas:\n  " + listed)
 
 
-def test_link_suggestions_columns_via_helper():
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE link_suggestions (id INTEGER, kind TEXT, ai_anchor_html TEXT)")
-    ensure_schema(conn)
-    cols = table_columns(conn, "link_suggestions")
+def test_link_suggestions_columns_via_helper(db_conn):
+    db_conn.execute("CREATE TABLE link_suggestions (id INTEGER, kind TEXT, ai_anchor_html TEXT)")
+    ensure_schema(db_conn)
+    cols = table_columns(db_conn, "link_suggestions")
     assert "ai_edit_json" in cols
     assert "id" in cols
-    conn.close()
 
 
-def test_catalog_ensure_column_uses_table_columns():
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE pages (handle TEXT)")
-    ensure_column(conn, "pages", "is_published", "INTEGER")
-    assert "is_published" in table_columns(conn, "pages")
-    ensure_column(conn, "pages", "is_published", "INTEGER")
-    assert "is_published" in table_columns(conn, "pages")
-    conn.close()
+def test_catalog_ensure_column_uses_table_columns(db_conn):
+    db_conn.execute("CREATE TABLE pages (handle TEXT)")
+    ensure_column(db_conn, "pages", "is_published", "INTEGER")
+    assert "is_published" in table_columns(db_conn, "pages")
+    ensure_column(db_conn, "pages", "is_published", "INTEGER")
+    assert "is_published" in table_columns(db_conn, "pages")
 
 
-def test_clusters_table_columns_via_helper():
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE clusters (id INTEGER, name TEXT, priority_score REAL)")
-    cols = table_columns(conn, "clusters")
+def test_clusters_table_columns_via_helper(db_conn):
+    db_conn.execute("CREATE TABLE clusters (id INTEGER, name TEXT, priority_score REAL)")
+    cols = table_columns(db_conn, "clusters")
     assert "priority_score" in cols
     assert "name" in cols
     assert "missing" not in cols
-    conn.close()

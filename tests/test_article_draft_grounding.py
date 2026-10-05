@@ -5,13 +5,12 @@ Covers:
 - regeneration_context (existing title, body skeleton, GSC queries) is surfaced
 - the draft router's article_idea SELECT pulls ``paa_expansion_json``
 """
-import sqlite3
-
 import pytest
 
 from shopifyseo.dashboard_ai_engine_parts import _article_draft
 from shopifyseo.dashboard_ai_engine_parts._article_draft import generate_article_draft
 from shopifyseo.dashboard_store import ensure_dashboard_schema
+from shopifyseo.db import insert_returning_id
 
 
 @pytest.fixture(autouse=True)
@@ -27,25 +26,24 @@ def _disable_phased_article_draft(monkeypatch):
 
 
 @pytest.fixture
-def db_conn(monkeypatch):
+def db_conn(testdb, monkeypatch):
     from shopifyseo.dashboard_ai_engine_parts import config
     monkeypatch.setattr(config, '_STORE_IDENTITY_CACHE', None)
     from shopifyseo.dashboard_queries import _urls
     monkeypatch.setattr(_urls, '_BASE_URL_CACHE', None)
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
     conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",
         ("store_custom_domain", "https://example.com"),
     )
     conn.execute(
-        "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
-        ("disposable-vapes", "Disposable Vapes"),
+        "INSERT INTO collections (shopify_id, handle, title, raw_json, synced_at) VALUES (?, ?, ?, '{}', '')",
+        ("gid://shopify/Collection/1", "disposable-vapes", "Disposable Vapes"),
     )
     conn.executemany(
-        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
-        [(f"product-{i}", f"Product {i}") for i in range(3)],
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, ?, '[]', '[]', '{}', '')",
+        [(f"gid://shopify/Product/{i}", f"product-{i}", f"Product {i}") for i in range(3)],
     )
     conn.commit()
     return conn
@@ -55,7 +53,8 @@ PRODUCT_LINKS = ''.join(f'<a href="https://example.com/products/product-{i}">Pro
 
 def _seed_cluster(conn) -> int:
     """Return id of a freshly-inserted cluster with a rich content_brief."""
-    cur = conn.execute(
+    cluster_id = insert_returning_id(
+        conn,
         """
         INSERT INTO clusters
             (name, content_type, primary_keyword, content_brief, generated_at,
@@ -73,7 +72,6 @@ def _seed_cluster(conn) -> int:
             "pillar",
         ),
     )
-    cluster_id = cur.lastrowid
     for kw in [
         "best disposable vapes canada",
         "disposable vape comparison",
@@ -403,7 +401,8 @@ def test_structural_directive_surfaces_raw_unknown_format(db_conn, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_cluster_keyword_metrics_table_appears_in_prompt(db_conn, monkeypatch):
     # Build a cluster with 3 keywords joined to keyword_metrics rows of different statuses.
-    cur = db_conn.execute(
+    cluster_id = insert_returning_id(
+        db_conn,
         """
         INSERT INTO clusters
             (name, content_type, primary_keyword, content_brief, generated_at)
@@ -412,7 +411,6 @@ def test_cluster_keyword_metrics_table_appears_in_prompt(db_conn, monkeypatch):
         ("Disposable Vapes Canada", "blog_post", "best disposable vapes canada",
          "Pillar article anchoring the disposable-vape cluster.", "2025-01-01"),
     )
-    cluster_id = cur.lastrowid
     cluster_kws = [
         ("best disposable vapes canada", 1200, 28, "commercial", "not_ranking", None, 75.0),
         ("elfbar vs lost mary", 480, 22, "commercial", "striking_distance", 7.2, 80.0),

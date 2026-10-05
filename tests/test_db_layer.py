@@ -140,6 +140,7 @@ class TestBackendForConnection:
     """Prefer the live connection type over DATABASE_URL (plan 7b CI pattern)."""
 
     def test_sqlite_connection_even_if_database_url_is_postgres(self):
+        # SQLite-only on purpose: backend_for_connection must see a real sqlite3.Connection.
         conn = sqlite3.connect(":memory:")
         try:
             with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://localhost/db"}):
@@ -148,6 +149,7 @@ class TestBackendForConnection:
             conn.close()
 
     def test_explicit_backend_wins(self):
+        # SQLite-only on purpose: backend_for_connection must see a real sqlite3.Connection.
         conn = sqlite3.connect(":memory:")
         try:
             assert backend_for_connection(conn, backend=Backend.POSTGRES) is Backend.POSTGRES
@@ -424,6 +426,7 @@ class TestWriteTxSqlite:
                 blocked = []
 
                 def try_write():
+                    # SQLite-only on purpose: BEGIN IMMEDIATE lock contention.
                     conn2 = sqlite3.connect(db_path, timeout=0.1)
                     conn2.isolation_level = None
                     try:
@@ -489,6 +492,7 @@ class TestWriteTxSqlite:
                 blocked = []
 
                 def try_write():
+                    # SQLite-only on purpose: BEGIN IMMEDIATE lock contention.
                     conn2 = sqlite3.connect(db_path, timeout=0.1)
                     conn2.isolation_level = None
                     try:

@@ -7,8 +7,6 @@ Tests verify that:
 4. Catalog vendor clusters are boosted
 5. When high-volume noise competes with catalog-brand, catalog-brand wins
 """
-import sqlite3
-
 import pytest
 
 from backend.app.services.keyword_clustering import (
@@ -25,10 +23,10 @@ from backend.app.services.keyword_clustering._planning import (
 )
 
 
-def _make_test_db_with_vendors() -> sqlite3.Connection:
-    """Create an in-memory DB with products and vendor data."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _make_test_db_with_vendors(source):
+    """Create an isolated DB with products and vendor data."""
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     conn.execute("PRAGMA foreign_keys = ON")
 
     # Products table with vendor
@@ -90,8 +88,8 @@ def _make_test_db_with_vendors() -> sqlite3.Connection:
 class TestStoreFitContextLoading:
     """Tests for loading store-fit context from database."""
 
-    def test_load_empty_catalog(self):
-        conn = sqlite3.connect(":memory:")
+    def test_load_empty_catalog(self, testdb):
+        conn = testdb.connect()
         conn.execute("CREATE TABLE products (shopify_id TEXT, vendor TEXT)")
         conn.commit()
 
@@ -101,8 +99,8 @@ class TestStoreFitContextLoading:
         assert ctx.total_product_count == 0
         conn.close()
 
-    def test_load_catalog_vendors(self):
-        conn = _make_test_db_with_vendors()
+    def test_load_catalog_vendors(self, testdb):
+        conn = _make_test_db_with_vendors(testdb)
 
         ctx = load_store_fit_context(conn)
 
@@ -238,8 +236,8 @@ class TestOffNichePenalty:
 class TestCatalogVendorBoost:
     """Tests for catalog vendor matching and boost."""
 
-    def test_catalog_vendor_detected(self):
-        conn = _make_test_db_with_vendors()
+    def test_catalog_vendor_detected(self, testdb):
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -255,8 +253,8 @@ class TestCatalogVendorBoost:
         assert result["fit_multiplier"] > 1.0  # Boosted
         conn.close()
 
-    def test_high_sku_vendor_gets_higher_boost(self):
-        conn = _make_test_db_with_vendors()
+    def test_high_sku_vendor_gets_higher_boost(self, testdb):
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # Flavour Beast has 20 products (largest)
@@ -283,8 +281,8 @@ class TestCatalogVendorBoost:
         assert fb_result["fit_multiplier"] > sgb_result["fit_multiplier"]
         conn.close()
 
-    def test_catalog_vendor_detected_in_keywords(self):
-        conn = _make_test_db_with_vendors()
+    def test_catalog_vendor_detected_in_keywords(self, testdb):
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -303,9 +301,9 @@ class TestCatalogVendorBoost:
 class TestPriorityCompetition:
     """Integration tests: catalog-aligned clusters should beat noise clusters."""
 
-    def test_catalog_brand_beats_cigarettes_despite_volume(self):
+    def test_catalog_brand_beats_cigarettes_despite_volume(self, testdb):
         """Catalog brand cluster with moderate volume should outrank cigarette cluster with high volume."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # Simulate keywords_map with high-volume cigarette cluster
@@ -356,9 +354,9 @@ class TestPriorityCompetition:
 
         conn.close()
 
-    def test_catalog_brand_beats_near_me_despite_volume(self):
+    def test_catalog_brand_beats_near_me_despite_volume(self, testdb):
         """Catalog brand cluster should outrank near-me cluster with massive volume."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         keywords_map = {
@@ -411,9 +409,9 @@ class TestPriorityCompetition:
 class TestRepairAndEnrichIntegration:
     """Tests for repair_and_enrich_clusters with store-fit scoring."""
 
-    def test_clusters_sorted_by_adjusted_priority(self):
+    def test_clusters_sorted_by_adjusted_priority(self, testdb):
         """repair_and_enrich_clusters should apply store-fit to all clusters."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
 
         keywords_map = {
             # Cigarette keywords
@@ -488,9 +486,9 @@ class TestEdgeCases:
         assert result["is_off_niche"] is True
         assert result["fit_multiplier"] == ctx.off_niche_penalty
 
-    def test_catalog_vendor_clears_minor_local_penalty(self):
+    def test_catalog_vendor_clears_minor_local_penalty(self, testdb):
         """If a cluster matches a catalog vendor, minor local signal is cleared."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # "ELFBAR near me" - local signal but also catalog brand
@@ -508,9 +506,9 @@ class TestEdgeCases:
 
         conn.close()
 
-    def test_non_catalog_brand_penalized(self):
+    def test_non_catalog_brand_penalized(self, testdb):
         """Brands not in catalog ARE penalized (updated behavior)."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # Caliburn is NOT in our test catalog - should be penalized
@@ -574,9 +572,9 @@ class TestWholesalePenalty:
 class TestNonCatalogBrandPenalty:
     """Tests for non-catalog device brand penalty."""
 
-    def test_juul_cluster_penalized(self):
+    def test_juul_cluster_penalized(self, testdb):
         """Juul cluster should be penalized when not in catalog."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -593,9 +591,9 @@ class TestNonCatalogBrandPenalty:
 
         conn.close()
 
-    def test_smok_cluster_penalized(self):
+    def test_smok_cluster_penalized(self, testdb):
         """SMOK cluster should be penalized when not in catalog."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -611,9 +609,9 @@ class TestNonCatalogBrandPenalty:
 
         conn.close()
 
-    def test_catalog_brand_not_penalized(self):
+    def test_catalog_brand_not_penalized(self, testdb):
         """Catalog brands should NOT be penalized even if in denylist."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # ELFBAR IS in our catalog, so it should be boosted not penalized
@@ -663,9 +661,9 @@ class TestUltraGenericPenalty:
         assert result["is_ultra_generic"] is True
         assert result["fit_multiplier"] < 0.5
 
-    def test_generic_not_penalized_with_catalog_match(self):
+    def test_generic_not_penalized_with_catalog_match(self, testdb):
         """Generic terms with catalog vendor match should be boosted."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -781,9 +779,9 @@ class TestHomonymPenalty:
         assert result["is_homonym"] is True
         assert result["fit_multiplier"] == ctx.homonym_penalty
 
-    def test_catalog_brand_overrides_homonym(self):
+    def test_catalog_brand_overrides_homonym(self, testdb):
         """Catalog brand match should override homonym penalty."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         # ALLO is in catalog, so even if homonym pattern matches,
@@ -821,9 +819,9 @@ class TestPriorityCap:
         assert result["priority_cap"] is not None
         assert result["priority_cap"] == ctx.non_catalog_priority_cap
 
-    def test_catalog_brand_no_priority_cap(self):
+    def test_catalog_brand_no_priority_cap(self, testdb):
         """Catalog-aligned clusters should not have a priority cap."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         result = compute_cluster_store_fit(
@@ -842,12 +840,12 @@ class TestPriorityCap:
 class TestSameEntityMerge:
     """Tests for same-entity+role aggressive merging."""
 
-    def test_same_entity_role_detected(self):
+    def test_same_entity_role_detected(self, testdb):
         """_same_entity_and_role should detect matching entity+role pairs."""
         from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
         from backend.app.services.keyword_clustering._planning import load_entity_rules
 
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         entity_rules = load_entity_rules(conn)
         keywords_map = {
             "flavour beast disposable": {"volume": 1000, "opportunity": 70.0},
@@ -881,12 +879,12 @@ class TestSameEntityMerge:
 
         conn.close()
 
-    def test_different_entity_not_matched(self):
+    def test_different_entity_not_matched(self, testdb):
         """Different entities should not be considered same."""
         from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
         from backend.app.services.keyword_clustering._planning import load_entity_rules
 
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         entity_rules = load_entity_rules(conn)
         keywords_map = {}
 
@@ -903,12 +901,12 @@ class TestSameEntityMerge:
 
         conn.close()
 
-    def test_empty_entity_not_matched(self):
+    def test_empty_entity_not_matched(self, testdb):
         """Empty entities should not match anything."""
         from backend.app.services.keyword_clustering._postprocess import _same_entity_and_role
         from backend.app.services.keyword_clustering._planning import load_entity_rules
 
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         entity_rules = load_entity_rules(conn)
         keywords_map = {}
 
@@ -930,9 +928,9 @@ class TestSameEntityMerge:
 class TestPriorityCompetitionExpanded:
     """Integration tests: catalog brands beat all noise types."""
 
-    def test_catalog_brand_beats_wholesale_despite_volume(self):
+    def test_catalog_brand_beats_wholesale_despite_volume(self, testdb):
         """Catalog brand should beat wholesale cluster."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         keywords_map = {
@@ -978,9 +976,9 @@ class TestPriorityCompetitionExpanded:
 
         conn.close()
 
-    def test_catalog_brand_beats_juul_despite_volume(self):
+    def test_catalog_brand_beats_juul_despite_volume(self, testdb):
         """Catalog brand should beat non-catalog brand (Juul) cluster."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         keywords_map = {
@@ -1029,9 +1027,9 @@ class TestPriorityCompetitionExpanded:
 
         conn.close()
 
-    def test_catalog_brand_beats_generic_ecig_shop(self):
+    def test_catalog_brand_beats_generic_ecig_shop(self, testdb):
         """Catalog brand should beat ultra-generic 'ecig shop' cluster."""
-        conn = _make_test_db_with_vendors()
+        conn = _make_test_db_with_vendors(testdb)
         ctx = load_store_fit_context(conn)
 
         keywords_map = {

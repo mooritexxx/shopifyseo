@@ -13,7 +13,8 @@ Plan 7b–d should migrate ``sqlite3.connect`` call sites onto ``testdb`` /
 
 Postgres ``testdb`` connections are adapted so leftover SQLite-shaped SQL in
 tests and production DDL (`?` placeholders, ``executescript``, AUTOINCREMENT,
-``INSERT OR IGNORE``, PRAGMA) still runs while ``DATABASE_URL`` stays unset.
+``INSERT OR IGNORE`` / ``INSERT OR REPLACE``, ``REAL``, ``datetime('now')``,
+PRAGMA) still runs while ``DATABASE_URL`` stays unset.
 """
 from __future__ import annotations
 
@@ -59,8 +60,17 @@ _INT_PK_AUTOINCREMENT = re.compile(
 _INT_PK = re.compile(r"\bINTEGER\s+PRIMARY\s+KEY\b", re.IGNORECASE)
 _INTEGER_TYPE = re.compile(r"\bINTEGER\b", re.IGNORECASE)
 _BLOB_TYPE = re.compile(r"\bBLOB\b")
+_REAL_TYPE = re.compile(r"\bREAL\b", re.IGNORECASE)
 _INSERT_OR_IGNORE = re.compile(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", re.IGNORECASE)
+_INSERT_OR_REPLACE = re.compile(
+    r"\bINSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][\w]*)\s*\(([^)]+)\)",
+    re.IGNORECASE,
+)
 _ON_CONFLICT = re.compile(r"\bON\s+CONFLICT\b", re.IGNORECASE)
+_DATETIME_NOW = re.compile(r"\bdatetime\(\s*'now'\s*\)", re.IGNORECASE)
+_PG_DATETIME_NOW = (
+    "(to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'), 'YYYY-MM-DD HH24:MI:SS'))"
+)
 _PRAGMA_TABLE_INFO = re.compile(
     r"""^\s*PRAGMA\s+table_info\(\s*(?:["']([^"']+)["']|([A-Za-z_][\w]*))\s*\)\s*;?\s*$""",
     re.IGNORECASE,
@@ -174,7 +184,10 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
     column named ``blob`` in ``SELECT`` / ``INSERT`` are left alone. SQLite
     ``INTEGER`` is 64-bit; Postgres ``INTEGER`` is 32-bit, so leftover epoch /
     sentinel values overflow unless remaining integer columns become ``BIGINT``.
-    ``BLOB`` becomes ``BYTEA``.
+    ``BLOB`` becomes ``BYTEA``. ``REAL`` becomes ``DOUBLE PRECISION``.
+    ``INSERT OR REPLACE INTO t (pk, …)`` becomes ``ON CONFLICT (pk) DO UPDATE``.
+    ``datetime('now')`` becomes UTC ``to_char(CURRENT_TIMESTAMP …)`` so leftover
+    SQLite date functions in test SQL match plan-6 naive UTC text.
     """
     head = sql.lstrip()[:12].upper()
     if head.startswith("CREATE") or head.startswith("ALTER"):
@@ -182,9 +195,18 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
         sql = _INT_PK.sub(_IDENTITY_DDL, sql)
         sql = _INTEGER_TYPE.sub("BIGINT", sql)
         sql = _BLOB_TYPE.sub("BYTEA", sql)
+        sql = _REAL_TYPE.sub("DOUBLE PRECISION", sql)
     if _INSERT_OR_IGNORE.search(sql) and not _ON_CONFLICT.search(sql):
         sql = _INSERT_OR_IGNORE.sub("INSERT INTO", sql)
         sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    replace = _INSERT_OR_REPLACE.search(sql)
+    if replace and not _ON_CONFLICT.search(sql):
+        cols = [c.strip() for c in replace.group(2).split(",") if c.strip()]
+        if cols:
+            assignments = ", ".join(f"{c} = excluded.{c}" for c in cols[1:] or cols)
+            sql = _INSERT_OR_REPLACE.sub(rf"INSERT INTO {replace.group(1)} ({replace.group(2)})", sql, count=1)
+            sql = sql.rstrip().rstrip(";") + f" ON CONFLICT ({cols[0]}) DO UPDATE SET {assignments}"
+    sql = _DATETIME_NOW.sub(_PG_DATETIME_NOW, sql)
     return sql
 
 
@@ -195,8 +217,9 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
     uses ``?``. This wrap translates placeholders, implements ``executescript``,
     implements ``PRAGMA table_info``, skips other PRAGMA, rolls back a failed
     statement so the next one can run, and rewrites AUTOINCREMENT / INTEGER /
-    BLOB / INSERT OR IGNORE. Idempotent. The object stays a
-    ``psycopg.Connection`` (isinstance checks in 7a fixture tests keep working).
+    BLOB / REAL / INSERT OR IGNORE / INSERT OR REPLACE / ``datetime('now')``.
+    Idempotent. The object stays a ``psycopg.Connection`` (isinstance checks
+    in 7a fixture tests keep working).
     """
     if getattr(conn, "_shopifyseo_testdb_adapted", False):
         return conn

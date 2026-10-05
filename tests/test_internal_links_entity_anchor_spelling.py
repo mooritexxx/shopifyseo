@@ -422,8 +422,8 @@ class TestApplyWithEntityNormalization:
         # Snapshot has entity-encoded apostrophe (what we sent)
         sent_body = "<p>The beginner&#x27;s guide.</p>"
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
             (sent_body,)
         )
         conn.commit()
@@ -506,8 +506,8 @@ class TestApplyWithEntityNormalization:
         # Snapshot has entity-encoded ampersand
         sent_body = "<p>Check the Q&amp;A guide.</p>"
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', ?, 'needs_reconciliation', 1, 1)",
             (sent_body,)
         )
         conn.commit()
@@ -1522,8 +1522,8 @@ class TestLockHolderBehavior:
         )
         # Create a real pending snapshot owned by suggestion 1
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
             (original_body, new_body, int(time.time()) - 1000)
         )
         conn.commit()
@@ -1602,8 +1602,8 @@ class TestLockHolderBehavior:
             "VALUES (1, 'product', 'source', 'collection', 'target1', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
         )
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', '<p>New.</p>', 'prepared', 1, 1)"
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', '<p>Old.</p>', '<p>New.</p>', 'prepared', 1, 1)"
         )
         # Suggestion 2 - different suggestion, same source page, NO snapshot yet
         conn.execute(
@@ -1651,8 +1651,8 @@ class TestLockHolderBehavior:
             "VALUES (1, 'product', 'source', 'collection', 'target1', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
         )
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, '<p>New.</p>', 'needs_reconciliation', 1, 1)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', ?, '<p>New.</p>', 'needs_reconciliation', 1, 1)",
             (original_body,)
         )
         # Suggestion 2 - different suggestion, same source page, NO snapshot
@@ -1716,8 +1716,8 @@ class TestLockHolderBehavior:
         )
         # Suggestion 2 has a needs_reconciliation snapshot (the lock)
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 2, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (2, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
             (original_body, sug2_new_body, int(time.time()) - 1000)
         )
         conn.commit()
@@ -1794,8 +1794,8 @@ class TestLockHolderBehavior:
             "VALUES (1, 'product', 'source', 'collection', 'tanks', 'phrase_wrap', 'ceramic tanks', 'suggested', 1)"
         )
         conn.execute(
-            "INSERT INTO link_body_snapshots (id, suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
-            "VALUES (1, 1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
+            "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at) "
+            "VALUES (1, 'product', 'source', 'gid://shopify/Product/1', ?, ?, 'needs_reconciliation', 1, ?)",
             (original_body, new_body, int(time.time()) - 1000)
         )
         conn.commit()

@@ -93,10 +93,11 @@ Postgres (production already no-ops those paths via `backend_for_connection`).
 `group_concat` so `DATABASE_URL` can stay unset.
 
 `testdb` Postgres connections rewrite SQLite-shaped DDL (`?`, `executescript`,
-AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `INSERT OR IGNORE`,
-`PRAGMA table_info`) so those tests hit Postgres while `DATABASE_URL` stays
-unset. Helpers such as `table_columns` / `insert_returning_id` use
-`backend_for_connection(conn)` rather than `DATABASE_URL`.
+AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `REAL`→`DOUBLE PRECISION`,
+`INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`, `PRAGMA table_info`)
+so those tests hit Postgres while `DATABASE_URL` stays unset. Helpers such as
+`table_columns` / `insert_returning_id` use `backend_for_connection(conn)`
+rather than `DATABASE_URL`.
 
 **Remaining** (`rg` AST `sqlite3.connect(`): **38 files / 70** call sites.
 

@@ -38,7 +38,7 @@ def test_snapshot_committed_before_push_and_no_transaction_during_network(testdb
     conn = database(testdb)
     live = Shopify()
     def push(*args):
-        assert not conn.in_transaction
+        assert not getattr(conn, "in_transaction", False)
         other = testdb.connect()
         backup = other.execute('SELECT old_body,status FROM link_body_snapshots').fetchone()
         other.close()

@@ -51,7 +51,7 @@ def seed_suggestions(conn, count: int = 1200) -> list[int]:
         source_type = source_types[i % len(source_types)]
         source_handle = f"handle-{i}"
         target_handle = f"target-{i}"
-        score = 1.0 - (i // 10) * 0.01
+        score = 100 - (i // 10)
 
         sid = insert_returning_id(
             conn,
@@ -399,7 +399,7 @@ def api_exact_multiple(testdb, monkeypatch):
     for i in range(300):
         source_handle = f"exact-handle-{i}"
         target_handle = f"exact-target-{i}"
-        score = 1.0 - (i // 10) * 0.01
+        score = 100 - (i // 10)
         conn.execute(
             "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at) "
             "VALUES ('product', ?, 'collection', ?, 'phrase_wrap', 'anchor', ?, 'suggested', ?)",

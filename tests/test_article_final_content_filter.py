@@ -138,8 +138,8 @@ def conn(testdb, monkeypatch):
     ensure_dashboard_schema(connection)
     connection.execute("INSERT INTO service_settings (key, value) VALUES ('store_custom_domain', 'https://example.com')")
     connection.executemany(
-        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
-        [(f'p{i}', f'Product {i}') for i in range(3)])
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, ?, '[]', '[]', '{}', '')",
+        [(f'gid://shopify/Product/{i}', f'p{i}', f'Product {i}') for i in range(3)])
     connection.commit()
     from shopifyseo.dashboard_ai_engine_parts.settings import ai_settings
     monkeypatch.setattr(_article_draft, 'ai_settings', lambda c: {**ai_settings(c), 'article_draft_phased': False})
@@ -353,7 +353,7 @@ def test_product_repair_uses_same_brand_and_ignores_stock(conn, monkeypatch):
     """
     conn.execute("UPDATE products SET vendor = 'Fog', total_inventory = 5, status = 'ACTIVE'")
     conn.execute("UPDATE products SET total_inventory = 0 WHERE handle = 'p0'")
-    conn.execute("INSERT INTO products (handle,title,vendor,status,tags_json,options_json,raw_json,synced_at) VALUES ('unrelated','Unrelated','Other','ACTIVE','[]','[]','{}','')")
+    conn.execute("INSERT INTO products (shopify_id,handle,title,vendor,status,tags_json,options_json,raw_json,synced_at) VALUES ('gid://shopify/Product/unrelated','unrelated','Unrelated','Other','ACTIVE','[]','[]','{}','')")
     conn.commit()
     calls = []
     def ai(*args, stage='', **kwargs):

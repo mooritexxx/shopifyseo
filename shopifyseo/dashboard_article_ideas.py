@@ -439,7 +439,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
               WHERE LOWER(ba.title) LIKE '%' || LOWER(TRIM(qr.query)) || '%'
                  OR LOWER(ba.seo_title) LIKE '%' || LOWER(TRIM(qr.query)) || '%'
           )
-        GROUP BY qr.query
+        GROUP BY qr.query, qr.object_type
         ORDER BY total_impressions DESC
         LIMIT 15
         """,

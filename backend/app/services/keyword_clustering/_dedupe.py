@@ -7,7 +7,6 @@ alongside so callers can stitch them back onto the winning cluster.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting
@@ -20,7 +19,7 @@ MIN_THRESHOLD = 0.80
 MAX_THRESHOLD = 1.0
 
 
-def _resolve_threshold(conn: sqlite3.Connection) -> float:
+def _resolve_threshold(conn: Any) -> float:
     raw = get_service_setting(conn, DEDUPE_THRESHOLD_KEY, "")
     if not raw:
         return DEFAULT_THRESHOLD
@@ -71,7 +70,7 @@ class _UnionFind:
 
 def collapse_near_duplicates(
     approved: list[dict],
-    conn: sqlite3.Connection,
+    conn: Any,
     threshold: float | None = None,
 ) -> tuple[list[dict], dict[str, list[str]]]:
     """Collapse embedding-similar approved keywords into canonical+aliases.

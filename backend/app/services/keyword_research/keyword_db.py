@@ -2,9 +2,9 @@
 
 import json
 import logging
-import sqlite3
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
@@ -100,7 +100,7 @@ def normalize_target_keywords_payload(data: dict, *, for_insert: bool = False) -
     return data
 
 
-def save_target_keywords(conn: sqlite3.Connection, data: dict, *, default=None, for_insert: bool = True) -> None:
+def save_target_keywords(conn: Any, data: dict, *, default=None, for_insert: bool = True) -> None:
     """Normalize then persist the target_keywords JSON blob.
 
     ``for_insert=True`` (default) ensures every item receives a real
@@ -113,7 +113,7 @@ def save_target_keywords(conn: sqlite3.Connection, data: dict, *, default=None, 
 
 
 def upsert_target_keyword(
-    conn: sqlite3.Connection,
+    conn: Any,
     keyword: str,
     *,
     status: str = "approved",
@@ -183,7 +183,7 @@ def upsert_target_keyword(
     return found
 
 
-def load_target_keywords(conn: sqlite3.Connection) -> dict:
+def load_target_keywords(conn: Any) -> dict:
     raw = get_service_setting(conn, TARGET_KEY, "{}")
     if not isinstance(raw, str):
         raw = "{}"
@@ -216,7 +216,7 @@ def load_target_keywords(conn: sqlite3.Connection) -> dict:
     return {**data, "items": clean, "total": len(clean)}
 
 
-def refresh_opportunity_scores(conn: sqlite3.Connection, *, force: bool = False) -> dict:
+def refresh_opportunity_scores(conn: Any, *, force: bool = False) -> dict:
     """Backfill stored target keyword opportunity scores to the current scoring model."""
     data = load_target_keywords(conn)
     items = data.get("items", [])
@@ -239,7 +239,7 @@ def refresh_opportunity_scores(conn: sqlite3.Connection, *, force: bool = False)
     return data
 
 
-def refresh_keyword_metric_opportunity_scores(conn: sqlite3.Connection) -> int:
+def refresh_keyword_metric_opportunity_scores(conn: Any) -> int:
     """Recompute opportunity directly in ``keyword_metrics`` without trusting stale JSON."""
     rows = conn.execute(
         """
@@ -265,7 +265,7 @@ def refresh_keyword_metric_opportunity_scores(conn: sqlite3.Connection) -> int:
 _APPROVED_JSON_COLUMNS = ("intent_raw", "seed_keywords", "serp_features")
 
 
-def load_approved_keywords(conn: sqlite3.Connection) -> list[dict]:
+def load_approved_keywords(conn: Any) -> list[dict]:
     """Return approved keywords from ``keyword_metrics`` as plain dicts.
 
     Shape matches what the clustering pipeline consumes: JSON-encoded
@@ -294,7 +294,7 @@ def load_approved_keywords(conn: sqlite3.Connection) -> list[dict]:
     return items
 
 
-def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: str) -> dict:
+def update_keyword_status(conn: Any, keyword: str, new_status: str) -> dict:
     data = load_target_keywords(conn)
     found = False
     for item in data["items"]:
@@ -323,7 +323,7 @@ def update_keyword_status(conn: sqlite3.Connection, keyword: str, new_status: st
     return {"keyword": keyword, "status": new_status}
 
 
-def bulk_update_status(conn: sqlite3.Connection, keywords: list[str], new_status: str) -> int:
+def bulk_update_status(conn: Any, keywords: list[str], new_status: str) -> int:
     data = load_target_keywords(conn)
     keyword_set = {kw.lower() for kw in keywords}
     updated = 0
@@ -351,7 +351,7 @@ def bulk_update_status(conn: sqlite3.Connection, keywords: list[str], new_status
     return updated
 
 
-def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
+def sync_keyword_metrics_to_db(conn: Any) -> int:
     """UPSERT all keyword metrics from the JSON blob into the keyword_metrics table.
 
     Returns the number of rows synced.
@@ -460,7 +460,7 @@ def sync_keyword_metrics_to_db(conn: sqlite3.Connection) -> int:
     return len(items)
 
 
-def sync_keyword_page_map(conn: sqlite3.Connection) -> int:
+def sync_keyword_page_map(conn: Any) -> int:
     """Populate keyword_page_map from gsc_query_rows, preserving per-page data."""
     now = int(time.time())
     rows = conn.execute(
@@ -494,7 +494,7 @@ def sync_keyword_page_map(conn: sqlite3.Connection) -> int:
     return count
 
 
-def sync_competitor_keyword_gaps(conn: sqlite3.Connection) -> int:
+def sync_competitor_keyword_gaps(conn: Any) -> int:
     """Build competitor gap records for keywords where they rank and we don't (or rank poorly)."""
     now = int(time.time())
     rows = conn.execute(
@@ -535,7 +535,7 @@ def sync_competitor_keyword_gaps(conn: sqlite3.Connection) -> int:
     return count
 
 
-def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], manual_domains: list[str] | None = None) -> int:
+def sync_competitor_profiles(conn: Any, profiles: list[dict], manual_domains: list[str] | None = None) -> int:
     """UPSERT competitor profile rows from competitor discovery (e.g. Labs ``serp_competitors`` / profiles). `manual_domains` = domains user had before this run (is_manual=1)."""
     now = int(time.time())
     manual = {norm_competitor_domain(d) for d in (manual_domains or []) if d}
@@ -589,7 +589,7 @@ def sync_competitor_profiles(conn: sqlite3.Connection, profiles: list[dict], man
 
 
 def update_competitor_profile_from_organic_keywords(
-    conn: sqlite3.Connection, domain: str, items: list[dict]
+    conn: Any, domain: str, items: list[dict]
 ) -> None:
     """Set traffic + keyword sample size from Site Explorer organic-keywords (manual competitors often missing from organic-competitors)."""
     if not items:
@@ -635,7 +635,7 @@ def update_competitor_profile_from_organic_keywords(
 
 
 def update_competitor_profile_organic_sample_count(
-    conn: sqlite3.Connection, domain: str, items: list[dict]
+    conn: Any, domain: str, items: list[dict]
 ) -> None:
     """Set ``keywords_they_have`` from organic-keyword API row count only. Does not change ``traffic``."""
     if not items:
@@ -667,7 +667,7 @@ def update_competitor_profile_organic_sample_count(
 
 
 def apply_competitor_traffic_from_provider_batch(
-    conn: sqlite3.Connection, traffic_by_domain: dict[str, int]
+    conn: Any, traffic_by_domain: dict[str, int]
 ) -> None:
     """Set ``traffic`` from provider-supplied domain-level estimates (e.g. DataForSEO bulk organic ETV)."""
     if not traffic_by_domain:
@@ -703,7 +703,7 @@ def apply_competitor_traffic_from_provider_batch(
     conn.commit()
 
 
-def sync_competitor_top_pages(conn: sqlite3.Connection, domain: str, pages: list[dict]) -> int:
+def sync_competitor_top_pages(conn: Any, domain: str, pages: list[dict]) -> int:
     """UPSERT top-page rows for a single competitor domain."""
     now = int(time.time())
     domain = domain.strip().lower()
@@ -747,7 +747,7 @@ def sync_competitor_top_pages(conn: sqlite3.Connection, domain: str, pages: list
 
 
 def sync_competitor_top_pages_from_keyword_metrics(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     per_domain_limit: int = 50,
 ) -> int:
@@ -842,7 +842,7 @@ def sync_competitor_top_pages_from_keyword_metrics(
     return total
 
 
-def cross_reference_gsc(conn: sqlite3.Connection) -> dict:
+def cross_reference_gsc(conn: Any) -> dict:
     """Enrich target keywords with GSC ranking data."""
     data = load_target_keywords(conn)
     items = data.get("items", [])

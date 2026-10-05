@@ -1,9 +1,9 @@
 import json
 import logging
 import queue
-import sqlite3
 import threading
 import time
+from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -73,7 +73,7 @@ class GoogleAdsPlannerRefreshRequest(BaseModel):
     keywords: list[str]
 
 
-def _load_seeds(conn: sqlite3.Connection) -> list[dict]:
+def _load_seeds(conn: Any) -> list[dict]:
     raw = get_service_setting(conn, SEED_KEY, "[]")
     try:
         return json.loads(raw)
@@ -81,7 +81,7 @@ def _load_seeds(conn: sqlite3.Connection) -> list[dict]:
         return []
 
 
-def _save_seeds(conn: sqlite3.Connection, seeds: list[dict]) -> None:
+def _save_seeds(conn: Any, seeds: list[dict]) -> None:
     set_service_setting(conn, SEED_KEY, json.dumps(seeds))
 
 
@@ -203,7 +203,7 @@ class CompetitorAddRequest(BaseModel):
     domain: str
 
 
-def _load_competitors(conn: sqlite3.Connection) -> list[str]:
+def _load_competitors(conn: Any) -> list[str]:
     raw = get_service_setting(conn, COMPETITOR_KEY, "[]")
     try:
         return json.loads(raw)
@@ -211,7 +211,7 @@ def _load_competitors(conn: sqlite3.Connection) -> list[str]:
         return []
 
 
-def _save_competitors(conn: sqlite3.Connection, domains: list[str]) -> None:
+def _save_competitors(conn: Any, domains: list[str]) -> None:
     set_service_setting(conn, COMPETITOR_KEY, json.dumps(domains))
 
 
@@ -299,7 +299,7 @@ def _zero_competitor_profile(domain: str) -> dict:
     }
 
 
-def _competitors_response_data(conn: sqlite3.Connection) -> dict:
+def _competitors_response_data(conn: Any) -> dict:
     """Build the same payload as GET /competitors (profiles + manual stubs + pending + dismissed blocklist)."""
     blocklist = load_competitor_blocklist(conn)
     manual_list = _load_competitors(conn)

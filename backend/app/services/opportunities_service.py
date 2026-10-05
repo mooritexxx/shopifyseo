@@ -8,10 +8,32 @@ from __future__ import annotations
 
 import logging
 import math
-import sqlite3
 from typing import Any
 
+from shopifyseo.db import DictRow
+
 logger = logging.getLogger(__name__)
+
+
+def _mapping_row_factory(cursor, row):
+    """sqlite3 row_factory that produces DictRow (compatible with sqlite3.Row)."""
+    return DictRow.from_values(tuple(col[0] for col in cursor.description), tuple(row))
+
+
+def _row_factory(conn: Any) -> Any:
+    """Ensure key-accessible rows without assigning ``sqlite3.Row``.
+
+    Live SQLite connections from ``get_connection()`` already have a mapping
+    factory (``sqlite3.Row``); leave it so ``DATABASE_URL``-unset matches main.
+    Bare connections (``row_factory is None``) get ``DictRow``. Postgres
+    connections already produce ``DictRow`` and must not be overwritten —
+    psycopg's factory signature differs from sqlite3.
+    """
+    if getattr(conn, "row_factory", None) is not None:
+        return conn
+    conn.row_factory = _mapping_row_factory
+    return conn
+
 
 # Expected CTR by position (based on industry benchmarks)
 EXPECTED_CTR_BY_POSITION = {
@@ -159,7 +181,7 @@ def compute_opportunity_score(
 
 
 def fetch_opportunities(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     page_type: str | None = None,
     min_impressions: int = 10,
@@ -174,8 +196,8 @@ def fetch_opportunities(
     
     Returns dict with items, total, and pagination info.
     """
-    conn.row_factory = sqlite3.Row
-    
+    _row_factory(conn)
+
     where_clauses = [
         "impressions >= ?",
         "position >= ?",
@@ -273,10 +295,10 @@ def fetch_opportunities(
     }
 
 
-def get_opportunity_stats(conn: sqlite3.Connection) -> dict[str, Any]:
+def get_opportunity_stats(conn: Any) -> dict[str, Any]:
     """Get summary statistics for opportunities."""
-    conn.row_factory = sqlite3.Row
-    
+    _row_factory(conn)
+
     stats: dict[str, Any] = {
         "total_queries": 0,
         "striking_distance": 0,

@@ -2,10 +2,10 @@
 
 import json
 import logging
-import sqlite3
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
@@ -58,7 +58,7 @@ COMPETITOR_RESEARCH_META_KEY = "competitor_research_meta"
 COMPETITOR_DISCOVERY_PENDING_KEY = "competitor_discovery_pending"
 
 
-def resolve_competitor_labs_target_domain(conn: sqlite3.Connection) -> str:
+def resolve_competitor_labs_target_domain(conn: Any) -> str:
     """Normalized hostname for Labs competitor flows: public store domain, then Shopify hostname."""
     for key in ("store_custom_domain", "shopify_shop"):
         raw = (get_service_setting(conn, key, "") or "").strip()
@@ -97,14 +97,14 @@ def _run_source(
     return cost
 
 
-def _primary_country_iso(conn: sqlite3.Connection) -> str:
+def _primary_country_iso(conn: Any) -> str:
     from shopifyseo.market_context import get_primary_country_code
 
     raw = (get_primary_country_code(conn) or "CA").strip().upper()
     return raw if len(raw) == 2 else "CA"
 
 
-def _resolve_dataforseo_credentials(conn: sqlite3.Connection) -> tuple[str, str]:
+def _resolve_dataforseo_credentials(conn: Any) -> tuple[str, str]:
     login = (get_service_setting(conn, "dataforseo_api_login") or "").strip()
     password = (get_service_setting(conn, "dataforseo_api_password") or "").strip()
     if not login or not password:
@@ -114,7 +114,7 @@ def _resolve_dataforseo_credentials(conn: sqlite3.Connection) -> tuple[str, str]
     return login, password
 
 
-def _preflight_keyword_research(conn: sqlite3.Connection, on_progress) -> tuple[str, str]:
+def _preflight_keyword_research(conn: Any, on_progress) -> tuple[str, str]:
     """Validate DataForSEO access; return (login, password)."""
     login, password = _resolve_dataforseo_credentials(conn)
     if on_progress:
@@ -125,7 +125,7 @@ def _preflight_keyword_research(conn: sqlite3.Connection, on_progress) -> tuple[
     return login, password
 
 
-def _prepare_competitors_list(conn: sqlite3.Connection) -> list[str]:
+def _prepare_competitors_list(conn: Any) -> list[str]:
     """Load competitor_domains from settings: normalize, dedupe, drop blocklist / junk domains, purge rows."""
     competitor_raw = get_service_setting(conn, "competitor_domains", "[]")
     try:
@@ -150,7 +150,7 @@ def _prepare_competitors_list(conn: sqlite3.Connection) -> list[str]:
     return competitors
 
 
-def _load_seed_keyword_strings(conn: sqlite3.Connection) -> list[str]:
+def _load_seed_keyword_strings(conn: Any) -> list[str]:
     """Ordered unique seed keyword strings from ``seed_keywords`` service setting.
 
     Labs ``serp_competitors`` accepts at most 200 keywords per request; :func:`call_serp_competitors` truncates
@@ -269,7 +269,7 @@ def _serp_discovery_profiles_with_bulk_traffic(
 
 
 def _finalize_keyword_research(
-    conn: sqlite3.Connection,
+    conn: Any,
     all_raw: list[dict],
     total_cost: float | int,
     errors: list[str],
@@ -348,7 +348,7 @@ def _finalize_keyword_research(
     return result
 
 
-def run_seed_keyword_research(conn: sqlite3.Connection, on_progress=None) -> dict:
+def run_seed_keyword_research(conn: Any, on_progress=None) -> dict:
     """Expand seed keywords via DataForSEO Labs + SERP. Merges into existing target keywords."""
     login, password = _preflight_keyword_research(conn, on_progress)
     cc_iso = _primary_country_iso(conn)
@@ -423,7 +423,7 @@ def run_seed_keyword_research(conn: sqlite3.Connection, on_progress=None) -> dic
     return _finalize_keyword_research(conn, all_raw, total_cost, errors, on_progress)
 
 
-def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
+def run_competitor_research(conn: Any, on_progress=None) -> dict:
     """Competitor pipeline via DataForSEO: optional discovery (``serp_competitors`` on seed keywords), organic keywords, profiles, top pages.
 
     New keywords merge into the same target_keywords store and DB as seed research so clusters / gaps stay in sync.
@@ -596,7 +596,7 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
     return _finalize_keyword_research(conn, all_raw, total_cost, errors, on_progress)
 
 
-def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -> dict:
+def refresh_target_keyword_metrics(conn: Any, on_progress=None) -> dict:
     """Refresh volume/difficulty/CPC for approved target keywords via DataForSEO keyword_overview.
 
     Only keywords with status ``"approved"`` are sent to the API.  Metrics are
@@ -717,7 +717,7 @@ def refresh_target_keyword_metrics(conn: sqlite3.Connection, on_progress=None) -
     return data
 
 
-def load_competitor_discovery_pending(conn: sqlite3.Connection) -> list[dict]:
+def load_competitor_discovery_pending(conn: Any) -> list[dict]:
     raw = get_service_setting(conn, COMPETITOR_DISCOVERY_PENDING_KEY, "")
     if not (raw or "").strip():
         return []
@@ -730,12 +730,12 @@ def load_competitor_discovery_pending(conn: sqlite3.Connection) -> list[dict]:
     return [x for x in data if isinstance(x, dict)]
 
 
-def save_competitor_discovery_pending(conn: sqlite3.Connection, rows: list[dict]) -> None:
+def save_competitor_discovery_pending(conn: Any, rows: list[dict]) -> None:
     set_service_setting(conn, COMPETITOR_DISCOVERY_PENDING_KEY, json.dumps(rows))
 
 
 def run_discover_competitors_for_review(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     on_progress=None,
 ) -> dict:
@@ -800,6 +800,6 @@ def run_discover_competitors_for_review(
     }
 
 
-def run_research(conn: sqlite3.Connection, on_progress=None) -> dict:
+def run_research(conn: Any, on_progress=None) -> dict:
     """Backward-compatible alias for :func:`run_seed_keyword_research` (seed Keywords Explorer only)."""
     return run_seed_keyword_research(conn, on_progress=on_progress)

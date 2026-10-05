@@ -1,6 +1,6 @@
 """Cluster CRUD operations — match options, update match, and detail view."""
 import logging
-import sqlite3
+from typing import Any
 
 import shopifyseo.dashboard_queries as dq
 
@@ -10,7 +10,7 @@ from ._storage import _cluster_planning_from_row, _cluster_stats_from_row, load_
 logger = logging.getLogger(__name__)
 
 
-def get_match_options(conn: sqlite3.Connection) -> list[dict]:
+def get_match_options(conn: Any) -> list[dict]:
     """Return flat list of available pages for the match override dropdown."""
     options: list[dict] = [
         {"match_type": "new", "match_handle": "", "match_title": "New content"},
@@ -39,7 +39,7 @@ def get_match_options(conn: sqlite3.Connection) -> list[dict]:
 
 
 def update_cluster_match(
-    conn: sqlite3.Connection,
+    conn: Any,
     cluster_id: int,
     match_type: str,
     match_handle: str,
@@ -71,7 +71,7 @@ def update_cluster_match(
     return load_clusters(conn)
 
 
-def get_cluster_detail(conn: sqlite3.Connection, cluster_id: int) -> dict:
+def get_cluster_detail(conn: Any, cluster_id: int) -> dict:
     """Load a single cluster with all auto-discovered related URLs and coverage.
 
     Discovery chain (priority order for deduplication):

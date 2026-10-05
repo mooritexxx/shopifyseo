@@ -1,7 +1,7 @@
 """SEO gap computation and cluster coverage enrichment."""
 import logging
 import re
-import sqlite3
+from typing import Any
 
 import shopifyseo.dashboard_queries as dq
 
@@ -91,7 +91,7 @@ def compute_seo_gaps(
     }
 
 
-def enrich_clusters_with_coverage(conn: sqlite3.Connection, data: dict) -> dict:
+def enrich_clusters_with_coverage(conn: Any, data: dict) -> dict:
     """Add keyword_coverage and matched_vendor to each cluster.
 
     keyword_coverage: union coverage across all related content — suggested_match

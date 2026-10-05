@@ -13,7 +13,6 @@ local detection, configurable noise lists) that any store can tune.
 from __future__ import annotations
 
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -310,7 +309,7 @@ class StoreFitContext:
     non_catalog_priority_cap: float = 45.0  # Cap for non-catalog-aligned clusters
 
 
-def load_store_fit_context(conn: sqlite3.Connection) -> StoreFitContext:
+def load_store_fit_context(conn: Any) -> StoreFitContext:
     """Build StoreFitContext from catalog data."""
     catalog_vendors: dict[str, dict[str, Any]] = {}
     total_product_count = 0

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +102,7 @@ def _catalog_url_cache_key(url: str) -> str:
 
 
 def _read_cached_catalog_url_image(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
 ) -> tuple[bytes, str] | None:
     cache_id = _catalog_url_cache_key(url)
@@ -194,7 +193,7 @@ def _collection_featured_seo_suffix_seed(collection_shopify_id: str) -> str:
 
 
 def _collection_featured_row(
-    conn: sqlite3.Connection,
+    conn: Any,
     collection_shopify_id: str,
 ) -> dict[str, Any] | None:
     row = conn.execute(
@@ -255,7 +254,7 @@ def draft_optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _draft_optimize_collection_image_impl(
-    conn: sqlite3.Connection,
+    conn: Any,
     collection_shopify_id: str,
     *,
     apply_fn: bool,
@@ -463,7 +462,7 @@ def draft_optimize_product_image(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _draft_optimize_product_image_impl(
-    conn: sqlite3.Connection,
+    conn: Any,
     product_shopify_id: str,
     image_shopify_id: str,
     *,
@@ -777,7 +776,7 @@ def optimize_collection_image(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _optimize_collection_image_impl(
-    conn: sqlite3.Connection,
+    conn: Any,
     collection_shopify_id: str,
     *,
     apply_alt: bool,
@@ -908,7 +907,7 @@ def _optimize_collection_image_impl(
 
 
 def _optimize_product_image_impl(
-    conn: sqlite3.Connection,
+    conn: Any,
     product_shopify_id: str,
     image_shopify_id: str,
     *,

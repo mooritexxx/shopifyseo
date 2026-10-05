@@ -1,6 +1,5 @@
 import json
 import queue
-import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -28,6 +27,7 @@ from backend.app.schemas.common import SuccessResponse, success_response
 from backend.app.schemas.content import ArticleUpdatePayload, ContentDetailPayload, ContentUpdatePayload
 from backend.app.schemas.product import FieldRegenerateRequest, FieldRegenerateResult, ProductActionResult, ProductInspectionLinkPayload
 from backend.app.db import get_db_path, open_db_connection
+from shopifyseo.db import DictRow
 from shopifyseo.dashboard_store import (
     DB_PATH,
     create_article_draft_run,
@@ -143,7 +143,7 @@ def _sync_article_body_if_needed(article: dict, body_html: str, p: _ProgressFn) 
     return article
 
 
-def _lookup_idea_id_for_article(conn: sqlite3.Connection, blog_handle: str, article_handle: str) -> int | None:
+def _lookup_idea_id_for_article(conn: Any, blog_handle: str, article_handle: str) -> int | None:
     row = conn.execute(
         """
         SELECT idea_id FROM idea_articles
@@ -158,7 +158,7 @@ def _lookup_idea_id_for_article(conn: sqlite3.Connection, blog_handle: str, arti
     return int(row[0])
 
 
-def _idea_link_exists(conn: sqlite3.Connection, idea_id: int, blog_handle: str, article_handle: str) -> bool:
+def _idea_link_exists(conn: Any, idea_id: int, blog_handle: str, article_handle: str) -> bool:
     row = conn.execute(
         """
         SELECT 1 FROM idea_articles
@@ -171,7 +171,7 @@ def _idea_link_exists(conn: sqlite3.Connection, idea_id: int, blog_handle: str, 
 
 
 def _load_article_target_keyword_strings(
-    conn: sqlite3.Connection, blog_handle: str, article_handle: str
+    conn: Any, blog_handle: str, article_handle: str
 ) -> list[str]:
     rows = conn.execute(
         """
@@ -185,7 +185,7 @@ def _load_article_target_keyword_strings(
 
 
 def _first_matched_cluster_id_for_blog_article(
-    conn: sqlite3.Connection, blog_handle: str, article_handle: str
+    conn: Any, blog_handle: str, article_handle: str
 ) -> int | None:
     composite = dq.blog_article_composite_handle(blog_handle, article_handle)
     try:
@@ -295,8 +295,8 @@ def _run_generate_article_draft(
 
         run_with_db_lock_retry(_do_update)
 
-    conn: sqlite3.Connection | None = open_db_connection()
-    existing_row: sqlite3.Row | None = None
+    conn: Any | None = open_db_connection()
+    existing_row: DictRow | None = None
     try:
         assert conn is not None
         if run_id:

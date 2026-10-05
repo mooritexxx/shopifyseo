@@ -1,10 +1,10 @@
 """Cluster database persistence — read/write clusters and keywords tables."""
 import json
 import logging
-import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
-from shopifyseo.db import insert_returning_id
+from shopifyseo.db import DictRow, insert_returning_id, table_columns
 
 from ._planning import parse_keyword_tier
 
@@ -14,7 +14,7 @@ CLUSTERS_KEY = "keyword_clusters"
 TARGET_KEY = "target_keywords"
 
 
-def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
+def _migrate_json_to_db(conn: Any) -> None:
     """One-time migration: move cluster JSON from service_settings to DB tables.
 
     Idempotent — only runs if JSON key exists and clusters table is empty.
@@ -40,7 +40,7 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
 
     clusters = data.get("clusters") or []
     generated_at = data.get("generated_at") or datetime.now(timezone.utc).isoformat()
-    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    cluster_cols = table_columns(conn, "clusters")
 
     for cluster in clusters:
         sm = cluster.get("suggested_match")
@@ -127,7 +127,7 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _cluster_stats_from_row(row: sqlite3.Row) -> dict:
+def _cluster_stats_from_row(row: DictRow) -> dict:
     """Rebuild stats dict for prompts / API from a clusters table row."""
     keys = row.keys()
     stats: dict[str, str | float] = {}
@@ -144,7 +144,7 @@ def _cluster_stats_from_row(row: sqlite3.Row) -> dict:
     return stats
 
 
-def _cluster_planning_from_row(row: sqlite3.Row) -> dict:
+def _cluster_planning_from_row(row: DictRow) -> dict:
     """Optional SEO-planning fields added after the original cluster schema."""
     keys = row.keys()
     out: dict[str, object] = {}
@@ -166,11 +166,11 @@ def _cluster_planning_from_row(row: sqlite3.Row) -> dict:
     return out
 
 
-def load_clusters(conn: sqlite3.Connection) -> dict:
+def load_clusters(conn: Any) -> dict:
     """Load clusters from DB tables. Migrates JSON data on first call if needed."""
     _migrate_json_to_db(conn)
 
-    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    cluster_cols = table_columns(conn, "clusters")
     order_expr = (
         "COALESCE(NULLIF(priority_score, 0), avg_opportunity) DESC, avg_opportunity DESC"
         if "priority_score" in cluster_cols

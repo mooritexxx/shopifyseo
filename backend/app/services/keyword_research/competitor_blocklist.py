@@ -1,7 +1,7 @@
 """Competitor domain blocklist management."""
 
 import json
-import sqlite3
+from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
 
@@ -35,7 +35,7 @@ def norm_competitor_domain(raw: str) -> str:
     return d
 
 
-def load_competitor_blocklist(conn: sqlite3.Connection) -> set[str]:
+def load_competitor_blocklist(conn: Any) -> set[str]:
     raw = get_service_setting(conn, COMPETITOR_BLOCKLIST_KEY, "[]")
     try:
         return {norm_competitor_domain(x) for x in json.loads(raw) if x}
@@ -43,7 +43,7 @@ def load_competitor_blocklist(conn: sqlite3.Connection) -> set[str]:
         return set()
 
 
-def add_competitor_to_blocklist(conn: sqlite3.Connection, domain: str) -> None:
+def add_competitor_to_blocklist(conn: Any, domain: str) -> None:
     n = norm_competitor_domain(domain)
     if not n:
         return
@@ -53,7 +53,7 @@ def add_competitor_to_blocklist(conn: sqlite3.Connection, domain: str) -> None:
         set_service_setting(conn, COMPETITOR_BLOCKLIST_KEY, json.dumps(sorted(b)))
 
 
-def load_dismissed_snapshots(conn: sqlite3.Connection) -> dict[str, dict]:
+def load_dismissed_snapshots(conn: Any) -> dict[str, dict]:
     raw = get_service_setting(conn, COMPETITOR_DISMISSED_SNAPSHOTS_KEY, "{}")
     try:
         data = json.loads(raw)
@@ -69,11 +69,11 @@ def load_dismissed_snapshots(conn: sqlite3.Connection) -> dict[str, dict]:
     return out
 
 
-def _save_dismissed_snapshots(conn: sqlite3.Connection, snapshots: dict[str, dict]) -> None:
+def _save_dismissed_snapshots(conn: Any, snapshots: dict[str, dict]) -> None:
     set_service_setting(conn, COMPETITOR_DISMISSED_SNAPSHOTS_KEY, json.dumps(snapshots))
 
 
-def remove_dismissed_snapshot(conn: sqlite3.Connection, domain: str) -> None:
+def remove_dismissed_snapshot(conn: Any, domain: str) -> None:
     n = norm_competitor_domain(domain)
     if not n:
         return
@@ -83,7 +83,7 @@ def remove_dismissed_snapshot(conn: sqlite3.Connection, domain: str) -> None:
         _save_dismissed_snapshots(conn, snaps)
 
 
-def upsert_dismissed_profile_snapshot(conn: sqlite3.Connection, snapshot: dict) -> None:
+def upsert_dismissed_profile_snapshot(conn: Any, snapshot: dict) -> None:
     """Store metrics for a domain being dismissed so the Dismissed tab can show Traffic / Common / Gap."""
     dom = norm_competitor_domain(str(snapshot.get("domain", "")))
     if not dom:
@@ -108,7 +108,7 @@ def upsert_dismissed_profile_snapshot(conn: sqlite3.Connection, snapshot: dict) 
     _save_dismissed_snapshots(conn, snaps)
 
 
-def remove_competitor_from_blocklist(conn: sqlite3.Connection, domain: str) -> None:
+def remove_competitor_from_blocklist(conn: Any, domain: str) -> None:
     n = norm_competitor_domain(domain)
     b = load_competitor_blocklist(conn)
     if n in b:
@@ -117,7 +117,7 @@ def remove_competitor_from_blocklist(conn: sqlite3.Connection, domain: str) -> N
     remove_dismissed_snapshot(conn, n)
 
 
-def competitor_domain_allowed_for_research(conn: sqlite3.Connection, domain: str) -> bool:
+def competitor_domain_allowed_for_research(conn: Any, domain: str) -> bool:
     n = norm_competitor_domain(domain)
     if not n:
         return False
@@ -128,7 +128,7 @@ def competitor_domain_allowed_for_research(conn: sqlite3.Connection, domain: str
     return True
 
 
-def purge_disallowed_competitor_rows(conn: sqlite3.Connection) -> None:
+def purge_disallowed_competitor_rows(conn: Any) -> None:
     """Remove DB rows for blocklisted or non-retail competitor domains (e.g. youtube.com)."""
     banned = list(load_competitor_blocklist(conn) | DISCOVERY_SKIP_DOMAINS)
     if not banned:

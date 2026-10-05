@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 import requests
 
+from shopifyseo.db import on_conflict_do_update
 from shopifyseo.catalog_image_work import build_catalog_image_registry_from_db, count_catalog_images_for_cache_db
 from shopifyseo.product_image_seo import infer_image_format_from_bytes, normalize_shopify_image_url
 from shopifyseo.shopify_catalog_sync.db import now_iso, open_db
@@ -393,11 +394,24 @@ def warm_product_image_cache(
                 tmp.write_bytes(oc.body)
                 tmp.replace(path)
                 conn.execute(
-                    """
-                    INSERT OR REPLACE INTO product_image_file_cache (
+                    f"""
+                    INSERT INTO product_image_file_cache (
                       image_shopify_id, normalized_url, local_relpath, etag, last_modified,
                       content_length, sha256_hex, mime, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    {on_conflict_do_update(
+                        "image_shopify_id",
+                        (
+                            "normalized_url",
+                            "local_relpath",
+                            "etag",
+                            "last_modified",
+                            "content_length",
+                            "sha256_hex",
+                            "mime",
+                            "updated_at",
+                        ),
+                    )}
                     """,
                     (
                         oc.image_id,
@@ -495,11 +509,24 @@ def _write_cache_entry(
     tmp.write_bytes(data)
     tmp.replace(path)
     conn.execute(
-        """
-        INSERT OR REPLACE INTO product_image_file_cache (
+        f"""
+        INSERT INTO product_image_file_cache (
           image_shopify_id, normalized_url, local_relpath, etag, last_modified,
           content_length, sha256_hex, mime, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        {on_conflict_do_update(
+            "image_shopify_id",
+            (
+                "normalized_url",
+                "local_relpath",
+                "etag",
+                "last_modified",
+                "content_length",
+                "sha256_hex",
+                "mime",
+                "updated_at",
+            ),
+        )}
         """,
         (image_shopify_id, norm_url, rel, etag, last_modified, cl, sh, mime, now_iso()),
     )

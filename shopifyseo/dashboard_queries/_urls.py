@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sqlite3
 
+from shopifyseo.db import order_ci
+
 
 _BASE_URL_CACHE: str | None = None
 
@@ -169,7 +171,7 @@ def build_store_internal_link_allowlist(
     try:
         for r in conn.execute(
             "SELECT handle, title FROM collections WHERE handle IS NOT NULL AND TRIM(handle) != '' "
-            "ORDER BY title COLLATE NOCASE"
+            f"ORDER BY {order_ci('title')}"
         ).fetchall():
             h = (r[0] or "").strip()
             if h:
@@ -177,14 +179,14 @@ def build_store_internal_link_allowlist(
         linkable_expr = linkable_product_sql(conn)
         for r in conn.execute(
             f"SELECT handle, title FROM products WHERE {linkable_expr} "
-            "ORDER BY title COLLATE NOCASE"
+            f"ORDER BY {order_ci('title')}"
         ).fetchall():
             h = (r[0] or "").strip()
             if h:
                 products.append((h, (r[1] or h).strip() or h))
         for r in conn.execute(
             "SELECT handle, title FROM pages WHERE handle IS NOT NULL AND TRIM(handle) != '' "
-            "ORDER BY title COLLATE NOCASE"
+            f"ORDER BY {order_ci('title')}"
         ).fetchall():
             h = (r[0] or "").strip()
             if h:
@@ -193,7 +195,7 @@ def build_store_internal_link_allowlist(
             "SELECT blog_handle, handle, title FROM blog_articles "
             "WHERE blog_handle IS NOT NULL AND TRIM(blog_handle) != '' "
             "AND handle IS NOT NULL AND TRIM(handle) != '' "
-            "ORDER BY title COLLATE NOCASE"
+            f"ORDER BY {order_ci('title')}"
         ).fetchall():
             bh = (r[0] or "").strip()
             ah = (r[1] or "").strip()

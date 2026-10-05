@@ -11,7 +11,8 @@ The allowlist helps ensure:
 
 Migration plan:
 - PR2: Infrastructure + team_tasks.py + api_usage.py
-- PR3 (this PR): route 7 sqlite3.connect sites through get_connection()
+- PR3: route 7 sqlite3.connect sites through get_connection()
+- PR4 (this PR): portable SQL (ON CONFLICT, insert_returning_id, dialect helpers)
 - Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
@@ -38,9 +39,9 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "backend/app/services/keyword_clustering/_context.py": 1,
     "backend/app/services/keyword_clustering/_crud.py": 14,
     "backend/app/services/keyword_clustering/_gaps.py": 6,
-    "backend/app/services/keyword_clustering/_generation.py": 9,
+    "backend/app/services/keyword_clustering/_generation.py": 6,
     "backend/app/services/keyword_clustering/_planning.py": 3,
-    "backend/app/services/keyword_clustering/_storage.py": 13,
+    "backend/app/services/keyword_clustering/_storage.py": 10,
     "backend/app/services/keyword_clustering/_store_fit.py": 1,
     "backend/app/services/keyword_research/competitor_blocklist.py": 3,
     "backend/app/services/keyword_research/keyword_db.py": 20,
@@ -49,7 +50,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "backend/app/services/opportunities_service.py": 6,
     "backend/app/services/overview_results.py": 2,
     "backend/app/services/rank_tracking.py": 42,
-    "backend/app/services/team_tasks.py": 10,
+    "backend/app/services/team_tasks.py": 9,
     # shopifyseo library
     "shopifyseo/api_usage.py": 11,
     "shopifyseo/article_draft_retrieval.py": 8,
@@ -59,7 +60,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/dashboard_ai_engine_parts/_article_ideas.py": 4,
     "shopifyseo/dashboard_ai_engine_parts/context.py": 8,
     "shopifyseo/dashboard_ai_engine_parts/generation.py": 1,
-    "shopifyseo/dashboard_article_ideas.py": 56,
+    "shopifyseo/dashboard_article_ideas.py": 55,
     "shopifyseo/dashboard_google/_auth.py": 4,
     "shopifyseo/dashboard_google/_cache.py": 5,
     "shopifyseo/dashboard_google/_ga4.py": 1,
@@ -72,11 +73,11 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/dashboard_queries/_text_tokens.py": 4,
     "shopifyseo/dashboard_queries/_urls.py": 4,
     "shopifyseo/dashboard_store.py": 67,
-    "shopifyseo/embedding_store.py": 50,
+    "shopifyseo/embedding_store.py": 49,
     "shopifyseo/embedding_sync.py": 1,
-    "shopifyseo/index_evidence.py": 15,
+    "shopifyseo/index_evidence.py": 14,
     "shopifyseo/internal_links/ai_weave.py": 4,
-    "shopifyseo/internal_links/apply.py": 25,
+    "shopifyseo/internal_links/apply.py": 24,
     "shopifyseo/internal_links/auto_apply.py": 3,
     "shopifyseo/internal_links/graph.py": 4,
     "shopifyseo/internal_links/manual_weave.py": 7,
@@ -90,7 +91,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/shopify_catalog_sync/__init__.py": 11,
     "shopifyseo/shopify_catalog_sync/blogs.py": 13,
     "shopifyseo/shopify_catalog_sync/collections.py": 9,
-    "shopifyseo/shopify_catalog_sync/db.py": 11,
+    "shopifyseo/shopify_catalog_sync/db.py": 10,
     "shopifyseo/shopify_catalog_sync/page_template_enrichment.py": 2,
     "shopifyseo/shopify_catalog_sync/pages.py": 1,
     "shopifyseo/shopify_catalog_sync/products.py": 11,

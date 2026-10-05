@@ -508,11 +508,12 @@ def run_competitor_research(conn: sqlite3.Connection, on_progress=None) -> dict:
             is_man = 1 if d in manual_seed_snapshot else 0
             conn.execute(
                 """
-                INSERT OR IGNORE INTO competitor_profiles
+                INSERT INTO competitor_profiles
                     (domain, keywords_common, keywords_they_have, keywords_we_have, share, traffic,
                      labs_visibility, labs_avg_position, labs_median_position, labs_seed_etv, labs_bulk_etv, labs_rating,
                      is_manual, updated_at)
                 VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?)
+                ON CONFLICT DO NOTHING
                 """,
                 (d, is_man, now_stub),
             )

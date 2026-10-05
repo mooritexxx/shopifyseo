@@ -954,6 +954,12 @@ from shopifyseo.db import (
     IDENTITY_COLUMNS,
     get_sequence_name,
     ResyncResult,
+    group_concat,
+    like_ci,
+    order_ci,
+    order_inserted,
+    on_conflict_do_nothing,
+    on_conflict_do_update,
 )
 
 
@@ -1908,3 +1914,465 @@ class TestPercentLiteralRegression:
         assert row["val"] == "50%"
         pg_conn.execute("DROP TABLE percent_lit_test")
         pg_conn.commit()
+
+
+# ============================================================================
+# PR4: portable SQL dialect helpers
+# ============================================================================
+
+
+class TestOnConflictDoNothing:
+    """INSERT OR IGNORE → ON CONFLICT DO NOTHING keeps the same conflict outcome."""
+
+    def test_second_insert_ignored_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (term TEXT PRIMARY KEY, note TEXT)")
+                conn.execute(
+                    f"INSERT INTO t(term, note) VALUES (?, ?) {on_conflict_do_nothing('term')}",
+                    ("vape", "first"),
+                )
+                cur = conn.execute(
+                    f"INSERT INTO t(term, note) VALUES (?, ?) {on_conflict_do_nothing('term')}",
+                    ("vape", "second"),
+                )
+                assert cur.rowcount == 0
+                row = conn.execute("SELECT note FROM t WHERE term = ?", ("vape",)).fetchone()
+                assert row["note"] == "first"
+            finally:
+                conn.close()
+
+    def test_matches_insert_or_ignore_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ignore_conn = connect_sqlite(Path(tmpdir) / "ignore.db")
+            conflict_conn = connect_sqlite(Path(tmpdir) / "conflict.db")
+            try:
+                for conn in (ignore_conn, conflict_conn):
+                    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, term TEXT UNIQUE)")
+                ignore_conn.execute("INSERT OR IGNORE INTO t(term) VALUES (?)", ("a",))
+                ignore_conn.execute("INSERT OR IGNORE INTO t(term) VALUES (?)", ("a",))
+                conflict_conn.execute(
+                    f"INSERT INTO t(term) VALUES (?) {on_conflict_do_nothing('term')}",
+                    ("a",),
+                )
+                conflict_conn.execute(
+                    f"INSERT INTO t(term) VALUES (?) {on_conflict_do_nothing('term')}",
+                    ("a",),
+                )
+                ignore_rows = ignore_conn.execute("SELECT id, term FROM t ORDER BY id").fetchall()
+                conflict_rows = conflict_conn.execute("SELECT id, term FROM t ORDER BY id").fetchall()
+                assert [(r["id"], r["term"]) for r in ignore_rows] == [(r["id"], r["term"]) for r in conflict_rows]
+            finally:
+                ignore_conn.close()
+                conflict_conn.close()
+
+    def test_second_insert_ignored_postgres(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_on_conflict_nothing"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (term TEXT PRIMARY KEY, note TEXT)")
+            conn.commit()
+            execute(
+                conn,
+                f"INSERT INTO {table}(term, note) VALUES (?, ?) {on_conflict_do_nothing('term')}",
+                ("vape", "first"),
+                backend=Backend.POSTGRES,
+            )
+            cur = execute(
+                conn,
+                f"INSERT INTO {table}(term, note) VALUES (?, ?) {on_conflict_do_nothing('term')}",
+                ("vape", "second"),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            assert cur.rowcount == 0
+            row = conn.execute(f"SELECT note FROM {table} WHERE term = %s", ("vape",)).fetchone()
+            assert row["note"] == "first"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestOnConflictDoUpdate:
+    """INSERT OR REPLACE → ON CONFLICT DO UPDATE keeps the same stored values."""
+
+    def test_updates_existing_row_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute(
+                    "CREATE TABLE cache (image_id TEXT PRIMARY KEY, url TEXT, mime TEXT)"
+                )
+                sql = (
+                    "INSERT INTO cache(image_id, url, mime) VALUES (?, ?, ?) "
+                    + on_conflict_do_update("image_id", ("url", "mime"))
+                )
+                conn.execute(sql, ("img1", "http://a", "image/jpeg"))
+                conn.execute(sql, ("img1", "http://b", "image/webp"))
+                row = conn.execute("SELECT url, mime FROM cache WHERE image_id = ?", ("img1",)).fetchone()
+                assert row["url"] == "http://b"
+                assert row["mime"] == "image/webp"
+            finally:
+                conn.close()
+
+    def test_updates_existing_row_postgres(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_on_conflict_update"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (image_id TEXT PRIMARY KEY, url TEXT, mime TEXT)")
+            conn.commit()
+            sql = (
+                f"INSERT INTO {table}(image_id, url, mime) VALUES (?, ?, ?) "
+                + on_conflict_do_update("image_id", ("url", "mime"))
+            )
+            execute(conn, sql, ("img1", "http://a", "image/jpeg"), backend=Backend.POSTGRES)
+            execute(conn, sql, ("img1", "http://b", "image/webp"), backend=Backend.POSTGRES)
+            conn.commit()
+            row = conn.execute(f"SELECT url, mime FROM {table} WHERE image_id = %s", ("img1",)).fetchone()
+            assert row["url"] == "http://b"
+            assert row["mime"] == "image/webp"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestInsertReturningIdCallSites:
+    """lastrowid → insert_returning_id returns the same identity on both backends."""
+
+    def test_sqlite_matches_lastrowid(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE robots (id INTEGER PRIMARY KEY, url TEXT)")
+                via_helper = insert_returning_id(
+                    conn, "INSERT INTO robots(url) VALUES (?)", ("https://a/robots.txt",),
+                    backend=Backend.SQLITE,
+                )
+                cur = conn.execute("INSERT INTO robots(url) VALUES (?)", ("https://b/robots.txt",))
+                assert via_helper == 1
+                assert cur.lastrowid == 2
+                assert via_helper != cur.lastrowid
+            finally:
+                conn.close()
+
+    def test_postgres_returns_serial_id(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_insert_returning_pr4"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (id SERIAL PRIMARY KEY, url TEXT)")
+            conn.commit()
+            first = insert_returning_id(
+                conn, f"INSERT INTO {table}(url) VALUES (?)", ("https://a/robots.txt",),
+                backend=Backend.POSTGRES,
+            )
+            second = insert_returning_id(
+                conn, f"INSERT INTO {table}(url) VALUES (?)", ("https://b/robots.txt",),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            assert first == 1
+            assert second == 2
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestGroupConcatHelper:
+    """GROUP_CONCAT helper emits dialect SQL and concatenates the same values."""
+
+    def test_sqlite_sql_and_result(self):
+        assert group_concat("model_version", distinct=True, backend=Backend.SQLITE) == (
+            "GROUP_CONCAT(DISTINCT model_version)"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE embeddings (object_type TEXT, model_version TEXT)")
+                conn.executemany(
+                    "INSERT INTO embeddings VALUES (?, ?)",
+                    [("product", "v1"), ("product", "v2"), ("product", "v1")],
+                )
+                row = conn.execute(
+                    f"SELECT {group_concat('model_version', distinct=True, backend=Backend.SQLITE)} AS models "
+                    "FROM embeddings GROUP BY object_type"
+                ).fetchone()
+                assert set(row["models"].split(",")) == {"v1", "v2"}
+            finally:
+                conn.close()
+
+    def test_postgres_sql_and_result(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        assert group_concat("model_version", distinct=True, backend=Backend.POSTGRES) == (
+            "string_agg(DISTINCT model_version, ',')"
+        )
+        conn = connect_postgres(pg_url)
+        table = "_test_group_concat"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (object_type TEXT, model_version TEXT)")
+            conn.commit()
+            execute(
+                conn,
+                f"INSERT INTO {table} VALUES (?, ?)",
+                ("product", "v1"),
+                backend=Backend.POSTGRES,
+            )
+            execute(
+                conn,
+                f"INSERT INTO {table} VALUES (?, ?)",
+                ("product", "v2"),
+                backend=Backend.POSTGRES,
+            )
+            execute(
+                conn,
+                f"INSERT INTO {table} VALUES (?, ?)",
+                ("product", "v1"),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            row = execute(
+                conn,
+                f"SELECT {group_concat('model_version', distinct=True, backend=Backend.POSTGRES)} AS models "
+                f"FROM {table} GROUP BY object_type",
+                backend=Backend.POSTGRES,
+            ).fetchone()
+            assert set(row["models"].split(",")) == {"v1", "v2"}
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestRowidToIdOrdering:
+    """ORDER BY rowid → ORDER BY id matches insertion identity on INTEGER PK tables."""
+
+    def test_id_matches_rowid_order_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute(
+                    "CREATE TABLE rank_jobs (id INTEGER PRIMARY KEY, created_at TEXT, name TEXT)"
+                )
+                conn.execute("INSERT INTO rank_jobs(created_at, name) VALUES ('2026-01-01', 'a')")
+                conn.execute("INSERT INTO rank_jobs(created_at, name) VALUES ('2026-01-01', 'b')")
+                by_rowid = conn.execute(
+                    "SELECT name FROM rank_jobs ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                ).fetchone()["name"]
+                by_id = conn.execute(
+                    "SELECT name FROM rank_jobs ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()["name"]
+                assert by_rowid == by_id == "b"
+            finally:
+                conn.close()
+
+    def test_id_order_postgres(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_rowid_to_id"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (id SERIAL PRIMARY KEY, created_at TEXT, name TEXT)")
+            conn.commit()
+            execute(
+                conn,
+                f"INSERT INTO {table}(created_at, name) VALUES (?, ?)",
+                ("2026-01-01", "a"),
+                backend=Backend.POSTGRES,
+            )
+            execute(
+                conn,
+                f"INSERT INTO {table}(created_at, name) VALUES (?, ?)",
+                ("2026-01-01", "b"),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            row = conn.execute(
+                f"SELECT name FROM {table} ORDER BY created_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            assert row["name"] == "b"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestOrderInserted:
+    """TEXT uuid PKs (rank_jobs): SQLite rowid preserves last-inserted; Postgres uses id."""
+
+    def test_sqlite_last_insert_wins_when_uuid_is_smaller(self):
+        assert order_inserted(backend=Backend.SQLITE) == "rowid"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute(
+                    "CREATE TABLE rank_jobs (id TEXT PRIMARY KEY, created_at TEXT, name TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO rank_jobs(id, created_at, name) VALUES ('zzzz', '2026-01-01', 'first')"
+                )
+                conn.execute(
+                    "INSERT INTO rank_jobs(id, created_at, name) VALUES ('aaaa', '2026-01-01', 'second')"
+                )
+                by_id = conn.execute(
+                    "SELECT name FROM rank_jobs ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()["name"]
+                by_inserted = conn.execute(
+                    f"SELECT name FROM rank_jobs ORDER BY created_at DESC, "
+                    f"{order_inserted(backend=Backend.SQLITE)} DESC LIMIT 1"
+                ).fetchone()["name"]
+                assert by_id == "first"
+                assert by_inserted == "second"
+            finally:
+                conn.close()
+
+    def test_postgres_fragment_is_id_column(self):
+        assert order_inserted(backend=Backend.POSTGRES) == "id"
+        assert order_inserted(id_column="job_id", backend=Backend.POSTGRES) == "job_id"
+
+
+class TestCollateAndLikeHelpers:
+    """COLLATE NOCASE / case-insensitive LIKE helpers preserve SQLite behaviour."""
+
+    def test_order_ci_sqlite_keeps_nocase(self):
+        assert order_ci("title", backend=Backend.SQLITE) == "title COLLATE NOCASE"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE pages (title TEXT)")
+                conn.executemany("INSERT INTO pages VALUES (?)", [("banana",), ("Apple",), ("cherry",)])
+                rows = conn.execute(
+                    f"SELECT title FROM pages ORDER BY {order_ci('title', backend=Backend.SQLITE)}"
+                ).fetchall()
+                assert [r["title"] for r in rows] == ["Apple", "banana", "cherry"]
+            finally:
+                conn.close()
+
+    def test_like_ci_sqlite_keeps_like(self):
+        assert like_ci("qr.query", "'how%'", backend=Backend.SQLITE) == "qr.query LIKE 'how%'"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE q (query TEXT)")
+                conn.executemany("INSERT INTO q VALUES (?)", [("How to vape",), ("best kit",)])
+                row = conn.execute(
+                    f"SELECT query FROM q WHERE {like_ci('query', '?', backend=Backend.SQLITE)}",
+                    ("how%",),
+                ).fetchone()
+                assert row["query"] == "How to vape"
+            finally:
+                conn.close()
+
+    def test_order_ci_postgres_uses_lower(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        assert order_ci("title", backend=Backend.POSTGRES) == "LOWER(title)"
+        conn = connect_postgres(pg_url)
+        table = "_test_order_ci"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (title TEXT)")
+            conn.commit()
+            for title in ("banana", "Apple", "cherry"):
+                execute(conn, f"INSERT INTO {table} VALUES (?)", (title,), backend=Backend.POSTGRES)
+            conn.commit()
+            rows = conn.execute(
+                f"SELECT title FROM {table} ORDER BY {order_ci('title', backend=Backend.POSTGRES)}"
+            ).fetchall()
+            assert [r["title"] for r in rows] == ["Apple", "banana", "cherry"]
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_like_ci_postgres_uses_ilike(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        assert like_ci("qr.query", "'how%'", backend=Backend.POSTGRES) == "qr.query ILIKE 'how%'"
+        conn = connect_postgres(pg_url)
+        table = "_test_like_ci"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (query TEXT)")
+            conn.commit()
+            execute(conn, f"INSERT INTO {table} VALUES (?)", ("How to vape",), backend=Backend.POSTGRES)
+            execute(conn, f"INSERT INTO {table} VALUES (?)", ("best kit",), backend=Backend.POSTGRES)
+            conn.commit()
+            row = execute(
+                conn,
+                f"SELECT query FROM {table} WHERE {like_ci('query', '?', backend=Backend.POSTGRES)}",
+                ("how%",),
+                backend=Backend.POSTGRES,
+            ).fetchone()
+            assert row["query"] == "How to vape"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+
+class TestChangesRowcount:
+    """changes() → cursor.rowcount reports the same deleted-row count."""
+
+    def test_delete_rowcount_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE embeddings (object_type TEXT, object_handle TEXT)")
+                conn.executemany(
+                    "INSERT INTO embeddings VALUES (?, ?)",
+                    [("product", "a"), ("product", "b"), ("collection", "c")],
+                )
+                cur = conn.execute("DELETE FROM embeddings WHERE object_type = ?", ("product",))
+                assert cur.rowcount == 2
+                assert conn.execute("SELECT changes()").fetchone()[0] == 2
+            finally:
+                conn.close()
+
+    def test_delete_rowcount_postgres(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_changes_rowcount"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (object_type TEXT, object_handle TEXT)")
+            conn.commit()
+            execute(conn, f"INSERT INTO {table} VALUES (?, ?)", ("product", "a"), backend=Backend.POSTGRES)
+            execute(conn, f"INSERT INTO {table} VALUES (?, ?)", ("product", "b"), backend=Backend.POSTGRES)
+            execute(conn, f"INSERT INTO {table} VALUES (?, ?)", ("collection", "c"), backend=Backend.POSTGRES)
+            conn.commit()
+            cur = execute(
+                conn,
+                f"DELETE FROM {table} WHERE object_type = ?",
+                ("product",),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            assert cur.rowcount == 2
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()

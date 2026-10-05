@@ -9,6 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.app.db import open_db_connection
+from shopifyseo.db import order_inserted
 from shopifyseo.rank_tracking.serp import (PROFILE, PROFILE_JSON, RankCancelled, RankError, check_term,
                                           clean_url, is_target, remaining_credits, url_identity)
 
@@ -96,7 +97,14 @@ def list_rankings(conn):
                     target_mismatch=bool(current and current['status'] == 'ok' and current['ranking_url'] and row['target_url'] and url_identity(current['ranking_url']) != url_identity(row['target_url'])),
                     top_competitor=next((current[k] for k in ('top1_domain','top2_domain','top3_domain') if current[k] and current[k] != PROFILE['domain'] and not current[k].endswith('.'+PROFILE['domain'])), None) if current else None)
         items.append(item)
-    job = conn.execute('SELECT * FROM rank_jobs ORDER BY created_at DESC,rowid DESC LIMIT 1').fetchone()
+    # SQLite: order_inserted() is the monotonic insertion-order key (matches
+    # main: last-inserted wins when created_at ties).
+    # Postgres: rank_jobs.id is a TEXT uuid with no monotonic insertion column
+    # (schema migration is out of scope), so equal created_at ties break on
+    # uuid lexicographic order, not insertion order.
+    job = conn.execute(
+        f'SELECT * FROM rank_jobs ORDER BY created_at DESC,{order_inserted()} DESC LIMIT 1'
+    ).fetchone()
     return dict(items=items, profile=PROFILE, **usage(conn), job=dict(job) if job else None)
 
 
@@ -244,8 +252,8 @@ def insert_interrupted(conn, job_id, keyword_id, cancelled=False):
     if cancelled and not count:
         return
     message = 'Check stopped by user; rank is unknown.' if cancelled else 'Check interrupted; rank is unknown.'
-    conn.execute('''INSERT OR IGNORE INTO rank_checks(keyword_id,job_id,checked_at,check_date,searches_used,source,status,error,profile,cancelled)
-        VALUES (?,?,?,?,?,'serpapi','error',?,?,?)''', (keyword_id,job_id,stamp,stamp[:10],count,message,PROFILE_JSON,cancelled))
+    conn.execute('''INSERT INTO rank_checks(keyword_id,job_id,checked_at,check_date,searches_used,source,status,error,profile,cancelled)
+        VALUES (?,?,?,?,?,'serpapi','error',?,?,?) ON CONFLICT DO NOTHING''', (keyword_id,job_id,stamp,stamp[:10],count,message,PROFILE_JSON,cancelled))
 
 
 def recover_jobs(conn):
@@ -267,14 +275,15 @@ def import_baseline(conn, path):
             if not row.get('source','').startswith('serpapi google.ca Toronto desktop'):
                 raise RankError('Only the supplied SerpApi baseline format is supported; GSC is not a rank.')
             term = ' '.join(row['term'].lower().split())
-            conn.execute('INSERT OR IGNORE INTO tracked_keywords(term) VALUES (?)', (term,))
+            conn.execute('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT DO NOTHING', (term,))
             keyword_id = conn.execute('SELECT id FROM tracked_keywords WHERE term=?', (term,)).fetchone()[0]
             stamp = datetime.fromisoformat(row['checked_at_pt']).astimezone(TZ).isoformat(timespec='seconds')
             identity = hashlib.sha256(f"legacy-serpapi:{term}:{stamp}".encode()).hexdigest()
             reported = None if row['vapely_position'] == '>50' else int(row['vapely_position'])
-            cur = conn.execute('''INSERT OR IGNORE INTO rank_checks(keyword_id,checked_at,check_date,reported_position,
+            cur = conn.execute('''INSERT INTO rank_checks(keyword_id,checked_at,check_date,reported_position,
                 ranking_url,top1_domain,top2_domain,top3_domain,pages_checked,searches_used,checked_depth,
-                source,status,error,profile,import_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,'legacy_csv','unverified',?,?,?)''',
+                source,status,error,profile,import_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,'legacy_csv','unverified',?,?,?)
+                ON CONFLICT DO NOTHING''',
                 (keyword_id,stamp,stamp[:10],reported,clean_url(row['vapely_url']) or None,
                  row['top1_domain'],row['top2_domain'],row['top3_domain'],int(row['pages_checked']),int(row['searches_used']),int(row['pages_checked'])*10,
                  'Legacy script counted collected results; ranking and coverage need a fresh check.',PROFILE_JSON,identity))

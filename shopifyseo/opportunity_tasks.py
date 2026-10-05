@@ -120,7 +120,7 @@ def record_applied(conn, kind, handle, payload):
         reviewed = json.loads(row['reviewed_json'])
         if reviewed and all(str(payload.get(k, '')).strip() == str(v).strip() for k, v in reviewed.items()):
             conn.execute("UPDATE seo_opportunity_tasks SET status='applied',updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
-            conn.execute('INSERT OR IGNORE INTO seo_change_events(task_id) VALUES(?)', (row['id'],))
+            conn.execute('INSERT INTO seo_change_events(task_id) VALUES(?) ON CONFLICT DO NOTHING', (row['id'],))
             conn.commit()
 
 

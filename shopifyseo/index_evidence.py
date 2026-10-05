@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from shopifyseo.db import insert_returning_id
+
 from .dashboard_status import index_status_info, index_status_bucket_from_strings
 
 PT = ZoneInfo('America/Vancouver')
@@ -187,10 +189,12 @@ def store_snapshot(conn, url, status_code, body, *, etag='', now=None, raw_body=
     if latest and (latest['status_code'], latest['sha256']) == (status_code, digest):
         conn.execute('UPDATE robots_snapshots SET last_seen_at=?, etag=? WHERE id=?', (now, etag, latest['id']))
         return latest['id']
-    cursor = conn.execute('''INSERT INTO robots_snapshots
+    return insert_returning_id(
+        conn,
+        '''INSERT INTO robots_snapshots
         (url,status_code,byte_size,sha256,etag,body,first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?)''',
-        (robots_url(url), status_code, len(raw), digest, etag, body, now, now))
-    return cursor.lastrowid
+        (robots_url(url), status_code, len(raw), digest, etag, body, now, now),
+    )
 
 
 def fetch_robots_snapshot(conn, storefront):

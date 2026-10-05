@@ -20,6 +20,8 @@ from typing import Any
 
 import numpy as np
 
+from shopifyseo.db import group_concat
+
 from . import dashboard_queries as dq
 from .dashboard_ai_engine_parts.config import GEMINI_API_URL
 from .dashboard_http import HttpRequestError, request_json
@@ -631,53 +633,55 @@ def prune_stale_embeddings(conn: sqlite3.Connection, object_type: str | None = N
     total = 0
     for t in types:
         if t == "gsc_queries":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'gsc_queries'
                 AND object_handle NOT IN (
                     SELECT DISTINCT object_type || ':' || object_handle FROM gsc_query_rows
                 )
             """)
         elif t == "blog_article":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'blog_article'
                 AND object_handle NOT IN (
                     SELECT blog_handle || '/' || handle FROM blog_articles
                 )
             """)
         elif t == "keyword":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'keyword'
                 AND object_handle NOT IN (
                     SELECT keyword FROM keyword_metrics WHERE status IN ('approved', 'new')
                 )
             """)
         elif t == "article_idea":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'article_idea'
                 AND object_handle NOT IN (
                     SELECT CAST(id AS TEXT) FROM article_ideas WHERE status != 'rejected'
                 )
             """)
         elif t == "competitor_page":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'competitor_page'
                 AND object_handle NOT IN (
                     SELECT competitor_domain || ':' || url FROM competitor_top_pages
                 )
             """)
         elif t == "cluster":
-            conn.execute("""
+            cur = conn.execute("""
                 DELETE FROM embeddings WHERE object_type = 'cluster'
                 AND object_handle NOT IN (SELECT CAST(id AS TEXT) FROM clusters)
             """)
         else:
             table = _source_table(t)
+            cur = None
             if table:
-                conn.execute(f"""
+                cur = conn.execute(f"""
                     DELETE FROM embeddings WHERE object_type = ?
                     AND object_handle NOT IN (SELECT handle FROM {table})
                 """, (t,))
-        total += conn.execute("SELECT changes()").fetchone()[0]
+        if cur is not None:
+            total += cur.rowcount
     if total:
         conn.commit()
     return total
@@ -1413,12 +1417,12 @@ def sync_embedding_for_handle(
 
 def embedding_status(conn: sqlite3.Connection) -> dict:
     """Return aggregate stats about the embedding table for the status page."""
-    embed_rows = conn.execute("""
+    embed_rows = conn.execute(f"""
         SELECT object_type,
                COUNT(DISTINCT object_handle) AS object_count,
                COUNT(*) AS chunk_count,
                MAX(updated_at) AS last_updated,
-               GROUP_CONCAT(DISTINCT model_version) AS model_versions
+               {group_concat("model_version", distinct=True)} AS model_versions
         FROM embeddings
         GROUP BY object_type
     """).fetchall()

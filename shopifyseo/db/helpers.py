@@ -2,10 +2,82 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any, Generator, Sequence
 
 from .backend import Backend, get_backend
 from .compat import _translate_placeholders
+
+
+def _resolve_backend(backend: Backend | None) -> Backend:
+    return get_backend() if backend is None else backend
+
+
+def group_concat(
+    expr: str,
+    *,
+    distinct: bool = False,
+    separator: str = ",",
+    backend: Backend | None = None,
+) -> str:
+    """SQL fragment that concatenates grouped strings on both backends.
+
+    SQLite: ``GROUP_CONCAT`` (default separator ``,``).
+    PostgreSQL: ``string_agg`` with the same separator.
+    """
+    if "'" in separator:
+        raise ValueError("group_concat separator cannot contain a single quote")
+    if _resolve_backend(backend) == Backend.POSTGRES:
+        inner = f"DISTINCT {expr}" if distinct else expr
+        return f"string_agg({inner}, '{separator}')"
+    if distinct and separator == ",":
+        return f"GROUP_CONCAT(DISTINCT {expr})"
+    if distinct:
+        return f"GROUP_CONCAT(DISTINCT {expr}, '{separator}')"
+    if separator == ",":
+        return f"GROUP_CONCAT({expr})"
+    return f"GROUP_CONCAT({expr}, '{separator}')"
+
+
+def like_ci(left: str, right: str, *, backend: Backend | None = None) -> str:
+    """Case-insensitive LIKE. SQLite keeps ``LIKE`` (ASCII CI); Postgres uses ``ILIKE``."""
+    op = "ILIKE" if _resolve_backend(backend) == Backend.POSTGRES else "LIKE"
+    return f"{left} {op} {right}"
+
+
+def order_ci(expr: str, *, backend: Backend | None = None) -> str:
+    """Case-insensitive ORDER BY key. SQLite keeps ``COLLATE NOCASE``; Postgres uses ``LOWER()``."""
+    if _resolve_backend(backend) == Backend.POSTGRES:
+        return f"LOWER({expr})"
+    return f"{expr} COLLATE NOCASE"
+
+
+def order_inserted(*, id_column: str = "id", backend: Backend | None = None) -> str:
+    """ORDER BY key that prefers insertion order.
+
+    SQLite: ``rowid`` (monotonic; same tie-break as main).
+    PostgreSQL: ``id_column`` (default ``id``). INTEGER / IDENTITY PKs match
+    insertion order. TEXT uuid PKs (``rank_jobs.id``) have no monotonic
+    insertion column without a schema migration — the uuid is then
+    lexicographic, not last-inserted. Call sites must document that residual.
+    """
+    if _resolve_backend(backend) == Backend.POSTGRES:
+        return id_column
+    return "rowid"
+
+
+def on_conflict_do_nothing(target: str | None = None) -> str:
+    """Portable UPSERT ignore clause. ``target`` is the unique index/constraint column list."""
+    if target:
+        return f"ON CONFLICT({target}) DO NOTHING"
+    return "ON CONFLICT DO NOTHING"
+
+
+def on_conflict_do_update(target: str, columns: Sequence[str]) -> str:
+    """Portable UPSERT update clause assigning each column from ``excluded``."""
+    if not columns:
+        raise ValueError("on_conflict_do_update requires at least one column")
+    assignments = ", ".join(f"{column} = excluded.{column}" for column in columns)
+    return f"ON CONFLICT({target}) DO UPDATE SET {assignments}"
 
 
 def insert_returning_id(

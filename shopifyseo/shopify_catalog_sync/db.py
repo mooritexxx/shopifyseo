@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..db import get_connection
+from ..db import get_connection, insert_returning_id
 from ..shopify_admin import graphql_post, graphql_request
 from .queries import (
     PRODUCTS_QUERY,
@@ -483,7 +483,8 @@ def start_run(conn: sqlite3.Connection) -> int:
         """,
         (now_iso(),),
     )
-    cur = conn.execute(
+    run_id = insert_returning_id(
+        conn,
         """
         INSERT INTO sync_runs(started_at, status)
         VALUES(?, 'running')
@@ -491,7 +492,7 @@ def start_run(conn: sqlite3.Connection) -> int:
         (now_iso(),),
     )
     conn.commit()
-    return int(cur.lastrowid)
+    return int(run_id)
 
 
 def finish_run(

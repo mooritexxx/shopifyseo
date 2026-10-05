@@ -124,6 +124,24 @@ def test_seed_remove_restore(database):
     with pytest.raises(serp.RankError): svc.save_keyword(conn,'bad','https://evil.example/')
 
 
+def test_list_rankings_latest_job_is_last_inserted_on_created_at_tie(database):
+    """SQLite rowid tie-break matches main: last insert wins even when its uuid is smaller."""
+    conn, _ = database
+    stamp = '2026-10-01T00:00:00-07:00'
+    conn.execute(
+        '''INSERT INTO rank_jobs(id,request_key,weekly_date,status,keyword_ids,max_pages,reserved,created_at)
+           VALUES (?,?,?,?,?,?,?,?)''',
+        ('zzzz-later-lex', 'k1', None, 'done', '[]', 1, 0, stamp),
+    )
+    conn.execute(
+        '''INSERT INTO rank_jobs(id,request_key,weekly_date,status,keyword_ids,max_pages,reserved,created_at)
+           VALUES (?,?,?,?,?,?,?,?)''',
+        ('aaaa-earlier-lex', 'k2', None, 'done', '[]', 1, 0, stamp),
+    )
+    conn.commit()
+    assert svc.list_rankings(conn)['job']['id'] == 'aaaa-earlier-lex'
+
+
 def test_estimate_includes_retries_and_budget(database,monkeypatch):
     conn,_=database
     assert svc.estimate(conn,None,5)['searches_worst_case']==160

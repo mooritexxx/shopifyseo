@@ -13,6 +13,7 @@ from typing import Any, Sequence
 
 from .backend import Backend, get_backend, parse_database_url
 from .compat import _translate_placeholders
+from .timestamps import rewrite_current_timestamp_for_postgres
 
 
 def _translate_sql(sql: str, params: Sequence[Any] | None, backend: Backend) -> str:
@@ -21,9 +22,14 @@ def _translate_sql(sql: str, params: Sequence[Any] | None, backend: Backend) -> 
     The key insight: psycopg processes % whenever a params sequence is passed,
     even if that sequence is empty () or []. So we must escape % to %% when
     params is not None, regardless of whether the SQL has ? placeholders.
+
+    On Postgres, ``CURRENT_TIMESTAMP`` is rewritten to naive UTC text so TEXT
+    timestamp columns match SQLite (``YYYY-MM-DD HH:MM:SS``). SQLite SQL is
+    returned unchanged.
     """
     if backend != Backend.POSTGRES:
         return sql
+    sql = rewrite_current_timestamp_for_postgres(sql)
     return _translate_placeholders(sql, to_postgres=True, escape_percent=params is not None)
 
 

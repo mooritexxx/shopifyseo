@@ -332,7 +332,7 @@ def test_upsert_page_stores_is_published():
 
     row = conn.execute("SELECT is_published, published_at FROM pages WHERE handle = 'test-unpub'").fetchone()
     assert row["is_published"] == 0
-    assert row["published_at"] == ""
+    assert not row["published_at"]
 
     upsert_page(
         conn,
@@ -364,7 +364,7 @@ def test_upsert_page_stores_is_published():
 
     row3 = conn.execute("SELECT is_published, published_at FROM pages WHERE handle = 'test-legacy'").fetchone()
     assert row3["is_published"] is None
-    assert row3["published_at"] == ""
+    assert not row3["published_at"]
 
 
 def test_pages_query_contains_is_published():

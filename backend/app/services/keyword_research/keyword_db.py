@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting, set_service_setting
+from shopifyseo.db import now_epoch
 
 from .competitor_blocklist import norm_competitor_domain
 from .keyword_utils import (
@@ -252,7 +253,7 @@ def refresh_keyword_metric_opportunity_scores(conn: Any) -> int:
     if not items:
         return 0
     recompute_opportunity_scores(items)
-    now = int(time.time())
+    now = now_epoch()
     for item in items:
         conn.execute(
             "UPDATE keyword_metrics SET opportunity = ?, updated_at = ? WHERE keyword = ?",
@@ -312,7 +313,7 @@ def update_keyword_status(conn: Any, keyword: str, new_status: str) -> dict:
     save_target_keywords(conn, data)
     conn.execute(
         "UPDATE keyword_metrics SET status = ?, updated_at = ? WHERE LOWER(keyword) = LOWER(?)",
-        (new_status, int(time.time()), keyword),
+        (new_status, now_epoch(), keyword),
     )
     conn.commit()
     try:
@@ -336,7 +337,7 @@ def bulk_update_status(conn: Any, keywords: list[str], new_status: str) -> int:
                 )
             updated += 1
     save_target_keywords(conn, data)
-    now = int(time.time())
+    now = now_epoch()
     for kw in keywords:
         conn.execute(
             "UPDATE keyword_metrics SET status = ?, updated_at = ? WHERE LOWER(keyword) = LOWER(?)",
@@ -358,7 +359,7 @@ def sync_keyword_metrics_to_db(conn: Any) -> int:
     """
     data = load_target_keywords(conn)
     items = data.get("items", [])
-    now = int(time.time())
+    now = now_epoch()
     for item in items:
         intent_raw = item.get("intent_raw") or {}
         seed_keywords = item.get("seed_keywords") or []

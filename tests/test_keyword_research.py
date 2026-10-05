@@ -19,6 +19,7 @@ from backend.app.services.keyword_research.keyword_db import (
     load_target_keywords,
     normalize_target_keyword_item,
     sync_competitor_top_pages_from_keyword_metrics,
+    sync_keyword_metrics_to_db,
     upsert_target_keyword,
 )
 from shopifyseo.dashboard_google import get_service_setting
@@ -524,6 +525,27 @@ def test_load_approved_keywords_aliases_content_type_label():
 def test_load_approved_keywords_empty_db():
     conn = _make_keyword_metrics_db()
     assert load_approved_keywords(conn) == []
+
+
+def test_sync_keyword_metrics_updated_at_is_epoch_integer():
+    """keyword_metrics.updated_at is INTEGER epoch, not CURRENT_TIMESTAMP text."""
+    conn = _make_keyword_metrics_db()
+    upsert_target_keyword(conn, "epoch kw", status="approved")
+    row = conn.execute(
+        "SELECT updated_at, typeof(updated_at) AS t FROM keyword_metrics WHERE keyword = ?",
+        ("epoch kw",),
+    ).fetchone()
+    assert row["t"] == "integer"
+    assert isinstance(row["updated_at"], int)
+    assert row["updated_at"] > 1_700_000_000
+    # Re-sync must not switch the column to TEXT (the live 3-row mixed-type bug).
+    sync_keyword_metrics_to_db(conn)
+    row2 = conn.execute(
+        "SELECT updated_at, typeof(updated_at) AS t FROM keyword_metrics WHERE keyword = ?",
+        ("epoch kw",),
+    ).fetchone()
+    assert row2["t"] == "integer"
+    assert isinstance(row2["updated_at"], int)
 
 
 def test_load_approved_keywords_survives_bad_json():

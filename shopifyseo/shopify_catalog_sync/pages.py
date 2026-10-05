@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from shopifyseo.db import empty_to_null
+
 from .db import (
     now_iso,
     json_dumps,
@@ -19,7 +21,7 @@ def upsert_page(conn: Any, page: dict, synced_at: str) -> None:
         is_published = None
     else:
         is_published = 1 if is_published_raw else 0
-    published_at = page.get("publishedAt") or ""
+    published_at = empty_to_null(page.get("publishedAt"))
     conn.execute(
         """
         INSERT INTO pages (

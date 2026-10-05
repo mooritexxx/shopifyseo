@@ -10,6 +10,9 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from shopifyseo.db import execute
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +175,8 @@ def get_usage_summary(conn: sqlite3.Connection, days: int = 30) -> dict:
     cutoff_1d = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     cutoff_custom = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
-    def _scalar(sql: str, params: tuple = ()) -> dict:
-        row = conn.execute(sql, params).fetchone()
+    def _scalar(sql: str, params: tuple | None = None) -> dict:
+        row = execute(conn, sql, params).fetchone()
         if not row:
             return {"total_cost": 0.0, "total_calls": 0, "total_input_tokens": 0, "total_output_tokens": 0}
         return {

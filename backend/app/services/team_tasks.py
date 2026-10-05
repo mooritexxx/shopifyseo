@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from backend.app.services.task_identity import ACTORS, MANAGERS
+from shopifyseo.db import execute, table_exists
 
 
 def ensure_schema(conn):
@@ -76,8 +77,8 @@ def list_tasks(conn, owner=None, status=None, stale=False, done_this_week=False,
         clauses.append("status='done' AND completed_at>=?")
         params.append(monday.astimezone(timezone.utc).isoformat(timespec='microseconds'))
     where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
-    total = conn.execute('SELECT COUNT(*) FROM team_tasks' + where, params).fetchone()[0]
-    rows = conn.execute('SELECT data_json FROM team_tasks' + where + ' ORDER BY priority, id DESC LIMIT ? OFFSET ?', [*params, limit, offset])
+    total = execute(conn, 'SELECT COUNT(*) FROM team_tasks' + where, params).fetchone()[0]
+    rows = execute(conn, 'SELECT data_json FROM team_tasks' + where + ' ORDER BY priority, id DESC LIMIT ? OFFSET ?', [*params, limit, offset])
     return {'items': [json.loads(row[0]) for row in rows], 'total': total, 'limit': limit, 'offset': offset}
 
 
@@ -91,8 +92,8 @@ def events(conn, task_id=None, since=None, limit=100, offset=0):
         clauses.append('at>=?')
         params.append(since.astimezone(timezone.utc).isoformat(timespec='microseconds'))
     where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
-    total = conn.execute('SELECT COUNT(*) FROM team_task_events' + where, params).fetchone()[0]
-    rows = conn.execute('SELECT id,task_id,actor,kind,at,version,note,changes_json FROM team_task_events' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?', [*params, limit, offset])
+    total = execute(conn, 'SELECT COUNT(*) FROM team_task_events' + where, params).fetchone()[0]
+    rows = execute(conn, 'SELECT id,task_id,actor,kind,at,version,note,changes_json FROM team_task_events' + where + ' ORDER BY id DESC LIMIT ? OFFSET ?', [*params, limit, offset])
     items = []
     for row in rows:
         item = dict(zip(('id', 'task_id', 'actor', 'kind', 'at', 'version', 'note', 'changes_json'), row))
@@ -126,7 +127,7 @@ def validate_references(conn, task):
         if link['kind'] == 'task':
             get_task(conn, int(link['id']))
         elif link['kind'] == 'opportunity_task':
-            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='seo_opportunity_tasks'").fetchone()
+            exists = table_exists(conn, 'seo_opportunity_tasks')
             require(exists and conn.execute('SELECT 1 FROM seo_opportunity_tasks WHERE id=?', (int(link['id']),)).fetchone(), 'Opportunity task not found', 422)
 
 

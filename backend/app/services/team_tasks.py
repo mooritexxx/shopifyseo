@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from backend.app.services.task_identity import ACTORS, MANAGERS
-from shopifyseo.db import execute, table_exists
+from shopifyseo.db import execute, insert_returning_id, table_exists
 
 
 def ensure_schema(conn):
@@ -159,9 +159,11 @@ def create(conn, actor, payload):
         request_approval(task)
     with conn:
         conn.execute('BEGIN IMMEDIATE')
-        cursor = conn.execute("INSERT INTO team_tasks(owner,status,priority,version,created_at,last_log_at,data_json) VALUES(?,?,?,0,?,?,'{}')",
-                              (task['owner'], task['status'], task['priority'], task['created_at'], task['created_at']))
-        task['id'] = cursor.lastrowid
+        task['id'] = insert_returning_id(
+            conn,
+            "INSERT INTO team_tasks(owner,status,priority,version,created_at,last_log_at,data_json) VALUES(?,?,?,0,?,?,'{}')",
+            (task['owner'], task['status'], task['priority'], task['created_at'], task['created_at']),
+        )
         validate_references(conn, task)
         return persist(conn, None, task, actor, 'created', 'Task created')
 

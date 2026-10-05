@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from backend.app.db import open_db_connection
+from shopifyseo.db import on_conflict_do_update
 from backend.app.services.keyword_research import (
     add_competitor_to_blocklist,
     bulk_update_status,
@@ -252,6 +253,27 @@ _COMPETITOR_PROFILE_COLS = [
     "referring_domains",
 ]
 _COMPETITOR_PROFILE_SELECT = ", ".join(_COMPETITOR_PROFILE_COLS)
+_COMPETITOR_PROFILE_WRITE_COLS = [
+    "domain",
+    "keywords_common",
+    "keywords_they_have",
+    "keywords_we_have",
+    "share",
+    "traffic",
+    "is_manual",
+    "updated_at",
+    "labs_visibility",
+    "labs_avg_position",
+    "labs_median_position",
+    "labs_seed_etv",
+    "labs_bulk_etv",
+    "labs_rating",
+]
+_COMPETITOR_PROFILE_WRITE = ", ".join(_COMPETITOR_PROFILE_WRITE_COLS)
+_COMPETITOR_PROFILE_UPSERT = on_conflict_do_update(
+    "domain",
+    [c for c in _COMPETITOR_PROFILE_WRITE_COLS if c != "domain"],
+)
 
 
 def _zero_competitor_profile(domain: str) -> dict:
@@ -374,9 +396,10 @@ def approve_pending_competitor(domain: str):
         now_ts = int(time.time())
         conn.execute(
             f"""
-            INSERT OR REPLACE INTO competitor_profiles
-                ({_COMPETITOR_PROFILE_SELECT})
+            INSERT INTO competitor_profiles
+                ({_COMPETITOR_PROFILE_WRITE})
             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            {_COMPETITOR_PROFILE_UPSERT}
             """,
             (
                 norm,

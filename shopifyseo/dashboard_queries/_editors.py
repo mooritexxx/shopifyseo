@@ -174,7 +174,7 @@ def set_workflow_state(
     conn.execute(
         """
         INSERT INTO seo_workflow_states (object_type, handle, status, notes, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(object_type, handle) DO UPDATE SET
             status = excluded.status,
             notes = excluded.notes,

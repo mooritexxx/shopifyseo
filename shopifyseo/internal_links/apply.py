@@ -9,6 +9,8 @@ import sqlite3
 import time
 from urllib.parse import urlparse
 
+from shopifyseo.db import insert_returning_id
+
 from ..dashboard_queries._urls import object_url_with_base
 from . import shopify_io
 from .graph import extract_links, resolve_internal_target
@@ -214,8 +216,9 @@ def _update_local(conn, sug, body, base_url, event):
     for href, anchor in extract_links(body):
         target = resolve_internal_target(href, base_url)
         if target:
-            conn.execute("INSERT OR IGNORE INTO internal_links "
-                         "(source_type, source_handle, target_type, target_handle, anchor_text, href) VALUES (?,?,?,?,?,?)",
+            conn.execute("INSERT INTO internal_links "
+                         "(source_type, source_handle, target_type, target_handle, anchor_text, href) VALUES (?,?,?,?,?,?) "
+                         "ON CONFLICT(source_type, source_handle, target_type, target_handle, href) DO NOTHING",
                          (sug["source_type"], sug["source_handle"], *target, anchor, href))
     conn.execute("UPDATE link_suggestions SET status = ?, applied_at = ? WHERE id = ?",
                  ("undone" if event == "undo" else "applied", int(time.time()), sug["id"]))
@@ -250,11 +253,13 @@ def apply_suggestion(conn, suggestion_id, base_url, *, preview_token_value="", f
     # Commit the backup and reservation BEFORE network dispatch. The unique partial
     # index serializes writes to an object across threads and app processes.
     try:
-        cursor = conn.execute("""INSERT INTO link_body_snapshots
+        snapshot_id = insert_returning_id(
+            conn,
+            """INSERT INTO link_body_snapshots
             (suggestion_id, source_type, source_handle, shopify_id, old_body, new_body, status, created_at, updated_at)
             VALUES (?,?,?,?,?,?,'prepared',?,?)""",
-            (suggestion_id, sug["source_type"], sug["source_handle"], row["shopify_id"], old, new, now, now))
-        snapshot_id = cursor.lastrowid
+            (suggestion_id, sug["source_type"], sug["source_handle"], row["shopify_id"], old, new, now, now),
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         conn.rollback()

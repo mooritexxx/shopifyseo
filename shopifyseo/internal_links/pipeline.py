@@ -405,9 +405,10 @@ def generate_link_suggestions(
                     score *= WEAK_ANCHOR_PENALTY
                 
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO link_suggestions "
+                    "INSERT INTO link_suggestions "
                     "(source_type, source_handle, target_type, target_handle, kind, anchor_phrase, "
-                    " source_body_hash, score, weak_anchor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " source_body_hash, score, weak_anchor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(source_type, source_handle, target_type, target_handle) DO NOTHING",
                     (s_type, s_handle, t_type, t_handle, kind, phrase, body_hash, score, weak_anchor, now),
                 )
                 if cur.rowcount:

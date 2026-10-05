@@ -670,10 +670,11 @@ def ensure_dashboard_schema(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(
             """
-            INSERT OR IGNORE INTO idea_articles (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
+            INSERT INTO idea_articles (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
             SELECT id, linked_blog_handle, linked_article_handle, shopify_article_id, '', created_at
             FROM article_ideas
             WHERE linked_article_handle != '' AND linked_blog_handle != ''
+            ON CONFLICT(idea_id, blog_handle, article_handle) DO NOTHING
             """
         )
         conn.commit()

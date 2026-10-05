@@ -10,6 +10,8 @@ import sqlite3
 import time
 from typing import Any
 
+from shopifyseo.db import insert_returning_id, like_ci
+
 
 def normalize_audience_questions_json(value: Any) -> list[dict[str, str]]:
     """Coerce ``audience_questions`` / DB JSON to ``[{question, snippet}, ...]`` (legacy: ``answer``, list of strings)."""
@@ -412,7 +414,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
     from shopifyseo.market_context import get_primary_country_code, country_display_name
     _mkt_country_lower = country_display_name(get_primary_country_code(conn)).lower()
     informational_query_gaps = conn.execute(
-        """
+        f"""
         SELECT qr.query,
                SUM(qr.impressions) AS total_impressions,
                SUM(qr.clicks)      AS total_clicks,
@@ -421,16 +423,16 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM gsc_query_rows qr
         WHERE qr.object_type IN ('product', 'collection', 'page')
           AND (
-               qr.query LIKE 'how%'
-            OR qr.query LIKE 'best%'
-            OR qr.query LIKE 'top%'
-            OR qr.query LIKE 'what%'
-            OR qr.query LIKE 'why%'
-            OR qr.query LIKE 'guide%'
-            OR qr.query LIKE 'review%'
-            OR qr.query LIKE '%vs%'
-            OR qr.query LIKE '%difference%'
-            OR qr.query LIKE '%' || ? || '%'
+               {like_ci('qr.query', "'how%'")}
+            OR {like_ci('qr.query', "'best%'")}
+            OR {like_ci('qr.query', "'top%'")}
+            OR {like_ci('qr.query', "'what%'")}
+            OR {like_ci('qr.query', "'why%'")}
+            OR {like_ci('qr.query', "'guide%'")}
+            OR {like_ci('qr.query', "'review%'")}
+            OR {like_ci('qr.query', "'%vs%'")}
+            OR {like_ci('qr.query', "'%difference%'")}
+            OR {like_ci('qr.query', "'%' || ? || '%'")}
           )
           AND NOT EXISTS (
               SELECT 1 FROM blog_articles ba
@@ -875,7 +877,8 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
             normalize_related_searches_json(idea.get("related_searches")),
             ensure_ascii=False,
         )
-        cur = conn.execute(
+        ids.append(insert_returning_id(
+            conn,
             """
             INSERT INTO article_ideas
                 (suggested_title, brief, primary_keyword, supporting_keywords,
@@ -922,8 +925,7 @@ def save_article_ideas(conn: sqlite3.Connection, ideas: list[dict[str, Any]]) ->
                 rs_json,
                 "[]",
             ),
-        )
-        ids.append(cur.lastrowid)
+        ))
     conn.commit()
     try:
         from .embedding_sync import enqueue_embedding_sync_from_conn
@@ -1371,9 +1373,10 @@ def link_idea_to_article(
     """Link an article idea to a Shopify article via the idea_articles junction table."""
     import time as _time
     conn.execute(
-        """INSERT OR IGNORE INTO idea_articles
+        """INSERT INTO idea_articles
            (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(idea_id, blog_handle, article_handle) DO NOTHING""",
         (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, int(_time.time())),
     )
     # Legacy columns: keep first article for backward compat. Do not change status — approved ideas stay approved.
@@ -1399,18 +1402,20 @@ def save_article_target_keywords(
     """Copy idea keywords into article_target_keywords at draft time."""
     if primary_keyword:
         conn.execute(
-            """INSERT OR IGNORE INTO article_target_keywords
+            """INSERT INTO article_target_keywords
                (blog_handle, article_handle, keyword, is_primary, source)
-               VALUES (?, ?, ?, 1, 'idea')""",
+               VALUES (?, ?, ?, 1, 'idea')
+               ON CONFLICT(blog_handle, article_handle, keyword) DO NOTHING""",
             (blog_handle, article_handle, primary_keyword.strip().lower()),
         )
     for kw in supporting_keywords:
         kw_clean = kw.strip().lower() if isinstance(kw, str) else ""
         if kw_clean and kw_clean != primary_keyword.strip().lower():
             conn.execute(
-                """INSERT OR IGNORE INTO article_target_keywords
+                """INSERT INTO article_target_keywords
                    (blog_handle, article_handle, keyword, is_primary, source)
-                   VALUES (?, ?, ?, 0, 'idea')""",
+                   VALUES (?, ?, ?, 0, 'idea')
+                   ON CONFLICT(blog_handle, article_handle, keyword) DO NOTHING""",
                 (blog_handle, article_handle, kw_clean),
             )
     conn.commit()

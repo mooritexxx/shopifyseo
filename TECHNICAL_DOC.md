@@ -820,6 +820,7 @@ which rows match.
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
 | `dashboard_queries/_basic_fetchers.py` | `*_FACT_COLUMNS` + `fetch_*_for_facts` (narrow reads for list/fact paths), `fetch_signal_totals`, `fetch_index_status_counts`, `fetch_catalog_meta_metrics` (SQL rollups for the dashboard) |
 | `backend/app/db.py`                   | `open_db_connection`; schema migration + `apply_runtime_settings` run **once per DB path**, not per connection |
+| `shopifyseo/db/`                      | SQLite/Postgres portability: `execute`, `insert_returning_id`, `group_concat`, `like_ci`, `order_ci`, `on_conflict_do_nothing` / `on_conflict_do_update`. Live stays on SQLite while `DATABASE_URL` is unset. |
 
 
 ---

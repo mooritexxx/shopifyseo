@@ -4,6 +4,8 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 
+from shopifyseo.db import insert_returning_id
+
 from ._planning import parse_keyword_tier
 
 logger = logging.getLogger(__name__)
@@ -62,7 +64,8 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
         avg_cps = float(ac) if ac is not None else 0.0
 
         if "priority_score" in cluster_cols:
-            conn.execute(
+            cluster_id = insert_returning_id(
+                conn,
                 """INSERT INTO clusters
                    (name, content_type, primary_keyword, content_brief,
                     total_volume, avg_difficulty, avg_opportunity, priority_score,
@@ -88,7 +91,8 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
                 ),
             )
         else:
-            conn.execute(
+            cluster_id = insert_returning_id(
+                conn,
                 """INSERT INTO clusters
                    (name, content_type, primary_keyword, content_brief,
                     total_volume, avg_difficulty, avg_opportunity,
@@ -112,10 +116,10 @@ def _migrate_json_to_db(conn: sqlite3.Connection) -> None:
                     generated_at,
                 ),
             )
-        cluster_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         for kw in cluster.get("keywords", []):
             conn.execute(
-                "INSERT OR IGNORE INTO cluster_keywords (cluster_id, keyword) VALUES (?, ?)",
+                "INSERT INTO cluster_keywords (cluster_id, keyword) VALUES (?, ?) "
+                "ON CONFLICT(cluster_id, keyword) DO NOTHING",
                 (cluster_id, kw),
             )
 

@@ -21,6 +21,7 @@ from shopifyseo.dashboard_ai_engine_parts.generation import (
     ai_settings,
 )
 from shopifyseo.dashboard_google import get_service_setting
+from shopifyseo.db import insert_returning_id
 
 from ._dedupe import collapse_near_duplicates
 from ._helpers import _build_clustering_prompt, _compute_cluster_stats, _group_by_parent_topic
@@ -543,12 +544,14 @@ def generate_clusters(
             values.extend(planning_values[col] for col in planning_cols)
             insert_cols = base_cols + planning_cols
             placeholders = ", ".join("?" for _ in insert_cols)
-            conn.execute(
+            cluster_id = insert_returning_id(
+                conn,
                 f"INSERT INTO clusters ({', '.join(insert_cols)}) VALUES ({placeholders})",
                 tuple(values),
             )
         else:
-            conn.execute(
+            cluster_id = insert_returning_id(
+                conn,
                 """INSERT INTO clusters
                    (name, content_type, primary_keyword, content_brief,
                     total_volume, avg_difficulty, avg_opportunity,
@@ -572,11 +575,11 @@ def generate_clusters(
                     generated_at,
                 ),
             )
-        cluster_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         cluster["id"] = cluster_id
         for kw in cluster.get("keywords", []):
             conn.execute(
-                "INSERT OR IGNORE INTO cluster_keywords (cluster_id, keyword) VALUES (?, ?)",
+                "INSERT INTO cluster_keywords (cluster_id, keyword) VALUES (?, ?) "
+                "ON CONFLICT(cluster_id, keyword) DO NOTHING",
                 (cluster_id, kw),
             )
     conn.commit()

@@ -5,7 +5,7 @@ from typing import Generator
 
 from shopifyseo.dashboard_config import apply_runtime_settings
 from shopifyseo.dashboard_store import DB_PATH, ensure_dashboard_schema
-from shopifyseo.sqlite_utf8 import configure_sqlite_text_decode
+from shopifyseo.db import get_connection
 
 
 # Schema migration and settings mirroring are idempotent but cost ~15 ms of DDL
@@ -26,10 +26,16 @@ def get_db_path() -> str:
     (e.g. ``publish_article``) rely on this having migrated the file.
     """
     if DB_PATH not in _bootstrapped_paths:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = get_connection(
+            path=DB_PATH,
+            timeout=10,
+            row_factory=False,
+            wal_mode=False,
+            busy_timeout_ms=BUSY_TIMEOUT_MS,
+            text_factory=True,
+            create_parents=False,
+        )
         try:
-            configure_sqlite_text_decode(conn)
-            conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             _bootstrap_once(conn, DB_PATH)
         finally:
             conn.close()
@@ -57,11 +63,15 @@ def _bootstrap_once(conn: sqlite3.Connection, path: str) -> None:
 
 def open_db_connection():
     path = DB_PATH
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    conn = get_connection(
+        path=path,
+        timeout=10,
+        row_factory=True,
+        wal_mode=True,
+        busy_timeout_ms=BUSY_TIMEOUT_MS,
+        text_factory=True,
+        create_parents=False,
+    )
     _bootstrap_once(conn, path)
     return conn
 

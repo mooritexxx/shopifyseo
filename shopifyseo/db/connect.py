@@ -54,13 +54,15 @@ def connect_sqlite(
     wal_mode: bool = True,
     busy_timeout_ms: int = BUSY_TIMEOUT_MS,
     text_factory: bool = True,
+    create_parents: bool = True,
 ) -> sqlite3.Connection:
     """Open a SQLite connection with standard configuration."""
     if path is None:
         from ..shopify_catalog_sync import DEFAULT_DB_PATH
         path = DEFAULT_DB_PATH
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=timeout)
     return _configure_sqlite_connection(
         conn,

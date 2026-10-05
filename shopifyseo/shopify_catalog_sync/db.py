@@ -5,8 +5,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..db import get_connection
 from ..shopify_admin import graphql_post, graphql_request
-from ..sqlite_utf8 import configure_sqlite_text_decode
 from .queries import (
     PRODUCTS_QUERY,
     PRODUCT_QUERY,
@@ -454,10 +454,15 @@ BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026
 def open_db(db_path: str | Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn = get_connection(
+        path=db_path,
+        timeout=30,
+        row_factory=True,
+        wal_mode=False,
+        busy_timeout_ms=BUSY_TIMEOUT_MS,
+        text_factory=True,
+        create_parents=False,
+    )
     ensure_schema(conn)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")

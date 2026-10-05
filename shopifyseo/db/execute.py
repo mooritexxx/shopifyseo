@@ -3,8 +3,7 @@
 The wrapper ensures that:
 1. Placeholders are translated from ? to %s for PostgreSQL
 2. % literals are escaped when params are provided (even empty () or [])
-3. A single get_connection() function provides backend-aware connections
-   (no app callers yet; connection routing deferred to a follow-up PR)
+3. get_connection() is the single entry point for app connection sites
 """
 from __future__ import annotations
 
@@ -97,6 +96,7 @@ def get_connection(
     busy_timeout_ms: int | None = None,
     text_factory: bool = True,
     autocommit: bool = False,
+    create_parents: bool = True,
 ) -> Any:
     """Get a database connection based on DATABASE_URL or default SQLite.
 
@@ -107,12 +107,16 @@ def get_connection(
     Args:
         path: Explicit SQLite path (ignored when DATABASE_URL is PostgreSQL)
         url: Explicit database URL (overrides DATABASE_URL env var)
-        timeout: SQLite connection timeout
+        timeout: SQLite connection timeout (seconds; also seeds PRAGMA busy_timeout)
         row_factory: Enable dict-like row access
-        wal_mode: Enable WAL mode on SQLite
-        busy_timeout_ms: SQLite busy timeout (None = use default from connect module)
+        wal_mode: Enable WAL + synchronous=NORMAL on SQLite
+        busy_timeout_ms: SQLite busy timeout. None uses the connect-module
+            default (30000). 0 skips the PRAGMA so sqlite3.connect(timeout=)
+            remains the observable busy_timeout.
         text_factory: Enable UTF-8 text decoding on SQLite
-        autocommit: Enable autocommit mode on PostgreSQL
+        autocommit: Enable autocommit (PostgreSQL autocommit; SQLite isolation_level=None)
+        create_parents: Create the SQLite file's parent directory (sites that
+            never mkdir must pass False)
 
     Returns:
         sqlite3.Connection for SQLite, psycopg connection for PostgreSQL
@@ -128,11 +132,15 @@ def get_connection(
         return connect_postgres(conn_str, autocommit=autocommit)
 
     sqlite_path = conn_str if conn_str else path
-    return connect_sqlite(
+    conn = connect_sqlite(
         sqlite_path,
         timeout=timeout,
         row_factory=row_factory,
         wal_mode=wal_mode,
         busy_timeout_ms=busy_timeout_ms,
         text_factory=text_factory,
+        create_parents=create_parents,
     )
+    if autocommit:
+        conn.isolation_level = None
+    return conn

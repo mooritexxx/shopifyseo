@@ -10,8 +10,9 @@ The allowlist helps ensure:
 3. CI fails if new direct execute sites are added
 
 Migration plan:
-- PR2 (this PR): Infrastructure + team_tasks.py + api_usage.py
-- PR3-5: Remaining modules (740 sites total at baseline)
+- PR2: Infrastructure + team_tasks.py + api_usage.py
+- PR3 (this PR): route 7 sqlite3.connect sites through get_connection()
+- Later PRs: remaining conn.execute() sites (see ALLOWED_DIRECT_EXECUTE_COUNTS)
 
 Using AST-based counting makes the test robust against:
 - Line number shifts from comments, blank lines, or unrelated edits
@@ -25,7 +26,7 @@ import pytest
 
 ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     # Backend app layer
-    "backend/app/db.py": 4,
+    "backend/app/db.py": 1,
     "backend/app/routers/article_ideas.py": 1,
     "backend/app/routers/blogs.py": 12,
     "backend/app/routers/internal_links.py": 27,
@@ -53,7 +54,6 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/api_usage.py": 11,
     "shopifyseo/article_draft_retrieval.py": 8,
     "shopifyseo/catalog_image_work.py": 6,
-    "shopifyseo/dashboard_actions/_state.py": 3,
     "shopifyseo/dashboard_actions/_sync_pagespeed.py": 1,
     "shopifyseo/dashboard_ai_engine_parts/_article_draft.py": 14,
     "shopifyseo/dashboard_ai_engine_parts/_article_ideas.py": 4,
@@ -71,7 +71,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/dashboard_queries/_seo_facts.py": 2,
     "shopifyseo/dashboard_queries/_text_tokens.py": 4,
     "shopifyseo/dashboard_queries/_urls.py": 4,
-    "shopifyseo/dashboard_store.py": 71,
+    "shopifyseo/dashboard_store.py": 67,
     "shopifyseo/embedding_store.py": 50,
     "shopifyseo/embedding_sync.py": 1,
     "shopifyseo/index_evidence.py": 15,
@@ -90,7 +90,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/shopify_catalog_sync/__init__.py": 11,
     "shopifyseo/shopify_catalog_sync/blogs.py": 13,
     "shopifyseo/shopify_catalog_sync/collections.py": 9,
-    "shopifyseo/shopify_catalog_sync/db.py": 12,
+    "shopifyseo/shopify_catalog_sync/db.py": 11,
     "shopifyseo/shopify_catalog_sync/page_template_enrichment.py": 2,
     "shopifyseo/shopify_catalog_sync/pages.py": 1,
     "shopifyseo/shopify_catalog_sync/products.py": 11,
@@ -98,7 +98,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     # DB layer internals (OK to use direct execute)
     "shopifyseo/db/connect.py": 3,
     "shopifyseo/db/helpers.py": 21,
-    "shopifyseo/db/identity.py": 12,
+    "shopifyseo/db/identity.py": 4,
 }
 
 EXCLUDED_DIRS = {
@@ -150,7 +150,7 @@ def _find_all_execute_counts() -> dict[str, int]:
         if any(part in EXCLUDED_DIRS for part in rel_path.parts):
             continue
 
-        if rel_path.name == "execute.py" and "db" in str(rel_path):
+        if str(rel_path) == "shopifyseo/db/execute.py":
             continue
 
         count = _count_execute_calls(py_file)

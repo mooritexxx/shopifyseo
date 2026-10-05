@@ -3,6 +3,9 @@
 SQLite affinity lets INTEGER columns hold text. pgloader then fails or
 promotes the column to text. Known case: ``keyword_metrics.updated_at``
 (declared INTEGER epoch, some rows store ``CURRENT_TIMESTAMP`` text).
+
+Also drops SQLite ``LOWER(keyword)`` expression indexes that pgloader 3.6
+cannot migrate; ``post_load_constraints.sql`` recreates them on Postgres.
 """
 
 from __future__ import annotations
@@ -135,13 +138,39 @@ def fix_integer_epoch_columns(conn: Any) -> dict[str, int]:
     return changed
 
 
+# pgloader 3.6.x TYPE-ERRORs on SQLite expression indexes (LOWER(...)).
+# post_load_constraints.sql recreates these on Postgres after load.
+_EXPRESSION_INDEXES_TO_DROP = (
+    "idx_keyword_metrics_keyword_lower",
+    "idx_keyword_page_map_keyword_lower",
+    "idx_competitor_gaps_keyword_lower",
+)
+
+
+def drop_expression_indexes(conn: Any) -> dict[str, int]:
+    """Drop known SQLite expression indexes that pgloader cannot migrate."""
+    dropped: dict[str, int] = {}
+    for name in _EXPRESSION_INDEXES_TO_DROP:
+        row = execute(
+            conn,
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (name,),
+        ).fetchone()
+        if not row:
+            continue
+        execute(conn, f"DROP INDEX IF EXISTS {_quoted(name)}")
+        dropped[name] = 1
+    return dropped
+
+
 def fix_sqlite_copy(path: str | Path) -> dict[str, dict[str, int]]:
     """Apply pre-load data fixes to ``path`` (must already be a working copy)."""
     conn = connect_sqlite(path)
     try:
         empty = fix_empty_strings_in_numeric_columns(conn)
         epochs = fix_integer_epoch_columns(conn)
+        expr = drop_expression_indexes(conn)
         conn.commit()
-        return {"empty_numeric": empty, "epoch_text": epochs}
+        return {"empty_numeric": empty, "epoch_text": epochs, "expression_indexes_dropped": expr}
     finally:
         conn.close()

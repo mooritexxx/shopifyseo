@@ -166,7 +166,7 @@ start_app.sh       One-command build + run script
 ### Running tests
 
 ```bash
-# Python
+# Python — SQLite unless TEST_DATABASE_URL is a postgres URL (see tests/README.md)
 PYTHONPATH=. python3 -m pytest tests/ -v
 
 # Frontend

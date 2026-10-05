@@ -58,6 +58,9 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "postgres: requires TEST_DATABASE_URL to be a PostgreSQL URL (skipped otherwise)",
+]
 
 [tool.mypy]
 python_version = "3.10"

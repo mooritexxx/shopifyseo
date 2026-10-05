@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
+        # PG17 + pgvector, matching the box. Do not revert to postgres:16.
         image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
@@ -59,11 +60,18 @@ jobs:
           PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d shopifyseo_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
-      - name: DB layer tests (PostgreSQL)
+      - name: Backend tests (TEST_DATABASE_URL → Postgres)
+        # Full tests/ tree, same deselects as backend-smoke. Fixture / db-layer
+        # tests hit Postgres; remaining sqlite3.connect sites (plan 7b–d) still
+        # open SQLite temp files. DATABASE_URL is intentionally unset so
+        # get_connection(path=tmp) does not ignore path and share one PG db.
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shopifyseo_test
         run: >-
-          PYTHONPATH=. python -m pytest tests/test_db_layer.py -v
+          PYTHONPATH=. python -m pytest tests/ -q -rfEs
+          --deselect tests/test_api.py::test_collection_update_uses_targeted_refresh
+          --deselect tests/test_api.py::test_page_detail_contract
+          --deselect tests/test_api.py::test_page_update_uses_targeted_refresh
 
   frontend-typecheck:
     runs-on: ubuntu-latest

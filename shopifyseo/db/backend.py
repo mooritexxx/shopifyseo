@@ -1,18 +1,8 @@
-"""Database backend detection and configuration.
-
-The backend is selected based on the DATABASE_URL environment variable:
-- Unset or empty: SQLite (default path)
-- file:// or .sqlite3 path: SQLite (explicit path)
-- postgresql:// or postgres://: PostgreSQL via psycopg (v3)
-"""
+"""Database backend detection and configuration."""
 from __future__ import annotations
 
 import os
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 
 class Backend(Enum):
@@ -20,24 +10,59 @@ class Backend(Enum):
     POSTGRES = "postgres"
 
 
+class InvalidDatabaseURL(ValueError):
+    """Raised when DATABASE_URL has an unsupported or malformed scheme."""
+    pass
+
+
 def parse_database_url(url: str | None = None) -> tuple[Backend, str]:
     """Parse DATABASE_URL and return (backend, connection_string).
 
-    Returns (SQLITE, "") for unset/empty URLs (use default path).
+    Supported formats:
+    - Unset, empty, or whitespace: SQLite with default path (returns ("", ""))
+    - postgresql://... or postgres://...: PostgreSQL
+    - sqlite:///path or file:path: SQLite with explicit path
+    - Bare filesystem path (contains / or ends with .sqlite3/.db): SQLite
+
+    Raises InvalidDatabaseURL for unknown schemes.
     """
     if url is None:
         url = os.environ.get("DATABASE_URL", "")
     url = url.strip()
     if not url:
         return Backend.SQLITE, ""
+
     lower = url.lower()
-    if lower.startswith(("postgresql://", "postgres://")):
+
+    if lower.startswith("postgresql://") or lower.startswith("postgres://"):
         return Backend.POSTGRES, url
-    if lower.startswith("file:") or lower.endswith(".sqlite3") or lower.endswith(".db"):
+
+    if lower.startswith("sqlite:///"):
+        path = url[10:]
+        if not path:
+            raise InvalidDatabaseURL("sqlite:/// URL has no path")
+        return Backend.SQLITE, path
+
+    if lower.startswith("sqlite:"):
+        raise InvalidDatabaseURL(
+            f"Invalid sqlite URL format: {url!r}. Use sqlite:///path for absolute "
+            "or sqlite:///./path for relative paths."
+        )
+
+    if lower.startswith("file:"):
+        path = url[5:]
+        if not path:
+            raise InvalidDatabaseURL("file: URL has no path")
+        return Backend.SQLITE, path
+
+    if "://" in url:
+        scheme = url.split("://", 1)[0]
+        raise InvalidDatabaseURL(f"Unsupported database scheme: {scheme!r}")
+
+    if "/" in url or url.endswith((".sqlite3", ".db")):
         return Backend.SQLITE, url
-    if "/" not in url and not url.startswith(("postgresql", "postgres")):
-        return Backend.SQLITE, url
-    return Backend.SQLITE, url
+
+    raise InvalidDatabaseURL(f"Cannot parse DATABASE_URL: {url!r}")
 
 
 def get_backend() -> Backend:

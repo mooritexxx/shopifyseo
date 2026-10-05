@@ -1,9 +1,4 @@
-"""Row compatibility and placeholder translation for database portability.
-
-Provides:
-- DictRow: A row type compatible with sqlite3.Row (index, key access, dict(), .keys())
-- translate_placeholders: Safe ? -> %s conversion that respects string literals
-"""
+"""Row compatibility and placeholder translation for database portability."""
 from __future__ import annotations
 
 import re
@@ -13,21 +8,17 @@ from typing import Any, Iterator
 class DictRow:
     """Row wrapper compatible with sqlite3.Row interface.
 
-    Supports:
-    - Index access: row[0], row[1]
-    - Key access: row["column_name"]
-    - dict(row) conversion
-    - row.keys() iteration
-    - len(row)
+    Supports index access, case-insensitive key access, dict(), keys(), len().
     """
 
-    __slots__ = ("_data", "_keys")
+    __slots__ = ("_data", "_keys", "_lower_map")
 
     def __init__(self, data: dict[str, Any] | None = None, keys: tuple[str, ...] | list[str] | None = None):
         if data is None:
             data = {}
         self._data = data
         self._keys = tuple(keys) if keys is not None else tuple(data.keys())
+        self._lower_map = {k.lower(): k for k in self._keys}
 
     def __getitem__(self, key: int | str) -> Any:
         if isinstance(key, int):
@@ -36,7 +27,10 @@ class DictRow:
             if 0 <= key < len(self._keys):
                 return self._data[self._keys[key]]
             raise IndexError(f"index {key} out of range")
-        return self._data[key]
+        real_key = self._lower_map.get(key.lower())
+        if real_key is None:
+            raise KeyError(key)
+        return self._data[real_key]
 
     def __iter__(self) -> Iterator[Any]:
         return (self._data[k] for k in self._keys)
@@ -45,7 +39,7 @@ class DictRow:
         return len(self._keys)
 
     def __contains__(self, key: str) -> bool:
-        return key in self._data
+        return key.lower() in self._lower_map
 
     def keys(self) -> tuple[str, ...]:
         return self._keys
@@ -57,61 +51,63 @@ class DictRow:
         return (self._data[k] for k in self._keys)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        real_key = self._lower_map.get(key.lower())
+        if real_key is None:
+            return default
+        return self._data.get(real_key, default)
 
-    def __repr__(self) -> str:
-        return f"DictRow({self._data!r})"
 
-
-_PLACEHOLDER_PATTERN = re.compile(
+_TOKEN_PATTERN = re.compile(
     r"""
-    '(?:[^'\\]|\\.)*'           # single-quoted string (handles escapes)
+    E'(?:[^'\\]|\\.)*'              # E'...' string with backslash escapes
     |
-    "(?:[^"\\]|\\.)*"           # double-quoted string (handles escapes)
+    '(?:[^']|'')*'                  # standard '...' string ('' is escape, NO backslash)
     |
-    \?\?                        # escaped placeholder (?? -> ? in PostgreSQL)
+    "(?:[^"]|"")*"                  # "..." identifier
     |
-    \?                          # single placeholder
+    --[^\n]*                        # -- single-line comment
+    |
+    /\*[\s\S]*?\*/                  # /* */ multi-line comment
+    |
+    \?\?                            # ?? -> ? (escaped placeholder / jsonb)
+    |
+    \?                              # ? placeholder
+    |
+    [^E'"\-/?]+                     # other text (no special chars)
+    |
+    .                               # single char fallback
     """,
-    re.VERBOSE,
+    re.VERBOSE | re.IGNORECASE,
 )
 
 
+def _escape_percent(s: str) -> str:
+    """Escape % to %% for psycopg (except inside ?? which becomes ?)."""
+    return s.replace("%", "%%")
+
+
 def translate_placeholders(sql: str, to_postgres: bool = True) -> str:
-    """Translate ? placeholders to %s for PostgreSQL, preserving string literals.
+    """Translate ? placeholders to %s for PostgreSQL.
 
-    - Single ? outside strings -> %s
-    - ?? (escaped) -> single ? (PostgreSQL convention, though rarely used)
-    - ? inside quoted strings is left alone
-
-    For SQLite (to_postgres=False), returns the SQL unchanged.
+    - ? outside strings/comments -> %s
+    - ?? -> ? (jsonb operator escape)
+    - % anywhere -> %% (psycopg requires this for ALL % except placeholders)
+    - ? inside strings/identifiers/comments preserved
     """
     if not to_postgres:
         return sql
 
-    def replacer(match: re.Match[str]) -> str:
-        text = match.group(0)
-        if text.startswith("'") or text.startswith('"'):
-            return text
-        if text == "??":
-            return "?"
-        if text == "?":
-            return "%s"
-        return text
-
-    return _PLACEHOLDER_PATTERN.sub(replacer, sql)
-
-
-def row_factory_for_cursor(cursor: Any) -> DictRow | None:
-    """Create a DictRow from the current cursor row description.
-
-    For use as a psycopg row_factory that mimics sqlite3.Row.
-    """
-    if cursor.description is None:
-        return None
-    columns = tuple(col.name for col in cursor.description)
-
-    def make_row(values: tuple[Any, ...]) -> DictRow:
-        return DictRow(dict(zip(columns, values)), columns)
-
-    return make_row  # type: ignore[return-value]
+    result = []
+    for match in _TOKEN_PATTERN.finditer(sql):
+        token = match.group(0)
+        if token.startswith(("'", '"', "E'", "e'")):
+            result.append(_escape_percent(token))
+        elif token.startswith(("--", "/*")):
+            result.append(_escape_percent(token))
+        elif token == "??":
+            result.append("?")
+        elif token == "?":
+            result.append("%s")
+        else:
+            result.append(_escape_percent(token))
+    return "".join(result)

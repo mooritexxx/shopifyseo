@@ -1,18 +1,11 @@
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Generator
 
 from shopifyseo.dashboard_config import apply_runtime_settings
 from shopifyseo.dashboard_store import DB_PATH, ensure_dashboard_schema
 from shopifyseo.sqlite_utf8 import configure_sqlite_text_decode
-
-from shopifyseo.db import (
-    Backend,
-    get_backend,
-    connect as db_connect_portable,
-    BUSY_TIMEOUT_MS as DB_BUSY_TIMEOUT_MS,
-)
 
 
 # Schema migration and settings mirroring are idempotent but cost ~15 ms of DDL
@@ -81,25 +74,3 @@ def db_conn() -> Generator[sqlite3.Connection, None, None]:
         yield conn
     finally:
         conn.close()
-
-
-def get_active_backend() -> Backend:
-    """Return the active database backend (SQLITE or POSTGRES)."""
-    return get_backend()
-
-
-def open_portable_connection() -> Any:
-    """Open a database connection using the portable db layer.
-
-    Returns a connection appropriate for the active backend (SQLite or PostgreSQL).
-    For SQLite, returns sqlite3.Connection with standard config.
-    For PostgreSQL, returns psycopg.Connection with DictRow factory.
-
-    Note: Full PostgreSQL support is a work in progress. For now, the SQLite
-    path is guaranteed to work identically to open_db_connection().
-    """
-    backend = get_backend()
-    if backend == Backend.POSTGRES:
-        return db_connect_portable()
-    conn = open_db_connection()
-    return conn

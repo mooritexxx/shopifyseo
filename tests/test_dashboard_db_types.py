@@ -11,7 +11,8 @@ import ast
 import sqlite3
 from pathlib import Path
 
-from shopifyseo.db import DictRow, table_columns
+from shopifyseo.dashboard_store import _migrate_link_suggestions_check_constraint
+from shopifyseo.db import Backend, DictRow, table_columns
 from shopifyseo.dashboard_queries._basic_fetchers import (
     _column_exists,
     _row_factory,
@@ -109,3 +110,22 @@ def test_column_exists_uses_table_columns(tmp_path):
     assert _column_exists(conn, "pages", "missing") is False
     assert "is_published" in table_columns(conn, "pages")
     conn.close()
+
+
+def test_migrate_link_suggestions_is_noop_on_non_sqlite(monkeypatch):
+    """Non-SQLite backends must return False and execute no DDL."""
+    import shopifyseo.dashboard_store as ds
+
+    monkeypatch.setattr(ds, "get_backend", lambda: Backend.POSTGRES)
+
+    class RecordingConn:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def execute(self, *args, **kwargs):
+            self.calls.append(("execute", args, kwargs))
+            raise AssertionError("non-SQLite migrate must not execute SQL")
+
+    conn = RecordingConn()
+    assert _migrate_link_suggestions_check_constraint(conn) is False
+    assert conn.calls == []

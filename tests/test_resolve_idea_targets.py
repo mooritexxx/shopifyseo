@@ -12,14 +12,14 @@ def db_conn(testdb):
     # Seed a few store objects used in the fixtures.
     for handle, title in [("disposable-vapes", "Disposable Vapes"), ("vape-kits", "Vape Kits")]:
         conn.execute(
-            "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
-            (handle, title),
+            "INSERT INTO collections (shopify_id, handle, title, raw_json, synced_at) VALUES (?, ?, ?, '{}', '')",
+            (f"gid://shopify/Collection/{handle}", handle, title),
         )
     for handle, title in [("elfbar-bc5000", "Elfbar BC5000"), ("lost-mary-os5000", "Lost Mary OS5000")]:
         conn.execute(
-            "INSERT INTO products (handle, title, status, tags_json, options_json, raw_json, synced_at) "
-            "VALUES (?, ?, 'ACTIVE', '[]', '[]', '{}', '')",
-            (handle, title),
+            "INSERT INTO products (shopify_id, handle, title, status, tags_json, options_json, raw_json, synced_at) "
+            "VALUES (?, ?, ?, 'ACTIVE', '[]', '[]', '{}', '')",
+            (f"gid://shopify/Product/{handle}", handle, title),
         )
     conn.commit()
     return conn

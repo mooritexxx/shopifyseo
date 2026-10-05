@@ -260,11 +260,11 @@ class TestDbConnFixture:
         )
         db_conn.execute(
             "INSERT INTO cache_probe (id, blob, expires_at) VALUES (?, ?, ?)",
-            (1, b"\x00\x01", 9_999_999_999),
+            (1, b"\\x00\\x01", 9_999_999_999),
         )
         db_conn.commit()
         row = db_conn.execute("SELECT blob, expires_at FROM cache_probe WHERE id = ?", (1,)).fetchone()
-        assert bytes(row["blob"]) == b"\x00\x01"
+        assert bytes(row["blob"]) == b"\\x00\\x01"
         assert int(row["expires_at"]) == 9_999_999_999
 
     def test_pragma_table_info_reports_columns(self, testdb, db_conn) -> None:

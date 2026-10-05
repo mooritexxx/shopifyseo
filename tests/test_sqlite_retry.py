@@ -121,6 +121,38 @@ def test_run_with_db_lock_retry_retries_on_pg_sqlstate():
     assert call_count[0] == 2
 
 
+def test_run_with_db_lock_retry_does_not_retry_wrapped_lock():
+    """RuntimeError raised from a lock is raised immediately (same as main)."""
+    call_count = [0]
+
+    def wrapped():
+        call_count[0] += 1
+        try:
+            raise sqlite3.OperationalError("database is locked")
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError("caller wrapper") from exc
+
+    with pytest.raises(RuntimeError, match="caller wrapper"):
+        run_with_db_lock_retry(wrapped, max_retries=5)
+    assert call_count[0] == 1
+
+
+def test_run_with_db_lock_retry_does_not_retry_foreign_lockerror():
+    """A foreign class named LockError is not retried."""
+    call_count = [0]
+
+    class LockError(Exception):
+        pass
+
+    def foreign():
+        call_count[0] += 1
+        raise LockError("redis lock")
+
+    with pytest.raises(LockError, match="redis lock"):
+        run_with_db_lock_retry(foreign, max_retries=5)
+    assert call_count[0] == 1
+
+
 def test_default_retry_constants():
     """Verify default constants are set appropriately.
 

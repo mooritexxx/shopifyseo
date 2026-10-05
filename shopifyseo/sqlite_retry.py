@@ -34,8 +34,11 @@ def run_with_db_lock_retry(
 ) -> T:
     """Run fn(), retrying on transient lock errors with exponential backoff.
 
-    Retries when ``is_lock_error`` is true: SQLite ``database is locked``,
-    ``shopifyseo.db.LockError``, and PostgreSQL SQLSTATEs 40001, 40P01, 55P03.
+    Retries when ``is_lock_error`` is true: SQLite ``database is locked``
+    (``sqlite3.OperationalError`` message, same as main), mapped
+    ``shopifyseo.db.LockError``, and PostgreSQL lock SQLSTATEs 40001 / 40P01 /
+    55P03 on the raised exception itself. Wrapping exceptions and foreign
+    classes named ``LockError`` are not retried.
 
     Args:
         fn: The callable to execute.

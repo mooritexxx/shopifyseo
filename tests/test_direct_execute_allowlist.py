@@ -99,7 +99,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/shopify_image_cache.py": 14,
     # DB layer internals (OK to use direct execute)
     "shopifyseo/db/connect.py": 3,
-    "shopifyseo/db/helpers.py": 21,
+    "shopifyseo/db/helpers.py": 20,
     "shopifyseo/db/identity.py": 4,
 }
 

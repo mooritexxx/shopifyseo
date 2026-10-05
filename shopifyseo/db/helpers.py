@@ -128,6 +128,10 @@ def write_tx(
 
     On SQLite: ``BEGIN IMMEDIATE`` to acquire the write lock immediately.
     ``lock_key`` and ``for_update`` are ignored so SQLite locking matches main.
+    On error, ``conn.rollback()`` runs only while ``conn.in_transaction``
+    (a no-op after SQLite has already ended the tx — same as main's
+    ``conn.rollback()`` / ``with conn:``). ``BaseException`` is included
+    so KeyboardInterrupt also rolls back, matching ``with conn:``.
 
     On PostgreSQL: commits any pending transaction first, then opens an
     explicit transaction block. When ``lock_key`` is set, acquires
@@ -161,8 +165,12 @@ def write_tx(
         try:
             yield conn
             conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
+        except BaseException:
+            # execute("ROLLBACK") fails if SQLite already ended the tx
+            # (RAISE(ROLLBACK), I/O, interrupt). conn.rollback() is a no-op then,
+            # matching main; skip the call when in_transaction is already False.
+            if getattr(conn, "in_transaction", False):
+                conn.rollback()
             raise
 
 

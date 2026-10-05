@@ -72,13 +72,14 @@ class ProgrammingError(DatabaseError):
 
 
 def _sqlstate(exc: BaseException) -> str | None:
-    for obj in (exc, getattr(exc, "__cause__", None)):
-        if obj is None:
-            continue
-        state = getattr(obj, "sqlstate", None)
-        if state:
-            return str(state)
-    return None
+    """SQLSTATE on ``exc`` itself. Does not walk ``__cause__``."""
+    state = getattr(exc, "sqlstate", None)
+    return str(state) if state else None
+
+
+def _is_psycopg_error(exc: BaseException) -> bool:
+    module = getattr(type(exc), "__module__", "") or ""
+    return module == "psycopg" or module.startswith("psycopg.")
 
 
 def _is_sqlite_lock_message(message: str) -> bool:
@@ -109,19 +110,19 @@ def _classify(exc: BaseException) -> type[DatabaseError] | None:
     if state and state.startswith("23"):
         return IntegrityError
 
-    name = type(exc).__name__
-    if name in _LOCK_NAMES:
-        return LockError
-    if name in _INTEGRITY_NAMES:
-        return IntegrityError
-    if name in _OPERATIONAL_NAMES:
-        return OperationalError
-    if name in _PROGRAMMING_NAMES:
-        return ProgrammingError
-
-    module = getattr(type(exc), "__module__", "") or ""
-    if "psycopg" in module and name.endswith("Error"):
-        return DatabaseError
+    # Name tables apply only to psycopg (not redis.LockError, builtin SyntaxError).
+    if _is_psycopg_error(exc):
+        name = type(exc).__name__
+        if name in _LOCK_NAMES:
+            return LockError
+        if name in _INTEGRITY_NAMES:
+            return IntegrityError
+        if name in _OPERATIONAL_NAMES:
+            return OperationalError
+        if name in _PROGRAMMING_NAMES:
+            return ProgrammingError
+        if name.endswith("Error"):
+            return DatabaseError
     return None
 
 
@@ -147,17 +148,16 @@ def is_integrity_error(exc: BaseException) -> bool:
 
 
 def is_lock_error(exc: BaseException) -> bool:
-    """True for LockError, SQLite 'database is locked', and PG lock SQLSTATEs."""
+    """True for mapped LockError, SQLite 'database is locked', and PG lock SQLSTATEs.
+
+    Inspects ``exc`` only — does not walk ``__cause__``, and does not treat a
+    foreign class named ``LockError`` as a lock (name matching is psycopg-only).
+    """
     if isinstance(exc, LockError):
         return True
     if isinstance(exc, sqlite3.OperationalError) and _is_sqlite_lock_message(str(exc)):
         return True
-    if _classify(exc) is LockError:
-        return True
-    cause = getattr(exc, "__cause__", None)
-    if cause is not None and cause is not exc:
-        return is_lock_error(cause)
-    return False
+    return _classify(exc) is LockError
 
 
 def is_operational_error(exc: BaseException) -> bool:

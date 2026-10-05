@@ -82,6 +82,11 @@ def backend_for_connection(conn: Any, *, backend: Backend | None = None) -> Back
     that only called ``get_backend()`` would then take the SQLite path
     (PRAGMA, ``lastrowid``) on a psycopg connection. Prefer the live
     connection type, then ``get_backend()``.
+
+    Test helpers sometimes wrap the live connection (``Borrow`` / TestClient
+    proxies). Those objects are not ``psycopg.Connection`` instances, so also
+    treat ``conn.info.vendor == "PostgreSQL"`` as Postgres (``__getattr__``
+    forwards to the real connection).
     """
     if backend is not None:
         return backend
@@ -89,6 +94,9 @@ def backend_for_connection(conn: Any, *, backend: Backend | None = None) -> Back
         return Backend.SQLITE
     module = type(conn).__module__
     if module == "psycopg" or module.startswith("psycopg."):
+        return Backend.POSTGRES
+    info = getattr(conn, "info", None)
+    if getattr(info, "vendor", None) == "PostgreSQL":
         return Backend.POSTGRES
     return get_backend()
 

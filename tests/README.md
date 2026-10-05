@@ -83,9 +83,10 @@ Postgres CI job still opens a SQLite temp file for that test.
 - `tests/test_signal_column_preservation.py`
 
 `testdb` Postgres connections rewrite SQLite-shaped DDL (`?`, `executescript`,
-AUTOINCREMENT, `INSERT OR IGNORE`, PRAGMA) so those tests hit Postgres while
-`DATABASE_URL` stays unset. Helpers such as `table_columns` / `insert_returning_id`
-use `backend_for_connection(conn)` rather than `DATABASE_URL`.
+AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `INSERT OR IGNORE`,
+`PRAGMA table_info`) so those tests hit Postgres while `DATABASE_URL` stays
+unset. Helpers such as `table_columns` / `insert_returning_id` use
+`backend_for_connection(conn)` rather than `DATABASE_URL`.
 
 **Remaining** (`rg -l 'sqlite3\.connect\(' tests`): **54 files / 107** AST
 call sites.

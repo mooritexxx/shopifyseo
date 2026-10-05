@@ -181,6 +181,35 @@ class TestDbConnFixture:
         rows = db_conn.execute("SELECT val FROM many_probe ORDER BY id").fetchall()
         assert [r["val"] for r in rows] == ["a", "b"]
 
+    def test_blob_and_wide_integer_ddl(self, testdb, db_conn) -> None:
+        db_conn.execute(
+            "CREATE TABLE cache_probe (id INTEGER PRIMARY KEY, blob BLOB, expires_at INTEGER)"
+        )
+        db_conn.execute(
+            "INSERT INTO cache_probe (id, blob, expires_at) VALUES (?, ?, ?)",
+            (1, b"\x00\x01", 9_999_999_999),
+        )
+        db_conn.commit()
+        row = db_conn.execute("SELECT blob, expires_at FROM cache_probe WHERE id = ?", (1,)).fetchone()
+        assert bytes(row["blob"]) == b"\x00\x01"
+        assert int(row["expires_at"]) == 9_999_999_999
+
+    def test_pragma_table_info_reports_columns(self, testdb, db_conn) -> None:
+        db_conn.execute("CREATE TABLE pragma_probe (handle TEXT PRIMARY KEY, online_store_url TEXT)")
+        rows = db_conn.execute("PRAGMA table_info(pragma_probe)").fetchall()
+        names = {r[1] if isinstance(r, (list, tuple)) else r["name"] for r in rows}
+        assert names == {"handle", "online_store_url"}
+
+    def test_failed_statement_does_not_poison_connection(self, testdb, db_conn) -> None:
+        db_conn.execute("CREATE TABLE ok_probe (id INTEGER PRIMARY KEY)")
+        try:
+            db_conn.execute("INSERT INTO ok_probe (no_such_col) VALUES (1)")
+        except Exception:
+            pass
+        db_conn.execute("INSERT INTO ok_probe (id) VALUES (?)", (1,))
+        db_conn.commit()
+        assert db_conn.execute("SELECT COUNT(*) FROM ok_probe").fetchone()[0] == 1
+
 
 @pytest.mark.postgres
 class TestPgvectorCiImage:

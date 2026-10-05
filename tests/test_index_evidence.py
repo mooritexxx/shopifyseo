@@ -28,7 +28,7 @@ def conn(db_conn):
 
 def insert_catalog(conn, kind='product', handle='x', **values):
     table = ie.TABLES[kind]
-    row = dict(title=handle, handle=handle, raw_json='{}', synced_at='')
+    row = dict(shopify_id=handle, title=handle, handle=handle, raw_json='{}', synced_at='')
     if kind in {'product', 'blog_article'}:
         row['tags_json'] = '[]'
     if kind == 'product':

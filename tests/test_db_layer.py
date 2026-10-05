@@ -160,6 +160,15 @@ class TestBackendForConnection:
             assert get_backend() is Backend.SQLITE
             assert backend_for_connection(pg_conn) is Backend.POSTGRES
 
+    def test_postgres_borrow_proxy_even_if_database_url_unset(self, pg_conn):
+        class Borrow:
+            def __getattr__(self, key):
+                return getattr(pg_conn, key)
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABASE_URL", None)
+            assert backend_for_connection(Borrow()) is Backend.POSTGRES
+
 
 class TestTranslatePlaceholders:
     """Tests for _translate_placeholders() - the private placeholder translation function.

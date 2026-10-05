@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+import pytest
 from backend.app.main import app
 from backend.app.services.overview_results import change_results
 from shopifyseo import opportunity_tasks as tasks
@@ -42,7 +43,8 @@ def test_equal_windows_exclude_save_day_and_wait_for_lag(db_conn):
     row=change_results(conn,date(2026,9,18))['items'][0]
     assert row['state']=='ready'
     assert row['before']['clicks']==14 and row['after']['clicks']==28
-    assert row['before']['ctr']==row['after']['ctr']==.01
+    assert float(row['before']['ctr']) == pytest.approx(0.01)
+    assert float(row['after']['ctr']) == pytest.approx(0.01)
     conn.execute("DELETE FROM gsc_page_daily WHERE date='2026-09-03'")
     assert change_results(conn,date(2026,9,18))['items'][0]['state']=='insufficient'
 

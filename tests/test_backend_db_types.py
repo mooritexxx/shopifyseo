@@ -19,7 +19,6 @@ from backend.app.services.keyword_clustering._storage import (
 from backend.app.services.opportunities_service import _row_factory
 from shopifyseo.db import DictRow, table_columns
 
-
 SERVICES_ROUTERS_AREA = (
     *sorted(Path("backend/app/services").rglob("*.py")),
     *sorted(Path("backend/app/routers").rglob("*.py")),

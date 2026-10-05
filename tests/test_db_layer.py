@@ -920,3 +920,515 @@ class TestInsertReturningIdPercentLiteral:
 
         pg_conn.execute("DROP TABLE percent_test")
         pg_conn.commit()
+
+
+# ============================================================================
+# PR2: Execute wrapper and get_connection tests
+# ============================================================================
+
+from shopifyseo.db import (
+    execute,
+    executemany,
+    get_connection,
+    table_ddl,
+    index_exists,
+    foreign_keys_enabled,
+    set_foreign_keys,
+    journal_mode,
+    busy_timeout,
+    resync_sequence,
+    resync_all_sequences,
+    create_identity_column_ddl,
+    IDENTITY_COLUMNS,
+    get_sequence_name,
+)
+
+
+class TestExecuteWrapperSqlite:
+    """Tests for execute() wrapper on SQLite."""
+
+    def test_execute_no_params(self):
+        """execute() with params=None works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
+                conn.execute("INSERT INTO t VALUES (1, 'test')")
+                row = execute(conn, "SELECT * FROM t", backend=Backend.SQLITE).fetchone()
+                assert row["id"] == 1
+                assert row["name"] == "test"
+            finally:
+                conn.close()
+
+    def test_execute_empty_tuple_params(self):
+        """execute() with params=() works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (val TEXT)")
+                conn.execute("INSERT INTO t VALUES ('50%')")
+                row = execute(conn, "SELECT val FROM t", (), backend=Backend.SQLITE).fetchone()
+                assert row["val"] == "50%"
+            finally:
+                conn.close()
+
+    def test_execute_empty_list_params(self):
+        """execute() with params=[] works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (val TEXT)")
+                conn.execute("INSERT INTO t VALUES ('50%')")
+                row = execute(conn, "SELECT val FROM t", [], backend=Backend.SQLITE).fetchone()
+                assert row["val"] == "50%"
+            finally:
+                conn.close()
+
+    def test_execute_with_params(self):
+        """execute() with actual params works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
+                execute(conn, "INSERT INTO t VALUES (?, ?)", (1, "Alice"), backend=Backend.SQLITE)
+                row = execute(conn, "SELECT * FROM t WHERE id = ?", (1,), backend=Backend.SQLITE).fetchone()
+                assert row["name"] == "Alice"
+            finally:
+                conn.close()
+
+    def test_execute_percent_literal_no_params(self):
+        """SELECT with % literal and no params works."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 7 % 3 AS r", backend=Backend.SQLITE).fetchone()
+                assert row["r"] == 1
+            finally:
+                conn.close()
+
+    def test_execute_like_percent_no_params(self):
+        """SELECT with LIKE % and no params works."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 'abc' LIKE 'a%' AS m", backend=Backend.SQLITE).fetchone()
+                assert row["m"] == 1
+            finally:
+                conn.close()
+
+
+class TestExecuteWrapperPostgres:
+    """Tests for execute() wrapper on PostgreSQL."""
+
+    def test_execute_no_params(self, pg_conn):
+        """execute() with params=None works correctly."""
+        row = execute(pg_conn, "SELECT 1 AS val", backend=Backend.POSTGRES).fetchone()
+        assert row["val"] == 1
+
+    def test_execute_empty_tuple_params(self, pg_conn):
+        """execute() with params=() and % literal works."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r", (), backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+
+    def test_execute_empty_list_params(self, pg_conn):
+        """execute() with params=[] and % literal works."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r", [], backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+
+    def test_execute_with_params(self, pg_conn):
+        """execute() with actual params works correctly."""
+        row = execute(pg_conn, "SELECT ? AS val", (42,), backend=Backend.POSTGRES).fetchone()
+        assert row["val"] == 42
+
+    def test_execute_like_empty_tuple(self, pg_conn):
+        """LIKE with % and empty tuple params works."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", (), backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_execute_like_empty_list(self, pg_conn):
+        """LIKE with % and empty list params works."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", [], backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_execute_like_no_params(self, pg_conn):
+        """LIKE with % and no params (None) works."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_execute_modulo_with_placeholder(self, pg_conn):
+        """Modulo % with placeholder param works."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r, ? AS v", ("x",), backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+        assert row["v"] == "x"
+
+
+class TestExecutemany:
+    """Tests for executemany() function."""
+
+    def test_executemany_sqlite(self):
+        """executemany() works on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE t (id INTEGER, name TEXT)")
+                executemany(conn, "INSERT INTO t VALUES (?, ?)", [(1, "a"), (2, "b")], backend=Backend.SQLITE)
+                rows = conn.execute("SELECT * FROM t ORDER BY id").fetchall()
+                assert len(rows) == 2
+                assert rows[0]["name"] == "a"
+                assert rows[1]["name"] == "b"
+            finally:
+                conn.close()
+
+    def test_executemany_postgres(self, pg_conn):
+        """executemany() works on PostgreSQL."""
+        pg_conn.execute("DROP TABLE IF EXISTS test_executemany")
+        pg_conn.execute("CREATE TABLE test_executemany (id INTEGER, name TEXT)")
+        pg_conn.commit()
+        executemany(pg_conn, "INSERT INTO test_executemany VALUES (?, ?)", [(1, "a"), (2, "b")], backend=Backend.POSTGRES)
+        pg_conn.commit()
+        rows = pg_conn.execute("SELECT * FROM test_executemany ORDER BY id").fetchall()
+        assert len(rows) == 2
+        assert rows[0]["name"] == "a"
+        assert rows[1]["name"] == "b"
+        pg_conn.execute("DROP TABLE test_executemany")
+        pg_conn.commit()
+
+
+class TestGetConnection:
+    """Tests for get_connection() function."""
+
+    def test_get_connection_default_sqlite(self):
+        """get_connection() returns SQLite when DATABASE_URL not set."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABASE_URL", None)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                conn = get_connection(path=Path(tmpdir) / "test.db")
+                try:
+                    assert isinstance(conn, sqlite3.Connection)
+                    conn.execute("CREATE TABLE t (id INTEGER)")
+                    row = conn.execute("SELECT 1 AS val").fetchone()
+                    assert row["val"] == 1
+                finally:
+                    conn.close()
+
+    def test_get_connection_postgres_url(self, pg_url):
+        """get_connection() returns PostgreSQL connection when URL is postgres://."""
+        conn = get_connection(url=pg_url)
+        try:
+            row = conn.execute("SELECT 1 AS val").fetchone()
+            assert row["val"] == 1
+        finally:
+            conn.close()
+
+
+class TestTableDdl:
+    """Tests for table_ddl() function."""
+
+    def test_table_ddl_sqlite(self):
+        """table_ddl() returns CREATE TABLE for SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+                ddl = table_ddl(conn, "users", backend=Backend.SQLITE)
+                assert ddl is not None
+                assert "CREATE TABLE" in ddl
+                assert "users" in ddl
+            finally:
+                conn.close()
+
+    def test_table_ddl_nonexistent_sqlite(self):
+        """table_ddl() returns None for nonexistent table."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                ddl = table_ddl(conn, "nonexistent", backend=Backend.SQLITE)
+                assert ddl is None
+            finally:
+                conn.close()
+
+    def test_table_ddl_postgres(self, pg_url):
+        """table_ddl() returns DDL for PostgreSQL."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        table_name = "_test_table_ddl"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            conn.commit()
+            ddl = table_ddl(conn, table_name, backend=Backend.POSTGRES)
+            assert ddl is not None
+            assert "CREATE TABLE" in ddl
+            assert "id" in ddl
+            assert "name" in ddl
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.close()
+
+
+class TestIndexExists:
+    """Tests for index_exists() function."""
+
+    def test_index_exists_sqlite(self):
+        """index_exists() correctly detects SQLite indexes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                conn.execute("CREATE TABLE users (id INTEGER, name TEXT)")
+                conn.execute("CREATE INDEX idx_users_name ON users(name)")
+                assert index_exists(conn, "idx_users_name", backend=Backend.SQLITE) is True
+                assert index_exists(conn, "nonexistent_idx", backend=Backend.SQLITE) is False
+            finally:
+                conn.close()
+
+    def test_index_exists_postgres(self, pg_url):
+        """index_exists() correctly detects PostgreSQL indexes."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        table_name = "_test_idx_exists"
+        idx_name = "_test_idx_exists_name"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table_name} (id INTEGER, name TEXT)")
+            conn.execute(f"CREATE INDEX {idx_name} ON {table_name}(name)")
+            conn.commit()
+            assert index_exists(conn, idx_name, backend=Backend.POSTGRES) is True
+            assert index_exists(conn, "nonexistent_idx_xyz", backend=Backend.POSTGRES) is False
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.close()
+
+
+class TestForeignKeysHelpers:
+    """Tests for foreign_keys_enabled() and set_foreign_keys()."""
+
+    def test_foreign_keys_enabled_sqlite(self):
+        """foreign_keys_enabled() checks SQLite setting."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                set_foreign_keys(conn, True, backend=Backend.SQLITE)
+                assert foreign_keys_enabled(conn, backend=Backend.SQLITE) is True
+                set_foreign_keys(conn, False, backend=Backend.SQLITE)
+                assert foreign_keys_enabled(conn, backend=Backend.SQLITE) is False
+            finally:
+                conn.close()
+
+    def test_foreign_keys_always_true_postgres(self, pg_conn):
+        """foreign_keys_enabled() always returns True on PostgreSQL."""
+        assert foreign_keys_enabled(pg_conn, backend=Backend.POSTGRES) is True
+
+
+class TestJournalMode:
+    """Tests for journal_mode() function."""
+
+    def test_journal_mode_sqlite_wal(self):
+        """journal_mode() returns WAL on SQLite with WAL enabled."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db", wal_mode=True)
+            try:
+                mode = journal_mode(conn, backend=Backend.SQLITE)
+                assert mode.lower() == "wal"
+            finally:
+                conn.close()
+
+    def test_journal_mode_postgres(self, pg_conn):
+        """journal_mode() returns wal_level on PostgreSQL."""
+        mode = journal_mode(pg_conn, backend=Backend.POSTGRES)
+        assert mode in ("replica", "logical", "minimal")
+
+
+class TestBusyTimeout:
+    """Tests for busy_timeout() function."""
+
+    def test_busy_timeout_sqlite(self):
+        """busy_timeout() returns the configured timeout on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db", busy_timeout_ms=5000)
+            try:
+                timeout = busy_timeout(conn, backend=Backend.SQLITE)
+                assert timeout == 5000
+            finally:
+                conn.close()
+
+    def test_busy_timeout_postgres(self, pg_conn):
+        """busy_timeout() returns lock_timeout on PostgreSQL."""
+        timeout = busy_timeout(pg_conn, backend=Backend.POSTGRES)
+        assert isinstance(timeout, int)
+
+
+class TestIdentityColumnHelpers:
+    """Tests for identity column DDL and sequence helpers."""
+
+    def test_create_identity_column_ddl_sqlite(self):
+        """create_identity_column_ddl() returns INTEGER PRIMARY KEY for SQLite."""
+        ddl = create_identity_column_ddl("test_table", "id", backend=Backend.SQLITE)
+        assert ddl == "id INTEGER PRIMARY KEY"
+
+    def test_create_identity_column_ddl_postgres(self):
+        """create_identity_column_ddl() returns GENERATED BY DEFAULT for PostgreSQL."""
+        ddl = create_identity_column_ddl("test_table", "id", backend=Backend.POSTGRES)
+        assert "GENERATED BY DEFAULT AS IDENTITY" in ddl
+        assert "PRIMARY KEY" in ddl
+
+    def test_get_sequence_name(self):
+        """get_sequence_name() returns expected naming convention."""
+        assert get_sequence_name("users", "id") == "users_id_seq"
+        assert get_sequence_name("team_tasks", "id") == "team_tasks_id_seq"
+
+    def test_resync_sequence_sqlite_noop(self):
+        """resync_sequence() is a no-op on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                result = resync_sequence(conn, "test", "id", backend=Backend.SQLITE)
+                assert result is None
+            finally:
+                conn.close()
+
+    def test_resync_sequence_postgres(self, pg_url):
+        """resync_sequence() updates sequence on PostgreSQL."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        table_name = "_test_resync_seq"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table_name} (id SERIAL PRIMARY KEY, name TEXT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table_name} (id, name) VALUES (100, 'manual')")
+            conn.commit()
+            new_val = resync_sequence(conn, table_name, "id", backend=Backend.POSTGRES)
+            assert new_val == 101
+            conn.execute(f"INSERT INTO {table_name} (name) VALUES ('auto')")
+            conn.commit()
+            row = conn.execute(f"SELECT id FROM {table_name} WHERE name = 'auto'").fetchone()
+            assert row["id"] == 101
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.close()
+
+    def test_resync_all_sequences_sqlite_empty(self):
+        """resync_all_sequences() returns empty dict on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                results = resync_all_sequences(conn, backend=Backend.SQLITE)
+                assert results == {}
+            finally:
+                conn.close()
+
+
+class TestPercentLiteralRegression:
+    """Regression tests for % literal handling with different param scenarios.
+
+    These tests verify that % in SQL (modulo, LIKE patterns) works correctly
+    with params=None, params=(), and params=[].
+    """
+
+    def test_modulo_params_none_sqlite(self):
+        """% modulo with params=None on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 7 % 3 AS r", None, backend=Backend.SQLITE).fetchone()
+                assert row["r"] == 1
+            finally:
+                conn.close()
+
+    def test_modulo_params_empty_tuple_sqlite(self):
+        """% modulo with params=() on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 7 % 3 AS r", (), backend=Backend.SQLITE).fetchone()
+                assert row["r"] == 1
+            finally:
+                conn.close()
+
+    def test_modulo_params_empty_list_sqlite(self):
+        """% modulo with params=[] on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 7 % 3 AS r", [], backend=Backend.SQLITE).fetchone()
+                assert row["r"] == 1
+            finally:
+                conn.close()
+
+    def test_modulo_params_none_postgres(self, pg_conn):
+        """% modulo with params=None on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r", None, backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+
+    def test_modulo_params_empty_tuple_postgres(self, pg_conn):
+        """% modulo with params=() on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r", (), backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+
+    def test_modulo_params_empty_list_postgres(self, pg_conn):
+        """% modulo with params=[] on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 7 % 3 AS r", [], backend=Backend.POSTGRES).fetchone()
+        assert row["r"] == 1
+
+    def test_like_params_none_sqlite(self):
+        """LIKE % with params=None on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 'abc' LIKE 'a%' AS m", None, backend=Backend.SQLITE).fetchone()
+                assert row["m"] == 1
+            finally:
+                conn.close()
+
+    def test_like_params_empty_tuple_sqlite(self):
+        """LIKE % with params=() on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 'abc' LIKE 'a%' AS m", (), backend=Backend.SQLITE).fetchone()
+                assert row["m"] == 1
+            finally:
+                conn.close()
+
+    def test_like_params_empty_list_sqlite(self):
+        """LIKE % with params=[] on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                row = execute(conn, "SELECT 'abc' LIKE 'a%' AS m", [], backend=Backend.SQLITE).fetchone()
+                assert row["m"] == 1
+            finally:
+                conn.close()
+
+    def test_like_params_none_postgres(self, pg_conn):
+        """LIKE % with params=None on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", None, backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_like_params_empty_tuple_postgres(self, pg_conn):
+        """LIKE % with params=() on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", (), backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_like_params_empty_list_postgres(self, pg_conn):
+        """LIKE % with params=[] on PostgreSQL."""
+        row = execute(pg_conn, "SELECT 'abc' LIKE 'a%' AS m", [], backend=Backend.POSTGRES).fetchone()
+        assert row["m"] is True
+
+    def test_literal_percent_in_string_postgres(self, pg_conn):
+        """Literal '50%' in INSERT with params works."""
+        pg_conn.execute("DROP TABLE IF EXISTS percent_lit_test")
+        pg_conn.execute("CREATE TABLE percent_lit_test (id SERIAL PRIMARY KEY, val TEXT)")
+        pg_conn.commit()
+        execute(pg_conn, "INSERT INTO percent_lit_test (val) VALUES (?)", ("50%",), backend=Backend.POSTGRES)
+        pg_conn.commit()
+        row = pg_conn.execute("SELECT val FROM percent_lit_test").fetchone()
+        assert row["val"] == "50%"
+        pg_conn.execute("DROP TABLE percent_lit_test")
+        pg_conn.commit()

@@ -6,6 +6,7 @@ from typing import Any, Generator
 
 from .backend import Backend, get_backend
 from .compat import translate_placeholders
+from .execute import execute
 
 
 def insert_returning_id(
@@ -102,3 +103,136 @@ def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> s
         quoted = table.replace('"', '""')
         rows = conn.execute(f'PRAGMA table_info("{quoted}")').fetchall()
         return {row[1] if isinstance(row, tuple) else row["name"] for row in rows}
+
+
+def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str | None:
+    """Get the CREATE TABLE DDL for a table, or None if it doesn't exist.
+
+    On SQLite: returns the sql column from sqlite_master.
+    On PostgreSQL: reconstructs DDL from pg_catalog (simplified version).
+    """
+    if backend is None:
+        backend = get_backend()
+
+    if backend == Backend.POSTGRES:
+        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        if row is None or row[0] is None:
+            return None
+        oid = row[0]
+        cols_rows = conn.execute(
+            """
+            SELECT attname, format_type(atttypid, atttypmod) AS dtype,
+                   attnotnull, pg_get_expr(adbin, adrelid) AS default_expr
+            FROM pg_attribute
+            LEFT JOIN pg_attrdef ON adrelid = attrelid AND adnum = attnum
+            WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped
+            ORDER BY attnum
+            """,
+            (oid,),
+        ).fetchall()
+        if not cols_rows:
+            return None
+        col_defs = []
+        for r in cols_rows:
+            col_def = f'"{r[0]}" {r[1]}'
+            if r[2]:
+                col_def += " NOT NULL"
+            if r[3]:
+                col_def += f" DEFAULT {r[3]}"
+            col_defs.append(col_def)
+        return f'CREATE TABLE "{table}" ({", ".join(col_defs)})'
+    else:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        return row[0] if row else None
+
+
+def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) -> bool:
+    """Check if an index exists."""
+    if backend is None:
+        backend = get_backend()
+
+    if backend == Backend.POSTGRES:
+        row = conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE indexname = %s", (index_name,)
+        ).fetchone()
+        return row is not None
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index_name,)
+        ).fetchone()
+        return row is not None
+
+
+def foreign_keys_enabled(conn: Any, *, backend: Backend | None = None) -> bool:
+    """Check if foreign key constraints are enabled.
+
+    On PostgreSQL: always returns True (foreign keys are always enforced).
+    On SQLite: checks PRAGMA foreign_keys setting.
+    """
+    if backend is None:
+        backend = get_backend()
+
+    if backend == Backend.POSTGRES:
+        return True
+    else:
+        row = conn.execute("PRAGMA foreign_keys").fetchone()
+        return bool(row and row[0])
+
+
+def set_foreign_keys(conn: Any, enabled: bool, *, backend: Backend | None = None) -> None:
+    """Enable or disable foreign key constraints.
+
+    On PostgreSQL: This is a no-op (use session_replication_role or
+    ALTER TABLE ... DISABLE TRIGGER for bulk loads).
+    On SQLite: Sets PRAGMA foreign_keys.
+    """
+    if backend is None:
+        backend = get_backend()
+
+    if backend != Backend.POSTGRES:
+        conn.execute(f"PRAGMA foreign_keys = {'ON' if enabled else 'OFF'}")
+
+
+def journal_mode(conn: Any, *, backend: Backend | None = None) -> str:
+    """Get the current journal/logging mode.
+
+    On PostgreSQL: Returns the wal_level setting.
+    On SQLite: Returns the journal_mode PRAGMA value.
+    """
+    if backend is None:
+        backend = get_backend()
+
+    if backend == Backend.POSTGRES:
+        row = conn.execute("SHOW wal_level").fetchone()
+        return row[0] if row else "unknown"
+    else:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        return row[0] if row else "unknown"
+
+
+def busy_timeout(conn: Any, *, backend: Backend | None = None) -> int:
+    """Get the current busy/lock timeout in milliseconds.
+
+    On PostgreSQL: Returns lock_timeout setting (converted from string).
+    On SQLite: Returns busy_timeout PRAGMA value.
+    """
+    if backend is None:
+        backend = get_backend()
+
+    if backend == Backend.POSTGRES:
+        row = conn.execute("SHOW lock_timeout").fetchone()
+        if not row:
+            return 0
+        val = row[0]
+        if val.endswith("ms"):
+            return int(val[:-2])
+        elif val.endswith("s"):
+            return int(float(val[:-1]) * 1000)
+        elif val == "0":
+            return 0
+        return int(val)
+    else:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        return row[0] if row else 0

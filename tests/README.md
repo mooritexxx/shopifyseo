@@ -94,7 +94,7 @@ Postgres (production already no-ops those paths via `backend_for_connection`).
 
 `testdb` Postgres connections rewrite SQLite-shaped DDL (`?`, `executescript`,
 AUTOINCREMENT, `INTEGER`→`BIGINT`, `BLOB`→`BYTEA`, `REAL`→`DOUBLE PRECISION`,
-`INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`, `PRAGMA table_info`)
+`INSERT OR IGNORE` / `INSERT OR REPLACE`, `datetime('now')`→plan-6 `PG_NOW_TEXT_SQL`, `PRAGMA table_info`)
 so those tests hit Postgres while `DATABASE_URL` stays unset. Helpers such as
 `table_columns` / `insert_returning_id` use `backend_for_connection(conn)`
 rather than `DATABASE_URL`.

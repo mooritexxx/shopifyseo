@@ -735,7 +735,7 @@ class TestManualWeaveTVPA:
 class TestManualWeaveDrift:
     """Test case 13: Drift detection (409)."""
     
-    def test_live_change_after_submit_fails_apply(self, database, live, api):
+    def test_live_change_after_submit_fails_apply(self, live, api):
         """Changes to live body between submit and apply should fail."""
         client, conn, live = api
         

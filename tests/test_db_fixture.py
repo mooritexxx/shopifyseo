@@ -189,6 +189,11 @@ class TestDbConnFixture:
         assert "CURRENT_TIMESTAMP" not in out
         assert PG_NOW_TEXT_SQL in out
 
+    def test_round_two_arg_rewrites_to_numeric(self) -> None:
+        out = rewrite_sqlite_ddl_for_postgres("SELECT ROUND(AVG(score), 2) FROM t")
+        assert "::numeric" in out.lower()
+        assert "ROUND(" in out.upper() or "round(" in out
+
     def test_last_insert_rowid_rewrites_to_lastval(self) -> None:
         out = rewrite_sqlite_ddl_for_postgres("SELECT last_insert_rowid()")
         assert "last_insert_rowid" not in out.lower()

@@ -13,7 +13,11 @@ def db(testdb):
         return testdb.connect()
     conn = connect()
     tasks.ensure_schema(conn)
-    conn.execute('CREATE TABLE gsc_query_rows(object_type, object_handle, query, clicks, impressions, ctr, position, fetched_at)')
+    conn.execute(
+        'CREATE TABLE gsc_query_rows('
+        'object_type TEXT, object_handle TEXT, query TEXT, clicks INTEGER, '
+        'impressions INTEGER, ctr REAL, position REAL, fetched_at INTEGER)'
+    )
     conn.executemany('INSERT INTO gsc_query_rows VALUES(?,?,?,?,?,?,?,?)', [('product','test','primary',5,1000,.005,2,123),('product','test','secondary',3,300,.01,12,123)])
     conn.commit()
     yield conn, connect

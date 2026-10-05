@@ -159,6 +159,7 @@ from shopifyseo.cutover.sqlite_pre_fix import fix_sqlite_copy
 report = fix_sqlite_copy("$SQLITE_COPY")
 print("pre-fix empty_numeric:", report["empty_numeric"] or "{}")
 print("pre-fix epoch_text:", report["epoch_text"] or "{}")
+print("pre-fix expression_indexes_dropped:", report.get("expression_indexes_dropped") or "{}")
 PY
 
 if [[ "$SKIP_PGLOADER" -eq 0 ]]; then

@@ -28,7 +28,7 @@ def insert_returning_id(
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
-        sql = translate_placeholders(sql, to_postgres=True)
+        sql = translate_placeholders(sql, to_postgres=True, escape_percent=True)
         cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()
         return row[0] if row else None

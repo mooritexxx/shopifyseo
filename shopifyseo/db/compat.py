@@ -110,7 +110,8 @@ def translate_placeholders(sql: str, to_postgres: bool = True, *, escape_percent
         to_postgres: If False, return sql unchanged.
         escape_percent: If True, escape % to %% for psycopg. If None (default),
             auto-detect: escape only if there are ? placeholders being translated.
-            Set to False when executing SQL without params.
+            Set to True when params will be passed to execute (even empty () or []),
+            since psycopg processes % whenever any params sequence is passed.
     """
     if not to_postgres:
         return sql

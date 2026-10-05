@@ -864,3 +864,59 @@ class TestPostgresPercentMatching:
                 assert pg_result["v"] == sqlite_result["v"]
             finally:
                 sqlite_conn.close()
+
+    def test_like_matches_sqlite_empty_params(self, pg_conn):
+        sql = "SELECT 'abc' LIKE 'a%' AS m"
+        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                sqlite_result = sqlite_conn.execute(sql, ()).fetchone()
+                assert pg_result["m"] == sqlite_result["m"]
+            finally:
+                sqlite_conn.close()
+
+    def test_modulo_matches_sqlite_empty_list_params(self, pg_conn):
+        sql = "SELECT 7 % 3 AS r"
+        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                sqlite_result = sqlite_conn.execute(sql, []).fetchone()
+                assert pg_result["r"] == sqlite_result["r"]
+            finally:
+                sqlite_conn.close()
+
+    def test_like_matches_sqlite_empty_list_params(self, pg_conn):
+        sql = "SELECT 'abc' LIKE 'a%' AS m"
+        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                sqlite_result = sqlite_conn.execute(sql, []).fetchone()
+                assert pg_result["m"] == sqlite_result["m"]
+            finally:
+                sqlite_conn.close()
+
+
+class TestInsertReturningIdPercentLiteral:
+    """Regression test: insert_returning_id with literal % in value."""
+
+    def test_insert_percent_literal_postgres(self, pg_conn):
+        """Literal '50%' via insert_returning_id with empty params reads back exactly."""
+        pg_conn.execute("DROP TABLE IF EXISTS percent_test")
+        pg_conn.execute("CREATE TABLE percent_test (id SERIAL PRIMARY KEY, val TEXT)")
+        pg_conn.commit()
+
+        row_id = insert_returning_id(
+            pg_conn,
+            "INSERT INTO percent_test (val) VALUES ('50%')",
+            backend=Backend.POSTGRES,
+        )
+        pg_conn.commit()
+
+        row = pg_conn.execute("SELECT val FROM percent_test WHERE id = %s", (row_id,)).fetchone()
+        assert row["val"] == "50%"
+
+        pg_conn.execute("DROP TABLE percent_test")
+        pg_conn.commit()

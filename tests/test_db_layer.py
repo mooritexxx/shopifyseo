@@ -1,9 +1,12 @@
 """Tests for the shopifyseo.db database abstraction layer."""
+import calendar
 import os
+import re
 import sqlite3
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -2568,3 +2571,241 @@ class TestChangesRowcount:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
             conn.close()
+
+
+_NAIVE_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+
+def _assert_naive_utc_text(value: object) -> None:
+    assert isinstance(value, str), f"expected str, got {type(value).__name__}: {value!r}"
+    assert _NAIVE_TS_RE.match(value), f"not naive UTC text: {value!r}"
+    assert "+" not in value
+    assert "T" not in value
+
+
+class TestTimestampParityHelpers:
+    """Unit tests for now_text / CURRENT_TIMESTAMP rewrite (no live Postgres)."""
+
+    def test_now_text_format_is_naive_utc(self):
+        from shopifyseo.db import NOW_TEXT_PATTERN, now_text
+
+        value = now_text()
+        _assert_naive_utc_text(value)
+        assert NOW_TEXT_PATTERN.match(value)
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        assert abs(parsed.timestamp() - time.time()) < 2
+
+    def test_now_text_sql_sqlite_keeps_current_timestamp(self):
+        from shopifyseo.db import now_text_sql
+
+        assert now_text_sql(backend=Backend.SQLITE) == "CURRENT_TIMESTAMP"
+
+    def test_now_text_sql_postgres_uses_to_char(self):
+        from shopifyseo.db import PG_NOW_TEXT_SQL, now_text_sql
+
+        assert now_text_sql(backend=Backend.POSTGRES) == PG_NOW_TEXT_SQL
+        assert "CURRENT_TIMESTAMP" not in PG_NOW_TEXT_SQL
+        assert "%" not in PG_NOW_TEXT_SQL
+
+    def test_rewrite_replaces_current_timestamp_outside_strings(self):
+        from shopifyseo.db.timestamps import rewrite_current_timestamp_for_postgres
+
+        sql = "UPDATE t SET updated_at=CURRENT_TIMESTAMP WHERE id=?"
+        out = rewrite_current_timestamp_for_postgres(sql)
+        assert "CURRENT_TIMESTAMP" not in out
+        assert "to_char" in out
+        assert "?" in out
+        assert rewrite_current_timestamp_for_postgres(out) == out
+
+    def test_rewrite_preserves_current_timestamp_in_strings_and_comments(self):
+        from shopifyseo.db.timestamps import rewrite_current_timestamp_for_postgres
+
+        assert rewrite_current_timestamp_for_postgres(
+            "SELECT 'CURRENT_TIMESTAMP' AS x"
+        ) == "SELECT 'CURRENT_TIMESTAMP' AS x"
+        commented = "SELECT 1 AS n -- CURRENT_TIMESTAMP"
+        assert rewrite_current_timestamp_for_postgres(commented) == commented
+        block = "SELECT /* CURRENT_TIMESTAMP */ 1 AS n"
+        assert rewrite_current_timestamp_for_postgres(block) == block
+
+    def test_rewrite_skips_when_absent(self):
+        from shopifyseo.db.timestamps import rewrite_current_timestamp_for_postgres
+
+        sql = "SELECT 1 AS n"
+        assert rewrite_current_timestamp_for_postgres(sql) is sql
+
+    def test_nullif_empty_and_empty_to_null(self):
+        from shopifyseo.db import empty_to_null, nullif_empty
+
+        assert nullif_empty("published_at") == "NULLIF(published_at, '')"
+        assert empty_to_null("") is None
+        assert empty_to_null("   ") is None
+        assert empty_to_null(None) is None
+        assert empty_to_null("2026-10-01T12:00:00Z") == "2026-10-01T12:00:00Z"
+
+    def test_as_epoch_seconds_coerces_text_timestamp(self):
+        from shopifyseo.db import as_epoch_seconds, now_epoch
+
+        # The live mixed-type value from REPORT.md type problem #1.
+        assert as_epoch_seconds("2026-10-01 23:54:58") == calendar.timegm(
+            (2026, 10, 1, 23, 54, 58, 0, 0, 0)
+        )
+        assert as_epoch_seconds(1_700_000_000) == 1_700_000_000
+        assert as_epoch_seconds("1700000000") == 1_700_000_000
+        now = now_epoch()
+        assert abs(as_epoch_seconds(None) - now) <= 1
+
+    def test_sqlite_current_timestamp_default_and_set(self):
+        """SQLite CURRENT_TIMESTAMP stays native and writes naive UTC text."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "ts.db")
+            try:
+                conn.execute(
+                    "CREATE TABLE t (id INTEGER PRIMARY KEY, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute("INSERT INTO t (id) VALUES (1)")
+                default_ts = conn.execute("SELECT ts FROM t WHERE id = 1").fetchone()[0]
+                _assert_naive_utc_text(default_ts)
+                conn.execute("UPDATE t SET ts = CURRENT_TIMESTAMP WHERE id = 1")
+                set_ts = conn.execute("SELECT ts FROM t WHERE id = 1").fetchone()[0]
+                _assert_naive_utc_text(set_ts)
+                conn.execute("INSERT INTO t (id, ts) VALUES (2, CURRENT_TIMESTAMP)")
+                values_ts = conn.execute("SELECT ts FROM t WHERE id = 2").fetchone()[0]
+                _assert_naive_utc_text(values_ts)
+            finally:
+                conn.close()
+
+    def test_sqlite_execute_wrapper_leaves_current_timestamp(self):
+        from shopifyseo.db import execute as db_execute
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "ts.db")
+            try:
+                db_execute(
+                    conn,
+                    "CREATE TABLE t (id INTEGER PRIMARY KEY, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+                    backend=Backend.SQLITE,
+                )
+                db_execute(conn, "INSERT INTO t (id) VALUES (1)", backend=Backend.SQLITE)
+                row = db_execute(conn, "SELECT ts FROM t", backend=Backend.SQLITE).fetchone()
+                _assert_naive_utc_text(row["ts"])
+            finally:
+                conn.close()
+
+
+class TestTimestampParityPostgres:
+    """Postgres CURRENT_TIMESTAMP format + session timezone. Skipped without TEST_DATABASE_URL."""
+
+    def test_session_timezone_is_utc(self, pg_conn):
+        row = pg_conn.execute("SHOW timezone").fetchone()
+        assert str(row[0]).upper() == "UTC"
+
+    def test_current_timestamp_default_matches_sqlite_format(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_ts_parity_default"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(
+                f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (id) VALUES (1)")
+            conn.commit()
+            ts = conn.execute(f"SELECT ts FROM {table} WHERE id = 1").fetchone()[0]
+            _assert_naive_utc_text(ts)
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_current_timestamp_set_and_values(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_ts_parity_dml"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (id, ts) VALUES (1, CURRENT_TIMESTAMP)")
+            conn.execute(f"INSERT INTO {table} (id) VALUES (2)")
+            conn.execute(f"UPDATE {table} SET ts = CURRENT_TIMESTAMP WHERE id = 2")
+            conn.commit()
+            rows = conn.execute(f"SELECT id, ts FROM {table} ORDER BY id").fetchall()
+            assert len(rows) == 2
+            for row in rows:
+                _assert_naive_utc_text(row["ts"])
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_execute_wrapper_rewrites_current_timestamp(self, pg_url):
+        from shopifyseo.db import connect_postgres, execute as db_execute
+
+        conn = connect_postgres(pg_url)
+        table = "_test_ts_parity_execute"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            db_execute(
+                conn,
+                f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            db_execute(conn, f"INSERT INTO {table} (id) VALUES (?)", (1,), backend=Backend.POSTGRES)
+            db_execute(
+                conn,
+                f"UPDATE {table} SET ts = CURRENT_TIMESTAMP WHERE id = ?",
+                (1,),
+                backend=Backend.POSTGRES,
+            )
+            conn.commit()
+            row = db_execute(
+                conn, f"SELECT ts FROM {table} WHERE id = ?", (1,), backend=Backend.POSTGRES
+            ).fetchone()
+            _assert_naive_utc_text(row["ts"])
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_cursor_execute_rewrites_current_timestamp(self, pg_url):
+        from shopifyseo.db import connect_postgres
+        from shopifyseo.db.timestamps import postgres_cursor_factory
+
+        conn = connect_postgres(pg_url)
+        table = "_test_ts_parity_cursor"
+        try:
+            assert conn.cursor_factory is postgres_cursor_factory()
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT)")
+            conn.commit()
+            cur = conn.cursor()
+            cur.execute(f"INSERT INTO {table} (id, ts) VALUES (1, CURRENT_TIMESTAMP)")
+            conn.commit()
+            row = conn.execute(f"SELECT ts FROM {table} WHERE id = 1").fetchone()
+            _assert_naive_utc_text(row["ts"])
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_timezone_survives_rollback(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("SELECT 1")
+            conn.rollback()
+            row = conn.execute("SHOW timezone").fetchone()
+            assert str(row[0]).upper() == "UTC"
+        finally:
+            conn.close()
+

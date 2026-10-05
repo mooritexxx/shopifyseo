@@ -2,6 +2,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from shopifyseo.db import empty_to_null
+
 from .db import (
     now_iso,
     json_dumps,
@@ -181,7 +183,7 @@ def upsert_blog_article(
             blog_handle,
             article["title"],
             article["handle"],
-            article.get("publishedAt") or "",
+            empty_to_null(article.get("publishedAt")),
             article.get("updatedAt") or "",
             1 if article.get("isPublished") else 0,
             article.get("body") or "",

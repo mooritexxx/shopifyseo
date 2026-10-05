@@ -74,14 +74,27 @@ def connect_sqlite(
 
 
 def connect_postgres(url: str, *, autocommit: bool = False) -> Any:
-    """Open a PostgreSQL connection via psycopg with DictRow factory."""
+    """Open a PostgreSQL connection via psycopg with DictRow factory.
+
+    Session ``timezone=UTC`` is set via libpq ``options`` (survives rollback;
+    not an in-transaction ``SET``). ``CURRENT_TIMESTAMP`` in SQL is rewritten
+    to naive UTC text — see ``shopifyseo.db.timestamps``. SQLite connections
+    are unchanged.
+    """
     try:
         import psycopg
     except ImportError as e:
         raise ImportError(
             "psycopg required for PostgreSQL. Install with: pip install 'psycopg[binary]'"
         ) from e
-    conn = psycopg.connect(url, autocommit=autocommit)
+    from .timestamps import postgres_connect_options, postgres_cursor_factory
+
+    conn = psycopg.connect(
+        url,
+        autocommit=autocommit,
+        options=postgres_connect_options(),
+        cursor_factory=postgres_cursor_factory(),
+    )
     conn.row_factory = _make_postgres_row_factory()
     return conn
 

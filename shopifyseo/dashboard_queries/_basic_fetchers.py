@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shopifyseo.db import DictRow, table_columns
+from shopifyseo.db import DictRow, nullif_empty, table_columns
 
 from ._urls import object_url
 from ..index_evidence import INDEX_STORED_FIELDS
@@ -204,11 +204,11 @@ def fetch_all_blog_articles(conn: Any) -> list[DictRow]:
 def fetch_all_blog_articles_enriched(conn: Any) -> list[DictRow]:
     """All articles with blog title for cross-blog listings."""
     return conn.execute(
-        """
+        f"""
         SELECT a.*, b.title AS blog_title
         FROM blog_articles a
         LEFT JOIN blogs b ON b.handle = a.blog_handle
-        ORDER BY COALESCE(a.published_at, a.updated_at, '') DESC, b.title, a.title
+        ORDER BY COALESCE({nullif_empty('a.published_at')}, a.updated_at, '') DESC, b.title, a.title
         """
     ).fetchall()
 
@@ -219,10 +219,10 @@ def fetch_blog_by_handle(conn: Any, handle: str) -> DictRow | None:
 
 def fetch_articles_by_blog_handle(conn: Any, blog_handle: str) -> list[DictRow]:
     return conn.execute(
-        """
+        f"""
         SELECT * FROM blog_articles
         WHERE blog_handle = ?
-        ORDER BY COALESCE(published_at, updated_at, '') DESC, title
+        ORDER BY COALESCE({nullif_empty('published_at')}, updated_at, '') DESC, title
         """,
         (blog_handle,),
     ).fetchall()

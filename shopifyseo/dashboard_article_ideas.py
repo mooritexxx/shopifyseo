@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
-from shopifyseo.db import insert_returning_id, like_ci
+from shopifyseo.db import insert_returning_id, like_ci, nullif_empty
 
 
 def normalize_audience_questions_json(value: Any) -> list[dict[str, str]]:
@@ -448,11 +448,11 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
 
     # 4. Existing article titles — to avoid suggesting duplicates
     existing_articles = conn.execute(
-        """
+        f"""
         SELECT title, seo_title, blog_handle
         FROM blog_articles
         WHERE title IS NOT NULL AND TRIM(title) != ''
-        ORDER BY published_at DESC NULLS LAST
+        ORDER BY {nullif_empty('published_at')} DESC NULLS LAST
         LIMIT 30
         """
     ).fetchall()

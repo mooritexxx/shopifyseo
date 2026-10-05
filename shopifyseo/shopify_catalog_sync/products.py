@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from shopifyseo.db import empty_to_null
+
 from .db import (
     now_iso,
     json_dumps,
@@ -194,7 +196,7 @@ def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, 
             product.get("status") or "",
             product.get("createdAt") or "",
             product.get("updatedAt") or "",
-            product.get("publishedAt") or "",
+            empty_to_null(product.get("publishedAt")),
             product.get("descriptionHtml") or "",
             json_dumps(product.get("tags") or []),
             (product.get("seo") or {}).get("title") or "",

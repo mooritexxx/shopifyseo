@@ -104,6 +104,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/db/connect.py": 3,
     "shopifyseo/db/helpers.py": 20,
     "shopifyseo/db/identity.py": 4,
+    "shopifyseo/db/timestamps.py": 3,
 }
 
 EXCLUDED_DIRS = {

@@ -6,6 +6,7 @@ from typing import Any, Generator, Sequence
 
 from .backend import Backend, get_backend
 from .compat import _translate_placeholders
+from .timestamps import rewrite_current_timestamp_for_postgres
 
 # Transaction-scoped advisory lock keys for Postgres (pg_advisory_xact_lock).
 # SQLite ignores these: BEGIN IMMEDIATE already exclusive-locks the database.
@@ -106,6 +107,7 @@ def insert_returning_id(
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
+        sql = rewrite_current_timestamp_for_postgres(sql)
         sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
         cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()

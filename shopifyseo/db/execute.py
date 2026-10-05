@@ -3,17 +3,17 @@
 The wrapper ensures that:
 1. Placeholders are translated from ? to %s for PostgreSQL
 2. % literals are escaped when params are provided (even empty () or [])
-3. A single get_connection() function routes to the correct backend
+3. A single get_connection() function provides backend-aware connections
+   (no app callers yet; connection routing deferred to a follow-up PR)
 """
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Sequence
 
 from .backend import Backend, get_backend, parse_database_url
-from .compat import translate_placeholders
+from .compat import _translate_placeholders
 
 
 def _translate_sql(sql: str, params: Sequence[Any] | None, backend: Backend) -> str:
@@ -25,8 +25,7 @@ def _translate_sql(sql: str, params: Sequence[Any] | None, backend: Backend) -> 
     """
     if backend != Backend.POSTGRES:
         return sql
-    escape_percent = params is not None
-    return translate_placeholders(sql, to_postgres=True, escape_percent=escape_percent)
+    return _translate_placeholders(sql, to_postgres=True, escape_percent=params is not None)
 
 
 def execute(
@@ -79,9 +78,12 @@ def executemany(
     if backend is None:
         backend = get_backend()
 
-    escape_percent = True
     translated_sql = _translate_sql(sql, (), backend) if backend == Backend.POSTGRES else sql
 
+    if backend == Backend.POSTGRES:
+        cursor = conn.cursor()
+        cursor.executemany(translated_sql, params_seq)
+        return cursor
     return conn.executemany(translated_sql, params_seq)
 
 

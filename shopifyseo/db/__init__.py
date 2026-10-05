@@ -6,7 +6,7 @@ Backend is selected via DATABASE_URL environment variable:
 - sqlite:///path or file:path or bare path: SQLite
 """
 from .backend import Backend, InvalidDatabaseURL, get_backend, is_postgres, is_sqlite, parse_database_url
-from .compat import DictRow, translate_placeholders
+from .compat import DictRow
 from .connect import BUSY_TIMEOUT_MS, connect, connect_postgres, connect_sqlite
 from .exceptions import DatabaseError, IntegrityError, LockError, OperationalError, ProgrammingError
 from .execute import execute, executemany, get_connection
@@ -24,7 +24,9 @@ from .helpers import (
 )
 from .identity import (
     IDENTITY_COLUMNS,
+    ResyncResult,
     create_identity_column_ddl,
+    ensure_identity,
     get_sequence_name,
     identity_ddl,
     resync_all_sequences,
@@ -51,7 +53,6 @@ __all__ = [
     "executemany",
     # Row compatibility
     "DictRow",
-    "translate_placeholders",
     # Helpers
     "insert_returning_id",
     "write_tx",
@@ -65,11 +66,13 @@ __all__ = [
     "busy_timeout",
     # Identity columns
     "IDENTITY_COLUMNS",
+    "ResyncResult",
     "identity_ddl",
     "serial_ddl",
     "get_sequence_name",
     "resync_sequence",
     "resync_all_sequences",
+    "ensure_identity",
     "create_identity_column_ddl",
     # Exceptions
     "DatabaseError",

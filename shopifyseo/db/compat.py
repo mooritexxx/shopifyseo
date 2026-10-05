@@ -98,7 +98,7 @@ _TOKEN_PATTERN = re.compile(
 )
 
 
-def translate_placeholders(sql: str, to_postgres: bool = True, *, escape_percent: bool | None = None) -> str:
+def _translate_placeholders(sql: str, to_postgres: bool = True, *, escape_percent: bool | None = None) -> str:
     """Translate ? placeholders to %s for PostgreSQL.
 
     - ? outside strings/comments -> %s

@@ -21,10 +21,10 @@ from shopifyseo.db import (
     parse_database_url,
     table_columns,
     table_exists,
-    translate_placeholders,
     write_tx,
     BUSY_TIMEOUT_MS,
 )
+from shopifyseo.db.compat import _translate_placeholders
 
 
 class TestParseDatabaseUrl:
@@ -124,94 +124,105 @@ class TestBackendHelpers:
 
 
 class TestTranslatePlaceholders:
-    """Tests for translate_placeholders()."""
+    """Tests for _translate_placeholders() - the private placeholder translation function.
+    
+    This function is internal and not exported from shopifyseo.db.
+    Users should use shopifyseo.db.execute() which handles translation automatically.
+    """
+
+    def test_not_exported_from_public_api(self):
+        """_translate_placeholders is private and not exported from shopifyseo.db."""
+        import shopifyseo.db
+        assert not hasattr(shopifyseo.db, "translate_placeholders")
+        assert "_translate_placeholders" not in shopifyseo.db.__all__
+        assert "translate_placeholders" not in shopifyseo.db.__all__
 
     def test_basic_replacement(self):
         sql = "SELECT * FROM users WHERE id = ? AND name = ?"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT * FROM users WHERE id = %s AND name = %s"
 
     def test_no_change_for_sqlite(self):
         sql = "SELECT * FROM users WHERE id = ?"
-        result = translate_placeholders(sql, to_postgres=False)
+        result = _translate_placeholders(sql, to_postgres=False)
         assert result == sql
 
     def test_preserves_single_quoted_strings(self):
         sql = "SELECT * FROM users WHERE name = '?' AND id = ?"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT * FROM users WHERE name = '?' AND id = %s"
 
     def test_preserves_double_quoted_identifiers(self):
         sql = 'SELECT "?" AS col, ? AS val'
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == 'SELECT "?" AS col, %s AS val'
 
     def test_double_question_mark(self):
         sql = "SELECT * FROM data WHERE payload ?? 'key' AND id = ?"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT * FROM data WHERE payload ? 'key' AND id = %s"
 
     def test_escapes_percent_for_like_with_placeholders(self):
         sql = "SELECT * FROM t WHERE name LIKE 'a%' AND id = ?"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT * FROM t WHERE name LIKE 'a%%' AND id = %s"
 
     def test_escapes_percent_for_modulo_with_placeholders(self):
         sql = "SELECT 7 % 3 AS r, ? AS v"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT 7 %% 3 AS r, %s AS v"
 
     def test_no_escape_percent_without_placeholders(self):
         sql = "SELECT 7 % 3 AS r, 'a%' AS v"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == sql
 
     def test_explicit_escape_percent_flag(self):
         sql = "SELECT 7 % 3 AS r"
-        result = translate_placeholders(sql, to_postgres=True, escape_percent=True)
+        result = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
         assert result == "SELECT 7 %% 3 AS r"
 
     def test_explicit_no_escape_percent_flag(self):
         sql = "SELECT 7 % 3 AS r, ? AS v"
-        result = translate_placeholders(sql, to_postgres=True, escape_percent=False)
+        result = _translate_placeholders(sql, to_postgres=True, escape_percent=False)
         assert result == "SELECT 7 % 3 AS r, %s AS v"
 
     def test_preserves_single_line_comment(self):
         sql = "SELECT ? AS b -- why?"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT %s AS b -- why?"
 
     def test_preserves_multi_line_comment(self):
         sql = "SELECT /* is it? */ ? AS b"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT /* is it? */ %s AS b"
 
     def test_backslash_not_escape_in_standard_string(self):
         sql = r"SELECT 'a\', ? AS b, 'c'"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == r"SELECT 'a\', %s AS b, 'c'"
 
     def test_else_with_string_not_misread_as_e_string(self):
         sql = r"SELECT CASE WHEN 1=1 THEN 'a' ELSE'\' END, ? AS b"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert "%s" in result
 
     def test_escaped_quotes_in_string(self):
         sql = "SELECT 'don''t?', ? AS val"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT 'don''t?', %s AS val"
 
     def test_mixed_like_patterns(self):
         sql = "SELECT * FROM t WHERE name LIKE 'how%' AND title LIKE '%' || ? || '%'"
-        result = translate_placeholders(sql, to_postgres=True)
+        result = _translate_placeholders(sql, to_postgres=True)
         assert result == "SELECT * FROM t WHERE name LIKE 'how%%' AND title LIKE '%%' || %s || '%%'"
 
     def test_empty_sql(self):
-        assert translate_placeholders("", to_postgres=True) == ""
+        assert _translate_placeholders("", to_postgres=True) == ""
 
     def test_no_placeholders(self):
         sql = "SELECT * FROM users"
-        assert translate_placeholders(sql, to_postgres=True) == sql
+        assert _translate_placeholders(sql, to_postgres=True) == sql
 
 
 class TestDictRow:
@@ -606,14 +617,14 @@ class TestPostgresTranslation:
 
     def test_basic_placeholder(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT ? AS val", to_postgres=True),
+            _translate_placeholders("SELECT ? AS val", to_postgres=True),
             (42,)
         ).fetchone()
         assert row[0] == 42
 
     def test_like_with_percent_and_params(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT 'abc' LIKE 'a%' AS m, ? AS v", to_postgres=True),
+            _translate_placeholders("SELECT 'abc' LIKE 'a%' AS m, ? AS v", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["m"] is True
@@ -621,56 +632,56 @@ class TestPostgresTranslation:
 
     def test_modulo_with_percent_and_params(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT 7 % 3 AS r, ? AS v", to_postgres=True),
+            _translate_placeholders("SELECT 7 % 3 AS r, ? AS v", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["r"] == 1
         assert row["v"] == "test"
 
     def test_like_no_params(self, pg_conn):
-        sql = translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True)
+        sql = _translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True)
         row = pg_conn.execute(sql).fetchone()
         assert row["m"] is True
 
     def test_modulo_no_params(self, pg_conn):
-        sql = translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True)
+        sql = _translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True)
         row = pg_conn.execute(sql).fetchone()
         assert row["r"] == 1
 
     def test_like_empty_params(self, pg_conn):
-        sql = translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True, escape_percent=True)
+        sql = _translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True, escape_percent=True)
         row = pg_conn.execute(sql, ()).fetchone()
         assert row["m"] is True
 
     def test_modulo_empty_params(self, pg_conn):
-        sql = translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True, escape_percent=True)
+        sql = _translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True, escape_percent=True)
         row = pg_conn.execute(sql, ()).fetchone()
         assert row["r"] == 1
 
     def test_single_line_comment(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT ? AS b -- why?", to_postgres=True),
+            _translate_placeholders("SELECT ? AS b -- why?", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["b"] == "test"
 
     def test_multi_line_comment(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT /* is it? */ ? AS b", to_postgres=True),
+            _translate_placeholders("SELECT /* is it? */ ? AS b", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["b"] == "test"
 
     def test_backslash_in_standard_string(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders(r"SELECT 'a\', ? AS b, 'c' AS c", to_postgres=True),
+            _translate_placeholders(r"SELECT 'a\', ? AS b, 'c' AS c", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["b"] == "test"
 
     def test_double_question_jsonb(self, pg_conn):
         row = pg_conn.execute(
-            translate_placeholders("SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key, ? AS v", to_postgres=True),
+            _translate_placeholders("SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key, ? AS v", to_postgres=True),
             ("test",)
         ).fetchone()
         assert row["has_key"] is True
@@ -820,7 +831,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_no_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True)).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True)).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -831,7 +842,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_no_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True)).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True)).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -842,7 +853,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_empty_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -854,7 +865,7 @@ class TestPostgresPercentMatching:
     def test_modulo_matches_sqlite_with_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r, ? AS v"
         pg_result = pg_conn.execute(
-            translate_placeholders(sql, to_postgres=True), ("x",)
+            _translate_placeholders(sql, to_postgres=True), ("x",)
         ).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
@@ -867,7 +878,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_empty_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -878,7 +889,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_empty_list_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -889,7 +900,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_empty_list_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -938,9 +949,11 @@ from shopifyseo.db import (
     busy_timeout,
     resync_sequence,
     resync_all_sequences,
+    ensure_identity,
     create_identity_column_ddl,
     IDENTITY_COLUMNS,
     get_sequence_name,
+    ResyncResult,
 )
 
 
@@ -1084,14 +1097,16 @@ class TestExecutemany:
         pg_conn.execute("DROP TABLE IF EXISTS test_executemany")
         pg_conn.execute("CREATE TABLE test_executemany (id INTEGER, name TEXT)")
         pg_conn.commit()
-        executemany(pg_conn, "INSERT INTO test_executemany VALUES (?, ?)", [(1, "a"), (2, "b")], backend=Backend.POSTGRES)
-        pg_conn.commit()
-        rows = pg_conn.execute("SELECT * FROM test_executemany ORDER BY id").fetchall()
-        assert len(rows) == 2
-        assert rows[0]["name"] == "a"
-        assert rows[1]["name"] == "b"
-        pg_conn.execute("DROP TABLE test_executemany")
-        pg_conn.commit()
+        try:
+            executemany(pg_conn, "INSERT INTO test_executemany VALUES (?, ?)", [(1, "a"), (2, "b")], backend=Backend.POSTGRES)
+            pg_conn.commit()
+            rows = pg_conn.execute("SELECT * FROM test_executemany ORDER BY id").fetchall()
+            assert len(rows) == 2
+            assert rows[0]["name"] == "a"
+            assert rows[1]["name"] == "b"
+        finally:
+            pg_conn.execute("DROP TABLE IF EXISTS test_executemany")
+            pg_conn.commit()
 
 
 class TestGetConnection:
@@ -1119,6 +1134,21 @@ class TestGetConnection:
             assert row["val"] == 1
         finally:
             conn.close()
+
+    def test_get_connection_postgres_creates_no_file(self, pg_url):
+        """get_connection() with postgres URL creates no file or directory on disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            check_dir = Path(tmpdir)
+            before_files = set(check_dir.iterdir())
+            conn = get_connection(url=pg_url, path=check_dir / "should_not_exist.db")
+            try:
+                row = conn.execute("SELECT 1 AS val").fetchone()
+                assert row["val"] == 1
+            finally:
+                conn.close()
+            after_files = set(check_dir.iterdir())
+            new_files = after_files - before_files
+            assert len(new_files) == 0, f"Unexpected files created: {new_files}"
 
 
 class TestTableDdl:
@@ -1255,10 +1285,42 @@ class TestBusyTimeout:
             finally:
                 conn.close()
 
+    def test_busy_timeout_sqlite_default_30000(self):
+        """busy_timeout() returns default 30000ms on SQLite when not specified."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                timeout = busy_timeout(conn, backend=Backend.SQLITE)
+                assert timeout == 30000
+            finally:
+                conn.close()
+
     def test_busy_timeout_postgres(self, pg_conn):
         """busy_timeout() returns lock_timeout on PostgreSQL."""
         timeout = busy_timeout(pg_conn, backend=Backend.POSTGRES)
         assert isinstance(timeout, int)
+
+    def test_busy_timeout_postgres_maps_2s_to_2000(self, pg_url):
+        """busy_timeout() maps PG '2s' to 2000ms using pg_settings."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("SET lock_timeout = '2s'")
+            timeout = busy_timeout(conn, backend=Backend.POSTGRES)
+            assert timeout == 2000
+        finally:
+            conn.close()
+
+    def test_busy_timeout_postgres_maps_1min_to_60000(self, pg_url):
+        """busy_timeout() maps PG '1min' to 60000ms using pg_settings."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("SET lock_timeout = '1min'")
+            timeout = busy_timeout(conn, backend=Backend.POSTGRES)
+            assert timeout == 60000
+        finally:
+            conn.close()
 
 
 class TestIdentityColumnHelpers:
@@ -1274,11 +1336,35 @@ class TestIdentityColumnHelpers:
         ddl = create_identity_column_ddl("test_table", "id", backend=Backend.POSTGRES)
         assert "GENERATED BY DEFAULT AS IDENTITY" in ddl
         assert "PRIMARY KEY" in ddl
+        assert "BIGINT" in ddl
 
-    def test_get_sequence_name(self):
-        """get_sequence_name() returns expected naming convention."""
-        assert get_sequence_name("users", "id") == "users_id_seq"
-        assert get_sequence_name("team_tasks", "id") == "team_tasks_id_seq"
+    def test_get_sequence_name_sqlite_returns_none(self):
+        """get_sequence_name() returns None on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                result = get_sequence_name(conn, "users", "id", backend=Backend.SQLITE)
+                assert result is None
+            finally:
+                conn.close()
+
+    def test_get_sequence_name_postgres(self, pg_url):
+        """get_sequence_name() uses pg_get_serial_sequence on PostgreSQL."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        table_name = "_test_get_seq_name"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table_name} (id SERIAL PRIMARY KEY, name TEXT)")
+            conn.commit()
+            seq_name = get_sequence_name(conn, table_name, "id", backend=Backend.POSTGRES)
+            assert seq_name is not None
+            assert table_name in seq_name
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn.commit()
+            conn.close()
 
     def test_resync_sequence_sqlite_noop(self):
         """resync_sequence() is a no-op on SQLite."""
@@ -1286,7 +1372,8 @@ class TestIdentityColumnHelpers:
             conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
                 result = resync_sequence(conn, "test", "id", backend=Backend.SQLITE)
-                assert result is None
+                assert result.new_value is None
+                assert result.error is None
             finally:
                 conn.close()
 
@@ -1302,8 +1389,9 @@ class TestIdentityColumnHelpers:
             conn.commit()
             conn.execute(f"INSERT INTO {table_name} (id, name) VALUES (100, 'manual')")
             conn.commit()
-            new_val = resync_sequence(conn, table_name, "id", backend=Backend.POSTGRES)
-            assert new_val == 101
+            result = resync_sequence(conn, table_name, "id", backend=Backend.POSTGRES)
+            assert result.error is None
+            assert result.new_value == 101
             conn.execute(f"INSERT INTO {table_name} (name) VALUES ('auto')")
             conn.commit()
             row = conn.execute(f"SELECT id FROM {table_name} WHERE name = 'auto'").fetchone()
@@ -1313,15 +1401,145 @@ class TestIdentityColumnHelpers:
             conn.commit()
             conn.close()
 
+    def test_resync_sequence_postgres_reserved_word_table(self, pg_url):
+        """resync_sequence() works with reserved word table names."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute('DROP TABLE IF EXISTS "order"')
+            conn.commit()
+            conn.execute('CREATE TABLE "order" (id SERIAL PRIMARY KEY, name TEXT)')
+            conn.commit()
+            conn.execute('INSERT INTO "order" (id, name) VALUES (50, \'manual\')')
+            conn.commit()
+            result = resync_sequence(conn, "order", "id", backend=Backend.POSTGRES)
+            assert result.error is None
+            assert result.new_value == 51
+        finally:
+            conn.execute('DROP TABLE IF EXISTS "order"')
+            conn.commit()
+            conn.close()
+
     def test_resync_all_sequences_sqlite_empty(self):
-        """resync_all_sequences() returns empty dict on SQLite."""
+        """resync_all_sequences() returns empty list on SQLite."""
         with tempfile.TemporaryDirectory() as tmpdir:
             conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
                 results = resync_all_sequences(conn, backend=Backend.SQLITE)
-                assert results == {}
+                assert results == []
             finally:
                 conn.close()
+
+    def test_resync_all_sequences_postgres_discovers_tables(self, pg_url):
+        """resync_all_sequences() discovers tables from catalog."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("DROP TABLE IF EXISTS _test_resync_all_a")
+            conn.execute("DROP TABLE IF EXISTS _test_resync_all_b")
+            conn.commit()
+            conn.execute("CREATE TABLE _test_resync_all_a (id SERIAL PRIMARY KEY, name TEXT)")
+            conn.execute("CREATE TABLE _test_resync_all_b (id SERIAL PRIMARY KEY, val INT)")
+            conn.commit()
+            conn.execute("INSERT INTO _test_resync_all_a (id, name) VALUES (10, 'a')")
+            conn.execute("INSERT INTO _test_resync_all_b (id, val) VALUES (20, 1)")
+            conn.commit()
+            results = resync_all_sequences(conn, backend=Backend.POSTGRES)
+            result_map = {r.table: r for r in results}
+            assert "_test_resync_all_a" in result_map
+            assert "_test_resync_all_b" in result_map
+            assert result_map["_test_resync_all_a"].new_value == 11
+            assert result_map["_test_resync_all_b"].new_value == 21
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _test_resync_all_a")
+            conn.execute("DROP TABLE IF EXISTS _test_resync_all_b")
+            conn.commit()
+            conn.close()
+
+    def test_resync_all_sequences_skips_composite_pk(self, pg_url):
+        """resync_all_sequences() skips tables with composite primary keys."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("DROP TABLE IF EXISTS _test_composite_pk")
+            conn.commit()
+            conn.execute("""
+                CREATE TABLE _test_composite_pk (
+                    a_id INTEGER, b_id INTEGER, name TEXT,
+                    PRIMARY KEY (a_id, b_id)
+                )
+            """)
+            conn.commit()
+            results = resync_all_sequences(conn, backend=Backend.POSTGRES)
+            table_names = [r.table for r in results]
+            assert "_test_composite_pk" not in table_names
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _test_composite_pk")
+            conn.commit()
+            conn.close()
+
+    def test_ensure_identity_sqlite_noop(self):
+        """ensure_identity() is a no-op on SQLite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conn = connect_sqlite(Path(tmpdir) / "test.db")
+            try:
+                result = ensure_identity(conn, "test", "id", backend=Backend.SQLITE)
+                assert result.new_value is None
+                assert result.error is None
+            finally:
+                conn.close()
+
+    def test_ensure_identity_postgres_adds_identity(self, pg_url):
+        """ensure_identity() adds IDENTITY and resyncs for columns without sequence."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("DROP TABLE IF EXISTS _test_ensure_identity")
+            conn.commit()
+            conn.execute("""
+                CREATE TABLE _test_ensure_identity (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT
+                )
+            """)
+            conn.commit()
+            conn.execute("INSERT INTO _test_ensure_identity (id, name) VALUES (10, 'a')")
+            conn.commit()
+            result = ensure_identity(conn, "_test_ensure_identity", "id", backend=Backend.POSTGRES)
+            conn.commit()
+            assert result.error is None
+            assert result.new_value == 11
+            conn.execute("INSERT INTO _test_ensure_identity (name) VALUES ('auto')")
+            conn.commit()
+            row = conn.execute("SELECT id FROM _test_ensure_identity WHERE name = 'auto'").fetchone()
+            assert row["id"] == 11
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _test_ensure_identity")
+            conn.commit()
+            conn.close()
+
+    def test_ensure_identity_postgres_idempotent(self, pg_url):
+        """ensure_identity() is idempotent - safe to call multiple times."""
+        from shopifyseo.db import connect_postgres
+        conn = connect_postgres(pg_url)
+        try:
+            conn.execute("DROP TABLE IF EXISTS _test_ensure_idem")
+            conn.commit()
+            conn.execute("CREATE TABLE _test_ensure_idem (id SERIAL PRIMARY KEY, name TEXT)")
+            conn.commit()
+            conn.execute("INSERT INTO _test_ensure_idem (id, name) VALUES (5, 'a')")
+            conn.commit()
+            result1 = ensure_identity(conn, "_test_ensure_idem", "id", backend=Backend.POSTGRES)
+            conn.commit()
+            result2 = ensure_identity(conn, "_test_ensure_idem", "id", backend=Backend.POSTGRES)
+            conn.commit()
+            assert result1.error is None
+            assert result2.error is None
+            assert result1.new_value == 6
+        finally:
+            conn.execute("DROP TABLE IF EXISTS _test_ensure_idem")
+            conn.commit()
+            conn.close()
 
 
 class TestPercentLiteralRegression:

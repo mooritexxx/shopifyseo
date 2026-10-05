@@ -5,8 +5,7 @@ from contextlib import contextmanager
 from typing import Any, Generator
 
 from .backend import Backend, get_backend
-from .compat import translate_placeholders
-from .execute import execute
+from .compat import _translate_placeholders
 
 
 def insert_returning_id(
@@ -29,7 +28,7 @@ def insert_returning_id(
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
-        sql = translate_placeholders(sql, to_postgres=True, escape_percent=True)
+        sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
         cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()
         return row[0] if row else None
@@ -66,16 +65,26 @@ def write_tx(conn: Any, *, backend: Backend | None = None) -> Generator[Any, Non
 
 
 def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bool:
-    """Check if a table exists (visible via search_path on Postgres)."""
+    """Check if a table exists (visible via search_path on Postgres).
+    
+    On PostgreSQL, filters by relkind='r' (regular table) and current_schema()
+    to avoid matching views, sequences, or tables in other schemas.
+    """
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
         row = conn.execute(
-            "SELECT to_regclass(%s) IS NOT NULL",
+            """
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = %s
+              AND c.relkind = 'r'
+              AND n.nspname = current_schema()
+            """,
             (table,),
         ).fetchone()
-        return row[0] if row else False
+        return row is not None
     else:
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -149,13 +158,24 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
 
 
 def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) -> bool:
-    """Check if an index exists."""
+    """Check if an index exists.
+    
+    On PostgreSQL, filters by relkind='i' (index) and current_schema()
+    to avoid matching indexes in other schemas.
+    """
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
         row = conn.execute(
-            "SELECT 1 FROM pg_indexes WHERE indexname = %s", (index_name,)
+            """
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = %s
+              AND c.relkind = 'i'
+              AND n.nspname = current_schema()
+            """,
+            (index_name,),
         ).fetchone()
         return row is not None
     else:
@@ -215,24 +235,20 @@ def journal_mode(conn: Any, *, backend: Backend | None = None) -> str:
 def busy_timeout(conn: Any, *, backend: Backend | None = None) -> int:
     """Get the current busy/lock timeout in milliseconds.
 
-    On PostgreSQL: Returns lock_timeout setting (converted from string).
+    On PostgreSQL: Reads lock_timeout from pg_settings (unit is always ms),
+    supporting values like '2s', '1min', '500ms', etc.
     On SQLite: Returns busy_timeout PRAGMA value.
     """
     if backend is None:
         backend = get_backend()
 
     if backend == Backend.POSTGRES:
-        row = conn.execute("SHOW lock_timeout").fetchone()
+        row = conn.execute(
+            "SELECT setting FROM pg_settings WHERE name = 'lock_timeout'"
+        ).fetchone()
         if not row:
             return 0
-        val = row[0]
-        if val.endswith("ms"):
-            return int(val[:-2])
-        elif val.endswith("s"):
-            return int(float(val[:-1]) * 1000)
-        elif val == "0":
-            return 0
-        return int(val)
+        return int(row[0])
     else:
         row = conn.execute("PRAGMA busy_timeout").fetchone()
         return row[0] if row else 0

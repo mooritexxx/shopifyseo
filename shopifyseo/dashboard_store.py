@@ -15,7 +15,7 @@ from .dashboard_status import index_status_info
 from .index_evidence import (INDEX_FIELDS, INDEX_STORED_FIELDS, extract_inspection_fields,
                              with_index_flag, update_catalog_inspection, ensure_evidence_schema)
 from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
-from .sqlite_utf8 import configure_sqlite_text_decode
+from .db import get_connection
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
 
 
@@ -1987,22 +1987,30 @@ BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026
 
 
 def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    conn = get_connection(
+        path=DB_PATH,
+        timeout=10,
+        row_factory=True,
+        wal_mode=True,
+        busy_timeout_ms=BUSY_TIMEOUT_MS,
+        text_factory=True,
+        create_parents=False,
+    )
     ensure_dashboard_schema(conn)
     apply_runtime_settings(conn)
     return conn
 
 
 def bootstrap_runtime_settings() -> None:
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn = get_connection(
+        path=DB_PATH,
+        timeout=10,
+        row_factory=True,
+        wal_mode=False,
+        busy_timeout_ms=BUSY_TIMEOUT_MS,
+        text_factory=True,
+        create_parents=False,
+    )
     try:
         ensure_dashboard_schema(conn)
         apply_runtime_settings(conn)

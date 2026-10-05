@@ -3,7 +3,6 @@ import argparse
 import json
 import logging
 import os
-import sqlite3
 import threading
 from pathlib import Path
 
@@ -14,7 +13,7 @@ DEFAULT_DB_PATH = Path(
     )
 )
 
-from ..sqlite_utf8 import configure_sqlite_text_decode
+from ..db import get_connection
 from .db import ensure_schema, open_db
 from .products import sync_product, sync_products, upsert_product
 from .collections import sync_collection, sync_collections, upsert_collection
@@ -87,9 +86,15 @@ def probe_shopify_blogs(page_size: int) -> dict:
 
 
 def print_summary(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
+    conn = get_connection(
+        path=db_path,
+        timeout=5.0,
+        row_factory=True,
+        wal_mode=False,
+        busy_timeout_ms=0,
+        text_factory=True,
+        create_parents=False,
+    )
     counts = {
         "products": conn.execute("SELECT COUNT(*) FROM products").fetchone()[0],
         "variants": conn.execute("SELECT COUNT(*) FROM product_variants").fetchone()[0],

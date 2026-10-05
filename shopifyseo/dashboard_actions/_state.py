@@ -7,8 +7,8 @@ import time
 import uuid
 from collections import deque
 
+from ..db import get_connection
 from ..exceptions import AICancelledError, SyncCancelledError
-from ..sqlite_utf8 import configure_sqlite_text_decode
 
 from ._rpm_limiter import PerMinuteRateLimiter
 
@@ -381,13 +381,15 @@ BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026
 
 
 def _db_connect_for_actions(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    return conn
+    return get_connection(
+        path=db_path,
+        timeout=30,
+        row_factory=True,
+        wal_mode=True,
+        busy_timeout_ms=BUSY_TIMEOUT_MS,
+        text_factory=True,
+        create_parents=False,
+    )
 
 
 def _step_result(status: str, message: str) -> dict:

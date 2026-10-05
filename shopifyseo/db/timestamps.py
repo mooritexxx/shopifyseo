@@ -165,53 +165,44 @@ def postgres_connect_options(existing_options: str | None = None) -> str:
     return f"{existing} {_PG_TIMEZONE_OPTIONS}"
 
 
-def attach_postgres_timestamp_parity(conn: Any) -> Any:
-    """Patch ``execute`` / ``cursor()`` so CURRENT_TIMESTAMP is rewritten.
+_TimestampParityCursor: type | None = None
 
-    Direct ``conn.execute`` call sites (still the majority) never go through
-    ``shopifyseo.db.execute``; wrapping the connection covers them. The
-    connection stays a ``psycopg.Connection`` (tests assert isinstance).
+
+def postgres_cursor_factory() -> type:
+    """psycopg Cursor subclass that rewrites CURRENT_TIMESTAMP.
+
+    Cursor.execute is read-only on psycopg 3, so we cannot monkey-patch it.
+    Connection.execute / cursor() both use this factory.
     """
-    if getattr(conn, "_shopifyseo_ts_parity", False):
+    global _TimestampParityCursor
+    if _TimestampParityCursor is None:
+        import psycopg
+
+        class TimestampParityCursor(psycopg.Cursor):
+            def execute(self, query: Any, params: Any = None, **kwargs: Any) -> Any:
+                if isinstance(query, str):
+                    query = rewrite_current_timestamp_for_postgres(query)
+                if params is None and not kwargs:
+                    return super().execute(query)
+                return super().execute(query, params, **kwargs)
+
+            def executemany(self, query: Any, params_seq: Any, **kwargs: Any) -> Any:
+                if isinstance(query, str):
+                    query = rewrite_current_timestamp_for_postgres(query)
+                return super().executemany(query, params_seq, **kwargs)
+
+        _TimestampParityCursor = TimestampParityCursor
+    return _TimestampParityCursor
+
+
+def attach_postgres_timestamp_parity(conn: Any) -> Any:
+    """Install the CURRENT_TIMESTAMP-rewriting cursor factory on ``conn``.
+
+    Direct ``conn.execute`` call sites never go through ``shopifyseo.db.execute``;
+    the factory covers them while leaving the object a ``psycopg.Connection``.
+    """
+    factory = postgres_cursor_factory()
+    if getattr(conn, "cursor_factory", None) is factory:
         return conn
-
-    orig_execute = conn.execute
-    orig_cursor = conn.cursor
-
-    def execute(query: Any, params: Any = None, **kwargs: Any) -> Any:
-        if isinstance(query, str):
-            query = rewrite_current_timestamp_for_postgres(query)
-        if params is None and not kwargs:
-            return orig_execute(query)
-        return orig_execute(query, params, **kwargs)
-
-    def cursor(*args: Any, **kwargs: Any) -> Any:
-        cur = orig_cursor(*args, **kwargs)
-        _patch_postgres_cursor(cur)
-        return cur
-
-    conn.execute = execute
-    conn.cursor = cursor
-    conn._shopifyseo_ts_parity = True
+    conn.cursor_factory = factory
     return conn
-
-
-def _patch_postgres_cursor(cur: Any) -> Any:
-    orig_execute = cur.execute
-    orig_executemany = cur.executemany
-
-    def execute(query: Any, params: Any = None, **kwargs: Any) -> Any:
-        if isinstance(query, str):
-            query = rewrite_current_timestamp_for_postgres(query)
-        if params is None and not kwargs:
-            return orig_execute(query)
-        return orig_execute(query, params, **kwargs)
-
-    def executemany(query: Any, params_seq: Any, **kwargs: Any) -> Any:
-        if isinstance(query, str):
-            query = rewrite_current_timestamp_for_postgres(query)
-        return orig_executemany(query, params_seq, **kwargs)
-
-    cur.execute = execute
-    cur.executemany = executemany
-    return cur

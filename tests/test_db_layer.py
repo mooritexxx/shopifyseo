@@ -2775,6 +2775,28 @@ class TestTimestampParityPostgres:
             conn.commit()
             conn.close()
 
+    def test_cursor_execute_rewrites_current_timestamp(self, pg_url):
+        from shopifyseo.db import connect_postgres
+        from shopifyseo.db.timestamps import postgres_cursor_factory
+
+        conn = connect_postgres(pg_url)
+        table = "_test_ts_parity_cursor"
+        try:
+            assert conn.cursor_factory is postgres_cursor_factory()
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT)")
+            conn.commit()
+            cur = conn.cursor()
+            cur.execute(f"INSERT INTO {table} (id, ts) VALUES (1, CURRENT_TIMESTAMP)")
+            conn.commit()
+            row = conn.execute(f"SELECT ts FROM {table} WHERE id = 1").fetchone()
+            _assert_naive_utc_text(row["ts"])
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
     def test_timezone_survives_rollback(self, pg_url):
         from shopifyseo.db import connect_postgres
 

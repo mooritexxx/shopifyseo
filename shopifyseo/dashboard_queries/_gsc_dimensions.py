@@ -9,6 +9,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from shopifyseo.db import is_operational_error
+
 from ._basic_fetchers import _row_factory
 
 
@@ -59,7 +61,9 @@ def object_keys_with_dimensional_gsc(
                 )
                 for row in cur.fetchall():
                     out.add((ot, row["object_handle"]))
-    except sqlite3.OperationalError:
+    except Exception as exc:
+        if not is_operational_error(exc):
+            raise
         return set()
     return out
 

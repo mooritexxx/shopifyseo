@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -11,18 +12,26 @@ import pytest
 from shopifyseo.db import (
     Backend,
     DictRow,
+    IntegrityError,
     InvalidDatabaseURL,
+    LockError,
+    OperationalError,
     connect,
     connect_sqlite,
     get_backend,
     insert_returning_id,
+    is_integrity_error,
+    is_lock_error,
+    is_operational_error,
     is_postgres,
     is_sqlite,
+    map_exception,
     parse_database_url,
     table_columns,
     table_exists,
     write_tx,
     BUSY_TIMEOUT_MS,
+    LOCK_RANK_JOBS,
 )
 from shopifyseo.db.compat import _translate_placeholders
 
@@ -431,6 +440,106 @@ class TestWriteTxSqlite:
             finally:
                 conn.close()
 
+    def test_write_tx_lock_kwargs_do_not_change_sqlite_immediate(self):
+        """lock_key / for_update are Postgres-only; SQLite still BEGIN IMMEDIATE."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.sqlite3"
+            conn = connect_sqlite(db_path, wal_mode=False)
+            conn.isolation_level = None
+            try:
+                conn.execute("CREATE TABLE t (id INTEGER)")
+                blocked = []
+
+                def try_write():
+                    conn2 = sqlite3.connect(db_path, timeout=0.1)
+                    conn2.isolation_level = None
+                    try:
+                        conn2.execute("BEGIN IMMEDIATE")
+                        blocked.append(False)
+                    except sqlite3.OperationalError as e:
+                        if "locked" in str(e).lower() or "busy" in str(e).lower():
+                            blocked.append(True)
+                        else:
+                            raise
+                    finally:
+                        conn2.close()
+
+                with write_tx(
+                    conn,
+                    backend=Backend.SQLITE,
+                    lock_key=LOCK_RANK_JOBS,
+                    for_update="SELECT id FROM t FOR UPDATE",
+                ):
+                    t = threading.Thread(target=try_write)
+                    t.start()
+                    t.join(timeout=1)
+
+                assert blocked == [True]
+            finally:
+                conn.close()
+
+
+class TestMappedExceptions:
+    """Driver → shopifyseo.db exception classification. Always runs on SQLite."""
+
+    def test_map_sqlite_integrity(self):
+        mapped = map_exception(sqlite3.IntegrityError("UNIQUE constraint failed"))
+        assert isinstance(mapped, IntegrityError)
+        assert is_integrity_error(sqlite3.IntegrityError("UNIQUE constraint failed"))
+        assert is_integrity_error(mapped)
+
+    def test_map_sqlite_lock(self):
+        locked = sqlite3.OperationalError("database is locked")
+        mapped = map_exception(locked)
+        assert isinstance(mapped, LockError)
+        assert is_lock_error(locked)
+        assert is_lock_error(mapped)
+        assert is_operational_error(locked)
+        assert is_operational_error(mapped)
+
+    def test_map_sqlite_operational_non_lock(self):
+        err = sqlite3.OperationalError("disk I/O error")
+        mapped = map_exception(err)
+        assert isinstance(mapped, OperationalError)
+        assert not isinstance(mapped, LockError)
+        assert is_operational_error(err)
+        assert not is_lock_error(err)
+
+    def test_is_lock_error_sqlstates(self):
+        class FakePgError(Exception):
+            def __init__(self, sqlstate, message="contention"):
+                super().__init__(message)
+                self.sqlstate = sqlstate
+
+        for state in ("40001", "40P01", "55P03"):
+            assert is_lock_error(FakePgError(state))
+            assert is_operational_error(FakePgError(state))
+            assert isinstance(map_exception(FakePgError(state)), LockError)
+
+    def test_undefined_table_is_operational(self):
+        class UndefinedTable(Exception):
+            sqlstate = "42P01"
+
+        err = UndefinedTable('relation "missing" does not exist')
+        assert is_operational_error(err)
+        assert not is_lock_error(err)
+        assert isinstance(map_exception(err), OperationalError)
+
+    def test_unique_violation_is_integrity(self):
+        class UniqueViolation(Exception):
+            sqlstate = "23505"
+
+        err = UniqueViolation("duplicate key")
+        assert is_integrity_error(err)
+        assert isinstance(map_exception(err), IntegrityError)
+
+    def test_non_db_exception_unchanged(self):
+        err = ValueError("not a db error")
+        assert map_exception(err) is err
+        assert not is_lock_error(err)
+        assert not is_integrity_error(err)
+        assert not is_operational_error(err)
+
 
 class TestInsertReturningIdSqlite:
     """Tests for insert_returning_id() on SQLite."""
@@ -736,6 +845,89 @@ class TestPostgresWriteTx:
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
             conn.commit()
             conn.close()
+
+    def test_write_tx_advisory_lock_blocks_second_writer(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        conn1 = connect_postgres(pg_url)
+        conn2 = connect_postgres(pg_url)
+        lock_key = 0x54455354  # 'TEST'
+        acquired = threading.Event()
+        blocked = []
+
+        def holder():
+            with write_tx(conn1, backend=Backend.POSTGRES, lock_key=lock_key):
+                acquired.set()
+                time.sleep(1.0)
+
+        t = threading.Thread(target=holder)
+        try:
+            conn2.execute("SET lock_timeout = '200ms'")
+            t.start()
+            assert acquired.wait(timeout=2)
+            try:
+                with write_tx(conn2, backend=Backend.POSTGRES, lock_key=lock_key):
+                    blocked.append(False)
+            except Exception as exc:
+                assert is_lock_error(exc) or is_operational_error(exc), repr(exc)
+                blocked.append(True)
+            t.join(timeout=3)
+            assert blocked == [True], "Second writer should time out on pg_advisory_xact_lock"
+        finally:
+            t.join(timeout=3)
+            conn1.close()
+            conn2.close()
+
+    def test_write_tx_for_update_blocks_second_writer(self, pg_url):
+        from shopifyseo.db import connect_postgres
+
+        table_name = "_test_write_tx_for_update"
+        conn1 = connect_postgres(pg_url)
+        conn2 = connect_postgres(pg_url)
+        acquired = threading.Event()
+        blocked = []
+        try:
+            conn1.execute(f"DROP TABLE IF EXISTS {table_name}")
+            conn1.commit()
+            conn1.execute(f"CREATE TABLE {table_name} (id INTEGER PRIMARY KEY, val TEXT)")
+            conn1.execute(f"INSERT INTO {table_name} (id, val) VALUES (1, 'a')")
+            conn1.commit()
+            conn2.execute("SET lock_timeout = '200ms'")
+
+            def holder():
+                with write_tx(
+                    conn1,
+                    backend=Backend.POSTGRES,
+                    for_update=f"SELECT id FROM {table_name} WHERE id = ? FOR UPDATE",
+                    for_update_params=(1,),
+                ):
+                    acquired.set()
+                    time.sleep(1.0)
+
+            t = threading.Thread(target=holder)
+            t.start()
+            assert acquired.wait(timeout=2)
+            try:
+                with write_tx(
+                    conn2,
+                    backend=Backend.POSTGRES,
+                    for_update=f"SELECT id FROM {table_name} WHERE id = ? FOR UPDATE",
+                    for_update_params=(1,),
+                ):
+                    blocked.append(False)
+            except Exception as exc:
+                assert is_lock_error(exc) or is_operational_error(exc), repr(exc)
+                blocked.append(True)
+            t.join(timeout=3)
+            assert blocked == [True], "Second writer should time out on FOR UPDATE"
+        finally:
+            try:
+                conn1.execute(f"DROP TABLE IF EXISTS {table_name}")
+                conn1.commit()
+            except Exception:
+                pass
+            conn1.close()
+            conn2.close()
 
 
 class TestPostgresInsertReturningId:

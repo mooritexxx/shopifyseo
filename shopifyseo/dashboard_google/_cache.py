@@ -9,6 +9,8 @@ import json
 import sqlite3
 import time
 
+from shopifyseo.db import is_operational_error
+
 
 # -- Cache TTLs (seconds) -----------------------------------------------------
 
@@ -88,8 +90,12 @@ def _run_with_cache_schema(conn: sqlite3.Connection, run):
     """
     try:
         return run()
-    except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc).lower():
+    except Exception as exc:
+        if not is_operational_error(exc):
+            raise
+        message = str(exc).lower()
+        # SQLite: "no such table". Postgres UndefinedTable: "does not exist".
+        if "no such table" not in message and "does not exist" not in message:
             raise
         ensure_google_cache_schema(conn)
         return run()

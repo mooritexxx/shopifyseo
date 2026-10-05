@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from backend.app.services.task_identity import ACTORS, MANAGERS
-from shopifyseo.db import execute, insert_returning_id, table_exists
+from shopifyseo.db import LOCK_TEAM_TASKS, execute, insert_returning_id, table_exists, write_tx
 
 
 def ensure_schema(conn):
@@ -31,8 +31,7 @@ def ensure_schema(conn):
         BEGIN SELECT RAISE(ABORT, 'Task history is append-only'); END;
     ''')
     # Idempotent, atomic conversion of the retired completion-review workflow.
-    with conn:
-        conn.execute('BEGIN IMMEDIATE')
+    with write_tx(conn, lock_key=LOCK_TEAM_TASKS):
         for row in conn.execute('SELECT data_json FROM team_tasks').fetchall():
             before = json.loads(row[0])
             if 'requires_review' not in before and before['status'] != 'review' and before.get('approval_status') != 'denied':
@@ -157,8 +156,7 @@ def create(conn, actor, payload):
                 approval_status='not_required', approval_by=None, approval_at=None, completed_at=None, created_at=now())
     if task['risks']:
         request_approval(task)
-    with conn:
-        conn.execute('BEGIN IMMEDIATE')
+    with write_tx(conn, lock_key=LOCK_TEAM_TASKS):
         task['id'] = insert_returning_id(
             conn,
             "INSERT INTO team_tasks(owner,status,priority,version,created_at,last_log_at,data_json) VALUES(?,?,?,0,?,?,'{}')",
@@ -181,8 +179,7 @@ def require_risk_approval(task):
 
 
 def mutate(conn, task_id, actor, payload, action):
-    with conn:
-        conn.execute('BEGIN IMMEDIATE')
+    with write_tx(conn, lock_key=LOCK_TEAM_TASKS):
         before = get_task(conn, task_id)
         require(before['version'] == payload.version, 'Task changed. Reload it and retry with the current version.', 409)
         task = json.loads(json.dumps(before))

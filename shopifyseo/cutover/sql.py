@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from shopifyseo.db import execute
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CUTOVER_SQL_DIR = REPO_ROOT / "scripts" / "pg_cutover"
 
@@ -77,12 +79,11 @@ def apply_sql_file(pg_conn: Any, path: str | Path) -> None:
     script = Path(path).read_text(encoding="utf-8")
     if not hasattr(pg_conn, "execute"):
         raise TypeError("apply_sql_file expects a psycopg connection")
-    # Use a raw cursor so testdb's SQLite-shaped execute wrapper does not
-    # rewrite dollar-quoted Postgres. Split statements: psycopg 3 runs one
-    # at a time.
-    with pg_conn.cursor() as cur:
-        for statement in _split_sql_statements(script):
-            cur.execute(statement)
+    # One statement at a time (psycopg 3). No bound params so %I in DO
+    # format() strings is left alone. testdb's adapter does not rewrite
+    # DO-blocks (not CREATE/ALTER DDL heads).
+    for statement in _split_sql_statements(script):
+        execute(pg_conn, statement)
     if not getattr(pg_conn, "autocommit", False):
         pg_conn.commit()
 
@@ -99,11 +100,12 @@ def cluster_keywords_orphan_sql(*, delete: bool) -> str:
 
 def delete_cluster_keyword_orphans(pg_conn: Any) -> int:
     """Delete cluster_keywords rows whose cluster_id is missing. Explicit only."""
-    cur = pg_conn.execute(
+    cur = execute(
+        pg_conn,
         """
         DELETE FROM cluster_keywords ck
         WHERE NOT EXISTS (SELECT 1 FROM clusters c WHERE c.id = ck.cluster_id)
-        """
+        """,
     )
     n = cur.rowcount if cur.rowcount is not None else 0
     if not getattr(pg_conn, "autocommit", False):
@@ -113,8 +115,6 @@ def delete_cluster_keyword_orphans(pg_conn: Any) -> int:
 
 def validate_named_constraint(pg_conn: Any, table: str, constraint: str) -> None:
     """VALIDATE CONSTRAINT — fails if existing rows violate the FK."""
-    pg_conn.execute(
-        f'ALTER TABLE "{table}" VALIDATE CONSTRAINT "{constraint}"'
-    )
+    execute(pg_conn, f'ALTER TABLE "{table}" VALIDATE CONSTRAINT "{constraint}"')
     if not getattr(pg_conn, "autocommit", False):
         pg_conn.commit()

@@ -7,10 +7,11 @@ promotes the column to text. Known case: ``keyword_metrics.updated_at``
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from shopifyseo.db import connect_sqlite, execute, table_exists
 
 from .catalog import INTEGER_EPOCH_COLUMNS
 
@@ -49,33 +50,29 @@ def _parse_epoch(value: Any) -> int | None:
     return int(dt.timestamp())
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _columns(conn: sqlite3.Connection, table: str) -> dict[str, str]:
-    return {row[1]: (row[2] or "").upper() for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _quoted(ident: str) -> str:
     return '"' + ident.replace('"', '""') + '"'
 
 
-def fix_empty_strings_in_numeric_columns(conn: sqlite3.Connection) -> dict[str, int]:
+def _pk_columns(conn: Any, table: str) -> list[str]:
+    info = list(execute(conn, f"PRAGMA table_info({_quoted(table)})"))
+    ranked = [(int(row[5]), row[1]) for row in info if row[5]]
+    ranked.sort()
+    return [name for _ord, name in ranked]
+
+
+def fix_empty_strings_in_numeric_columns(conn: Any) -> dict[str, int]:
     """Set empty-string values in INTEGER/REAL columns to NULL (or 0 if NOT NULL)."""
     changed: dict[str, int] = {}
     tables = [
         row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        for row in execute(
+            conn,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )
     ]
     for table in tables:
-        info = list(conn.execute(f"PRAGMA table_info({_quoted(table)})"))
+        info = list(execute(conn, f"PRAGMA table_info({_quoted(table)})"))
         for _cid, name, decl, notnull, default, _pk in info:
             kind = (decl or "").upper()
             if not any(token in kind for token in ("INT", "REAL", "FLOA", "DOUB", "NUM")):
@@ -83,41 +80,55 @@ def fix_empty_strings_in_numeric_columns(conn: sqlite3.Connection) -> dict[str, 
             qtable, qcol = _quoted(table), _quoted(name)
             if notnull:
                 fallback = 0 if default is None else default
-                cur = conn.execute(
+                cur = execute(
+                    conn,
                     f"UPDATE {qtable} SET {qcol} = ? WHERE typeof({qcol}) = 'text' AND trim({qcol}) = ''",
                     (fallback,),
                 )
             else:
-                cur = conn.execute(
-                    f"UPDATE {qtable} SET {qcol} = NULL WHERE typeof({qcol}) = 'text' AND trim({qcol}) = ''"
+                cur = execute(
+                    conn,
+                    f"UPDATE {qtable} SET {qcol} = NULL WHERE typeof({qcol}) = 'text' AND trim({qcol}) = ''",
                 )
             if cur.rowcount:
                 changed[f"{table}.{name}"] = changed.get(f"{table}.{name}", 0) + cur.rowcount
     return changed
 
 
-def fix_integer_epoch_columns(conn: sqlite3.Connection) -> dict[str, int]:
+def fix_integer_epoch_columns(conn: Any) -> dict[str, int]:
     """Rewrite text-in-int timestamp columns to unix seconds (0 if unparseable + NOT NULL)."""
     changed: dict[str, int] = {}
     for table, columns in INTEGER_EPOCH_COLUMNS.items():
-        if not _table_exists(conn, table):
+        if not table_exists(conn, table):
             continue
-        colmap = _columns(conn, table)
-        info = {row[1]: row for row in conn.execute(f"PRAGMA table_info({_quoted(table)})")}
+        info = {row[1]: row for row in execute(conn, f"PRAGMA table_info({_quoted(table)})")}
+        pks = _pk_columns(conn, table)
+        if not pks:
+            continue
+        qtable = _quoted(table)
+        q_pks = ", ".join(_quoted(pk) for pk in pks)
+        where_pk = " AND ".join(f"{_quoted(pk)} = ?" for pk in pks)
         for column in columns:
-            if column not in colmap:
+            if column not in info:
                 continue
-            qtable, qcol = _quoted(table), _quoted(column)
-            rows = conn.execute(
-                f"SELECT rowid, {qcol} FROM {qtable} WHERE typeof({qcol}) = 'text'"
+            qcol = _quoted(column)
+            rows = execute(
+                conn,
+                f"SELECT {q_pks}, {qcol} FROM {qtable} WHERE typeof({qcol}) = 'text'",
             ).fetchall()
             notnull = bool(info[column][3])
             n = 0
-            for rowid, raw in rows:
+            for row in rows:
+                raw = row[-1]
                 parsed = _parse_epoch(raw)
                 if parsed is None:
                     parsed = 0 if notnull else None
-                conn.execute(f"UPDATE {qtable} SET {qcol} = ? WHERE rowid = ?", (parsed, rowid))
+                pk_vals = [row[i] for i in range(len(pks))]
+                execute(
+                    conn,
+                    f"UPDATE {qtable} SET {qcol} = ? WHERE {where_pk}",
+                    (parsed, *pk_vals),
+                )
                 n += 1
             if n:
                 changed[f"{table}.{column}"] = n
@@ -126,8 +137,7 @@ def fix_integer_epoch_columns(conn: sqlite3.Connection) -> dict[str, int]:
 
 def fix_sqlite_copy(path: str | Path) -> dict[str, dict[str, int]]:
     """Apply pre-load data fixes to ``path`` (must already be a working copy)."""
-    path = Path(path)
-    conn = sqlite3.connect(str(path))
+    conn = connect_sqlite(path)
     try:
         empty = fix_empty_strings_in_numeric_columns(conn)
         epochs = fix_integer_epoch_columns(conn)

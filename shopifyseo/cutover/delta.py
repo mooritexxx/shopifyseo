@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shopifyseo.db import execute
+from shopifyseo.db import connect_sqlite, execute
 
 from .catalog import DELTA_TABLES, TIMESTAMP_COLUMNS
 
@@ -135,14 +134,14 @@ def apply_delta_to_sqlite_copy(
 ) -> dict[str, int]:
     """UPSERT exported rows into a SQLite copy. Never the live file by default."""
     dest = refuse_live_sqlite(sqlite_path, allow_live=allow_live)
-    conn = sqlite3.connect(str(dest))
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(dest)
     applied: dict[str, int] = {}
     try:
         existing = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            for row in execute(
+                conn,
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
             )
         }
         for delta in deltas:
@@ -170,7 +169,7 @@ def apply_delta_to_sqlite_copy(
             )
             n = 0
             for row in delta.rows:
-                conn.execute(sql, [row.get(c) for c in cols])
+                execute(conn, sql, [row.get(c) for c in cols])
                 n += 1
             applied[delta.table] = n
         conn.commit()

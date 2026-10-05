@@ -102,17 +102,19 @@ def _pg_text_in_int_count(pg_conn: Any, table: str, column: str) -> int | None:
 
 
 def _sqlite_text_in_int_count(conn: Any, table: str, column: str) -> int | None:
-    present = conn.execute(
+    present = execute(
+        conn,
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone()
     if not present:
         return None
-    cols = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+    cols = [row[1] for row in execute(conn, f'PRAGMA table_info("{table}")')]
     if column not in cols:
         return None
-    row = conn.execute(
-        f'''SELECT COUNT(*) FROM "{table}" WHERE typeof("{column}") = 'text' '''
+    row = execute(
+        conn,
+        f'''SELECT COUNT(*) FROM "{table}" WHERE typeof("{column}") = 'text' ''',
     ).fetchone()
     return int(row[0])
 

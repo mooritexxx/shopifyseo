@@ -254,10 +254,11 @@ FOREIGN_KEYS: tuple[tuple[str, str, str, str, str, str], ...] = (
 
 def list_user_tables(conn: Any) -> list[str]:
     """Return ordinary user table names (no sqlite_/pg_ internals)."""
-    from shopifyseo.db import Backend, backend_for_connection
+    from shopifyseo.db import Backend, backend_for_connection, execute
 
     if backend_for_connection(conn) == Backend.POSTGRES:
-        rows = conn.execute(
+        rows = execute(
+            conn,
             """
             SELECT tablename
             FROM pg_tables
@@ -265,15 +266,16 @@ def list_user_tables(conn: Any) -> list[str]:
               AND tablename NOT LIKE 'pg_%'
               AND tablename NOT LIKE 'sql_%'
             ORDER BY tablename
-            """
+            """,
         ).fetchall()
         return [row[0] for row in rows]
-    rows = conn.execute(
+    rows = execute(
+        conn,
         """
         SELECT name FROM sqlite_master
         WHERE type = 'table'
           AND name NOT LIKE 'sqlite_%'
         ORDER BY name
-        """
+        """,
     ).fetchall()
     return [row[0] for row in rows]

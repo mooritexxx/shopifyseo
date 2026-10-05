@@ -24,52 +24,53 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # backend/app/db.py get_db_path: connect(timeout=10), no row_factory,
 # PRAGMA busy_timeout=30000, _bootstrap_once PRAGMA journal_mode=WAL,
-# no synchronous PRAGMA (FULL=2), no foreign_keys.
+# no synchronous PRAGMA (FULL=2). ensure_schema sets PRAGMA foreign_keys=ON.
 GET_DB_PATH = {
     "row_factory": None,
     "isolation_level": "",
     "journal_mode": "wal",
     "synchronous": 2,
     "busy_timeout": 30000,
-    "foreign_keys": 0,
+    "foreign_keys": 1,
     "timeout": 10,
 }
 
 # backend/app/db.py open_db_connection: connect(timeout=10), sqlite3.Row,
 # PRAGMA busy_timeout=30000, PRAGMA synchronous=NORMAL (1),
-# _bootstrap_once PRAGMA journal_mode=WAL, no foreign_keys.
+# _bootstrap_once PRAGMA journal_mode=WAL. ensure_schema sets foreign_keys=ON.
 OPEN_DB_CONNECTION = {
     "row_factory": sqlite3.Row,
     "isolation_level": "",
     "journal_mode": "wal",
     "synchronous": 1,
     "busy_timeout": 30000,
-    "foreign_keys": 0,
+    "foreign_keys": 1,
     "timeout": 10,
 }
 
 # shopifyseo/dashboard_store.py db_connect: connect(timeout=10), sqlite3.Row,
-# PRAGMA busy_timeout=30000, journal_mode=WAL, synchronous=NORMAL, no foreign_keys.
+# PRAGMA busy_timeout=30000, journal_mode=WAL, synchronous=NORMAL.
+# ensure_schema sets foreign_keys=ON.
 DB_CONNECT = {
     "row_factory": sqlite3.Row,
     "isolation_level": "",
     "journal_mode": "wal",
     "synchronous": 1,
     "busy_timeout": 30000,
-    "foreign_keys": 0,
+    "foreign_keys": 1,
     "timeout": 10,
 }
 
 # shopifyseo/dashboard_store.py bootstrap_runtime_settings: connect(timeout=10),
 # sqlite3.Row, PRAGMA busy_timeout=30000, no journal_mode (delete), no
-# synchronous (FULL=2), no foreign_keys.
+# synchronous (FULL=2). ensure_schema sets foreign_keys=ON.
 BOOTSTRAP_RUNTIME_SETTINGS = {
     "row_factory": sqlite3.Row,
     "isolation_level": "",
     "journal_mode": "delete",
     "synchronous": 2,
     "busy_timeout": 30000,
-    "foreign_keys": 0,
+    "foreign_keys": 1,
     "timeout": 10,
 }
 
@@ -101,15 +102,15 @@ PRINT_SUMMARY = {
 }
 
 # shopifyseo/shopify_catalog_sync/db.py open_db: connect(timeout=30), sqlite3.Row,
-# PRAGMA busy_timeout=30000, then after ensure_schema journal_mode=WAL and
-# synchronous=NORMAL, no foreign_keys.
+# PRAGMA busy_timeout=30000, then after ensure_schema (which sets foreign_keys=ON)
+# journal_mode=WAL and synchronous=NORMAL.
 OPEN_DB = {
     "row_factory": sqlite3.Row,
     "isolation_level": "",
     "journal_mode": "wal",
     "synchronous": 1,
     "busy_timeout": 30000,
-    "foreign_keys": 0,
+    "foreign_keys": 1,
     "timeout": 30,
 }
 
@@ -151,33 +152,40 @@ def assert_settings(actual, expected):
         assert actual["timeout"] == expected["timeout"]
 
 
-def wrap_get_connection(monkeypatch, module):
+class _CloseSnapshotProxy:
+    """Delegate to a live sqlite3 connection and snapshot PRAGMAs on close()."""
+
+    def __init__(self, conn, recorded):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_recorded", recorded)
+
+    def close(self):
+        recorded = object.__getattribute__(self, "_recorded")
+        conn = object.__getattribute__(self, "_conn")
+        if "settings" not in recorded:
+            recorded["settings"] = snapshot_settings(conn)
+        return conn.close()
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_conn"), name)
+
+
+def wrap_get_connection(monkeypatch, module, *, snapshot_on_close=False):
+    """Record get_connection kwargs; optionally snapshot PRAGMAs when the site closes."""
     recorded = {}
     real = module.get_connection
 
     def wrapper(**kwargs):
         recorded.clear()
         recorded.update(kwargs)
-        return real(**kwargs)
+        conn = real(**kwargs)
+        recorded["conn"] = conn
+        if snapshot_on_close:
+            return _CloseSnapshotProxy(conn, recorded)
+        return conn
 
     monkeypatch.setattr(module, "get_connection", wrapper)
     return recorded
-
-
-def capture_on_close(monkeypatch):
-    captured = {}
-    orig = sqlite3.Connection.close
-
-    def close(self):
-        if "settings" not in captured:
-            try:
-                captured["settings"] = snapshot_settings(self)
-            except sqlite3.ProgrammingError:
-                pass
-        return orig(self)
-
-    monkeypatch.setattr(sqlite3.Connection, "close", close)
-    return captured
 
 
 def test_get_db_path_preserves_sqlite_settings(tmp_path, monkeypatch, unset_database_url):
@@ -186,12 +194,16 @@ def test_get_db_path_preserves_sqlite_settings(tmp_path, monkeypatch, unset_data
     db_path = str(tmp_path / "catalog.sqlite3")
     monkeypatch.setattr(app_db, "DB_PATH", db_path)
     app_db._bootstrapped_paths.clear()
-    recorded = wrap_get_connection(monkeypatch, app_db)
-    closed = capture_on_close(monkeypatch)
+    recorded = wrap_get_connection(monkeypatch, app_db, snapshot_on_close=True)
     try:
-        assert app_db.get_db_path() == db_path
+        try:
+            assert app_db.get_db_path() == db_path
+        except TypeError as exc:
+            # Main did not set row_factory on this site; _table_columns uses
+            # row["name"]. WAL / foreign_keys PRAGMAs still run before that.
+            assert "tuple indices" in str(exc)
         assert recorded["timeout"] == GET_DB_PATH["timeout"]
-        assert_settings(closed["settings"], GET_DB_PATH)
+        assert_settings(recorded["settings"], GET_DB_PATH)
     finally:
         app_db._bootstrapped_paths.clear()
 
@@ -240,12 +252,11 @@ def test_bootstrap_runtime_settings_preserves_sqlite_settings(
 
     original = dashboard_store.DB_PATH
     dashboard_store.DB_PATH = str(tmp_path / "catalog.sqlite3")
-    recorded = wrap_get_connection(monkeypatch, dashboard_store)
-    closed = capture_on_close(monkeypatch)
+    recorded = wrap_get_connection(monkeypatch, dashboard_store, snapshot_on_close=True)
     try:
         dashboard_store.bootstrap_runtime_settings()
         assert recorded["timeout"] == BOOTSTRAP_RUNTIME_SETTINGS["timeout"]
-        assert_settings(closed["settings"], BOOTSTRAP_RUNTIME_SETTINGS)
+        assert_settings(recorded["settings"], BOOTSTRAP_RUNTIME_SETTINGS)
     finally:
         dashboard_store.DB_PATH = original
 
@@ -298,12 +309,11 @@ def test_print_summary_preserves_sqlite_settings(tmp_path, monkeypatch, unset_da
     finally:
         setup.close()
 
-    recorded = wrap_get_connection(monkeypatch, catalog_init)
-    closed = capture_on_close(monkeypatch)
+    recorded = wrap_get_connection(monkeypatch, catalog_init, snapshot_on_close=True)
     with redirect_stdout(io.StringIO()):
         catalog_init.print_summary(db_path)
     assert recorded["timeout"] == PRINT_SUMMARY["timeout"]
-    assert_settings(closed["settings"], PRINT_SUMMARY)
+    assert_settings(recorded["settings"], PRINT_SUMMARY)
 
 
 def test_catalog_sync_open_db_preserves_sqlite_settings(

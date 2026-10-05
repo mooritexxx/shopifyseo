@@ -1,5 +1,5 @@
-import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .db import (
     now_iso,
@@ -18,7 +18,7 @@ from .db import (
 )
 
 
-def replace_children(conn: sqlite3.Connection, table: str, product_id: str) -> None:
+def replace_children(conn: Any, table: str, product_id: str) -> None:
     conn.execute(f"DELETE FROM {table} WHERE product_shopify_id = ?", (product_id,))
 
 
@@ -53,7 +53,7 @@ def _product_images_for_upsert(product: dict) -> list[dict]:
     return [edge["node"] for edge in (product.get("images") or {}).get("edges", [])]
 
 
-def prune_deleted_products(conn: sqlite3.Connection, live_products: list[dict]) -> int:
+def prune_deleted_products(conn: Any, live_products: list[dict]) -> int:
     live_ids = {product["id"] for product in live_products}
     stale_rows = conn.execute(
         "SELECT shopify_id, handle FROM products"
@@ -80,7 +80,7 @@ def prune_deleted_products(conn: sqlite3.Connection, live_products: list[dict]) 
     return len(stale)
 
 
-def upsert_product(conn: sqlite3.Connection, product: dict, synced_at: str) -> tuple[int, int, int]:
+def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, int]:
     battery_size = metafield_value(product, "custom", "battery_size")
     charging_port = metafield_value(product, "custom", "charging_port")
     coil = metafield_value(product, "custom", "coil")
@@ -354,7 +354,7 @@ def sync_products(
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         def _on_product_page_loaded(n_so_far: int) -> None:
             if progress_callback is not None:
@@ -484,7 +484,7 @@ def sync_product(db_path: Path, product_id: str) -> dict:
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         product = fetch_product_by_id(product_id)
         if not product:

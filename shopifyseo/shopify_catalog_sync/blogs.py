@@ -1,6 +1,6 @@
-import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 from .db import (
     now_iso,
@@ -16,11 +16,11 @@ from .db import (
 )
 
 
-def replace_blog_articles(conn: sqlite3.Connection, blog_shopify_id: str) -> None:
+def replace_blog_articles(conn: Any, blog_shopify_id: str) -> None:
     conn.execute("DELETE FROM blog_articles WHERE blog_shopify_id = ?", (blog_shopify_id,))
 
 
-def prune_deleted_blogs(conn: sqlite3.Connection, live_blogs: list[dict]) -> int:
+def prune_deleted_blogs(conn: Any, live_blogs: list[dict]) -> int:
     live_ids = {blog["id"] for blog in live_blogs}
     stale_rows = conn.execute("SELECT shopify_id, handle FROM blogs").fetchall()
     stale = [row for row in stale_rows if row[0] not in live_ids]
@@ -61,7 +61,7 @@ def prune_deleted_blogs(conn: sqlite3.Connection, live_blogs: list[dict]) -> int
     return len(stale)
 
 
-def upsert_blog(conn: sqlite3.Connection, blog: dict, synced_at: str) -> None:
+def upsert_blog(conn: Any, blog: dict, synced_at: str) -> None:
     conn.execute(
         """
         INSERT INTO blogs (
@@ -100,7 +100,7 @@ def upsert_blog(conn: sqlite3.Connection, blog: dict, synced_at: str) -> None:
 
 
 def upsert_blog_article_from_admin_create(
-    conn: sqlite3.Connection,
+    conn: Any,
     article: dict,
     *,
     blog_handle: str,
@@ -125,7 +125,7 @@ def upsert_blog_article_from_admin_create(
 
 
 def upsert_blog_article(
-    conn: sqlite3.Connection,
+    conn: Any,
     article: dict,
     blog_shopify_id: str,
     blog_handle: str,
@@ -202,7 +202,7 @@ def sync_article(db_path: Path, article_id: str) -> dict:
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         article = fetch_article_by_id(article_id)
         if not article:
@@ -248,7 +248,7 @@ def sync_blogs(
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         if blogs is None:
             blogs = fetch_all_blogs(page_size)
@@ -389,7 +389,7 @@ def sync_blog(db_path: Path, blog_id: str, page_size: int = 50) -> dict:
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         blog = fetch_blog_by_id(blog_id)
         if not blog:

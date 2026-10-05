@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shopifyseo.db import get_connection  # noqa: E402
 
 TARGET_KEY = "target_keywords"
 
@@ -35,8 +39,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    conn = get_connection(path=args.db)
     cur = conn.cursor()
 
     km_zeros = cur.execute("SELECT COUNT(*) FROM keyword_metrics WHERE difficulty = 0").fetchone()[0]

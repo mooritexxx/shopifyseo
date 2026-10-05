@@ -4,10 +4,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-import sqlite3
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from .anchors import find_anchor_phrase, is_weak_anchor
 from .graph import rebuild_internal_link_graph
@@ -22,7 +21,7 @@ ORPHAN_BOOST = 1.25
 WEAK_ANCHOR_PENALTY = 0.4  # Phase B: multiply score by this when anchor is weak
 
 
-def _get_sim_threshold(conn: sqlite3.Connection) -> float:
+def _get_sim_threshold(conn: Any) -> float:
     """Load internal_link_sim_threshold from service_settings with 0.55 fallback."""
     try:
         from ..dashboard_google import get_service_setting
@@ -84,7 +83,7 @@ def _default_related(conn, object_type, handle, top_k=10, type_quotas=None):
     return retrieve_related_by_handle(conn, object_type, handle, top_k=top_k)
 
 
-def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle: str) -> bool:
+def _target_exists_and_published(conn: Any, t_type: str, t_handle: str) -> bool:
     """Check if target exists, is published, and is reachable via Admin API.
     
     Phase A: Excludes api_unreachable collections to prevent Apply failures.
@@ -114,7 +113,7 @@ def _target_exists_and_published(conn: sqlite3.Connection, t_type: str, t_handle
     return False
 
 
-def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: str) -> list[str]:
+def _target_title_and_keywords(conn: Any, t_type: str, t_handle: str) -> list[str]:
     candidates: list[str] = []
     if t_type == "blog_article":
         blog_h, _, article_h = t_handle.partition("/")
@@ -153,7 +152,7 @@ def _target_title_and_keywords(conn: sqlite3.Connection, t_type: str, t_handle: 
     return candidates
 
 
-def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]:
+def _orphan_targets(conn: Any) -> list[tuple[str, str, int, int]]:
     """Return published entities with no inbound links, sorted by traffic (clicks+impressions desc).
 
     Returns list of (object_type, handle, gsc_clicks, gsc_impressions).
@@ -209,12 +208,12 @@ def _orphan_targets(conn: sqlite3.Connection) -> list[tuple[str, str, int, int]]
     return orphans
 
 
-def _orphan_target_set(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+def _orphan_target_set(conn: Any) -> set[tuple[str, str]]:
     """Return just (type, handle) pairs of orphans for internal scoring."""
     return {(t, h) for t, h, _c, _i in _orphan_targets(conn)}
 
 
-def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: str) -> bool:
+def _source_exists_with_body(conn: Any, s_type: str, s_handle: str) -> bool:
     """Check if a source object exists, is published, and has a non-empty body.
     
     This matches the published_filter criteria used in _SUGGESTION_SOURCES:
@@ -250,7 +249,7 @@ def _source_exists_with_body(conn: sqlite3.Connection, s_type: str, s_handle: st
     return False
 
 
-def _get_valid_restored_ids(conn: sqlite3.Connection, existing_edges: set[tuple[str, str, str, str]]) -> set[int]:
+def _get_valid_restored_ids(conn: Any, existing_edges: set[tuple[str, str, str, str]]) -> set[int]:
     """Get IDs of restored suggestions that still have valid source/target pairs.
     
     B8: Restored rows survive rebuild only if their pair is still valid:
@@ -287,7 +286,7 @@ def _get_valid_restored_ids(conn: sqlite3.Connection, existing_edges: set[tuple[
 
 
 def generate_link_suggestions(
-    conn: sqlite3.Connection,
+    conn: Any,
     related_fn: Callable | None = None,
     rebuild_graph: bool = True,
     base_url: str | None = None,

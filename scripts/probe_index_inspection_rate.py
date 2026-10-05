@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import statistics
 import sys
 import threading
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -35,7 +35,7 @@ import shopifyseo.dashboard_google as dg  # noqa: E402
 from shopifyseo.dashboard_actions._rpm_limiter import PerMinuteRateLimiter  # noqa: E402
 from shopifyseo.dashboard_http import HttpRequestError  # noqa: E402
 from shopifyseo.dashboard_store import DB_PATH, bootstrap_runtime_settings  # noqa: E402
-from shopifyseo.sqlite_utf8 import configure_sqlite_text_decode  # noqa: E402
+from shopifyseo.db import get_connection  # noqa: E402
 
 
 # Plain session with connection pooling but NO automatic retries, so throttling shows up
@@ -44,14 +44,11 @@ _RAW = requests.Session()
 _RAW.mount("https://", requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=0))
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    configure_sqlite_text_decode(conn)
-    return conn
+def _connect(db_path: str) -> Any:
+    return get_connection(path=db_path, timeout=30)
 
 
-def _targets(conn: sqlite3.Connection, count: int, offset: int = 0) -> list[str]:
+def _targets(conn: Any, count: int, offset: int = 0) -> list[str]:
     """Real catalog URLs — the same ones a sync would inspect."""
     import shopifyseo.dashboard_queries as dq
 

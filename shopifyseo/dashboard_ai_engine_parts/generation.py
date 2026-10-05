@@ -3,9 +3,8 @@ import datetime
 import json
 import logging
 import re
-import sqlite3
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from shopifyseo.exceptions import AICancelledError
 
@@ -167,7 +166,7 @@ def _emit_progress(progress_callback: ProgressCallback | None, **payload) -> Non
 
 
 def insert_recommendation_record(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     object_type: str,
     handle: str,
@@ -328,7 +327,7 @@ def _generate_single_field_attempt(
     cancel_callback: CancelCallback | None = None,
     step_index: int = 0,
     step_total: int = 0,
-    conn: sqlite3.Connection | None = None,
+    conn: Any | None = None,
 ) -> dict:
     generation_provider = settings["generation_provider"]
     generation_model = settings["generation_model"]
@@ -556,7 +555,7 @@ def _generate_single_field_attempt(
 
 
 def generate_recommendation(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     progress_callback: ProgressCallback | None = None,
@@ -1116,7 +1115,7 @@ def generate_recommendation(
 
 
 def generate_field_recommendation(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     field: str,
@@ -1376,7 +1375,7 @@ def generate_field_recommendation(
     }
 
 
-def test_connection(conn: sqlite3.Connection, settings_override: dict[str, str] | None = None, target: str = "generation") -> dict:
+def test_connection(conn: Any, settings_override: dict[str, str] | None = None, target: str = "generation") -> dict:
     settings = ai_settings(conn, settings_override)
     normalized_target = (target or "generation").strip().lower()
     if normalized_target == "review":

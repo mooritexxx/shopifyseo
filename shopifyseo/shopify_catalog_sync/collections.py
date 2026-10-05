@@ -1,5 +1,5 @@
-import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .db import (
     now_iso,
@@ -14,7 +14,7 @@ from .db import (
 
 
 def _mark_api_unreachable_collections(
-    conn: sqlite3.Connection, live_collections: list[dict]
+    conn: Any, live_collections: list[dict]
 ) -> int:
     """Mark collections not returned by Admin API as api_unreachable.
     
@@ -58,11 +58,11 @@ def _mark_api_unreachable_collections(
     return len(stale)
 
 
-def replace_collection_children(conn: sqlite3.Connection, table: str, collection_id: str) -> None:
+def replace_collection_children(conn: Any, table: str, collection_id: str) -> None:
     conn.execute(f"DELETE FROM {table} WHERE collection_shopify_id = ?", (collection_id,))
 
 
-def upsert_collection(conn: sqlite3.Connection, collection: dict, synced_at: str) -> int:
+def upsert_collection(conn: Any, collection: dict, synced_at: str) -> int:
     image_payload = collection.get("image")
     image_json_val = json_dumps(image_payload) if image_payload else None
     conn.execute(
@@ -151,7 +151,7 @@ def sync_collections(
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         if collections is None:
             collections = fetch_all_collections(page_size)
@@ -265,7 +265,7 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
     run_id = start_run(run_conn)
     run_conn.close()
     synced_at = now_iso()
-    conn: sqlite3.Connection | None = None
+    conn: Any | None = None
     try:
         collection = fetch_collection_by_id(collection_id)
         if not collection:

@@ -6,9 +6,10 @@ and scores above threshold are auto-applied. Never auto-applies ai_woven.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
-from typing import Callable
+from typing import Any, Callable
+
+from shopifyseo.db import DictRow
 
 from .apply import apply_suggestion, preview_suggestion
 from .anchors import is_weak_anchor
@@ -28,7 +29,7 @@ DEFAULT_AUTO_APPLY_MAX_PER_DAY = 10
 DEFAULT_AUTO_APPLY_KINDS = "phrase_wrap"  # Never auto-apply ai_woven
 
 
-def get_auto_apply_settings(conn: sqlite3.Connection) -> dict:
+def get_auto_apply_settings(conn: Any) -> dict:
     """Get current auto-apply settings from service_settings."""
     from ..dashboard_google import get_service_setting
     
@@ -67,7 +68,7 @@ def get_auto_apply_settings(conn: sqlite3.Connection) -> dict:
     }
 
 
-def get_auto_applied_today_count(conn: sqlite3.Connection) -> int:
+def get_auto_applied_today_count(conn: Any) -> int:
     """Count how many suggestions were auto-applied today."""
     today_start = int(time.time()) - (int(time.time()) % 86400)
     row = conn.execute(
@@ -79,9 +80,9 @@ def get_auto_applied_today_count(conn: sqlite3.Connection) -> int:
 
 
 def find_auto_apply_candidates(
-    conn: sqlite3.Connection,
+    conn: Any,
     settings: dict | None = None,
-) -> list[sqlite3.Row]:
+) -> list[DictRow]:
     """Find suggestions eligible for auto-apply.
     
     Criteria:
@@ -117,7 +118,7 @@ def find_auto_apply_candidates(
 
 
 def run_auto_apply(
-    conn: sqlite3.Connection,
+    conn: Any,
     base_url: str,
     push_fn: Callable | None = None,
     fetch_fn: Callable | None = None,

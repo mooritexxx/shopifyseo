@@ -8,7 +8,6 @@ PageSpeed Insights (which shares the same OAuth token) and the shared
 import logging
 import os
 import random
-import sqlite3
 import sys
 import time
 from collections.abc import Callable
@@ -154,7 +153,7 @@ def invalidate_pagespeed_memory_cache(url: str, strategy: str | None = None) -> 
         bucket.pop(f"{strat}:{url}", None)
 
 
-def delete_search_console_overview_cache(conn: sqlite3.Connection) -> None:
+def delete_search_console_overview_cache(conn: Any) -> None:
     """Invalidate overview time-series and property-level dimensional caches (manual GSC refresh)."""
     ensure_google_cache_schema(conn)
     conn.execute("DELETE FROM google_api_cache WHERE cache_type = ?", ("search_console_overview",))
@@ -174,7 +173,7 @@ def delete_search_console_overview_cache(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def delete_search_console_overview_timeseries_only(conn: sqlite3.Connection) -> None:
+def delete_search_console_overview_timeseries_only(conn: Any) -> None:
     """Drop only site-level GSC overview rollup rows (``search_console_overview``).
 
     Tier A property breakdown caches (``gsc_property_*``) are left intact.
@@ -187,7 +186,7 @@ def delete_search_console_overview_timeseries_only(conn: sqlite3.Connection) -> 
     conn.commit()
 
 
-def clear_google_caches(conn: sqlite3.Connection | None = None) -> None:
+def clear_google_caches(conn: Any | None = None) -> None:
     gsc_cache = _pkg().GSC_CACHE
     gsc_cache["summary"] = None
     gsc_cache["ga4"] = None
@@ -205,7 +204,7 @@ def clear_google_caches(conn: sqlite3.Connection | None = None) -> None:
 # -- GSC data fetching & rollup -----------------------------------------------
 
 def _fetch_gsc_daily_analytics(
-    conn: sqlite3.Connection,
+    conn: Any,
     site_url: str,
     start: date,
     end: date,
@@ -317,7 +316,7 @@ def _gsc_avg_position_improvement_pct(
 # -- GSC overview (time-series) -----------------------------------------------
 
 def get_search_console_overview_cached(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     site_url: str,
     period_mode: str,
@@ -422,7 +421,7 @@ def _normalize_gsc_breakdown_rows(raw_rows: list) -> list[dict]:
 
 
 def _fetch_gsc_property_breakdown(
-    conn: sqlite3.Connection,
+    conn: Any,
     site_url: str,
     start: date,
     end: date,
@@ -482,7 +481,7 @@ def _top_bucket_impressions_pct_vs_prior(current_rows: list, previous_rows: list
 
 
 def get_gsc_property_breakdowns_cached(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     site_url: str,
     period_mode: str,
@@ -628,7 +627,7 @@ def get_gsc_property_breakdowns_cached(
 # -- GSC query/page tables ----------------------------------------------------
 
 def _fetch_gsc_query_page_dimension(
-    conn: sqlite3.Connection,
+    conn: Any,
     site_url: str,
     start: date,
     end: date,
@@ -675,7 +674,7 @@ def _fetch_gsc_query_page_dimension(
 
 
 def get_gsc_query_page_tables_cached(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     site_url: str,
     period_mode: str,
@@ -775,7 +774,7 @@ def get_gsc_query_page_tables_cached(
     }
 
 
-def refresh_gsc_property_breakdowns_for_site(conn: sqlite3.Connection, site_url: str) -> None:
+def refresh_gsc_property_breakdowns_for_site(conn: Any, site_url: str) -> None:
     """Re-fetch and store Tier A property breakdowns for MTD, full months, and fixed-start overview mode."""
     url = (site_url or "").strip()
     if not url:
@@ -814,13 +813,13 @@ def refresh_gsc_property_breakdowns_for_site(conn: sqlite3.Connection, site_url:
 
 # -- Search Console sites & summary -------------------------------------------
 
-def get_search_console_sites(conn: sqlite3.Connection) -> list[dict]:
+def get_search_console_sites(conn: Any) -> list[dict]:
     access_token = get_google_access_token(conn)
     payload = google_api_get("https://www.googleapis.com/webmasters/v3/sites", access_token)
     return payload.get("siteEntry", [])
 
 
-def preferred_site_url(conn: sqlite3.Connection, sites: list[dict]) -> str:
+def preferred_site_url(conn: Any, sites: list[dict]) -> str:
     selected = get_service_setting(conn, "search_console_site")
     if selected:
         return selected
@@ -841,7 +840,7 @@ def preferred_site_url(conn: sqlite3.Connection, sites: list[dict]) -> str:
     return ""
 
 
-def fetch_search_console_summary(conn: sqlite3.Connection) -> dict:
+def fetch_search_console_summary(conn: Any) -> dict:
     sites = get_search_console_sites(conn)
     site_url = preferred_site_url(conn, sites)
     if not site_url:
@@ -869,7 +868,7 @@ def fetch_search_console_summary(conn: sqlite3.Connection) -> dict:
     }
 
 
-def get_search_console_summary_cached(conn: sqlite3.Connection, refresh: bool = False) -> dict:
+def get_search_console_summary_cached(conn: Any, refresh: bool = False) -> dict:
     gsc_cache = _pkg().GSC_CACHE
     sites = []
     site_url = get_service_setting(conn, "search_console_site")
@@ -913,7 +912,7 @@ def get_search_console_summary_cached(conn: sqlite3.Connection, refresh: bool = 
 
 
 def gsc_url_detail_cache_meta_for_sync(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     *,
     site_url: str,
@@ -938,7 +937,7 @@ def gsc_url_detail_cache_meta_for_sync(
 
 
 def gsc_url_detail_needs_refresh(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     *,
     site_url: str,
@@ -950,7 +949,7 @@ def gsc_url_detail_needs_refresh(
 
 
 def get_search_console_url_detail(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     *,
     refresh: bool = False,
@@ -1209,7 +1208,7 @@ def build_gsc_url_detail(
 
 
 def write_gsc_url_detail_cache(
-    conn: sqlite3.Connection,
+    conn: Any,
     payload: dict,
     *,
     site_url: str,
@@ -1243,7 +1242,7 @@ GSC_URL_QUERY_SECOND_DIMENSION_ROW_LIMIT = 250
 
 
 def fetch_gsc_url_query_second_dimension(
-    conn: sqlite3.Connection,
+    conn: Any,
     site_url: str,
     page_url: str,
     start: date,
@@ -1292,7 +1291,7 @@ def fetch_gsc_url_query_second_dimension(
 
 # -- URL inspection -----------------------------------------------------------
 
-def _url_inspect_lang_code(conn: sqlite3.Connection) -> str:
+def _url_inspect_lang_code(conn: Any) -> str:
     try:
         from shopifyseo.market_context import get_primary_country_code, language_region_code
         return language_region_code(get_primary_country_code(conn))
@@ -1301,7 +1300,7 @@ def _url_inspect_lang_code(conn: sqlite3.Connection) -> str:
 
 
 def get_url_inspection(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     *,
     refresh: bool = False,
@@ -1474,7 +1473,7 @@ def trim_pagespeed_payload(payload: dict) -> dict:
 
 
 def _finalize_pagespeed_rate_limited(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     db_cache_key: str,
     cache_key: str,
@@ -1570,7 +1569,7 @@ def _fetch_run_pagespeed_with_retries(
 
 
 def get_pagespeed(
-    conn: sqlite3.Connection,
+    conn: Any,
     url: str,
     strategy: str = "mobile",
     *,

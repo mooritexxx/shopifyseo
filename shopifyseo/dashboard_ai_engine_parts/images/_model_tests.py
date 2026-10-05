@@ -1,7 +1,6 @@
 """Settings connectivity smoke tests for configured image and vision models."""
-
 import base64
-import sqlite3
+from typing import Any
 
 from ..settings import ai_settings
 from ._providers import (
@@ -28,7 +27,7 @@ _VISION_MODEL_TEST_INSTRUCTION = (
 )
 
 
-def test_image_model(conn: sqlite3.Connection, settings_override: dict[str, str] | None = None) -> dict:
+def test_image_model(conn: Any, settings_override: dict[str, str] | None = None) -> dict:
     """Generate one sample image using Settings image provider/model; returns base64 for UI preview (no Shopify upload)."""
     settings = ai_settings(conn, settings_override)
     prov = settings["image_provider"]
@@ -65,7 +64,7 @@ def test_image_model(conn: sqlite3.Connection, settings_override: dict[str, str]
     }
 
 
-def test_vision_model(conn: sqlite3.Connection, settings_override: dict[str, str] | None = None) -> dict:
+def test_vision_model(conn: Any, settings_override: dict[str, str] | None = None) -> dict:
     """Send a tiny PNG to the configured Vision provider/model; returns a short caption for UI (no Shopify writes)."""
     settings = ai_settings(conn, settings_override)
     prov = (settings.get("vision_provider") or "").strip().lower()

@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import re
-import sqlite3
 import struct
 import threading
 import time
@@ -151,7 +150,7 @@ def _blob_to_array(blob: bytes) -> np.ndarray:
 # Text assembly per entity type
 # ---------------------------------------------------------------------------
 
-def _build_product_text(row: dict, conn: sqlite3.Connection) -> str:
+def _build_product_text(row: dict, conn: Any) -> str:
     parts = [
         _coalesce(row.get("title")),
         _coalesce(row.get("seo_title")),
@@ -201,7 +200,7 @@ def _truncate_product_text(parts: list[str], row: dict) -> str:
     return text[:MAX_INPUT_CHARS]
 
 
-def _build_collection_text(row: dict, conn: sqlite3.Connection) -> str:
+def _build_collection_text(row: dict, conn: Any) -> str:
     parts = [
         _coalesce(row.get("title")),
         _coalesce(row.get("seo_title")),
@@ -271,7 +270,7 @@ def _build_article_text(row: dict) -> str | list[str]:
     return chunks if len(chunks) > 1 else (chunks[0] if chunks else header[:MAX_INPUT_CHARS])
 
 
-def _build_cluster_text(row: dict, conn: sqlite3.Connection) -> str:
+def _build_cluster_text(row: dict, conn: Any) -> str:
     parts = [
         _coalesce(row.get("name")),
         _coalesce(row.get("primary_keyword")),
@@ -289,7 +288,7 @@ def _build_cluster_text(row: dict, conn: sqlite3.Connection) -> str:
     return " | ".join(p for p in parts if p)[:MAX_INPUT_CHARS]
 
 
-def _catalog_title_for_gsc_bundle(conn: sqlite3.Connection, object_type: str, handle: str) -> str:
+def _catalog_title_for_gsc_bundle(conn: Any, object_type: str, handle: str) -> str:
     """Resolve storefront title for embedding header (matches catalog object types in gsc_query_rows)."""
     if object_type == "product":
         row = conn.execute("SELECT title FROM products WHERE handle = ?", (handle,)).fetchone()
@@ -311,7 +310,7 @@ def _catalog_title_for_gsc_bundle(conn: sqlite3.Connection, object_type: str, ha
     return _coalesce(row["title"] if row else None)
 
 
-def _build_gsc_queries_text(handle: str, object_type_src: str, conn: sqlite3.Connection) -> str:
+def _build_gsc_queries_text(handle: str, object_type_src: str, conn: Any) -> str:
     """Text for `gsc_queries` embeddings: entity title + canonical URL + top queries (same row cap as API/context)."""
     lim = GSC_PER_URL_QUERY_ROW_LIMIT
     rows = conn.execute(
@@ -498,7 +497,7 @@ def _build_competitor_page_text(row: dict) -> str:
 
 
 def build_embed_text(
-    object_type: str, row: dict, conn: sqlite3.Connection | None = None,
+    object_type: str, row: dict, conn: Any | None = None,
 ) -> str | list[str]:
     """Assemble text to embed for a given entity type and row dict."""
     if object_type == "product":
@@ -572,7 +571,7 @@ def embed_batch(
 # Row loaders per type
 # ---------------------------------------------------------------------------
 
-def _load_rows(conn: sqlite3.Connection, object_type: str) -> list[dict]:
+def _load_rows(conn: Any, object_type: str) -> list[dict]:
     """Load source rows for a given type, returning dicts with a stable handle key."""
     if object_type == "product":
         rows = conn.execute("SELECT * FROM products WHERE status = 'ACTIVE'").fetchall()
@@ -627,7 +626,7 @@ def _source_table(object_type: str) -> str | None:
 # Prune
 # ---------------------------------------------------------------------------
 
-def prune_stale_embeddings(conn: sqlite3.Connection, object_type: str | None = None) -> int:
+def prune_stale_embeddings(conn: Any, object_type: str | None = None) -> int:
     """Delete embeddings whose source object no longer exists. Returns count deleted."""
     types = [object_type] if object_type else list(EMBEDDABLE_TYPES)
     total = 0
@@ -691,7 +690,7 @@ def prune_stale_embeddings(conn: sqlite3.Connection, object_type: str | None = N
 # Sync
 # ---------------------------------------------------------------------------
 
-def _get_gemini_api_key(conn: sqlite3.Connection) -> str:
+def _get_gemini_api_key(conn: Any) -> str:
     row = conn.execute(
         "SELECT value FROM service_settings WHERE key = 'gemini_api_key'"
     ).fetchone()
@@ -699,7 +698,7 @@ def _get_gemini_api_key(conn: sqlite3.Connection) -> str:
 
 
 def sync_embeddings(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str | None = None,
 ) -> dict:
     """Embed changed/new rows for the given type (or all types). Thread-safe via _sync_lock."""
@@ -931,7 +930,7 @@ def sync_embeddings(
 # ---------------------------------------------------------------------------
 
 def _load_embedding_matrix(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_types: list[str] | None = None,
     exclude: tuple[str, str] | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
@@ -1001,7 +1000,7 @@ def _apply_type_quotas(items: list[dict], type_quotas: dict[str, int]) -> list[d
 
 
 def retrieve_related(
-    conn: sqlite3.Connection,
+    conn: Any,
     api_key: str,
     query_text: str,
     top_k: int = 5,
@@ -1025,7 +1024,7 @@ def retrieve_related(
 
 
 def retrieve_related_by_handle(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     top_k: int = 5,
@@ -1056,7 +1055,7 @@ def retrieve_related_by_handle(
 
 
 def find_semantic_keyword_matches(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     top_k: int = 10,
@@ -1099,7 +1098,7 @@ def find_semantic_keyword_matches(
 
 
 def find_similar_ideas(
-    conn: sqlite3.Connection,
+    conn: Any,
     api_key: str,
     idea_text: str,
     top_k: int = 5,
@@ -1120,7 +1119,7 @@ def find_similar_ideas(
 
 
 def find_competitive_gaps(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     top_k: int = 10,
@@ -1164,7 +1163,7 @@ def find_competitive_gaps(
 
 
 def find_cannibalization_candidates(
-    conn: sqlite3.Connection,
+    conn: Any,
     threshold: float = 0.85,
 ) -> list[dict]:
     """Find pairs of pages with high content AND query embedding similarity."""
@@ -1251,7 +1250,7 @@ def find_cannibalization_candidates(
 # ---------------------------------------------------------------------------
 
 def build_sidekick_query_vector(
-    conn: sqlite3.Connection,
+    conn: Any,
     api_key: str,
     user_message: str,
     object_type: str,
@@ -1281,7 +1280,7 @@ def build_sidekick_query_vector(
 
 
 def sync_embedding_for_handle(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
 ) -> dict[str, Any]:
@@ -1415,7 +1414,7 @@ def sync_embedding_for_handle(
     return {"embedded": embedded, "skipped": skipped, "error": None}
 
 
-def embedding_status(conn: sqlite3.Connection) -> dict:
+def embedding_status(conn: Any) -> dict:
     """Return aggregate stats about the embedding table for the status page."""
     embed_rows = conn.execute(f"""
         SELECT object_type,
@@ -1492,7 +1491,7 @@ def embedding_status(conn: sqlite3.Connection) -> dict:
 
 
 def retrieve_for_sidekick(
-    conn: sqlite3.Connection,
+    conn: Any,
     api_key: str,
     user_message: str,
     object_type: str,

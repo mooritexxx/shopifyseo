@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -48,6 +47,7 @@ def main() -> int:
     from shopifyseo import dashboard_google as dg
     import shopifyseo.market_context as mc
     from shopifyseo.dashboard_store import DB_PATH, ensure_dashboard_schema
+    from shopifyseo.db import get_connection
 
     db_path = args.db or DB_PATH
     print(f"Database: {db_path}")
@@ -55,8 +55,7 @@ def main() -> int:
         print("ERROR: database file not found. Set --db or SHOPIFY_CATALOG_DB_PATH.")
         return 1
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = get_connection(path=str(db_path))
     ensure_dashboard_schema(conn)
 
     pk = (args.keyword or "").strip()

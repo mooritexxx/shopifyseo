@@ -2,8 +2,7 @@
 
 import concurrent.futures
 import logging
-import sqlite3
-from typing import Callable
+from typing import Any, Callable
 
 from ..settings import ai_settings
 from ..faq_content_filter import validate_and_fix_alt_text
@@ -28,7 +27,7 @@ _ARTICLE_INLINE_ASPECT_RATIO = "3:2"
 
 
 def try_prepare_article_images_bundle(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     title: str,
     topic: str,

@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +16,7 @@ _LOCK = threading.Lock()
 def schedule_internal_link_refresh(
     db_path: str,
     coalesce_seconds: float = DEFAULT_COALESCE_SECONDS,
-    run_fn: Callable[[sqlite3.Connection], int] | None = None,
+    run_fn: Callable[[Any], int] | None = None,
 ) -> bool:
     """Schedule a debounced internal link refresh.
 
@@ -27,7 +26,7 @@ def schedule_internal_link_refresh(
     from ..dashboard_actions._state import _db_connect_for_actions
 
     def _worker() -> None:
-        conn: sqlite3.Connection | None = None
+        conn: Any | None = None
         try:
             conn = _db_connect_for_actions(db_path)
             if run_fn:

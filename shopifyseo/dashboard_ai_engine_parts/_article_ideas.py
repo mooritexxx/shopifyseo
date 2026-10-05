@@ -1,8 +1,9 @@
 """Article idea generation using AI and keyword gap analysis."""
 import datetime
 import logging
-import sqlite3
 from typing import Any
+
+from shopifyseo.db import table_columns
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ def _best_cluster_for_idea(idea: dict, clusters: list[dict]) -> dict:
     )
 
 
-def _cluster_keywords_snapshot(conn: sqlite3.Connection, cluster_meta: dict, *, limit: int = 18) -> list[dict]:
+def _cluster_keywords_snapshot(conn: Any, cluster_meta: dict, *, limit: int = 18) -> list[dict]:
     """Snapshot related cluster keywords with available metrics for idea detail/drafts."""
     cid = cluster_meta.get("id")
     rows_by_keyword: dict[str, dict] = {}
@@ -170,9 +171,9 @@ def _cluster_keywords_snapshot(conn: sqlite3.Connection, cluster_meta: dict, *, 
     return out
 
 
-def _fallback_article_clusters(conn: sqlite3.Connection, *, limit: int = 12) -> list[dict]:
+def _fallback_article_clusters(conn: Any, *, limit: int = 12) -> list[dict]:
     """Load real clusters when strict gap filtering has no candidates."""
-    cluster_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()}
+    cluster_cols = table_columns(conn, "clusters")
     priority_select = (
         "COALESCE(NULLIF(priority_score, 0), avg_opportunity) AS priority_score"
         if "priority_score" in cluster_cols
@@ -363,7 +364,7 @@ def _apply_catalog_quotas(
     return final[:n_total]
 
 
-def generate_article_ideas(conn: sqlite3.Connection) -> list[dict]:
+def generate_article_ideas(conn: Any) -> list[dict]:
     """Analyse content gaps and return 3 AI-generated article ideas.
 
     Each idea contains: suggested_title, brief, primary_keyword,

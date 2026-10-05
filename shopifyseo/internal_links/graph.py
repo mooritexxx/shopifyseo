@@ -1,8 +1,8 @@
 """Internal link graph: parse catalog bodies into the internal_links table."""
 from __future__ import annotations
 
-import sqlite3
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urlparse
 
 # (source_type, table, handle_expr, body_column)
@@ -66,7 +66,7 @@ def extract_links(html: str | None) -> list[tuple[str, str]]:
     return collector.links
 
 
-def rebuild_internal_link_graph(conn: sqlite3.Connection, base_url: str | None = None) -> int:
+def rebuild_internal_link_graph(conn: Any, base_url: str | None = None) -> int:
     """Re-parse every catalog body into internal_links. Returns row count."""
     if base_url is None:
         from ..dashboard_queries._urls import _base_store_url

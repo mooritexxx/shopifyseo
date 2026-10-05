@@ -1,11 +1,11 @@
 import json
 import os
-import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from ..db import get_connection, insert_returning_id
+from ..db import get_connection, insert_returning_id, table_columns
 from ..shopify_admin import graphql_post, graphql_request
 from .queries import (
     PRODUCTS_QUERY,
@@ -91,7 +91,7 @@ def fetch_metaobjects_by_ids(ids: list[str]) -> list[dict]:
     return [node for node in nodes if node]
 
 
-def upsert_metaobjects(conn: sqlite3.Connection, metaobjects: list[dict], synced_at: str) -> None:
+def upsert_metaobjects(conn: Any, metaobjects: list[dict], synced_at: str) -> None:
     if not metaobjects:
         return
     conn.executemany(
@@ -131,7 +131,7 @@ def upsert_metaobjects(conn: sqlite3.Connection, metaobjects: list[dict], synced
     )
 
 
-def resolve_product_metaobject_labels(conn: sqlite3.Connection, product_id: str, refs_by_field: dict[str, str]) -> None:
+def resolve_product_metaobject_labels(conn: Any, product_id: str, refs_by_field: dict[str, str]) -> None:
     label_columns = {
         "battery_type_refs_json": "battery_type_labels_json",
         "coil_connection_refs_json": "coil_connection_labels_json",
@@ -177,13 +177,13 @@ def resolve_product_metaobject_labels(conn: sqlite3.Connection, product_id: str,
     )
 
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+def ensure_column(conn: Any, table: str, column: str, ddl: str) -> None:
+    existing = table_columns(conn, table)
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
+def ensure_schema(conn: Any) -> None:
     conn.executescript(
         """
         PRAGMA foreign_keys = ON;
@@ -451,7 +451,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 BUSY_TIMEOUT_MS = 30000  # 30 seconds wait on lock contention (box hotpatch 2026-09-29)
 
 
-def open_db(db_path: str | Path) -> sqlite3.Connection:
+def open_db(db_path: str | Path) -> Any:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_connection(
@@ -469,7 +469,7 @@ def open_db(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def start_run(conn: sqlite3.Connection) -> int:
+def start_run(conn: Any) -> int:
     conn.execute(
         """
         UPDATE sync_runs
@@ -496,7 +496,7 @@ def start_run(conn: sqlite3.Connection) -> int:
 
 
 def finish_run(
-    conn: sqlite3.Connection,
+    conn: Any,
     run_id: int,
     *,
     status: str,

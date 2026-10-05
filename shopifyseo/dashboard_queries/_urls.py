@@ -130,7 +130,7 @@ def build_store_internal_link_allowlist(
     """Build canonical internal link targets for prompts and HTML sanitization.
 
     Returns ``(targets, allowed_full_urls, allowed_paths)`` where *targets* are
-    dicts ``{\"type\", \"handle\", \"title\", \"url\"}`` sorted for prompt injection
+    dicts ``{"type", "handle", "title", "url"}`` sorted for prompt injection
     (RAG hits first per type, then priority handles, then alphabetical DB fill
     up to caps).
 
@@ -147,7 +147,7 @@ def build_store_internal_link_allowlist(
     priority_handles : dict, optional
         Mapping of object type to list of handles to prioritize after RAG hits
         but before the alphabetical fill. For example:
-        ``{\"product\": [\"handle-a\", \"handle-b\"], \"collection\": [\"coll-x\"]}``.
+        ``{"product": ["handle-a", "handle-b"], "collection": ["coll-x"]}``.
         Unknown or unlinkable handles are silently ignored.
 
     *allowed_full_urls* includes every ``url`` plus alternate forms (e.g. with

@@ -38,12 +38,12 @@ def db_conn(testdb, monkeypatch):
         ("store_custom_domain", "https://example.com"),
     )
     conn.execute(
-        "INSERT INTO collections (handle, title, raw_json, synced_at) VALUES (?, ?, '{}', '')",
-        ("disposable-vapes", "Disposable Vapes"),
+        "INSERT INTO collections (shopify_id, handle, title, raw_json, synced_at) VALUES (?, ?, ?, '{}', '')",
+        ("gid://shopify/Collection/1", "disposable-vapes", "Disposable Vapes"),
     )
     conn.executemany(
-        "INSERT INTO products (handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, '[]', '[]', '{}', '')",
-        [(f"product-{i}", f"Product {i}") for i in range(3)],
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) VALUES (?, ?, ?, '[]', '[]', '{}', '')",
+        [(f"gid://shopify/Product/{i}", f"product-{i}", f"Product {i}") for i in range(3)],
     )
     conn.commit()
     return conn

@@ -1,10 +1,10 @@
 """AI job management: background generation, field regeneration, object signal refresh."""
 import logging
 import queue
-import sqlite3
 import threading
 import time
 import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ def consume_job_events(job_id: str, timeout: float = 1.0) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _targets_for_ai(conn: sqlite3.Connection, scope: str) -> list[tuple[str, str]]:
+def _targets_for_ai(conn: Any, scope: str) -> list[tuple[str, str]]:
     if ":" in scope:
         object_type, handle = scope.split(":", 1)
         if object_type in {"product", "collection", "page", "blog_article"} and handle:

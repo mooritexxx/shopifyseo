@@ -7,7 +7,7 @@ it (e.g. when the user changes their custom domain in Settings) should call
 from __future__ import annotations
 
 import os
-import sqlite3
+from typing import Any
 
 from shopifyseo.db import order_ci
 
@@ -37,7 +37,7 @@ def clear_base_url_cache() -> None:
     _BASE_URL_CACHE = None
 
 
-def _base_store_url(conn: sqlite3.Connection | None = None) -> str:
+def _base_store_url(conn: Any | None = None) -> str:
     """Return the canonical storefront base URL (no trailing slash).
 
     Single source of truth: the ``store_custom_domain`` setting on the
@@ -120,7 +120,7 @@ def object_url_with_base(base_url: str, object_type: str, handle: str) -> str:
 
 
 def build_store_internal_link_allowlist(
-    conn: sqlite3.Connection,
+    conn: Any,
     base_url: str,
     *,
     rag_results: list[dict] | None = None,
@@ -136,7 +136,7 @@ def build_store_internal_link_allowlist(
 
     Parameters
     ----------
-    conn : sqlite3.Connection
+    conn : Any
         Database connection.
     base_url : str
         Store base URL (e.g. ``https://example.com``).

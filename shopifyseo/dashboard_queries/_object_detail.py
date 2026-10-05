@@ -6,8 +6,9 @@ and articles) related-content joins driven by token overlap.
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any
+
+from shopifyseo.db import DictRow
 
 from ._text_tokens import (
     _content_tokens_for_blog_article,
@@ -19,7 +20,7 @@ from ._text_tokens import (
 from ._urls import blog_article_composite_handle
 
 
-def _recommendation_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _recommendation_row_to_dict(row: DictRow) -> dict[str, Any]:
     """Convert a seo_recommendations row to a dict, parsing details_json."""
     d = dict(row)
     raw = d.pop("details_json", None)
@@ -27,7 +28,7 @@ def _recommendation_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return d
 
 
-def _fetch_recommendation(conn: sqlite3.Connection, object_type: str, handle: str) -> dict[str, Any] | None:
+def _fetch_recommendation(conn: Any, object_type: str, handle: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT id, summary, details_json, status, model, prompt_version, error_message, created_at, source
@@ -41,7 +42,7 @@ def _fetch_recommendation(conn: sqlite3.Connection, object_type: str, handle: st
     return _recommendation_row_to_dict(row) if row else None
 
 
-def _fetch_recommendation_event(conn: sqlite3.Connection, object_type: str, handle: str) -> dict[str, Any] | None:
+def _fetch_recommendation_event(conn: Any, object_type: str, handle: str) -> dict[str, Any] | None:
     """Fetch the latest recommendation event (including errors/pending)."""
     row = conn.execute(
         """
@@ -56,7 +57,7 @@ def _fetch_recommendation_event(conn: sqlite3.Connection, object_type: str, hand
     return _recommendation_row_to_dict(row) if row else None
 
 
-def _fetch_recommendation_history(conn: sqlite3.Connection, object_type: str, handle: str, limit: int = 10) -> list[dict[str, Any]]:
+def _fetch_recommendation_history(conn: Any, object_type: str, handle: str, limit: int = 10) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT summary, details_json, status, model, prompt_version, error_message, created_at, source
@@ -75,7 +76,7 @@ def _fetch_recommendation_history(conn: sqlite3.Connection, object_type: str, ha
     return result
 
 
-def _fetch_workflow(conn: sqlite3.Connection, object_type: str, handle: str) -> dict[str, Any] | None:
+def _fetch_workflow(conn: Any, object_type: str, handle: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT status, notes, updated_at FROM seo_workflow_states WHERE object_type = ? AND handle = ?",
         (object_type, handle),
@@ -83,7 +84,7 @@ def _fetch_workflow(conn: sqlite3.Connection, object_type: str, handle: str) -> 
     return dict(row) if row else None
 
 
-def fetch_product_detail(conn: sqlite3.Connection, handle: str) -> dict[str, Any] | None:
+def fetch_product_detail(conn: Any, handle: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM products WHERE handle = ?", (handle,)).fetchone()
     if not row:
         return None
@@ -131,7 +132,7 @@ def fetch_product_detail(conn: sqlite3.Connection, handle: str) -> dict[str, Any
     }
 
 
-def fetch_collection_detail(conn: sqlite3.Connection, handle: str) -> dict[str, Any] | None:
+def fetch_collection_detail(conn: Any, handle: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM collections WHERE handle = ?", (handle,)).fetchone()
     if not row:
         return None
@@ -162,7 +163,7 @@ def fetch_collection_detail(conn: sqlite3.Connection, handle: str) -> dict[str, 
     }
 
 
-def fetch_page_detail(conn: sqlite3.Connection, handle: str) -> dict[str, Any] | None:
+def fetch_page_detail(conn: Any, handle: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM pages WHERE handle = ?", (handle,)).fetchone()
     if not row:
         return None
@@ -190,7 +191,7 @@ def fetch_page_detail(conn: sqlite3.Connection, handle: str) -> dict[str, Any] |
     }
 
 
-def fetch_blog_article_detail(conn: sqlite3.Connection, blog_handle: str, article_handle: str) -> dict[str, Any] | None:
+def fetch_blog_article_detail(conn: Any, blog_handle: str, article_handle: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM blog_articles WHERE blog_handle = ? AND handle = ?",
         (blog_handle, article_handle),

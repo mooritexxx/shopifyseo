@@ -5,7 +5,6 @@ opportunity views. Score is 0-100 where higher = more issues.
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from ..index_evidence import index_api_fields
@@ -85,6 +84,15 @@ def _seo_base_score(object_type: str, obj: dict[str, Any], product_count: int = 
     return score, reasons
 
 
+def _row_as_dict(obj: Any) -> Any:
+    """Convert sqlite3.Row / DictRow to dict; leave dict and None unchanged."""
+    if obj is None or isinstance(obj, dict):
+        return obj
+    if callable(getattr(obj, "keys", None)):
+        return dict(obj)
+    return obj
+
+
 def build_seo_fact(
     object_type: str,
     obj: Any,
@@ -99,10 +107,8 @@ def build_seo_fact(
     it; ``fetch_seo_facts`` used to load every stored recommendation (4.4 MB of
     ``details_json`` for products alone) only to discard it here.
     """
-    if isinstance(obj, sqlite3.Row):
-        obj = dict(obj)
-    if isinstance(workflow, sqlite3.Row):
-        workflow = dict(workflow)
+    obj = _row_as_dict(obj)
+    workflow = _row_as_dict(workflow)
 
     base_score, reasons = _seo_base_score(object_type, obj, product_count)
     handle = obj.get("handle", "")
@@ -137,7 +143,7 @@ def build_seo_fact(
 
 
 def fetch_seo_facts(
-    conn: sqlite3.Connection,
+    conn: Any,
     kind: str | None = None,
     *,
     rows: list[Any] | None = None,

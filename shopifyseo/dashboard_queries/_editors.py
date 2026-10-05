@@ -7,11 +7,11 @@ the fields the editor exposes (other columns are left untouched via SQL
 from __future__ import annotations
 
 import json
-import sqlite3
+from typing import Any
 
 
 def apply_saved_product_fields_from_editor(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     *,
     title: str = "",
@@ -45,7 +45,7 @@ def apply_saved_product_fields_from_editor(
 
 
 def apply_saved_collection_fields_from_editor(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     *,
     title: str = "",
@@ -75,7 +75,7 @@ def apply_saved_collection_fields_from_editor(
 
 
 def apply_saved_page_fields_from_editor(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     *,
     title: str = "",
@@ -105,7 +105,7 @@ def apply_saved_page_fields_from_editor(
 
 
 def apply_saved_blog_article_fields_from_editor(
-    conn: sqlite3.Connection,
+    conn: Any,
     shopify_id: str,
     *,
     title: str | None = None,
@@ -164,7 +164,7 @@ def apply_saved_blog_article_fields_from_editor(
 
 
 def set_workflow_state(
-    conn: sqlite3.Connection,
+    conn: Any,
     object_type: str,
     handle: str,
     status: str = "Needs fix",

@@ -1,12 +1,13 @@
 """PageSpeed bulk sync: queue, workers, batching, and error handling."""
 import json
 import logging
-import sqlite3
 import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
+
+from shopifyseo.db import DictRow
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def _resolve_all_object_targets():
     return _sync._all_object_targets
 
 
-def _pagespeed_target_counts(conn: sqlite3.Connection) -> tuple[int, list[tuple[str, str, str, str]]]:
+def _pagespeed_target_counts(conn: Any) -> tuple[int, list[tuple[str, str, str, str]]]:
     """Return (catalog object count, PageSpeed API jobs to run).
 
     Each job is ``(object_type, handle, url, strategy)`` for ``strategy`` in ``mobile`` / ``desktop``.
@@ -59,7 +60,7 @@ def _pagespeed_target_counts(conn: sqlite3.Connection) -> tuple[int, list[tuple[
         """,
     ).fetchall()
 
-    cache_rows: dict[tuple[str, str, str], sqlite3.Row] = {}
+    cache_rows: dict[tuple[str, str, str], DictRow] = {}
     for row in rows:
         object_type = str(row["object_type"] or "")
         object_handle = str(row["object_handle"] or "")
@@ -68,7 +69,7 @@ def _pagespeed_target_counts(conn: sqlite3.Connection) -> tuple[int, list[tuple[
         strategy = str(row["strategy"] or "mobile")
         cache_rows[(object_type, object_handle, strategy)] = row
 
-    def _needs_pagespeed_refresh(row: sqlite3.Row | None) -> bool:
+    def _needs_pagespeed_refresh(row: DictRow | None) -> bool:
         if row is None:
             return True
         try:

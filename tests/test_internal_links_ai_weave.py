@@ -5,8 +5,8 @@ from shopifyseo.internal_links.ai_weave import generate_ai_anchor
 from shopifyseo.internal_links.safety import LinkConflict, body_hash, AI_TYPES_KEY
 
 
-def test_generates_structured_edit_from_live_body():
-    conn = database(); live = Shopify(OLD + '<p>New live text.</p>')
+def test_generates_structured_edit_from_live_body(db_conn):
+    conn = database(db_conn); live = Shopify(OLD + '<p>New live text.</p>')
     conn.execute("UPDATE link_suggestions SET kind='ai_woven'"); conn.commit()
     def ai(messages, schema):
         assert live.body in messages[0]['content']
@@ -20,8 +20,8 @@ def test_generates_structured_edit_from_live_body():
 
 
 @pytest.mark.parametrize('body', ['<p>Different sentence.</p>', '<p>Love ceramic tanks.</p>'])
-def test_ai_rewrites_and_truncation_are_rejected(body):
-    conn = database(); live=Shopify()
+def test_ai_rewrites_and_truncation_are_rejected(body, db_conn):
+    conn = database(db_conn); live=Shopify()
     conn.execute("UPDATE link_suggestions SET kind='ai_woven'"); conn.commit()
     with pytest.raises(LinkConflict) as err:
         generate_ai_anchor(conn,1,BASE,call_ai_fn=lambda *_: {'revised_body':body},fetch_fn=live.fetch)
@@ -31,36 +31,33 @@ def test_ai_rewrites_and_truncation_are_rejected(body):
 
 
 @pytest.mark.parametrize('source', ['collection','page'])
-def test_ai_disabled_for_collections_and_pages(source):
-    conn=database(); live=Shopify()
+def test_ai_disabled_for_collections_and_pages(source, db_conn):
+    conn=database(db_conn); live=Shopify()
     conn.execute("UPDATE link_suggestions SET kind='ai_woven',source_type=?",(source,)); conn.commit()
     with pytest.raises(LinkConflict, match='disabled'):
         generate_ai_anchor(conn,1,BASE,call_ai_fn=lambda *_: {},fetch_fn=live.fetch)
     live.fetch.assert_not_called()
 
 
-def test_empty_type_setting_disables_every_type():
-    conn=database(); live=Shopify()
+def test_empty_type_setting_disables_every_type(db_conn):
+    conn=database(db_conn); live=Shopify()
     conn.execute('INSERT INTO service_settings(key,value) VALUES (?,?)',(AI_TYPES_KEY,''))
     conn.execute("UPDATE link_suggestions SET kind='ai_woven'"); conn.commit()
     with pytest.raises(LinkConflict, match='disabled'):
         generate_ai_anchor(conn,1,BASE,call_ai_fn=lambda *_: {},fetch_fn=live.fetch)
 
 
-def test_generation_cannot_change_plan_during_apply(tmp_path):
-    import sqlite3
+def test_generation_cannot_change_plan_during_apply(testdb):
     from internal_links_support import apply
 
-    path = tmp_path / 'generation.sqlite'
-    conn = database(path)
+    conn = database(testdb)
     live = Shopify()
     original_edit = json.dumps({'anchor_phrase': 'ceramic tanks'})
     conn.execute("UPDATE link_suggestions SET kind='ai_woven', ai_edit_json=?", (original_edit,))
     conn.commit()
 
     def push(*args):
-        other = sqlite3.connect(path)
-        other.row_factory = sqlite3.Row
+        other = testdb.connect()
         try:
             with pytest.raises(LinkConflict, match='changed during generation'):
                 generate_ai_anchor(other, 1, BASE, call_ai_fn=lambda *_: {'anchor_phrase': 'Original'}, fetch_fn=live.fetch)

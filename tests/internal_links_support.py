@@ -1,6 +1,6 @@
-import sqlite3
 from unittest.mock import Mock
 
+from db_support import TestDatabase
 from shopifyseo.dashboard_store import ensure_dashboard_schema
 from shopifyseo.internal_links.apply import preview_suggestion, apply_suggestion
 
@@ -8,9 +8,13 @@ BASE = 'https://s.com'
 OLD = '<p>Love ceramic tanks.</p><p>Original second sentence.</p>'
 
 
-def database(path=':memory:'):
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+def database(source):
+    """Seed the standard IL catalog on a testdb connection.
+
+    ``source`` is a ``TestDatabase`` (opens a new connection) or an
+    already-open connection from ``db_conn`` / ``testdb.connect()``.
+    """
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     ensure_dashboard_schema(conn)
     conn.execute("INSERT INTO products (shopify_id, handle, title, status, description_html,tags_json,options_json,raw_json,synced_at) VALUES ('gid://shopify/Product/1','source','Source','ACTIVE',?,'[]','[]','{}','now')", (OLD,))
     conn.execute("INSERT INTO collections (shopify_id, handle, title,raw_json,synced_at) VALUES ('gid://shopify/Collection/2','ceramic-tanks','Ceramic Tanks','{}','now')")

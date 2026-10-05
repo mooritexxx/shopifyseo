@@ -1,6 +1,5 @@
 """Tests for the event-driven embedding sync helper."""
 
-import sqlite3
 import time
 import threading
 from pathlib import Path
@@ -19,10 +18,10 @@ from shopifyseo.embedding_sync import (
 )
 
 
-def _make_test_db(db_path: Path) -> sqlite3.Connection:
+def _make_test_db(source):
     """Create a minimal test database with required tables."""
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     conn.execute("""
         CREATE TABLE IF NOT EXISTS embeddings (
             object_type TEXT NOT NULL,
@@ -74,35 +73,34 @@ def _make_test_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _enqueue_path(testdb) -> Path:
+    """Path argument for enqueue helpers. ``_open_db`` is mocked in these tests."""
+    return testdb.path if testdb.path is not None else Path("testdb-pg")
+
+
 class TestGetDbPathFromConnection:
     """Test _get_db_path_from_connection utility."""
 
-    def test_returns_path_for_file_db(self, tmp_path):
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(str(db_path))
-        try:
-            result = _get_db_path_from_connection(conn)
-            assert result == str(db_path)
-        finally:
-            conn.close()
+    def test_returns_path_for_file_db(self, testdb, db_conn):
+        if testdb.is_postgres:
+            pytest.skip("PRAGMA database_list is SQLite-only")
+        result = _get_db_path_from_connection(db_conn)
+        assert result == str(testdb.path)
 
-    def test_returns_empty_for_memory_db(self):
-        conn = sqlite3.connect(":memory:")
-        try:
-            result = _get_db_path_from_connection(conn)
-            # In-memory DBs return empty string for the file column
-            assert result == "" or result is None
-        finally:
-            conn.close()
+    def test_returns_empty_when_path_unavailable(self, testdb, db_conn):
+        if not testdb.is_postgres:
+            pytest.skip("adapted PRAGMA skip is Postgres testdb only")
+        result = _get_db_path_from_connection(db_conn)
+        assert result == "" or result is None
 
 
 class TestEnqueueEmbeddingSync:
     """Test enqueue_embedding_sync function."""
 
-    def test_enqueue_with_all_types(self, tmp_path):
+    def test_enqueue_with_all_types(self, testdb):
         """Test that enqueue with no types syncs all embeddable types."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
 
         sync_calls = []
 
@@ -122,10 +120,10 @@ class TestEnqueueEmbeddingSync:
         # Should have called sync for all embeddable types
         assert set(sync_calls) == set(EMBEDDABLE_TYPES)
 
-    def test_enqueue_with_specific_types(self, tmp_path):
+    def test_enqueue_with_specific_types(self, testdb):
         """Test that enqueue with specific types only syncs those types."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
 
         sync_calls = []
 
@@ -143,10 +141,10 @@ class TestEnqueueEmbeddingSync:
 
         assert set(sync_calls) == {"product", "keyword"}
 
-    def test_enqueue_with_invalid_types_logs_warning(self, tmp_path, caplog):
+    def test_enqueue_with_invalid_types_logs_warning(self, testdb, caplog):
         """Test that invalid types are filtered and a warning is logged."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
 
         with patch("shopifyseo.embedding_sync._sync_type"):
             enqueue_embedding_sync(db_path, object_types=["not_a_real_type"])
@@ -154,10 +152,10 @@ class TestEnqueueEmbeddingSync:
 
         assert "no valid object_types" in caplog.text.lower()
 
-    def test_enqueue_with_handles_uses_single_handle_sync(self, tmp_path):
+    def test_enqueue_with_handles_uses_single_handle_sync(self, testdb):
         """Test that providing handles uses single-handle sync for supported types."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
         conn.execute(
             "INSERT INTO products (handle, title, status) VALUES (?, ?, ?)",
             ("test-product", "Test Product", "ACTIVE"),
@@ -192,10 +190,10 @@ class TestEnqueueEmbeddingSync:
         assert ("product", "test-product") in single_handle_calls
         assert "product" not in type_calls
 
-    def test_enqueue_falls_back_to_type_sync_for_unsupported(self, tmp_path):
+    def test_enqueue_falls_back_to_type_sync_for_unsupported(self, testdb):
         """Test that unsupported types fall back to type-scoped sync."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
 
         type_calls = []
 
@@ -224,10 +222,12 @@ class TestEnqueueEmbeddingSync:
 class TestEnqueueEmbeddingSyncFromConn:
     """Test enqueue_embedding_sync_from_conn function."""
 
-    def test_extracts_path_and_enqueues(self, tmp_path):
+    def test_extracts_path_and_enqueues(self, testdb):
         """Test that it extracts db_path from connection and enqueues."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        if testdb.is_postgres:
+            pytest.skip("PRAGMA database_list cannot extract a file path on Postgres")
+        db_path = testdb.path
+        conn = _make_test_db(testdb)
 
         with patch("shopifyseo.embedding_sync.enqueue_embedding_sync") as mock_enqueue:
             enqueue_embedding_sync_from_conn(conn, object_types=["product"])
@@ -238,34 +238,30 @@ class TestEnqueueEmbeddingSyncFromConn:
 
         conn.close()
 
-    def test_warns_on_memory_db(self, caplog):
-        """Test that it logs a warning for in-memory databases."""
-        conn = sqlite3.connect(":memory:")
-        try:
-            enqueue_embedding_sync_from_conn(conn, object_types=["product"])
-            # Should log a warning since we can't extract path from memory DB
-            # Note: this might not warn if empty string is returned
-        finally:
-            conn.close()
+    def test_warns_when_path_unavailable(self, testdb, db_conn, caplog):
+        """Test that it logs a warning when the path cannot be extracted."""
+        if not testdb.is_postgres:
+            pytest.skip("path-unavailable case is Postgres testdb (PRAGMA database_list skipped)")
+        enqueue_embedding_sync_from_conn(db_conn, object_types=["product"])
 
 
 class TestConvenienceWrappers:
     """Test convenience wrapper functions."""
 
-    def test_enqueue_for_type(self, tmp_path):
+    def test_enqueue_for_type(self, testdb):
         """Test enqueue_embedding_sync_for_type wrapper."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
         conn.close()
 
         with patch("shopifyseo.embedding_sync.enqueue_embedding_sync") as mock_enqueue:
             enqueue_embedding_sync_for_type(db_path, "product")
             mock_enqueue.assert_called_once_with(db_path, object_types=["product"])
 
-    def test_enqueue_for_handle(self, tmp_path):
+    def test_enqueue_for_handle(self, testdb):
         """Test enqueue_embedding_sync_for_handle wrapper."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
         conn.close()
 
         with patch("shopifyseo.embedding_sync.enqueue_embedding_sync") as mock_enqueue:
@@ -278,10 +274,10 @@ class TestConvenienceWrappers:
 class TestThreadSafety:
     """Test that embedding sync is thread-safe."""
 
-    def test_multiple_concurrent_enqueues(self, tmp_path):
+    def test_multiple_concurrent_enqueues(self, testdb):
         """Test that multiple concurrent enqueues don't cause issues."""
-        db_path = tmp_path / "test.db"
-        conn = _make_test_db(db_path)
+        db_path = _enqueue_path(testdb)
+        conn = _make_test_db(testdb)
 
         call_count = {"value": 0}
         lock = threading.Lock()

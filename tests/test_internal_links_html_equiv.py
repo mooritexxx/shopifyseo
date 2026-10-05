@@ -262,9 +262,9 @@ class TestHtmlEquivalentUnit:
 class TestApplyWithWhitespaceTolerance:
     """Tests for apply_suggestion with whitespace-tolerant comparison."""
     
-    def test_apply_with_shopify_newline_insertion(self):
+    def test_apply_with_shopify_newline_insertion(self, db_conn):
         """Apply succeeds when Shopify returns body with newline inserted between blocks."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Shopify returns body with newline inserted between </p><p>
@@ -290,9 +290,9 @@ class TestApplyWithWhitespaceTolerance:
         snapshot = conn.execute("SELECT new_body FROM link_body_snapshots").fetchone()
         assert snapshot["new_body"] == live.body
     
-    def test_apply_with_text_change_fails(self):
+    def test_apply_with_text_change_fails(self, db_conn):
         """Apply fails when Shopify returns body with text change."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         def push_with_text_change(source_type, row, body):
@@ -310,9 +310,9 @@ class TestApplyWithWhitespaceTolerance:
         snapshot = conn.execute("SELECT status FROM link_body_snapshots").fetchone()
         assert snapshot["status"] == "needs_reconciliation"
     
-    def test_undo_after_whitespace_tolerant_apply(self):
+    def test_undo_after_whitespace_tolerant_apply(self, db_conn):
         """Undo succeeds after a whitespace-tolerant apply."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Apply with newline insertion
@@ -333,12 +333,12 @@ class TestApplyWithWhitespaceTolerance:
         assert result["status"] == "undone"
         assert live.body == OLD  # Back to original
     
-    def test_apply_with_shopify_nbsp_insertion_fails(self):
+    def test_apply_with_shopify_nbsp_insertion_fails(self, db_conn):
         """Apply fails when Shopify returns body with NBSP inserted between paragraphs.
         
         B1: NBSP is visible content and must not be tolerated.
         """
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Shopify returns body with NBSP (U+00A0) inserted between paragraphs
@@ -360,9 +360,9 @@ class TestApplyWithWhitespaceTolerance:
 class TestReconcileWithWhitespaceTolerance:
     """Tests for reconcile_suggestion with whitespace-tolerant comparison."""
     
-    def test_reconcile_with_whitespace_difference(self):
+    def test_reconcile_with_whitespace_difference(self, db_conn):
         """Reconcile succeeds when live differs from new_body only by inter-tag whitespace."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Simulate timeout during apply
@@ -385,9 +385,9 @@ class TestReconcileWithWhitespaceTolerance:
         # No additional push should happen
         assert live.push.call_count == 1  # Only the original failed call
     
-    def test_reconcile_with_content_drift_fails(self):
+    def test_reconcile_with_content_drift_fails(self, db_conn):
         """Reconcile fails when live has content drift (not just whitespace)."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         live.push.side_effect = TimeoutError()
@@ -404,9 +404,9 @@ class TestReconcileWithWhitespaceTolerance:
         snapshot = conn.execute("SELECT status FROM link_body_snapshots").fetchone()
         assert snapshot["status"] == "needs_reconciliation"
     
-    def test_reconcile_not_written_with_whitespace(self):
+    def test_reconcile_not_written_with_whitespace(self, db_conn):
         """Reconcile returns not_written when live matches old_body with whitespace differences."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Simulate push failure
@@ -428,9 +428,9 @@ class TestReconcileWithWhitespaceTolerance:
 class TestNewlineSeparatorInsert:
     """Tests for the optional newline-separator insert in build_edit."""
     
-    def test_insert_preserves_newline_style(self):
+    def test_insert_preserves_newline_style(self, db_conn):
         """When body uses newlines between blocks, inserted paragraph uses newline prefix."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Body with newline between paragraphs
@@ -452,9 +452,9 @@ class TestNewlineSeparatorInsert:
         # The inserted paragraph should start with \n to match the style
         assert "\n<p>Explore" in live.body
     
-    def test_insert_without_newlines_stays_compact(self):
+    def test_insert_without_newlines_stays_compact(self, db_conn):
         """When body doesn't use newlines between blocks, inserted paragraph is compact."""
-        conn = database()
+        conn = database(db_conn)
         live = Shopify()
         
         # Body without newlines between paragraphs

@@ -1,6 +1,5 @@
 """Tests for manual-weave endpoint and service."""
 import json
-import sqlite3
 from unittest.mock import Mock, patch
 
 import pytest
@@ -52,10 +51,10 @@ SAMPLE_BODY_8_LINKS = '''<p>Some text:
 Sentence at the end.</p>'''
 
 
-def make_database(path=":memory:"):
+def make_database(source):
     """Create a test database with minimal schema and ai_woven suggestion."""
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+    from db_support import TestDatabase
+    conn = source.connect() if isinstance(source, TestDatabase) else source
     ensure_dashboard_schema(conn)
     
     # Add a source product
@@ -108,10 +107,9 @@ class MockShopify:
 
 
 @pytest.fixture
-def database(tmp_path):
+def database(testdb):
     """Create a fresh test database."""
-    path = tmp_path / "test.sqlite"
-    conn = make_database(path)
+    conn = make_database(testdb)
     yield conn
     conn.close()
 
@@ -147,15 +145,12 @@ def no_ai_calls(monkeypatch):
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch, live):
+def api(testdb, monkeypatch, live):
     """Create a test API client with mocked dependencies."""
-    path = tmp_path / "api.sqlite"
-    conn = make_database(path)
+    conn = make_database(testdb)
     
     def connect():
-        c = sqlite3.connect(path, timeout=10)
-        c.row_factory = sqlite3.Row
-        return c
+        return testdb.connect()
     
     monkeypatch.setattr(router, "open_db_connection", connect)
     monkeypatch.setattr(router, "_base_url", lambda _: BASE)

@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from shopifyseo.db import group_concat
+from shopifyseo.db import backend_for_connection, group_concat
 
 from . import dashboard_queries as dq
 from .dashboard_ai_engine_parts.config import GEMINI_API_URL
@@ -1421,7 +1421,7 @@ def embedding_status(conn: Any) -> dict:
                COUNT(DISTINCT object_handle) AS object_count,
                COUNT(*) AS chunk_count,
                MAX(updated_at) AS last_updated,
-               {group_concat("model_version", distinct=True)} AS model_versions
+               {group_concat("model_version", distinct=True, backend=backend_for_connection(conn))} AS model_versions
         FROM embeddings
         GROUP BY object_type
     """).fetchall()

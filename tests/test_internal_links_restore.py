@@ -11,8 +11,6 @@ Requirements:
 import json
 import os
 import pytest
-import sqlite3
-import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock, Mock
 
@@ -23,10 +21,8 @@ from shopifyseo.internal_links.store import ensure_schema
 BASE = "https://example.myshopify.com"
 
 
-def _init_db():
-    """Initialize an in-memory database with required schema."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _init_db(conn):
+    """Initialize a testdb connection with required schema."""
     conn.executescript("""
         CREATE TABLE link_suggestions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,9 +119,9 @@ def _init_db():
 
 
 @pytest.fixture
-def database():
+def database(db_conn):
     """Create a test database with a dismissed suggestion."""
-    conn = _init_db()
+    conn = _init_db(db_conn)
     
     # Insert sample product (target)
     conn.execute("""
@@ -159,7 +155,6 @@ def database():
     
     conn.commit()
     yield conn
-    conn.close()
 
 
 class TestRestoreSuggestion:
@@ -319,11 +314,9 @@ class TestRebuildWithRealPipeline:
     """B8: Restored suggestions survive rebuild through real pipeline."""
     
     @pytest.fixture
-    def pipeline_db(self, tmp_path):
-        """Create a file-based database for pipeline tests."""
-        db_path = tmp_path / "pipeline_test.sqlite"
-        conn = sqlite3.connect(str(db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
+    def pipeline_db(self, testdb):
+        """Create an isolated testdb for pipeline tests."""
+        conn = testdb.connect()
         
         # Create full schema
         conn.executescript("""
@@ -446,8 +439,7 @@ class TestRebuildWithRealPipeline:
         """)
         
         conn.commit()
-        yield conn, db_path
-        conn.close()
+        yield conn, testdb
     
     def test_restored_valid_pair_survives_rebuild(self, pipeline_db):
         """B8: Restored suggestion with valid source/target survives rebuild."""
@@ -730,10 +722,9 @@ class TestRebuildWithRealPipeline:
         assert edge_after is not None, "Internal links edge must not be removed (with graph rebuild)"
 
 
-def _make_api_database(path):
-    """Create a test database at a file path for API testing."""
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+def _make_api_database(testdb):
+    """Create a testdb for API testing."""
+    conn = testdb.connect()
     conn.executescript("""
         CREATE TABLE link_suggestions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -836,7 +827,7 @@ class TestRestoreAPIEndpoint:
     """Tests for the restore API endpoint."""
     
     @pytest.fixture
-    def api_with_auth(self, tmp_path, monkeypatch):
+    def api_with_auth(self, tmp_path, testdb, monkeypatch):
         """Create API test client with mocked auth tokens."""
         from fastapi.testclient import TestClient
         from backend.app.main import app
@@ -850,17 +841,14 @@ class TestRestoreAPIEndpoint:
         
         monkeypatch.setenv("TASK_MANAGER_TOKEN_DIR", str(token_dir))
         
-        path = tmp_path / "restore_api.sqlite"
-        _make_api_database(path)
+        _make_api_database(testdb)
         
         def connect():
-            c = sqlite3.connect(path, timeout=10)
-            c.row_factory = sqlite3.Row
-            return c
+            return testdb.connect()
         
         monkeypatch.setattr(router, "open_db_connection", connect)
         
-        yield TestClient(app), path
+        yield TestClient(app), testdb
     
     def test_restore_api_success_with_valid_token(self, api_with_auth):
         """API endpoint restores dismissed suggestion with valid token."""
@@ -977,7 +965,7 @@ class TestRestoreAPIEndpoint:
     
     def test_restore_api_reason_is_stripped(self, api_with_auth):
         """B5: Reason is stripped before validation and storage."""
-        client, db_path = api_with_auth
+        client, testdb = api_with_auth
         
         response = client.post(
             "/api/internal-links/suggestions/1/restore",
@@ -988,8 +976,7 @@ class TestRestoreAPIEndpoint:
         assert response.status_code == 200
         
         # Verify stripped reason in audit
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = testdb.connect()
         audit = conn.execute("SELECT reason FROM link_suggestion_restore_audit WHERE suggestion_id = 1").fetchone()
         conn.close()
         assert audit["reason"] == "valid reason with spaces"

@@ -8,7 +8,6 @@ Test Requirements:
 5. Cursor pagination
 6. No Shopify pushes
 """
-import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -18,10 +17,11 @@ from backend.app.main import app
 from backend.app.routers import internal_links as router
 from internal_links_support import BASE, Shopify
 from shopifyseo.dashboard_store import ensure_dashboard_schema
+from shopifyseo.db import insert_returning_id
 from shopifyseo.internal_links import shopify_io, pipeline
 
 
-def seed_suggestions(conn: sqlite3.Connection, count: int = 1200) -> list[int]:
+def seed_suggestions(conn, count: int = 1200) -> list[int]:
     """Seed link_suggestions with diverse data for pagination testing.
 
     Creates rows with:
@@ -53,32 +53,29 @@ def seed_suggestions(conn: sqlite3.Connection, count: int = 1200) -> list[int]:
         target_handle = f"target-{i}"
         score = 1.0 - (i // 10) * 0.01
 
-        conn.execute(
+        sid = insert_returning_id(
+            conn,
             "INSERT INTO link_suggestions (source_type, source_handle, target_type, target_handle, kind, anchor_phrase, score, status, created_at) "
             "VALUES (?, ?, 'collection', ?, 'phrase_wrap', 'anchor text', ?, ?, ?)",
             (source_type, source_handle, target_handle, score, status, i),
         )
         if status == "suggested":
-            suggested_ids.append(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            suggested_ids.append(sid)
 
     conn.commit()
     return suggested_ids
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch):
+def api(testdb, monkeypatch):
     """Create test API with seeded database."""
-    path = tmp_path / "pagination.sqlite"
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
 
     suggested_ids = seed_suggestions(conn, count=1200)
 
     def connect():
-        c = sqlite3.connect(path)
-        c.row_factory = sqlite3.Row
-        return c
+        return testdb.connect()
 
     monkeypatch.setattr(router, "open_db_connection", connect)
     monkeypatch.setattr(router, "_base_url", lambda _: BASE)
@@ -390,14 +387,12 @@ def test_cursor_walk_matches_offset_walk(api):
 
 
 @pytest.fixture
-def api_exact_multiple(tmp_path, monkeypatch):
+def api_exact_multiple(testdb, monkeypatch):
     """Create test API where total is an exact multiple of page size (limit).
     
     Creates exactly 300 'suggested' rows so with limit=100, we get exactly 3 full pages.
     """
-    path = tmp_path / "pagination_exact.sqlite"
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
+    conn = testdb.connect()
     ensure_dashboard_schema(conn)
 
     # Create exactly 300 suggested rows (3 pages of 100)
@@ -413,9 +408,7 @@ def api_exact_multiple(tmp_path, monkeypatch):
     conn.commit()
 
     def connect():
-        c = sqlite3.connect(path)
-        c.row_factory = sqlite3.Row
-        return c
+        return testdb.connect()
 
     monkeypatch.setattr(router, "open_db_connection", connect)
     monkeypatch.setattr(router, "_base_url", lambda _: BASE)

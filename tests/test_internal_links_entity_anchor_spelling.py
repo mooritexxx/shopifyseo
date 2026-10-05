@@ -8,7 +8,6 @@ These tests cover the changes in the PR:
 - E. Skip unpublished sources
 """
 import json
-import sqlite3
 import pytest
 from unittest.mock import Mock, patch
 
@@ -315,10 +314,8 @@ class TestApplyWithEntityNormalization:
     in the anchor phrase itself, and the stub returns what Shopify really stores.
     """
     
-    def _create_apply_db(self):
+    def _create_apply_db(self, conn):
         """Create database with required schema for apply/reconcile tests."""
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
         conn.executescript("""
             CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
                 description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
@@ -345,7 +342,7 @@ class TestApplyWithEntityNormalization:
         """)
         return conn
     
-    def test_apply_apostrophe_in_anchor_shopify_returns_plain(self):
+    def test_apply_apostrophe_in_anchor_shopify_returns_plain(self, db_conn):
         """Apply link with apostrophe in anchor phrase. Shopify returns plain ' where we sent &#x27;.
         
         Body contains "beginner&#x27;s guide" with entity-encoded apostrophe.
@@ -357,7 +354,7 @@ class TestApplyWithEntityNormalization:
         """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
-        conn = self._create_apply_db()
+        conn = self._create_apply_db(db_conn)
         # Body has ENTITY-ENCODED apostrophe - this is key for testing normalization
         original_body = "<p>Check our beginner&#x27;s guide for tips.</p>"
         conn.execute(
@@ -397,7 +394,7 @@ class TestApplyWithEntityNormalization:
         sug = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
         assert sug["status"] == "applied"
     
-    def test_reconcile_apostrophe_entity_vs_plain(self):
+    def test_reconcile_apostrophe_entity_vs_plain(self, db_conn):
         """Reconcile succeeds when we sent &#x27; but Shopify returned plain '.
         
         This directly tests entity normalization in the reconcile path.
@@ -409,7 +406,7 @@ class TestApplyWithEntityNormalization:
         """
         from shopifyseo.internal_links.apply import reconcile_suggestion
         
-        conn = self._create_apply_db()
+        conn = self._create_apply_db(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', '<p>Old.</p>', 'https://shop.com/products/source')"
@@ -438,7 +435,7 @@ class TestApplyWithEntityNormalization:
         result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
         assert result["status"] == "applied"
     
-    def test_apply_ampersand_in_body_shopify_returns_plain(self):
+    def test_apply_ampersand_in_body_shopify_returns_plain(self, db_conn):
         """Apply link when body has &amp;. Shopify returns plain & where we sent &amp;.
         
         Body contains "Q&amp;A guide" with properly escaped ampersand.
@@ -450,7 +447,7 @@ class TestApplyWithEntityNormalization:
         """
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
-        conn = self._create_apply_db()
+        conn = self._create_apply_db(db_conn)
         # Body has ENTITY-ENCODED ampersand - this is key for testing normalization
         original_body = "<p>Check our Q&amp;A guide for answers.</p>"
         conn.execute(
@@ -486,14 +483,14 @@ class TestApplyWithEntityNormalization:
         )
         assert result["status"] == "applied"
     
-    def test_reconcile_ampersand_entity_vs_plain(self):
+    def test_reconcile_ampersand_entity_vs_plain(self, db_conn):
         """Reconcile succeeds when we sent &amp; but Shopify returned plain &.
         
         This test FAILS if normalization is disabled.
         """
         from shopifyseo.internal_links.apply import reconcile_suggestion
         
-        conn = self._create_apply_db()
+        conn = self._create_apply_db(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://shopify/Product/1', 'source', 'Source', 'ACTIVE', '<p>Old.</p>', 'https://shop.com/products/source')"
@@ -1072,7 +1069,7 @@ class TestGuardEditFindsCorrectAnchor:
         assert f'<a href="{self.URL}">ceramic tanks</a>' in result
         guard_edit(old, result, edit, self.URL)
     
-    def test_1f_real_preview_ai_woven_insert_sentence_next_para_link(self):
+    def test_1f_real_preview_ai_woven_insert_sentence_next_para_link(self, db_conn):
         """Real preview_suggestion on ai_woven insert_sentence with link in next para.
         
         The sentence starts with the phrase ('Ceramic tanks are a great upgrade.')
@@ -1080,8 +1077,7 @@ class TestGuardEditFindsCorrectAnchor:
         """
         from shopifyseo.internal_links.apply import preview_suggestion
         
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
+        conn = db_conn
         conn.executescript("""
             CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
                 description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
@@ -1357,10 +1353,8 @@ class TestCallSiteMutationTests:
 # C. Preview Respects Open-Write Lock Tests
 # =============================================================================
 
-def _test_db():
+def _test_db(conn):
     """Create a minimal test database."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
@@ -1387,9 +1381,9 @@ def _test_db():
 class TestPreviewWriteLock:
     """Test preview respects the page write lock."""
     
-    def test_check_page_write_pending_true(self):
+    def test_check_page_write_pending_true(self, db_conn):
         """Should return True when there's a pending snapshot on the page."""
-        conn = _test_db()
+        conn = _test_db(db_conn)
         conn.execute(
             "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, status, created_at, updated_at) "
             "VALUES (1, 'product', 'test-handle', 'needs_reconciliation', 1, 1)"
@@ -1397,9 +1391,9 @@ class TestPreviewWriteLock:
         conn.commit()
         assert _check_page_write_pending(conn, "product", "test-handle")
     
-    def test_check_page_write_pending_false(self):
+    def test_check_page_write_pending_false(self, db_conn):
         """Should return False when no pending snapshots."""
-        conn = _test_db()
+        conn = _test_db(db_conn)
         conn.execute(
             "INSERT INTO link_body_snapshots (suggestion_id, source_type, source_handle, status, created_at, updated_at) "
             "VALUES (1, 'product', 'test-handle', 'applied', 1, 1)"
@@ -1407,9 +1401,9 @@ class TestPreviewWriteLock:
         conn.commit()
         assert not _check_page_write_pending(conn, "product", "test-handle")
     
-    def test_preview_returns_page_write_pending(self):
+    def test_preview_returns_page_write_pending(self, db_conn):
         """Preview should return allowed=false with page_write_pending code."""
-        conn = _test_db()
+        conn = _test_db(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://1', 'source', 'Source', 'ACTIVE', '<p>Body</p>', 'https://shop.com/products/source')"
@@ -1435,14 +1429,14 @@ class TestPreviewWriteLock:
 class TestManualWeaveWriteLock:
     """Test manual-weave respects the page write lock."""
     
-    def test_manual_weave_preview_only_returns_page_write_pending(self):
+    def test_manual_weave_preview_only_returns_page_write_pending(self, db_conn):
         """Manual-weave with preview_only=True should return allowed=false shape.
         
         Test-contract change: preview_only now returns allowed=false dict instead of raising 409.
         """
         from shopifyseo.internal_links.manual_weave import submit_manual_weave
         
-        conn = _test_db()
+        conn = _test_db(db_conn)
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
             "VALUES ('gid://1', 'source', 'Source', 'ACTIVE', '<p>Body sentence.</p>', 'https://shop.com/products/source')"
@@ -1474,10 +1468,8 @@ class TestManualWeaveWriteLock:
 class TestLockHolderBehavior:
     """Test that the lock holder can preview and apply their own suggestion."""
     
-    def _create_lock_test_db(self):
+    def _create_lock_test_db(self, conn):
         """Create database for lock holder tests."""
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
         conn.executescript("""
             CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
                 description_html TEXT, gsc_clicks INTEGER DEFAULT 0, online_store_url TEXT);
@@ -1504,7 +1496,7 @@ class TestLockHolderBehavior:
         """)
         return conn
     
-    def test_lock_holder_can_reconcile_own_snapshot(self):
+    def test_lock_holder_can_reconcile_own_snapshot(self, db_conn):
         """Lock holder can reconcile their own pending snapshot.
         
         Suggestion 1 has a needs_reconciliation snapshot (the lock).
@@ -1513,7 +1505,7 @@ class TestLockHolderBehavior:
         from shopifyseo.internal_links.apply import reconcile_suggestion
         import time
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         original_body = "<p>Check our ceramic tanks guide.</p>"
         new_body = '<p>Check our <a href="https://shop.com/collections/tanks">ceramic tanks</a> guide.</p>'
         conn.execute(
@@ -1544,11 +1536,11 @@ class TestLockHolderBehavior:
         result = reconcile_suggestion(conn, 1, "https://shop.com", fetch_fn=mock_fetch)
         assert result["status"] == "applied"
     
-    def test_lock_holder_preview_then_apply_succeeds(self):
+    def test_lock_holder_preview_then_apply_succeeds(self, db_conn):
         """Lock holder can preview and then apply their own suggestion (no prior lock)."""
         from shopifyseo.internal_links.apply import apply_suggestion, preview_suggestion
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         original_body = "<p>Check our ceramic tanks guide.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
@@ -1583,7 +1575,7 @@ class TestLockHolderBehavior:
         )
         assert result["status"] == "applied"
     
-    def test_preview_blocked_by_another_holders_lock(self):
+    def test_preview_blocked_by_another_holders_lock(self, db_conn):
         """Preview is blocked when page is locked by another suggestion's snapshot.
         
         Suggestion 1 has a pending snapshot (the lock holder).
@@ -1591,7 +1583,7 @@ class TestLockHolderBehavior:
         """
         from shopifyseo.internal_links.apply import preview_suggestion
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         original_body = "<p>Check our ceramic tanks and test2 phrase.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
@@ -1631,7 +1623,7 @@ class TestLockHolderBehavior:
         assert preview["code"] == "page_write_pending"
         assert "write" in preview["reason"].lower() or "progress" in preview["reason"].lower()
     
-    def test_reconcile_requires_own_snapshot(self):
+    def test_reconcile_requires_own_snapshot(self, db_conn):
         """Reconcile requires the suggestion to have its own pending snapshot.
         
         Suggestion 1 has a pending snapshot (the lock holder).
@@ -1640,7 +1632,7 @@ class TestLockHolderBehavior:
         """
         from shopifyseo.internal_links.apply import reconcile_suggestion
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         original_body = "<p>Check our ceramic tanks.</p>"
         conn.execute(
             "INSERT INTO products (shopify_id, handle, title, status, description_html, online_store_url) "
@@ -1680,7 +1672,7 @@ class TestLockHolderBehavior:
         # Should fail because suggestion 2 has no pending snapshot
         assert "no unfinished write" in str(exc_info.value).lower()
     
-    def test_lock_holder_reconcile_then_preview_apply_succeeds(self):
+    def test_lock_holder_reconcile_then_preview_apply_succeeds(self, db_conn):
         """Full sequence test: blocked preview → reconcile → preview (allowed) → apply (stub called).
         
         Sequence:
@@ -1695,7 +1687,7 @@ class TestLockHolderBehavior:
         )
         import time
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         # Body has two phrases we can link
         original_body = "<p>Check our ceramic tanks and vape pods guide.</p>"
         # What suggestion 2's first write produced (pending reconciliation)
@@ -1774,7 +1766,7 @@ class TestLockHolderBehavior:
         sug1 = conn.execute("SELECT status FROM link_suggestions WHERE id = 1").fetchone()
         assert sug1["status"] == "applied"
     
-    def test_sequence_fails_if_reconcile_doesnt_clear_lock(self, monkeypatch):
+    def test_sequence_fails_if_reconcile_doesnt_clear_lock(self, monkeypatch, db_conn):
         """Mutation test: if reconcile never clears the lock, sequence fails.
         
         FAILS if reconcile doesn't properly update snapshot status to 'applied'.
@@ -1785,7 +1777,7 @@ class TestLockHolderBehavior:
         from shopifyseo.internal_links import apply as apply_module
         import time
         
-        conn = self._create_lock_test_db()
+        conn = self._create_lock_test_db(db_conn)
         original_body = "<p>Check our ceramic tanks guide.</p>"
         new_body = '<p>Check our <a href="https://shop.com/collections/tanks">ceramic tanks</a> guide.</p>'
         
@@ -1946,10 +1938,8 @@ class TestEnCaSpelling:
 # E. Skip Unpublished Sources Tests
 # =============================================================================
 
-def _pipeline_db():
+def _pipeline_db(conn):
     """Create database for pipeline tests."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
             description_html TEXT, gsc_clicks INTEGER DEFAULT 0, gsc_impressions INTEGER DEFAULT 0,
@@ -1993,9 +1983,9 @@ def _pipeline_db():
 class TestSkipUnpublishedSources:
     """Test that unpublished sources are skipped during generation."""
     
-    def test_unpublished_article_skipped(self):
+    def test_unpublished_article_skipped(self, db_conn):
         """Unpublished blog article should not generate suggestions."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content about ceramic tanks.</p>', 0, 100)"
@@ -2013,9 +2003,9 @@ class TestSkipUnpublishedSources:
         rows = conn.execute("SELECT * FROM link_suggestions").fetchall()
         assert len(rows) == 0
     
-    def test_published_article_generates_suggestions(self):
+    def test_published_article_generates_suggestions(self, db_conn):
         """Published blog article should generate suggestions."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'pub', 'Published', '<p>Content about ceramic tanks.</p>', 1, 100)"
@@ -2031,9 +2021,9 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1
     
-    def test_draft_product_skipped(self):
+    def test_draft_product_skipped(self, db_conn):
         """Draft product (status != ACTIVE) should not generate suggestions."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('draft-product', 'Draft', 'DRAFT', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/draft')"
@@ -2049,9 +2039,9 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 0
     
-    def test_active_product_with_online_store_url_generates_suggestions(self):
+    def test_active_product_with_online_store_url_generates_suggestions(self, db_conn):
         """Active product with online_store_url should generate suggestions."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('active-product', 'Active', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/active')"
@@ -2067,13 +2057,13 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1
     
-    def test_active_product_without_online_store_url_generates_suggestions(self):
+    def test_active_product_without_online_store_url_generates_suggestions(self, db_conn):
         """Active product WITHOUT online_store_url should still generate suggestions.
         
         Product SOURCES tolerate blank online_store_url (like targets per #48).
         ACTIVE status (case-insensitive) is required for sources.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('no-url-product', 'No URL', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, NULL)"
@@ -2089,13 +2079,13 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1  # Product sources tolerate blank online_store_url
     
-    def test_product_with_empty_status_skipped(self):
+    def test_product_with_empty_status_skipped(self, db_conn):
         """Product with empty string status should NOT generate suggestions.
         
         Product sources require status = 'ACTIVE' (case-insensitive).
         Empty status is rejected.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('empty-status', 'Empty Status', '', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/empty')"
@@ -2111,13 +2101,13 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 0  # Empty status is rejected
     
-    def test_product_with_null_status_skipped(self):
+    def test_product_with_null_status_skipped(self, db_conn):
         """Product with NULL status should NOT generate suggestions.
         
         Product sources require status = 'ACTIVE' (case-insensitive).
         NULL status is rejected.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('null-status', 'Null Status', NULL, '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/null')"
@@ -2133,12 +2123,12 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 0  # NULL status is rejected
     
-    def test_product_with_lowercase_active_status_generates_suggestions(self):
+    def test_product_with_lowercase_active_status_generates_suggestions(self, db_conn):
         """Product with lowercase 'active' status should generate suggestions.
         
         Status check is case-insensitive.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('lowercase-active', 'Lowercase', 'active', '<p>About ceramic tanks.</p>', 100, 'https://shop.com/products/lower')"
@@ -2154,9 +2144,9 @@ class TestSkipUnpublishedSources:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1  # Case-insensitive ACTIVE match
     
-    def test_existing_applied_rows_for_unpublished_source_untouched(self):
+    def test_existing_applied_rows_for_unpublished_source_untouched(self, db_conn):
         """Existing applied rows for unpublished sources should not be deleted."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
@@ -2178,9 +2168,9 @@ class TestSkipUnpublishedSources:
 class TestRestoredRowsSurviveRebuild:
     """Test that restored rows survive or are dropped based on eligibility."""
     
-    def test_restored_row_both_pages_eligible_survives(self):
+    def test_restored_row_both_pages_eligible_survives(self, db_conn):
         """Restored row with both source and target eligible survives rebuild."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'pub', 'Published', '<p>Content about tanks.</p>', 1, 100)"
@@ -2201,9 +2191,9 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is not None
     
-    def test_restored_row_source_unpublished_dropped(self):
+    def test_restored_row_source_unpublished_dropped(self, db_conn):
         """Restored row with unpublished source is dropped at rebuild."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
@@ -2224,9 +2214,9 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None
     
-    def test_restored_row_target_removed_dropped(self):
+    def test_restored_row_target_removed_dropped(self, db_conn):
         """Restored row with removed target is dropped at rebuild."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'pub', 'Published', '<p>Content.</p>', 1, 100)"
@@ -2246,9 +2236,9 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None
     
-    def test_restored_row_target_blocked_dropped(self):
+    def test_restored_row_target_blocked_dropped(self, db_conn):
         """Restored row with blocked target (api_unreachable) is dropped at rebuild."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'pub', 'Published', '<p>Content.</p>', 1, 100)"
@@ -2269,12 +2259,12 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None
     
-    def test_restored_row_product_empty_status_dropped(self):
+    def test_restored_row_product_empty_status_dropped(self, db_conn):
         """Restored row with product source having empty status is dropped at rebuild.
         
         Tests pipeline.py:239 - products require ACTIVE status.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('empty-status', 'Empty Status', '', '<p>Content.</p>', 100, 'https://shop.com/products/empty')"
@@ -2295,12 +2285,12 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None  # Empty status should cause drop
     
-    def test_restored_row_product_null_status_dropped(self):
+    def test_restored_row_product_null_status_dropped(self, db_conn):
         """Restored row with product source having NULL status is dropped at rebuild.
         
         Tests pipeline.py:239 - products require ACTIVE status.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('null-status', 'Null Status', NULL, '<p>Content.</p>', 100, 'https://shop.com/products/null')"
@@ -2321,12 +2311,12 @@ class TestRestoredRowsSurviveRebuild:
         row = conn.execute("SELECT * FROM link_suggestions WHERE id = 1").fetchone()
         assert row is None  # NULL status should cause drop
     
-    def test_product_with_empty_string_url_generates_suggestions(self):
+    def test_product_with_empty_string_url_generates_suggestions(self, db_conn):
         """Product with empty string online_store_url still generates suggestions.
         
         Blank online_store_url is tolerated for sources per #116.
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, gsc_clicks, online_store_url) "
             "VALUES ('empty-url', 'Empty URL', 'ACTIVE', '<p>About ceramic tanks.</p>', 100, '')"
@@ -2342,9 +2332,9 @@ class TestRestoredRowsSurviveRebuild:
         n = generate_link_suggestions(conn, related_fn=related, rebuild_graph=False)
         assert n == 1  # Empty string URL is tolerated
     
-    def test_row_with_open_snapshot_on_unpublished_source_kept(self):
+    def test_row_with_open_snapshot_on_unpublished_source_kept(self, db_conn):
         """Row with open snapshot on unpublished source is protected from deletion."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published, gsc_clicks) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0, 100)"
@@ -2369,9 +2359,9 @@ class TestRestoredRowsSurviveRebuild:
 class TestSourceExistsWithBodyPublished:
     """Test _source_exists_with_body respects published status and online_store_url."""
     
-    def test_unpublished_article_returns_false(self):
+    def test_unpublished_article_returns_false(self, db_conn):
         """Unpublished article should return False."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published) "
             "VALUES ('news', 'unpub', 'Unpublished', '<p>Content.</p>', 0)"
@@ -2379,9 +2369,9 @@ class TestSourceExistsWithBodyPublished:
         conn.commit()
         assert not _source_exists_with_body(conn, "blog_article", "news/unpub")
     
-    def test_published_article_returns_true(self):
+    def test_published_article_returns_true(self, db_conn):
         """Published article with body should return True."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO blog_articles (blog_handle, handle, title, body, is_published) "
             "VALUES ('news', 'pub', 'Published', '<p>Content.</p>', 1)"
@@ -2389,9 +2379,9 @@ class TestSourceExistsWithBodyPublished:
         conn.commit()
         assert _source_exists_with_body(conn, "blog_article", "news/pub")
     
-    def test_draft_product_returns_false(self):
+    def test_draft_product_returns_false(self, db_conn):
         """Draft product should return False."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, online_store_url) "
             "VALUES ('draft', 'Draft', 'DRAFT', '<p>Content.</p>', 'https://shop.com/products/draft')"
@@ -2399,9 +2389,9 @@ class TestSourceExistsWithBodyPublished:
         conn.commit()
         assert not _source_exists_with_body(conn, "product", "draft")
     
-    def test_active_product_with_url_returns_true(self):
+    def test_active_product_with_url_returns_true(self, db_conn):
         """Active product with online_store_url should return True."""
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, online_store_url) "
             "VALUES ('active', 'Active', 'ACTIVE', '<p>Content.</p>', 'https://shop.com/products/active')"
@@ -2409,12 +2399,12 @@ class TestSourceExistsWithBodyPublished:
         conn.commit()
         assert _source_exists_with_body(conn, "product", "active")
     
-    def test_active_product_without_url_returns_true(self):
+    def test_active_product_without_url_returns_true(self, db_conn):
         """Active product without online_store_url should still return True.
         
         Product SOURCES tolerate blank online_store_url (like targets per #48).
         """
-        conn = _pipeline_db()
+        conn = _pipeline_db(db_conn)
         conn.execute(
             "INSERT INTO products (handle, title, status, description_html, online_store_url) "
             "VALUES ('no-url', 'No URL', 'ACTIVE', '<p>Content.</p>', NULL)"

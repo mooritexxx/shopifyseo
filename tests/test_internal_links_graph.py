@@ -1,7 +1,5 @@
 """Tests for internal link extraction and graph rebuild."""
 
-import sqlite3
-
 from shopifyseo.internal_links.graph import (
     extract_links,
     rebuild_internal_link_graph,
@@ -31,9 +29,7 @@ def test_extract_links_returns_href_and_text():
     assert extract_links(html) == [("/products/widget", "the widget"), ("https://x.example/p", "ext")]
 
 
-def _catalog_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
+def _catalog_conn(conn):
     conn.executescript(
         """
         CREATE TABLE products (shopify_id TEXT, handle TEXT, title TEXT, status TEXT,
@@ -62,8 +58,8 @@ def _catalog_conn() -> sqlite3.Connection:
     return conn
 
 
-def test_rebuild_graph_fills_rows_and_is_idempotent():
-    conn = _catalog_conn()
+def test_rebuild_graph_fills_rows_and_is_idempotent(db_conn):
+    conn = _catalog_conn(db_conn)
     conn.execute(
         "INSERT INTO blog_articles (blog_handle, handle, title, body) VALUES "
         "('news', 'post', 'Post', '<p><a href=\"/products/widget\">widget</a></p>')"

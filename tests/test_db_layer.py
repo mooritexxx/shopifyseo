@@ -826,6 +826,21 @@ class TestPostgresTranslation:
         assert row["has_key"] is True
         assert row["v"] == "test"
 
+    def test_double_question_jsonb_via_runtime_cursor(self, pg_url):
+        """Production cursor translates ``??`` / ``?`` itself (no pre-pass)."""
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        try:
+            row = conn.execute(
+                "SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key, ? AS v",
+                ("test",),
+            ).fetchone()
+            assert row["has_key"] is True
+            assert row["v"] == "test"
+        finally:
+            conn.close()
+
 
 class TestPostgresWriteTx:
     """PostgreSQL write_tx tests."""
@@ -2820,12 +2835,12 @@ class TestTimestampParityPostgres:
 
     def test_cursor_execute_rewrites_current_timestamp(self, pg_url):
         from shopifyseo.db import connect_postgres
-        from shopifyseo.db.timestamps import postgres_cursor_factory
+        from shopifyseo.db.pg_runtime import postgres_runtime_cursor_factory
 
         conn = connect_postgres(pg_url)
         table = "_test_ts_parity_cursor"
         try:
-            assert conn.cursor_factory is postgres_cursor_factory()
+            assert conn.cursor_factory is postgres_runtime_cursor_factory()
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
             conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, ts TEXT)")

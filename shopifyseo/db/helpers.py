@@ -412,6 +412,11 @@ def isolated_sql(conn: Any, *, backend: Backend | None = None) -> Generator[None
     if backend != Backend.POSTGRES:
         yield
         return
+    # Testdb sets autocommit=True (SQLite DDL auto-commit). SAVEPOINT is
+    # illegal there; a failed statement also does not abort the next one.
+    if getattr(conn, "autocommit", False):
+        yield
+        return
     conn.execute("SAVEPOINT shopifyseo_probe")
     try:
         yield

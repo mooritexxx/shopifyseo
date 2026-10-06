@@ -65,10 +65,16 @@ def _numeric_as_float_loader() -> type:
 
 
 def _rewrite_postgres_sql(query: str) -> str:
-    """CURRENT_TIMESTAMP rewrite then ``?`` → ``%s`` (auto % escape)."""
+    """CURRENT_TIMESTAMP rewrite then ``?`` → ``%s`` (auto % escape).
+
+    Idempotent for already-translated SQL: if ``%s`` is present, leftover
+    ``?`` tokens are jsonb operators (``??`` already reduced), not placeholders.
+    """
     query = rewrite_current_timestamp_for_postgres(query)
     # escape_percent=None: escape % only when translating placeholders, so
     # callers (and tests) that already pass %s are not double-escaped.
+    if "%s" in query:
+        return query
     return _translate_placeholders(query, to_postgres=True, escape_percent=None)
 
 

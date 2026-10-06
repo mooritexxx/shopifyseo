@@ -27,6 +27,7 @@ SKIP_VERIFY=0
 FAIL_ON_ORPHANS=0
 ENV_FILE="${PG_ENV_FILE:-$HOME/.config/shopifyseo/pg.env}"
 SQLITE_PATH="${SQLITE_PATH:-}"
+SQLITE_FROM_CLI=""
 WORK_DIR=""
 PGLOADER_BIN="${PGLOADER:-pgloader}"
 
@@ -60,7 +61,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-file) ENV_FILE="$2"; shift 2 ;;
-    --sqlite) SQLITE_PATH="$2"; shift 2 ;;
+    --sqlite) SQLITE_FROM_CLI="$2"; SQLITE_PATH="$2"; shift 2 ;;
     --work-dir) WORK_DIR="$2"; shift 2 ;;
     --dry-run) MODE="dry-run"; shift ;;
     --apply-load) MODE="apply-load"; shift ;;
@@ -86,6 +87,11 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 else
   echo "note: env file $ENV_FILE not found; using current environment"
+fi
+
+# --sqlite always wins over SQLITE_PATH from --env-file / the environment.
+if [[ -n "$SQLITE_FROM_CLI" ]]; then
+  SQLITE_PATH="$SQLITE_FROM_CLI"
 fi
 
 # Refuse to treat DATABASE_URL as the live app switch. Prefer CUTOVER_*.

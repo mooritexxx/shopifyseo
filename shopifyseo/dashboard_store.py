@@ -15,7 +15,17 @@ from .dashboard_status import index_status_info
 from .index_evidence import (INDEX_FIELDS, INDEX_STORED_FIELDS, extract_inspection_fields,
                              with_index_flag, update_catalog_inspection, ensure_evidence_schema)
 from .gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
-from .db import Backend, DictRow, backend_for_connection, get_connection, table_columns, table_ddl, table_exists
+from .db import (
+    Backend,
+    DictRow,
+    backend_for_connection,
+    get_connection,
+    isolated_sql,
+    sqlite_runtime_ddl,
+    table_columns,
+    table_ddl,
+    table_exists,
+)
 from .shopify_catalog_sync import DEFAULT_DB_PATH, ensure_schema
 
 
@@ -158,6 +168,12 @@ def _migrate_link_suggestions_check_constraint(conn: Any) -> bool:
     return True
 
 
+def _sqlite_ddl(conn: Any, sql: str) -> None:
+    """Run SQLite-only CREATE TABLE (identity PK). Cutover owns the PG schema."""
+    if sqlite_runtime_ddl():
+        conn.execute(sql)
+
+
 def _ensure_columns(conn: Any, table: str, columns: dict[str, str]) -> None:
     existing = table_columns(conn, table)
     for name, col_type in columns.items():
@@ -214,7 +230,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS clusters (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,7 +344,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         ON gsc_page_daily(object_type, object_handle, date)
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS seo_recommendations (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -537,7 +555,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS article_ideas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -603,7 +622,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         "article_ideas",
         {"serp_refreshed_at": "INTEGER"},
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS idea_articles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -643,7 +663,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS article_target_keywords (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -658,15 +679,16 @@ def ensure_dashboard_schema(conn: Any) -> None:
     )
     # Backfill idea_articles from legacy 1:1 link columns
     try:
-        conn.execute(
-            """
-            INSERT INTO idea_articles (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
-            SELECT id, linked_blog_handle, linked_article_handle, shopify_article_id, '', created_at
-            FROM article_ideas
-            WHERE linked_article_handle != '' AND linked_blog_handle != ''
-            ON CONFLICT DO NOTHING
-            """
-        )
+        with isolated_sql(conn):
+            conn.execute(
+                """
+                INSERT INTO idea_articles (idea_id, blog_handle, article_handle, shopify_article_id, angle_label, created_at)
+                SELECT id, linked_blog_handle, linked_article_handle, shopify_article_id, '', created_at
+                FROM article_ideas
+                WHERE linked_article_handle != '' AND linked_blog_handle != ''
+                ON CONFLICT DO NOTHING
+                """
+            )
         conn.commit()
     except Exception:
         pass
@@ -689,7 +711,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(object_type)"
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS api_usage_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -708,7 +731,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_api_usage_log_created ON api_usage_log(created_at)"
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS internal_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -727,7 +751,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
     )
     # Migrate link_suggestions table if it has the old CHECK constraint (without 'undone')
     _migrate_link_suggestions_check_constraint(conn)
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS link_suggestions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -757,7 +782,8 @@ def ensure_dashboard_schema(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
     )
     # Phase D: link_suggestion_events for measurement/outcomes
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS link_suggestion_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

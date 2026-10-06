@@ -120,6 +120,33 @@ async def sqlite_database_error_handler(_, exc: sqlite3.DatabaseError):
     )
 
 
+def _json_database_error(exc: BaseException, *, code: str = "database_error") -> JSONResponse:
+    """Same ``{ok, error}`` shape as the SQLite handler, for psycopg / mapped errors."""
+    msg = str(exc).strip() or "Database error"
+    return JSONResponse(
+        status_code=503,
+        content={"ok": False, "error": {"code": code, "message": msg}},
+    )
+
+
+try:
+    import psycopg
+
+    @app.exception_handler(psycopg.Error)
+    async def psycopg_error_handler(_, exc: psycopg.Error):
+        return _json_database_error(exc)
+except ImportError:
+    pass
+
+
+from shopifyseo.db import DatabaseError as MappedDatabaseError
+
+
+@app.exception_handler(MappedDatabaseError)
+async def mapped_database_error_handler(_, exc: MappedDatabaseError):
+    return _json_database_error(exc)
+
+
 if (FRONTEND_DIST / "assets").exists():
     app.mount("/app/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="spa-assets")
 

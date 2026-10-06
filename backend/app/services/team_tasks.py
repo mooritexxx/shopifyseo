@@ -4,11 +4,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from backend.app.services.task_identity import ACTORS, MANAGERS
-from shopifyseo.db import LOCK_TEAM_TASKS, execute, insert_returning_id, table_exists, write_tx
+from shopifyseo.db import LOCK_TEAM_TASKS, execute, insert_returning_id, sqlite_runtime_ddl, table_exists, write_tx
 
 
 def ensure_schema(conn):
-    conn.executescript('''
+    if sqlite_runtime_ddl():
+        conn.executescript('''
         CREATE TABLE IF NOT EXISTS team_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             owner TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL,

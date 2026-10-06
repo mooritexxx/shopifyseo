@@ -37,9 +37,8 @@ __all__ = [
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     """Return True if *column* exists in *table*."""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    names = {r[1] if isinstance(r, (list, tuple)) else r["name"] for r in rows}
-    return column in names
+    from shopifyseo.db import table_columns
+    return column in table_columns(conn, table)
 
 
 def linkable_product_sql(conn: sqlite3.Connection, alias: str = "") -> str:

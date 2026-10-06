@@ -1,4 +1,6 @@
 """Rank tracking schema. Called by the normal once-per-database bootstrap."""
+from shopifyseo.db import executemany, sqlite_runtime_ddl, table_columns
+
 TERMS = (
     'vape shop canada', 'online vape shop canada', 'best online vape shop canada',
     'buy vape online canada', 'canadian vape store', 'disposable vapes canada',
@@ -8,7 +10,8 @@ TERMS = (
 
 
 def ensure_schema(conn):
-    conn.executescript('''
+    if sqlite_runtime_ddl():
+        conn.executescript('''
       CREATE TABLE IF NOT EXISTS tracked_keywords (
         id INTEGER PRIMARY KEY, term TEXT NOT NULL UNIQUE,
         target_url TEXT, grp TEXT, active INTEGER NOT NULL DEFAULT 1,
@@ -49,7 +52,7 @@ def ensure_schema(conn):
         'rank_checks': {'coverage_complete': 'INTEGER NOT NULL DEFAULT 1',
                         'cancelled': 'INTEGER NOT NULL DEFAULT 0'},
     }.items():
-        existing = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+        existing = table_columns(conn, table)
         for name, definition in columns.items():
             if name not in existing:
                 conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
@@ -72,7 +75,7 @@ def ensure_schema(conn):
     # A marker prevents deleted/deactivated seed keywords reappearing on restart.
     seeded = conn.execute("SELECT value FROM service_settings WHERE key='rank_tracking_seeded'").fetchone()
     if not seeded:
-        conn.executemany('INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT DO NOTHING', [(t,) for t in TERMS])
+        executemany(conn, 'INSERT INTO tracked_keywords(term) VALUES (?) ON CONFLICT DO NOTHING', [(t,) for t in TERMS])
         conn.execute("INSERT INTO service_settings(key,value) VALUES ('rank_tracking_seeded','1')")
     conn.execute("INSERT INTO service_settings(key,value) VALUES ('serpapi_rank_monthly_budget','250') ON CONFLICT DO NOTHING")
     conn.commit()

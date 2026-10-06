@@ -1,6 +1,6 @@
 """Durable backups and write reservations for internal-link body edits."""
 
-from shopifyseo.db import table_columns
+from shopifyseo.db import sqlite_runtime_ddl, table_columns
 
 
 def ensure_schema(conn):
@@ -9,7 +9,8 @@ def ensure_schema(conn):
         conn.execute("ALTER TABLE link_suggestions ADD COLUMN ai_edit_json TEXT")
         # Legacy whole-body responses must never become applicable again.
         conn.execute("UPDATE link_suggestions SET ai_anchor_html = NULL WHERE kind = 'ai_woven'")
-    conn.execute("""CREATE TABLE IF NOT EXISTS link_body_snapshots (
+    if sqlite_runtime_ddl():
+        conn.execute("""CREATE TABLE IF NOT EXISTS link_body_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         suggestion_id INTEGER NOT NULL,
         source_type TEXT NOT NULL,
@@ -30,7 +31,8 @@ def ensure_schema(conn):
     
     # Restore audit table: tracks when dismissed suggestions are restored
     # B8: No FOREIGN KEY - audit is append-only and must not block deletes
-    conn.execute("""CREATE TABLE IF NOT EXISTS link_suggestion_restore_audit (
+    if sqlite_runtime_ddl():
+        conn.execute("""CREATE TABLE IF NOT EXISTS link_suggestion_restore_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         suggestion_id INTEGER NOT NULL,
         restored_at INTEGER NOT NULL,

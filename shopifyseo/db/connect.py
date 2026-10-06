@@ -88,16 +88,17 @@ def connect_postgres(url: str, *, autocommit: bool = False) -> Any:
         raise ImportError(
             "psycopg required for PostgreSQL. Install with: pip install 'psycopg[binary]'"
         ) from e
-    from .timestamps import postgres_connect_options, postgres_cursor_factory
+    from .pg_runtime import apply_postgres_runtime_compat, postgres_runtime_cursor_factory
+    from .timestamps import postgres_connect_options
 
     conn = psycopg.connect(
         url,
         autocommit=autocommit,
         options=postgres_connect_options(),
-        cursor_factory=postgres_cursor_factory(),
+        cursor_factory=postgres_runtime_cursor_factory(),
     )
     conn.row_factory = _make_postgres_row_factory()
-    return conn
+    return apply_postgres_runtime_compat(conn)
 
 
 def connect(

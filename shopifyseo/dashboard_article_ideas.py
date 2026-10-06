@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
-from shopifyseo.db import insert_returning_id, like_ci, nullif_empty
+from shopifyseo.db import insert_returning_id, like_ci, nullif_empty, table_columns
 
 
 def normalize_audience_questions_json(value: Any) -> list[dict[str, str]]:
@@ -160,9 +160,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
     - existing_article_titles: titles already covered (to avoid duplicates)
     - top_collections: top collections by GSC impressions (for context)
     """
-    cluster_stat_cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(clusters)").fetchall()
-    }
+    cluster_stat_cols = table_columns(conn, "clusters")
     cluster_stats_sql = (
         ", c.dominant_serp_features, c.content_format_hints, c.avg_cps"
         if "dominant_serp_features" in cluster_stat_cols
@@ -358,7 +356,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
 
     # Enrich cluster_gaps with keyword_page_map: find the best-ranking existing page
     # for each cluster's primary keyword.
-    _kpm_cols = {row[1] for row in conn.execute("PRAGMA table_info(keyword_page_map)").fetchall()}
+    _kpm_cols = table_columns(conn, "keyword_page_map")
     if _kpm_cols:
         for cg in cluster_gaps:
             try:
@@ -387,9 +385,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
             cg["existing_page"] = None
 
     # 2. Collections with impressions > 200 but no supporting article
-    coll_col_names = {
-        row[1] for row in conn.execute("PRAGMA table_info(collections)").fetchall()
-    }
+    coll_col_names = table_columns(conn, "collections")
     ga4_col = ", COALESCE(col.ga4_sessions, 0) AS ga4_sessions" if "ga4_sessions" in coll_col_names else ", 0 AS ga4_sessions"
     collection_gaps = conn.execute(
         f"""
@@ -483,7 +479,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
     competitor_gaps_dedupe_skipped = 0
     competitor_gaps: list[dict[str, Any]] = []
     try:
-        _ckg_cols = {row[1] for row in conn.execute("PRAGMA table_info(competitor_keyword_gaps)").fetchall()}
+        _ckg_cols = table_columns(conn, "competitor_keyword_gaps")
         _ckg_pos_col = "ckg.competitor_position" if "competitor_position" in _ckg_cols else "NULL AS competitor_position"
         _ckg_url_col = "ckg.competitor_url" if "competitor_url" in _ckg_cols else "NULL AS competitor_url"
         competitor_gap_rows = conn.execute(
@@ -528,7 +524,7 @@ def fetch_article_idea_inputs(conn: sqlite3.Connection) -> dict[str, Any]:
 
     # 7. Top competitor pages driving traffic (content landscape)
     try:
-        _ctp_cols = {row[1] for row in conn.execute("PRAGMA table_info(competitor_top_pages)").fetchall()}
+        _ctp_cols = table_columns(conn, "competitor_top_pages")
         _ctp_tv_col = "traffic_value" if "traffic_value" in _ctp_cols else "0 AS traffic_value"
         winning_content_rows = conn.execute(
             f"""
@@ -803,7 +799,7 @@ def resolve_idea_targets(
     if primary:
         seen.add((primary["type"], primary["handle"]))
 
-    kpm_cols = {row[1] for row in conn.execute("PRAGMA table_info(keyword_page_map)").fetchall()}
+    kpm_cols = table_columns(conn, "keyword_page_map")
     if not kpm_cols:
         return primary, secondary
 

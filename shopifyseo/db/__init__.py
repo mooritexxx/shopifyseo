@@ -16,6 +16,7 @@ from .backend import (
 )
 from .compat import DictRow
 from .connect import BUSY_TIMEOUT_MS, connect, connect_postgres, connect_sqlite
+from .pg_runtime import apply_postgres_runtime_compat, is_postgres_runtime
 from .exceptions import (
     DatabaseError,
     IntegrityError,
@@ -30,10 +31,12 @@ from .exceptions import (
 from .execute import execute, executemany, get_connection
 from .helpers import (
     busy_timeout,
+    connection_key,
     foreign_keys_enabled,
     group_concat,
     index_exists,
     insert_returning_id,
+    isolated_sql,
     journal_mode,
     like_ci,
     LOCK_RANK_JOBS,
@@ -43,6 +46,9 @@ from .helpers import (
     order_ci,
     order_inserted,
     set_foreign_keys,
+    set_journal_mode,
+    set_synchronous,
+    sqlite_runtime_ddl,
     table_columns,
     table_ddl,
     table_exists,
@@ -85,6 +91,8 @@ __all__ = [
     "connect_sqlite",
     "connect_postgres",
     "get_connection",
+    "apply_postgres_runtime_compat",
+    "is_postgres_runtime",
     "BUSY_TIMEOUT_MS",
     # Execute wrapper
     "execute",
@@ -108,8 +116,13 @@ __all__ = [
     "index_exists",
     "foreign_keys_enabled",
     "set_foreign_keys",
+    "set_journal_mode",
+    "set_synchronous",
+    "sqlite_runtime_ddl",
+    "isolated_sql",
     "journal_mode",
     "busy_timeout",
+    "connection_key",
     # Identity columns
     "IDENTITY_COLUMNS",
     "ResyncResult",

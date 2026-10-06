@@ -5,11 +5,11 @@ from typing import Generator
 
 from shopifyseo.dashboard_config import apply_runtime_settings
 from shopifyseo.dashboard_store import DB_PATH, ensure_dashboard_schema
-from shopifyseo.db import get_connection
+from shopifyseo.db import get_connection, set_journal_mode, set_synchronous
 
 
 # Schema migration and settings mirroring are idempotent but cost ~15 ms of DDL
-# (60+ CREATE IF NOT EXISTS / PRAGMA table_info statements) per call, which
+# (60+ CREATE IF NOT EXISTS / table_columns probes) per call, which
 # dominated short requests when run on every connection. Do it once per DB path;
 # an unseen path (tests, a relocated DB) still migrates on first use.
 _bootstrapped_paths: set[str] = set()
@@ -53,7 +53,7 @@ def _bootstrap_once(conn: sqlite3.Connection, path: str) -> None:
     with _bootstrap_lock:
         if path in _bootstrapped_paths:
             return
-        conn.execute("PRAGMA journal_mode = WAL")
+        set_journal_mode(conn, "WAL")
         ensure_dashboard_schema(conn)
         from backend.app.services.team_tasks import ensure_schema as ensure_team_task_schema
         ensure_team_task_schema(conn)
@@ -72,7 +72,7 @@ def open_db_connection():
         text_factory=True,
         create_parents=False,
     )
-    conn.execute("PRAGMA synchronous = NORMAL")
+    set_synchronous(conn, "NORMAL")
     _bootstrap_once(conn, path)
     return conn
 

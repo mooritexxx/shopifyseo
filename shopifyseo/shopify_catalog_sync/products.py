@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from shopifyseo.db import empty_to_null
+from shopifyseo.db import empty_to_null, executemany
 
 from .db import (
     now_iso,
@@ -237,7 +237,7 @@ def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, 
     replace_children(conn, "product_metafields", product["id"])
 
     variants = [edge["node"] for edge in (product.get("variants") or {}).get("edges", [])]
-    conn.executemany(
+    executemany(conn,
         """
         INSERT INTO product_variants (
           shopify_id,
@@ -282,7 +282,7 @@ def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, 
     )
 
     images = _product_images_for_upsert(product)
-    conn.executemany(
+    executemany(conn,
         """
         INSERT INTO product_images (
           shopify_id,
@@ -313,7 +313,7 @@ def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, 
     )
 
     metafields = [edge["node"] for edge in (product.get("metafields") or {}).get("edges", [])]
-    conn.executemany(
+    executemany(conn,
         """
         INSERT INTO product_metafields (
           shopify_id,

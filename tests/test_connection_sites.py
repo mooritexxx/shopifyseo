@@ -355,6 +355,24 @@ def test_print_summary_preserves_sqlite_settings(tmp_path, monkeypatch, unset_da
     assert_settings(recorded["settings"], PRINT_SUMMARY)
 
 
+def test_ensure_schema_enables_foreign_keys_when_transaction_open(
+    tmp_path, unset_database_url
+):
+    """SQLite ignores PRAGMA foreign_keys inside an open txn; set it after executescript."""
+    from shopifyseo.shopify_catalog_sync.db import ensure_schema
+
+    path = tmp_path / "fk-txn.sqlite3"
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE probe (id INTEGER)")
+        conn.execute("INSERT INTO probe (id) VALUES (1)")
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+        ensure_schema(conn)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_catalog_sync_open_db_preserves_sqlite_settings(
     tmp_path, monkeypatch, unset_database_url
 ):

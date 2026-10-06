@@ -35,7 +35,7 @@ CAST type integer to bigint drop typemod,
      type numeric to numeric drop typemod,
      type text to text drop typemod,
      type varchar to text drop typemod,
-     type blob to bytea,
+     type blob to bytea using byte-vector-to-bytea,
      type clob to text drop typemod
 
 EXCLUDING TABLE NAMES LIKE 'sqlite_%', 'sqlite_sequence'

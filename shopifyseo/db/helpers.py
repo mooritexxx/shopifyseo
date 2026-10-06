@@ -6,6 +6,7 @@ from typing import Any, Generator, Sequence
 
 from .backend import Backend, backend_for_connection, get_backend
 from .compat import _translate_placeholders
+from .pg_runtime import is_postgres_runtime
 from .timestamps import rewrite_current_timestamp_for_postgres
 
 # Transaction-scoped advisory lock keys for Postgres (pg_advisory_xact_lock).
@@ -111,8 +112,9 @@ def insert_returning_id(
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
-        sql = rewrite_current_timestamp_for_postgres(sql)
-        sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
+        if not is_postgres_runtime(conn):
+            sql = rewrite_current_timestamp_for_postgres(sql)
+            sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
         cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()
         return row[0] if row else None
@@ -194,7 +196,7 @@ def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bo
             """
             SELECT 1 FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relname = %s
+            WHERE c.relname = ?
               AND c.relkind = 'r'
               AND (
                   n.nspname = current_schema()
@@ -218,12 +220,12 @@ def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> s
         backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
-        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        row = conn.execute("SELECT to_regclass(?)::oid", (table,)).fetchone()
         if row is None or row[0] is None:
             return set()
         oid = row[0]
         rows = conn.execute(
-            "SELECT attname FROM pg_attribute WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped",
+            "SELECT attname FROM pg_attribute WHERE attrelid = ? AND attnum > 0 AND NOT attisdropped",
             (oid,),
         ).fetchall()
         return {r[0] for r in rows}
@@ -243,7 +245,7 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
         backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
-        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        row = conn.execute("SELECT to_regclass(?)::oid", (table,)).fetchone()
         if row is None or row[0] is None:
             return None
         oid = row[0]
@@ -253,7 +255,7 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
                    attnotnull, pg_get_expr(adbin, adrelid) AS default_expr
             FROM pg_attribute
             LEFT JOIN pg_attrdef ON adrelid = attrelid AND adnum = attnum
-            WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped
+            WHERE attrelid = ? AND attnum > 0 AND NOT attisdropped
             ORDER BY attnum
             """,
             (oid,),
@@ -290,7 +292,7 @@ def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) 
             """
             SELECT 1 FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relname = %s
+            WHERE c.relname = ?
               AND c.relkind = 'i'
               AND (
                   n.nspname = current_schema()
@@ -352,6 +354,78 @@ def journal_mode(conn: Any, *, backend: Backend | None = None) -> str:
     else:
         row = conn.execute("PRAGMA journal_mode").fetchone()
         return row[0] if row else "unknown"
+
+
+def connection_key(conn: Any, *, backend: Backend | None = None) -> str | None:
+    """Stable key for the open database (SQLite file path or Postgres DSN).
+
+    Used by embedding enqueue so a Postgres connection does not return None.
+    """
+    if backend is None:
+        backend = _resolve_conn_backend(conn, backend)
+    if backend == Backend.POSTGRES:
+        info = getattr(conn, "info", None)
+        dsn = getattr(info, "dsn", None) or ""
+        return dsn or "postgresql"
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row and len(row) >= 3:
+            return row[2]
+    except Exception:
+        pass
+    return None
+
+
+def sqlite_runtime_ddl() -> bool:
+    """True when SQLite-shaped schema bootstrap should run.
+
+    Testdb keeps ``DATABASE_URL`` unset and still needs the SQLite DDL
+    (rewritten by the test adapter). Production Postgres (``DATABASE_URL``
+    set) skips it — the cutover owns that schema.
+    """
+    return get_backend() != Backend.POSTGRES
+
+
+def set_journal_mode(conn: Any, mode: str = "WAL", *, backend: Backend | None = None) -> None:
+    """SQLite ``PRAGMA journal_mode``. No-op on PostgreSQL."""
+    if backend is None:
+        backend = _resolve_conn_backend(conn, backend)
+    if backend == Backend.SQLITE:
+        conn.execute(f"PRAGMA journal_mode = {mode}")
+
+
+def set_synchronous(conn: Any, mode: str = "NORMAL", *, backend: Backend | None = None) -> None:
+    """SQLite ``PRAGMA synchronous``. No-op on PostgreSQL."""
+    if backend is None:
+        backend = _resolve_conn_backend(conn, backend)
+    if backend == Backend.SQLITE:
+        conn.execute(f"PRAGMA synchronous = {mode}")
+
+
+@contextmanager
+def isolated_sql(conn: Any, *, backend: Backend | None = None) -> Generator[None, None, None]:
+    """Run a SQL probe so a caught error does not abort a Postgres transaction.
+
+    SQLite: no-op wrapper (errors do not poison the next statement).
+    PostgreSQL: SAVEPOINT / RELEASE / ROLLBACK TO SAVEPOINT.
+    """
+    if backend is None:
+        backend = _resolve_conn_backend(conn, backend)
+    if backend != Backend.POSTGRES:
+        yield
+        return
+    # Testdb sets autocommit=True (SQLite DDL auto-commit). SAVEPOINT is
+    # illegal there; a failed statement also does not abort the next one.
+    if getattr(conn, "autocommit", False):
+        yield
+        return
+    conn.execute("SAVEPOINT shopifyseo_probe")
+    try:
+        yield
+        conn.execute("RELEASE SAVEPOINT shopifyseo_probe")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT shopifyseo_probe")
+        raise
 
 
 def busy_timeout(conn: Any, *, backend: Backend | None = None) -> int:

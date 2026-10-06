@@ -5,7 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..db import get_connection, insert_returning_id, table_columns
+from ..db import (
+    executemany,
+    get_connection,
+    insert_returning_id,
+    set_foreign_keys,
+    set_journal_mode,
+    set_synchronous,
+    sqlite_runtime_ddl,
+    table_columns,
+)
 from ..shopify_admin import graphql_post, graphql_request
 from .queries import (
     PRODUCTS_QUERY,
@@ -94,7 +103,8 @@ def fetch_metaobjects_by_ids(ids: list[str]) -> list[dict]:
 def upsert_metaobjects(conn: Any, metaobjects: list[dict], synced_at: str) -> None:
     if not metaobjects:
         return
-    conn.executemany(
+    executemany(
+        conn,
         """
         INSERT INTO shopify_metaobjects (
           shopify_id,
@@ -184,10 +194,9 @@ def ensure_column(conn: Any, table: str, column: str, ddl: str) -> None:
 
 
 def ensure_schema(conn: Any) -> None:
-    conn.executescript(
-        """
-        PRAGMA foreign_keys = ON;
-
+    if sqlite_runtime_ddl():
+        conn.executescript(
+            """
         CREATE TABLE IF NOT EXISTS sync_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           started_at TEXT NOT NULL,
@@ -413,6 +422,9 @@ def ensure_schema(conn: Any) -> None:
         );
         """
     )
+        # After executescript's implicit COMMIT — SQLite ignores
+        # foreign_keys while a transaction is already open.
+        set_foreign_keys(conn, True)
     ensure_column(conn, "sync_runs", "collections_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "collection_metafields_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "pages_synced", "INTEGER NOT NULL DEFAULT 0")
@@ -464,8 +476,8 @@ def open_db(db_path: str | Path) -> Any:
         create_parents=False,
     )
     ensure_schema(conn)
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    set_journal_mode(conn, "WAL")
+    set_synchronous(conn, "NORMAL")
     return conn
 
 

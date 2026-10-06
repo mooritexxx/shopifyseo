@@ -27,8 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shopifyseo.db import Backend, PG_NOW_TEXT_SQL, get_connection
-from shopifyseo.db.compat import _translate_placeholders
+from shopifyseo.db import Backend, PG_NOW_TEXT_SQL, apply_postgres_runtime_compat, get_connection
 
 _PG_PREFIXES = ("postgresql://", "postgres://")
 
@@ -236,22 +235,22 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
 def adapt_postgres_test_connection(conn: Any) -> Any:
     """Make a testdb Postgres connection accept SQLite-shaped SQL from tests.
 
-    ``DATABASE_URL`` stays unset (plan 7a), so production ``conn.execute`` still
-    uses ``?``. This wrap translates placeholders, implements ``executescript``,
-    implements ``PRAGMA table_info``, skips other PRAGMA, rolls back a failed
-    statement so the next one can run, and rewrites AUTOINCREMENT / INTEGER /
-    BLOB / REAL / INSERT OR IGNORE / INSERT OR REPLACE / ``datetime('now')`` /
-    ``last_insert_rowid()``. Bound Python ``bool`` values become ``0``/``1``
-    (SQLite ``INTEGER`` / testdb ``BIGINT``). Exposes ``total_changes`` like
-    sqlite3 so leftover tests can assert a helper did not write.
-    Idempotent. The object stays a ``psycopg.Connection`` (isinstance checks
-    in 7a fixture tests keep working).
+    Shared production compat (``?`` translation, bool dump, NUMERIC load,
+    ``executemany``) comes from ``apply_postgres_runtime_compat``. This wrap
+    adds testdb-only behaviour: ``executescript``, ``PRAGMA table_info``,
+    other PRAGMA no-ops, rollback-on-error, and SQLite DDL rewrites
+    (AUTOINCREMENT / INTEGER / BLOB / REAL / INSERT OR IGNORE / INSERT OR
+    REPLACE / ``datetime('now')`` / ``last_insert_rowid()``). Bound Python
+    ``bool`` values become ``0``/``1``. Exposes ``total_changes`` like sqlite3.
+    Idempotent. The object stays a ``psycopg.Connection``.
     """
+    # Shared production compat first so testdb cannot drift from connect_postgres.
+    apply_postgres_runtime_compat(conn)
     if getattr(conn, "_shopifyseo_testdb_adapted", False):
         return conn
 
     orig_execute = conn.execute
-    # psycopg3 Connection has execute only; executemany lives on Cursor.
+    # Production compat (or a leftover raw connection) may already expose executemany.
     orig_executemany = getattr(conn, "executemany", None)
     conn.total_changes = 0
 
@@ -313,10 +312,7 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
                     # Testdb-only skip; live SQLite still installs them.
                     return _NoopCursor()
                 query = rewrite_sqlite_ddl_for_postgres(query)
-                if "?" in query:
-                    query = _translate_placeholders(
-                        query, to_postgres=True, escape_percent=params is not None
-                    )
+                # ``?`` → ``%s`` and bool dump live in production apply_postgres_runtime_compat.
             params = _coerce_sql_params(params)
             if params is None and not kwargs:
                 result = orig_execute(query)
@@ -332,10 +328,6 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
         try:
             if isinstance(query, str):
                 query = rewrite_sqlite_ddl_for_postgres(query)
-                if "?" in query:
-                    query = _translate_placeholders(
-                        query, to_postgres=True, escape_percent=True
-                    )
             if isinstance(params_seq, (list, tuple)):
                 params_seq = [_coerce_sql_params(row) for row in params_seq]
             if orig_executemany is not None:

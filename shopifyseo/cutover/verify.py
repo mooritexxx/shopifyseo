@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -119,6 +120,115 @@ def _sqlite_text_in_int_count(conn: Any, table: str, column: str) -> int | None:
     return int(row[0])
 
 
+def _as_blob_bytes(value: Any) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return bytes(value)
+
+
+def _blob_columns_sqlite(conn: Any, table: str) -> list[str]:
+    cols = list(execute(conn, f'PRAGMA table_info("{table}")'))
+    names = []
+    for row in cols:
+        ctype = str(row[2] if not hasattr(row, "keys") else row["type"] or "")
+        if ctype.upper() == "BLOB":
+            names.append(row[1] if not hasattr(row, "keys") else row["name"])
+    return names
+
+
+def _blob_columns_postgres(conn: Any, table: str) -> list[str]:
+    rows = execute(
+        conn,
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ? AND data_type = 'bytea'
+        """,
+        (table,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _blob_fingerprint(conn: Any, table: str, column: str) -> tuple[int, int, str]:
+    """Return (non-null count, total bytes, order-independent sha256 of per-row hashes)."""
+    rows = execute(
+        conn,
+        f'SELECT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL',
+    ).fetchall()
+    digests: list[tuple[int, str]] = []
+    total = 0
+    for row in rows:
+        raw = _as_blob_bytes(row[0])
+        total += len(raw)
+        digests.append((len(raw), hashlib.sha256(raw).hexdigest()))
+    digests.sort()
+    outer = hashlib.sha256()
+    for length, digest in digests:
+        outer.update(f"{length}:{digest};".encode("ascii"))
+    return len(digests), total, outer.hexdigest()
+
+
+def _pg_lisp_blob_count(pg_conn: Any, table: str, column: str) -> int:
+    """Rows whose bytea is pgloader's Lisp print form ``#(n n …)`` as text."""
+    row = execute(
+        pg_conn,
+        f'''
+        SELECT COUNT(*) FROM "{table}"
+        WHERE "{column}" IS NOT NULL
+          AND encode("{column}", 'escape') LIKE '#(%'
+        ''',
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _verify_blob_columns(
+    report: ValueReport,
+    pg_conn: Any,
+    sqlite_conn: Any | None,
+) -> None:
+    tables = set(list_user_tables(pg_conn))
+    sqlite_tables = set(list_user_tables(sqlite_conn)) if sqlite_conn is not None else set()
+    for table in sorted(tables):
+        pg_cols = _blob_columns_postgres(pg_conn, table) if backend_for_connection(pg_conn) == Backend.POSTGRES else _blob_columns_sqlite(pg_conn, table)
+        sqlite_cols = _blob_columns_sqlite(sqlite_conn, table) if sqlite_conn is not None and table in sqlite_tables else []
+        for column in sorted(set(pg_cols) | set(sqlite_cols)):
+            lisp_n = 0
+            if backend_for_connection(pg_conn) == Backend.POSTGRES and column in pg_cols:
+                lisp_n = _pg_lisp_blob_count(pg_conn, table, column)
+                if lisp_n:
+                    report.issues.append(
+                        ValueIssue(
+                            table,
+                            column,
+                            "blob_lisp_text",
+                            lisp_n,
+                            "bytea holds pgloader Lisp text #(n n …) instead of raw bytes; "
+                            "reload with 'type blob to bytea using byte-vector-to-bytea'",
+                        )
+                    )
+            if sqlite_conn is None or column not in sqlite_cols or column not in pg_cols:
+                continue
+            scount, slen, sdigest = _blob_fingerprint(sqlite_conn, table, column)
+            pcount, plen, pdigest = _blob_fingerprint(pg_conn, table, column)
+            if (scount, slen, sdigest) != (pcount, plen, pdigest):
+                report.issues.append(
+                    ValueIssue(
+                        table,
+                        column,
+                        "blob_mismatch",
+                        abs(slen - plen),
+                        f"sqlite n={scount} bytes={slen} sha256={sdigest[:12]}…; "
+                        f"postgres n={pcount} bytes={plen} sha256={pdigest[:12]}…",
+                    )
+                )
+
+
 def cluster_keyword_orphan_count(conn: Any) -> int | None:
     tables = set(list_user_tables(conn))
     if "cluster_keywords" not in tables or "clusters" not in tables:
@@ -163,6 +273,8 @@ def verify_values(
                         f"sqlite {table}.{column} still has {leftover} text values "
                         "(pre-fix the working copy before load)"
                     )
+
+    _verify_blob_columns(report, pg_conn, sqlite_conn)
 
     orphans = cluster_keyword_orphan_count(pg_conn)
     if orphans is None:

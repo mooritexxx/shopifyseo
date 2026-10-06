@@ -76,6 +76,7 @@ def test_load_file_omits_foreign_keys_and_has_placeholders():
     assert "__SQLITE_URI__" in load
     assert "__POSTGRES_URI__" in load
     assert "no foreign keys" in load
+    assert "type blob to bytea using byte-vector-to-bytea" in load
     assert "keyword_metrics.updated_at" in load
     assert "PASSWORD" not in load
     assert "postgresql://shopifyseo:" not in load
@@ -224,6 +225,34 @@ def test_verify_counts_and_orphan_report(tmp_path):
     finally:
         a.close()
         b.close()
+
+
+def test_verify_blob_length_and_sha256(tmp_path):
+    import hashlib
+    import struct
+
+    left = tmp_path / "left.sqlite3"
+    right = tmp_path / "right.sqlite3"
+    blob = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+    for path in (left, right):
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, embedding BLOB)")
+        conn.execute("INSERT INTO embeddings (id, embedding) VALUES (1, ?)", (blob,))
+        conn.commit()
+        conn.close()
+    a = sqlite3.connect(left)
+    b = sqlite3.connect(right)
+    try:
+        report = verify_values(b, sqlite_conn=a)
+        assert not any(i.kind.startswith("blob") for i in report.issues)
+        b.execute("UPDATE embeddings SET embedding = ?", (blob + b"x",))
+        b.commit()
+        report = verify_values(b, sqlite_conn=a)
+        assert any(i.kind == "blob_mismatch" for i in report.issues)
+    finally:
+        a.close()
+        b.close()
+    assert hashlib.sha256(blob).digest()
 
 
 def test_verify_counts_mismatch(tmp_path):

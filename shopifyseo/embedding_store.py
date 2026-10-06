@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from shopifyseo.db import backend_for_connection, group_concat
+from shopifyseo.db import backend_for_connection, executemany, group_concat
 
 from . import dashboard_queries as dq
 from .dashboard_ai_engine_parts.config import GEMINI_API_URL
@@ -143,6 +143,12 @@ def _embed_to_blob(vec: list[float]) -> bytes:
 
 
 def _blob_to_array(blob: bytes) -> np.ndarray:
+    if blob is None:
+        raise ValueError("empty embedding blob")
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes()
+    elif not isinstance(blob, (bytes, bytearray)):
+        blob = bytes(blob)
     return np.frombuffer(blob, dtype=np.float32).copy()
 
 
@@ -810,7 +816,8 @@ def sync_embeddings(
             # Apply the scan's deletes in one short transaction, and commit so no
             # write transaction stays open across the embedding API calls below.
             if stale_chunk_deletes:
-                conn.executemany(
+                executemany(
+                    conn,
                     "DELETE FROM embeddings WHERE object_type = ? AND object_handle = ? AND chunk_index >= ?",
                     stale_chunk_deletes,
                 )

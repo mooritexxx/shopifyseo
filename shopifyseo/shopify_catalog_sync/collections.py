@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from shopifyseo.db import executemany
+
 from .db import (
     now_iso,
     json_dumps,
@@ -109,7 +111,7 @@ def upsert_collection(conn: Any, collection: dict, synced_at: str) -> int:
 
     replace_collection_children(conn, "collection_metafields", collection["id"])
     metafields = [edge["node"] for edge in (collection.get("metafields") or {}).get("edges", [])]
-    conn.executemany(
+    executemany(conn,
         """
         INSERT INTO collection_metafields (
           shopify_id,
@@ -195,7 +197,7 @@ def sync_collections(
                 metafield_count += upsert_collection(conn, collection, synced_at)
                 replace_collection_children(conn, "collection_products", collection["id"])
                 products = products_by_collection_id.get(collection["id"], [])
-                conn.executemany(
+                executemany(conn,
                     """
                     INSERT INTO collection_products (
                       collection_shopify_id,
@@ -275,7 +277,7 @@ def sync_collection(db_path: Path, collection_id: str, page_size: int = 250) -> 
         conn = open_db(db_path)
         metafield_count = upsert_collection(conn, collection, synced_at)
         replace_collection_children(conn, "collection_products", collection["id"])
-        conn.executemany(
+        executemany(conn,
             """
             INSERT INTO collection_products (
               collection_shopify_id,

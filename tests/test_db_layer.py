@@ -1347,12 +1347,28 @@ class TestGetConnection:
             with tempfile.TemporaryDirectory() as tmpdir:
                 conn = get_connection(path=Path(tmpdir) / "test.db")
                 try:
-                    assert isinstance(conn, sqlite3.Connection)
+                    assert type(conn) is sqlite3.Connection
                     conn.execute("CREATE TABLE t (id INTEGER)")
                     row = conn.execute("SELECT 1 AS val").fetchone()
                     assert row["val"] == 1
                 finally:
                     conn.close()
+
+    def test_open_db_connection_is_plain_sqlite_when_database_url_unset(self, tmp_path, monkeypatch):
+        """Requirement A: production SQLite path is an unwrapped sqlite3.Connection."""
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        db_path = str(tmp_path / "plain.sqlite3")
+        monkeypatch.setattr("shopifyseo.dashboard_store.DB_PATH", db_path)
+        monkeypatch.setattr("backend.app.db.DB_PATH", db_path)
+        from backend.app import db as app_db
+
+        app_db._bootstrapped_paths.clear()
+        conn = app_db.open_db_connection()
+        try:
+            assert type(conn) is sqlite3.Connection
+        finally:
+            conn.close()
+            app_db._bootstrapped_paths.clear()
 
     def test_get_connection_postgres_url(self, pg_url):
         """get_connection() with a postgresql:// URL returns a psycopg connection."""
@@ -2834,5 +2850,56 @@ class TestTimestampParityPostgres:
             row = conn.execute("SHOW timezone").fetchone()
             assert str(row[0]).upper() == "UTC"
         finally:
+            conn.close()
+
+
+class TestPostgresRuntimeCompat:
+    """Production connect_postgres compat — no testdb adapter."""
+
+    def test_qmark_bool_executemany_and_numeric_float(self, pg_url):
+        import json
+
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_pg_runtime_compat"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute(f"CREATE TABLE {table} (n BIGINT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (n) VALUES (?)", (True,))
+            conn.executemany(f"INSERT INTO {table} (n) VALUES (?)", [(False,), (True,)])
+            conn.commit()
+            rows = conn.execute(f"SELECT n FROM {table} ORDER BY n").fetchall()
+            assert [r[0] for r in rows] == [0, 1, 1]
+            summed = conn.execute(f"SELECT SUM(n) AS s FROM {table}").fetchone()["s"]
+            assert isinstance(summed, float)
+            json.dumps({"s": summed})
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_error_does_not_autocommit_rollback(self, pg_url):
+        """Production must not copy testdb's rollback-on-error."""
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_pg_runtime_no_rollback"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute(f"CREATE TABLE {table} (n BIGINT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (n) VALUES (1)")
+            with pytest.raises(Exception):
+                conn.execute("SELECT this_column_does_not_exist FROM nowhere")
+            with pytest.raises(Exception):
+                conn.execute(f"SELECT n FROM {table}")
+            conn.rollback()
+            row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+            assert row["c"] == 0
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
             conn.close()
 

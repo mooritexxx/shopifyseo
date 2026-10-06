@@ -44,10 +44,12 @@ def url_inspection_used_today(conn, *, now_fn=None):
     la_midnight = la_now.replace(hour=0, minute=0, second=0, microsecond=0)
     start_of_day_epoch = int(la_midnight.timestamp())
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM google_api_cache WHERE cache_type='url_inspection' AND fetched_at >= ?",
-            (start_of_day_epoch,)
-        ).fetchone()
+        from shopifyseo.db import isolated_sql
+        with isolated_sql(conn):
+            row = conn.execute(
+                "SELECT COUNT(*) FROM google_api_cache WHERE cache_type='url_inspection' AND fetched_at >= ?",
+                (start_of_day_epoch,)
+            ).fetchone()
         return row[0] if row else 0
     except Exception:
         return 0

@@ -73,6 +73,14 @@ jobs:
           --deselect tests/test_api.py::test_collection_update_uses_targeted_refresh
           --deselect tests/test_api.py::test_page_detail_contract
           --deselect tests/test_api.py::test_page_update_uses_targeted_refresh
+      - name: PG runtime smoke (production connection, no testdb adapter)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shopifyseo_runtime
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS shopifyseo_runtime;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE shopifyseo_runtime;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d shopifyseo_runtime -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          PYTHONPATH=. python -m pytest tests/test_pg_runtime_smoke.py -q -rfEs
 
   frontend-typecheck:
     runs-on: ubuntu-latest

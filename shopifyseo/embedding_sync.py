@@ -222,14 +222,15 @@ def enqueue_embedding_sync_for_handle(
 
 
 def _get_db_path_from_connection(conn: sqlite3.Connection) -> str | None:
-    """Extract database file path from an open connection."""
-    try:
-        row = conn.execute("PRAGMA database_list").fetchone()
-        if row and len(row) >= 3:
-            return row[2]  # (seq, name, file)
-    except Exception:
-        pass
-    return None
+    """Extract a key the background worker can reopen.
+
+    SQLite: the catalog file path. PostgreSQL: the connection DSN (or
+    ``postgresql``). ``open_db`` then uses ``DATABASE_URL`` so enqueue
+    after idea save still runs.
+    """
+    from shopifyseo.db import connection_key
+
+    return connection_key(conn)
 
 
 def enqueue_embedding_sync_from_conn(

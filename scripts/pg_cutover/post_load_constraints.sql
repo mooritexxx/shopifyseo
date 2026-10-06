@@ -42,6 +42,119 @@ BEGIN
 END
 $$;
 
+-- Secondary indexes the SQLite runtime bootstrap used to create. Gating that
+-- bootstrap off on Postgres (cutover owns the schema) would otherwise drop them.
+DO $$
+BEGIN
+    IF to_regclass('products') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_products_vendor ON products(vendor)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)';
+    END IF;
+    IF to_regclass('product_variants') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_shopify_id)';
+    END IF;
+    IF to_regclass('product_images') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_images_product ON product_images(product_shopify_id)';
+    END IF;
+    IF to_regclass('product_metafields') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_metafields_product ON product_metafields(product_shopify_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_metafields_ns_key ON product_metafields(namespace, key)';
+    END IF;
+    IF to_regclass('collections') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_collections_handle ON collections(handle)';
+    END IF;
+    IF to_regclass('collection_metafields') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_collection_metafields_collection ON collection_metafields(collection_shopify_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_collection_metafields_ns_key ON collection_metafields(namespace, key)';
+    END IF;
+    IF to_regclass('collection_products') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_collection_products_collection ON collection_products(collection_shopify_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_collection_products_product ON collection_products(product_shopify_id)';
+    END IF;
+    IF to_regclass('pages') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_pages_handle ON pages(handle)';
+    END IF;
+    IF to_regclass('blogs') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_blogs_handle ON blogs(handle)';
+    END IF;
+    IF to_regclass('blog_articles') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_blog_articles_blog ON blog_articles(blog_shopify_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_blog_articles_blog_handle ON blog_articles(blog_handle, handle)';
+    END IF;
+    IF to_regclass('link_suggestions') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)';
+    END IF;
+    IF to_regclass('embeddings') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(object_type)';
+    END IF;
+    IF to_regclass('api_usage_log') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_api_usage_log_created ON api_usage_log(created_at)';
+    END IF;
+    IF to_regclass('internal_links') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links (target_type, target_handle)';
+    END IF;
+    IF to_regclass('link_suggestion_events') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_created ON link_suggestion_events (created_at)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_suggestion ON link_suggestion_events (suggestion_id)';
+    END IF;
+    IF to_regclass('team_tasks') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS team_tasks_owner_status ON team_tasks(owner, status)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS team_tasks_stale ON team_tasks(status, last_log_at)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS team_tasks_completed ON team_tasks(completed_at)';
+    END IF;
+    IF to_regclass('team_task_events') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS team_task_events_task ON team_task_events(task_id, id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS team_task_events_time ON team_task_events(at, id)';
+    END IF;
+    IF to_regclass('link_body_snapshots') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_link_body_suggestion ON link_body_snapshots(suggestion_id, id DESC)';
+    END IF;
+    IF to_regclass('link_suggestion_restore_audit') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_restore_audit_suggestion ON link_suggestion_restore_audit(suggestion_id)';
+    END IF;
+    IF to_regclass('google_api_cache') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_google_api_cache_type ON google_api_cache(cache_type)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_google_api_cache_url ON google_api_cache(url)';
+    END IF;
+    IF to_regclass('robots_snapshots') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS robots_snapshot_url ON robots_snapshots(url, id DESC)';
+    END IF;
+    IF to_regclass('rank_checks') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS rank_checks_history ON rank_checks(keyword_id, checked_at DESC)';
+    END IF;
+    IF to_regclass('rank_requests') IS NOT NULL THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS rank_requests_month ON rank_requests(month)';
+    END IF;
+END
+$$;
+
+-- Append-only guard for team_task_events (SQLite RAISE(ABORT) triggers).
+DO $$
+BEGIN
+    IF to_regclass('team_task_events') IS NULL THEN
+        RETURN;
+    END IF;
+    EXECUTE $fn$
+        CREATE OR REPLACE FUNCTION team_task_events_append_only()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $body$
+        BEGIN
+            RAISE EXCEPTION 'Task history is append-only';
+        END
+        $body$;
+    $fn$;
+    DROP TRIGGER IF EXISTS team_events_no_update ON team_task_events;
+    DROP TRIGGER IF EXISTS team_events_no_delete ON team_task_events;
+    CREATE TRIGGER team_events_no_update
+        BEFORE UPDATE ON team_task_events
+        FOR EACH ROW EXECUTE FUNCTION team_task_events_append_only();
+    CREATE TRIGGER team_events_no_delete
+        BEFORE DELETE ON team_task_events
+        FOR EACH ROW EXECUTE FUNCTION team_task_events_append_only();
+END
+$$;
+
 DO $$
 DECLARE
     rec record;

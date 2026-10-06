@@ -87,11 +87,12 @@ class TestGetDbPathFromConnection:
         result = _get_db_path_from_connection(db_conn)
         assert result == str(testdb.path)
 
-    def test_returns_empty_when_path_unavailable(self, testdb, db_conn):
+    def test_returns_dsn_on_postgres(self, testdb, db_conn):
         if not testdb.is_postgres:
-            pytest.skip("adapted PRAGMA skip is Postgres testdb only")
+            pytest.skip("DSN sentinel is Postgres only")
         result = _get_db_path_from_connection(db_conn)
-        assert result == "" or result is None
+        assert result
+        assert result != ""
 
 
 class TestEnqueueEmbeddingSync:
@@ -224,25 +225,26 @@ class TestEnqueueEmbeddingSyncFromConn:
 
     def test_extracts_path_and_enqueues(self, testdb):
         """Test that it extracts db_path from connection and enqueues."""
-        if testdb.is_postgres:
-            pytest.skip("PRAGMA database_list cannot extract a file path on Postgres")
-        db_path = testdb.path
         conn = _make_test_db(testdb)
 
         with patch("shopifyseo.embedding_sync.enqueue_embedding_sync") as mock_enqueue:
             enqueue_embedding_sync_from_conn(conn, object_types=["product"])
             mock_enqueue.assert_called_once()
             call_args = mock_enqueue.call_args
-            # First arg should be the db_path
-            assert str(db_path) in str(call_args)
+            if testdb.path is not None:
+                assert str(testdb.path) in str(call_args)
+            else:
+                assert mock_enqueue.call_args.args[0]
 
         conn.close()
 
-    def test_warns_when_path_unavailable(self, testdb, db_conn, caplog):
-        """Test that it logs a warning when the path cannot be extracted."""
+    def test_enqueues_on_postgres_connection(self, testdb, db_conn):
+        """RC8: PG connections must enqueue, not silently skip."""
         if not testdb.is_postgres:
-            pytest.skip("path-unavailable case is Postgres testdb (PRAGMA database_list skipped)")
-        enqueue_embedding_sync_from_conn(db_conn, object_types=["product"])
+            pytest.skip("Postgres enqueue sentinel")
+        with patch("shopifyseo.embedding_sync.enqueue_embedding_sync") as mock_enqueue:
+            enqueue_embedding_sync_from_conn(db_conn, object_types=["product"])
+            mock_enqueue.assert_called_once()
 
 
 class TestConvenienceWrappers:

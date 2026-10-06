@@ -6,6 +6,7 @@ from typing import Any, Generator, Sequence
 
 from .backend import Backend, backend_for_connection, get_backend
 from .compat import _translate_placeholders
+from .pg_runtime import is_postgres_runtime
 from .timestamps import rewrite_current_timestamp_for_postgres
 
 # Transaction-scoped advisory lock keys for Postgres (pg_advisory_xact_lock).
@@ -111,8 +112,9 @@ def insert_returning_id(
     if backend == Backend.POSTGRES:
         sql = sql.rstrip().rstrip(";")
         sql = f"{sql} RETURNING {id_column}"
-        sql = rewrite_current_timestamp_for_postgres(sql)
-        sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
+        if not is_postgres_runtime(conn):
+            sql = rewrite_current_timestamp_for_postgres(sql)
+            sql = _translate_placeholders(sql, to_postgres=True, escape_percent=True)
         cursor = conn.execute(sql, params if params else ())
         row = cursor.fetchone()
         return row[0] if row else None

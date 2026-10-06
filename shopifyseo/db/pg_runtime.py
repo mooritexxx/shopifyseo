@@ -64,18 +64,22 @@ def _numeric_as_float_loader() -> type:
     return _NumericAsFloatLoader
 
 
-def _rewrite_postgres_sql(query: str) -> str:
-    """CURRENT_TIMESTAMP rewrite then ``?`` → ``%s`` (auto % escape).
+def is_postgres_runtime(conn: Any) -> bool:
+    """True when ``apply_postgres_runtime_compat`` has been installed on ``conn``."""
+    return bool(getattr(conn, _RUNTIME_FLAG, False))
 
-    Idempotent for already-translated SQL: if ``%s`` is present, leftover
-    ``?`` tokens are jsonb operators (``??`` already reduced), not placeholders.
+
+def _rewrite_postgres_sql(query: str, *, params: Any = None) -> str:
+    """CURRENT_TIMESTAMP rewrite then ``?`` → ``%s``.
+
+    This is the only placeholder translator on a production PG connection.
+    ``escape_percent`` follows psycopg: ``%`` is processed only when a params
+    sequence is passed (including empty ``()`` / ``[]``).
     """
     query = rewrite_current_timestamp_for_postgres(query)
-    # escape_percent=None: escape % only when translating placeholders, so
-    # callers (and tests) that already pass %s are not double-escaped.
-    if "%s" in query:
-        return query
-    return _translate_placeholders(query, to_postgres=True, escape_percent=None)
+    return _translate_placeholders(
+        query, to_postgres=True, escape_percent=params is not None
+    )
 
 
 def postgres_runtime_cursor_factory() -> type:
@@ -87,14 +91,14 @@ def postgres_runtime_cursor_factory() -> type:
         class PostgresRuntimeCursor(psycopg.Cursor):
             def execute(self, query: Any, params: Any = None, **kwargs: Any) -> Any:
                 if isinstance(query, str):
-                    query = _rewrite_postgres_sql(query)
+                    query = _rewrite_postgres_sql(query, params=params)
                 if params is None and not kwargs:
                     return super().execute(query)
                 return super().execute(query, params, **kwargs)
 
             def executemany(self, query: Any, params_seq: Any, **kwargs: Any) -> Any:
                 if isinstance(query, str):
-                    query = _rewrite_postgres_sql(query)
+                    query = _rewrite_postgres_sql(query, params=params_seq)
                 return super().executemany(query, params_seq, **kwargs)
 
         _RuntimeCursor = PostgresRuntimeCursor

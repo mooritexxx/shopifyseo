@@ -314,6 +314,13 @@ def _seed(pg_conn) -> dict[str, object]:
         ),
     )
     pg_conn.execute(
+        "ALTER TABLE competitor_profiles ADD COLUMN IF NOT EXISTS authority_score DOUBLE PRECISION"
+    )
+    pg_conn.execute(
+        "INSERT INTO competitor_profiles (domain, authority_score) VALUES (?, ?)",
+        ("authority-competitor.com", 6.5),
+    )
+    pg_conn.execute(
         "INSERT INTO service_settings (key, value) VALUES (?, ?)",
         (
             "target_keywords",
@@ -428,6 +435,7 @@ def _assert_not_5xx(response, label: str) -> None:
         ("GET", "/api/embeddings/cannibalization", {"params": {"threshold": 0.01}}),
         ("GET", "/api/embeddings/status", {}),
         ("GET", "/api/settings", {}),
+        ("GET", "/api/site-authority", {}),
     ],
 )
 def test_route_smoke_get(client, smoke_ids, method, path, kwargs):

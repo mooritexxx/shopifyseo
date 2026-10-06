@@ -18,6 +18,7 @@ from typing import Any
 
 from shopifyseo.dashboard_google import get_service_setting
 from shopifyseo.dashboard_http import HttpRequestError, request_json
+from shopifyseo.db import Backend, backend_for_connection
 
 logger = logging.getLogger(__name__)
 
@@ -295,9 +296,15 @@ def load_site_authority(conn: Any) -> dict:
 
 def competitor_authority_benchmark(conn: Any) -> dict:
     """Scored-competitor context so the dashboard card is useful before indexing."""
+    # Postgres has no ROUND(double precision, int); SQLite SQL stays identical.
+    avg_expr = (
+        "ROUND(AVG(authority_score)::numeric, 2)"
+        if backend_for_connection(conn) == Backend.POSTGRES
+        else "ROUND(AVG(authority_score), 2)"
+    )
     row = conn.execute(
-        """
-        SELECT COUNT(*), ROUND(AVG(authority_score), 2), MAX(authority_score)
+        f"""
+        SELECT COUNT(*), {avg_expr}, MAX(authority_score)
           FROM competitor_profiles WHERE authority_score IS NOT NULL
         """
     ).fetchone()

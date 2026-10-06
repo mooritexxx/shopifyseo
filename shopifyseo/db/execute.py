@@ -13,6 +13,7 @@ from typing import Any, Sequence
 
 from .backend import Backend, backend_for_connection, parse_database_url
 from .compat import _translate_placeholders
+from .pg_runtime import is_postgres_runtime
 from .timestamps import rewrite_current_timestamp_for_postgres
 
 
@@ -55,7 +56,11 @@ def execute(
     if backend is None:
         backend = backend_for_connection(conn)
 
-    translated_sql = _translate_sql(sql, params, backend)
+    # Runtime cursor is the only translator on a production PG connection.
+    if backend == Backend.POSTGRES and is_postgres_runtime(conn):
+        translated_sql = sql
+    else:
+        translated_sql = _translate_sql(sql, params, backend)
 
     if params is None:
         return conn.execute(translated_sql)
@@ -83,7 +88,12 @@ def executemany(
     if backend is None:
         backend = backend_for_connection(conn)
 
-    translated_sql = _translate_sql(sql, (), backend) if backend == Backend.POSTGRES else sql
+    if backend == Backend.POSTGRES and is_postgres_runtime(conn):
+        translated_sql = sql
+    elif backend == Backend.POSTGRES:
+        translated_sql = _translate_sql(sql, (), backend)
+    else:
+        translated_sql = sql
 
     if backend == Backend.POSTGRES:
         cursor = conn.cursor()

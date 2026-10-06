@@ -839,7 +839,7 @@ which rows match.
 | `pg_cutover.sh`                     | Plan 8 cutover runner (backup → pgloader → fixups → NOT VALID FKs → sequences → ANALYZE → verify). Does **not** set live `DATABASE_URL` or restart uvicorn. See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `pg_to_sqlite_delta.py`             | Plan 8 rollback helper: export PG rows newer than `cutover_mark.json` onto a SQLite **copy** (refuses the live catalog by default) |
 | `ensure-postgres.sh`                | Optional box-level PG17 + pgvector install. **Not** on the live app start path |
-| `pg_cutover/`                       | pgloader load file (`type blob to bytea using byte-vector-to-bytea`), `post_load_*.sql` (secondary indexes + team_task_events append-only triggers), verify/resync CLIs (BLOB length/sha256), `pg_env.example` (no secrets) |
+| `pg_cutover/`                       | pgloader load file (`type blob to bytea using byte-vector-to-bytea`), `post_load_*.sql` (rename pgloader `idx_<oid>_<name>` → 8 existing + 33 secondary = 41 SQLite indexes; team_task_events append-only triggers), verify/resync CLIs (BLOB length/sha256), `pg_env.example` (no secrets) |
 
 
 ---

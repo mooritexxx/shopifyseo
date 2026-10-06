@@ -116,6 +116,9 @@ def test_constraint_sql_is_not_valid_and_does_not_delete_orphans():
     assert "NOT VALID" in sql
     assert "cluster_keywords_cluster_id_fkey" in sql
     assert "idx_keyword_metrics_keyword_lower" in sql
+    assert "shopifyseo_ensure_index" in sql
+    assert "ALTER INDEX" in sql
+    assert "idx_[0-9]+_" in sql
     assert "DELETE FROM" not in sql.upper().replace("\n", " ")
     fixups = (CUTOVER_SQL_DIR / "post_load_fixups.sql").read_text()
     assert "cluster_keywords" not in fixups or "DELETE" not in fixups
@@ -129,6 +132,35 @@ def test_orphan_delete_sql_only_from_explicit_helper():
     assert "--delete-cluster-orphans" in script
     # Default path reports orphans; delete is gated on DELETE_ORPHANS.
     assert 'if [[ "$DELETE_ORPHANS" -eq 1 ]]' in script
+
+
+def test_sqlite_cli_wins_over_env_file(tmp_path):
+    """--sqlite must win over SQLITE_PATH sourced from --env-file."""
+    env_db = tmp_path / "from-env.sqlite3"
+    sqlite3.connect(env_db).close()
+    cli_missing = tmp_path / "from-cli-missing.sqlite3"
+    env_file = tmp_path / "pg.env"
+    env_file.write_text(
+        f"SQLITE_PATH={env_db}\n"
+        "CUTOVER_DATABASE_URL=postgresql://u:p@127.0.0.1:1/db\n"
+    )
+    proc = _run(
+        [
+            "bash",
+            str(CUTOVER_SH),
+            "--env-file",
+            str(env_file),
+            "--sqlite",
+            str(cli_missing),
+            "--skip-pgloader",
+            "--skip-verify",
+        ]
+    )
+    text = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "sqlite file not found" in text
+    assert str(cli_missing) in text
+    assert str(env_db) not in text.split("sqlite file not found", 1)[-1]
 
 
 def test_docs_say_live_stays_sqlite():

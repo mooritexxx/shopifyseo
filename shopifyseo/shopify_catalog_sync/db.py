@@ -195,7 +195,6 @@ def ensure_column(conn: Any, table: str, column: str, ddl: str) -> None:
 
 def ensure_schema(conn: Any) -> None:
     if sqlite_runtime_ddl():
-        set_foreign_keys(conn, True)
         conn.executescript(
             """
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -423,6 +422,9 @@ def ensure_schema(conn: Any) -> None:
         );
         """
     )
+        # After executescript's implicit COMMIT — SQLite ignores
+        # foreign_keys while a transaction is already open.
+        set_foreign_keys(conn, True)
     ensure_column(conn, "sync_runs", "collections_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "collection_metafields_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "pages_synced", "INTEGER NOT NULL DEFAULT 0")

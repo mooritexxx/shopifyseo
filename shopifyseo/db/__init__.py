@@ -16,7 +16,7 @@ from .backend import (
 )
 from .compat import DictRow
 from .connect import BUSY_TIMEOUT_MS, connect, connect_postgres, connect_sqlite
-from .pg_runtime import apply_postgres_runtime_compat
+from .pg_runtime import apply_postgres_runtime_compat, is_postgres_runtime
 from .exceptions import (
     DatabaseError,
     IntegrityError,
@@ -92,6 +92,7 @@ __all__ = [
     "connect_postgres",
     "get_connection",
     "apply_postgres_runtime_compat",
+    "is_postgres_runtime",
     "BUSY_TIMEOUT_MS",
     # Execute wrapper
     "execute",

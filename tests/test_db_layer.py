@@ -755,73 +755,60 @@ class TestPostgresTranslation:
     """PostgreSQL placeholder translation tests with real execution."""
 
     def test_basic_placeholder(self, pg_conn):
-        row = pg_conn.execute(
-            _translate_placeholders("SELECT ? AS val", to_postgres=True),
-            (42,)
-        ).fetchone()
+        row = pg_conn.execute("SELECT ? AS val", (42,)).fetchone()
         assert row[0] == 42
 
     def test_like_with_percent_and_params(self, pg_conn):
         row = pg_conn.execute(
-            _translate_placeholders("SELECT 'abc' LIKE 'a%' AS m, ? AS v", to_postgres=True),
-            ("test",)
+            "SELECT 'abc' LIKE 'a%' AS m, ? AS v",
+            ("test",),
         ).fetchone()
         assert row["m"] is True
         assert row["v"] == "test"
 
     def test_modulo_with_percent_and_params(self, pg_conn):
         row = pg_conn.execute(
-            _translate_placeholders("SELECT 7 % 3 AS r, ? AS v", to_postgres=True),
-            ("test",)
+            "SELECT 7 % 3 AS r, ? AS v",
+            ("test",),
         ).fetchone()
         assert row["r"] == 1
         assert row["v"] == "test"
 
     def test_like_no_params(self, pg_conn):
-        sql = _translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True)
-        row = pg_conn.execute(sql).fetchone()
+        row = pg_conn.execute("SELECT 'a%' LIKE 'a%' AS m").fetchone()
         assert row["m"] is True
 
     def test_modulo_no_params(self, pg_conn):
-        sql = _translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True)
-        row = pg_conn.execute(sql).fetchone()
+        row = pg_conn.execute("SELECT 7 % 3 AS r").fetchone()
         assert row["r"] == 1
 
     def test_like_empty_params(self, pg_conn):
-        sql = _translate_placeholders("SELECT 'a%' LIKE 'a%' AS m", to_postgres=True, escape_percent=True)
-        row = pg_conn.execute(sql, ()).fetchone()
+        row = pg_conn.execute("SELECT 'a%' LIKE 'a%' AS m", ()).fetchone()
         assert row["m"] is True
 
     def test_modulo_empty_params(self, pg_conn):
-        sql = _translate_placeholders("SELECT 7 % 3 AS r", to_postgres=True, escape_percent=True)
-        row = pg_conn.execute(sql, ()).fetchone()
+        row = pg_conn.execute("SELECT 7 % 3 AS r", ()).fetchone()
         assert row["r"] == 1
 
     def test_single_line_comment(self, pg_conn):
-        row = pg_conn.execute(
-            _translate_placeholders("SELECT ? AS b -- why?", to_postgres=True),
-            ("test",)
-        ).fetchone()
+        row = pg_conn.execute("SELECT ? AS b -- why?", ("test",)).fetchone()
         assert row["b"] == "test"
 
     def test_multi_line_comment(self, pg_conn):
-        row = pg_conn.execute(
-            _translate_placeholders("SELECT /* is it? */ ? AS b", to_postgres=True),
-            ("test",)
-        ).fetchone()
+        row = pg_conn.execute("SELECT /* is it? */ ? AS b", ("test",)).fetchone()
         assert row["b"] == "test"
 
     def test_backslash_in_standard_string(self, pg_conn):
         row = pg_conn.execute(
-            _translate_placeholders(r"SELECT 'a\', ? AS b, 'c' AS c", to_postgres=True),
-            ("test",)
+            r"SELECT 'a\', ? AS b, 'c' AS c",
+            ("test",),
         ).fetchone()
         assert row["b"] == "test"
 
     def test_double_question_jsonb(self, pg_conn):
         row = pg_conn.execute(
-            _translate_placeholders("SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key, ? AS v", to_postgres=True),
-            ("test",)
+            "SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key, ? AS v",
+            ("test",),
         ).fetchone()
         assert row["has_key"] is True
         assert row["v"] == "test"
@@ -1068,7 +1055,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_no_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True)).fetchone()
+        pg_result = pg_conn.execute(sql).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1079,7 +1066,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_no_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True)).fetchone()
+        pg_result = pg_conn.execute(sql).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1090,7 +1077,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_empty_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
+        pg_result = pg_conn.execute(sql, ()).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1101,9 +1088,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_with_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r, ? AS v"
-        pg_result = pg_conn.execute(
-            _translate_placeholders(sql, to_postgres=True), ("x",)
-        ).fetchone()
+        pg_result = pg_conn.execute(sql, ("x",)).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1115,7 +1100,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_empty_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), ()).fetchone()
+        pg_result = pg_conn.execute(sql, ()).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1126,7 +1111,7 @@ class TestPostgresPercentMatching:
 
     def test_modulo_matches_sqlite_empty_list_params(self, pg_conn):
         sql = "SELECT 7 % 3 AS r"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        pg_result = pg_conn.execute(sql, []).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -1137,7 +1122,7 @@ class TestPostgresPercentMatching:
 
     def test_like_matches_sqlite_empty_list_params(self, pg_conn):
         sql = "SELECT 'abc' LIKE 'a%' AS m"
-        pg_result = pg_conn.execute(_translate_placeholders(sql, to_postgres=True, escape_percent=True), []).fetchone()
+        pg_result = pg_conn.execute(sql, []).fetchone()
         with tempfile.TemporaryDirectory() as tmpdir:
             sqlite_conn = connect_sqlite(Path(tmpdir) / "test.db")
             try:
@@ -2893,6 +2878,39 @@ class TestPostgresRuntimeCompat:
         finally:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
+            conn.close()
+
+    def test_qmark_with_percent_literal_like(self, pg_url):
+        """Raw conn.execute: ``?`` plus a ``LIKE '%sale%'`` literal."""
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_pg_runtime_like_pct"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute(f"CREATE TABLE {table} (name TEXT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (name) VALUES (?)", ("winter sale",))
+            conn.commit()
+            row = conn.execute(
+                f"SELECT name FROM {table} WHERE name LIKE '%sale%' AND name = ?",
+                ("winter sale",),
+            ).fetchone()
+            assert row["name"] == "winter sale"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_jsonb_exists_no_params_via_db_execute(self, pg_url):
+        """db.execute with ``??`` and no params — cursor is the only translator."""
+        from shopifyseo.db import connect_postgres, execute
+
+        conn = connect_postgres(pg_url)
+        try:
+            row = execute(conn, "SELECT '{\"a\":1}'::jsonb ?? 'a' AS has_key").fetchone()
+            assert row["has_key"] is True
+        finally:
             conn.close()
 
     def test_error_does_not_autocommit_rollback(self, pg_url):

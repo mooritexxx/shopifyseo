@@ -71,7 +71,6 @@ _DATETIME_NOW = re.compile(r"\bdatetime\(\s*'now'\s*\)", re.IGNORECASE)
 # execute already rewrites that token to a TEXT expression; wrapping the
 # result in ``AT TIME ZONE`` yields ``timezone(unknown, text)``.
 _LAST_INSERT_ROWID = re.compile(r"\blast_insert_rowid\s*\(\s*\)", re.IGNORECASE)
-_ROUND_TWO_ARG = re.compile(r"\bROUND\s*\(([^,]+),\s*(\d+)\s*\)", re.IGNORECASE)
 _SQLITE_RAISE_TRIGGER = re.compile(
     r"^\s*CREATE\s+TRIGGER\b.*\bRAISE\s*\(\s*ABORT\s*,",
     re.IGNORECASE | re.DOTALL,
@@ -205,8 +204,7 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
     ``now()``, not ``CURRENT_TIMESTAMP``, so the production token rewrite
     cannot wrap text in ``AT TIME ZONE``).     ``last_insert_rowid()`` becomes
     ``lastval()`` so leftover tests that read the IDENTITY after INSERT hit
-    Postgres without changing production helpers. Two-argument ``ROUND(x, n)``
-    becomes ``ROUND((x)::numeric, n)`` (Postgres has no ``ROUND(double, int)``).
+    Postgres without changing production helpers.
     """
     head = sql.lstrip()[:12].upper()
     if head.startswith("CREATE") or head.startswith("ALTER"):
@@ -227,8 +225,6 @@ def rewrite_sqlite_ddl_for_postgres(sql: str) -> str:
             sql = sql.rstrip().rstrip(";") + f" ON CONFLICT ({cols[0]}) DO UPDATE SET {assignments}"
     sql = _DATETIME_NOW.sub(PG_NOW_TEXT_SQL, sql)
     sql = _LAST_INSERT_ROWID.sub("lastval()", sql)
-    # Postgres ROUND(double, int) does not exist; SQLite accepts two args.
-    sql = _ROUND_TWO_ARG.sub(r"ROUND((\1)::numeric, \2)", sql)
     return sql
 
 

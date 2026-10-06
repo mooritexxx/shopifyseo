@@ -163,14 +163,16 @@ def test_sqlite_cli_wins_over_env_file(tmp_path):
     assert str(env_db) not in text.split("sqlite file not found", 1)[-1]
 
 
-def test_docs_say_live_stays_sqlite():
+def test_docs_say_cutover_does_not_flip_app():
     text = DOCS.read_text()
-    assert "Live deploy stays on SQLite" in text
-    assert "does not flip" in text.lower() or "does **not** set live `DATABASE_URL`" in text
+    assert "does **not** flip uvicorn" in text.lower() or "does not flip uvicorn" in text.lower()
+    assert "does **not** set live `DATABASE_URL`" in text or "Does **not** set live `DATABASE_URL`" in text
     assert "pg.env" in text
     assert "--delete-cluster-orphans" in text
     assert "pg_to_sqlite_delta" in text
     assert "ensure-postgres.sh" in text
+    assert "start-app.sh" in text
+    assert "pg_live_cutover.json" in text
     assert "never commit" in text.lower() or "Never commit" in text
 
 

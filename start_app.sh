@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Dev-only: verify deps, build the SPA, start uvicorn in the foreground.
+# Production box restarts must use scripts/start-app.sh (ensure-postgres +
+# live mark). This script does not source pg.env and does not honor
+# /home/box/.config/shopifyseo/pg_live_cutover.json.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

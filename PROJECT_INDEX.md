@@ -24,7 +24,7 @@ with the code, the code wins and the map is the bug.
 | Backend app | `backend/app/main.py` (FastAPI; registers all routers, lifespan, exception handlers) |
 | DB connections | `backend/app/db.py` (`open_db_connection`, schema bootstrap per path) |
 | Frontend root | `frontend/src/main.tsx` → `frontend/src/app/` (providers, router; SPA basename `/app`) |
-| Run everything | `start_app.sh`; dev loop `scripts/dev-restart-local.sh` |
+| Run everything | Production: `scripts/start-app.sh`. Dev: `start_app.sh`; `scripts/dev-restart-local.sh` |
 | Default database | `shopify_catalog.sqlite3` (override `SHOPIFY_CATALOG_DB_PATH`) |
 
 ---
@@ -101,7 +101,8 @@ PYTHONPATH=. python3 -m pytest tests/ -q       # full python suite
 ruff check . --fix && ruff format .            # python lint/format
 cd frontend && npx tsc --noEmit                # typecheck
 cd frontend && npm run build                   # build SPA (npm run rebuild clears cache)
-./scripts/dev-restart-local.sh                 # stop :8000, build, serve
+./scripts/start-app.sh                         # production start (ensure-postgres + live mark)
+./scripts/dev-restart-local.sh                 # stop :8000, build, serve (dev-only)
 ```
 
 ## Docs

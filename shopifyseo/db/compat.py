@@ -98,12 +98,49 @@ _TOKEN_PATTERN = re.compile(
 )
 
 
+# Word-boundary LIKE only: does not match ILIKE, likes, unlike_count.
+_LIKE_KEYWORD = re.compile(r"(?<![A-Za-z0-9_])LIKE(?![A-Za-z0-9_])", re.IGNORECASE)
+
+
+def _is_protected_sql_token(token: str) -> bool:
+    """True for string literals, quoted identifiers, and comments."""
+    if not token:
+        return False
+    if token[0] in "'\"":
+        return True
+    return token.startswith("--") or token.startswith("/*")
+
+
+def _rewrite_like_to_ilike(token: str) -> str:
+    """Rewrite SQL ``LIKE`` / ``NOT LIKE`` to ``ILIKE`` / ``NOT ILIKE``.
+
+    Leaves ``ILIKE``, column names (``likes``, ``unlike_count``), string
+    literals, quoted identifiers, and comments unchanged. ``ESCAPE`` clauses
+    are preserved because only the operator keyword is rewritten.
+    """
+    if _is_protected_sql_token(token):
+        return token
+
+    def _sub(match: re.Match[str]) -> str:
+        word = match.group(0)
+        prefix = "I" if word[0].isupper() else "i"
+        return f"{prefix}{word}"
+
+    return _LIKE_KEYWORD.sub(_sub, token)
+
+
 def _translate_placeholders(sql: str, to_postgres: bool = True, *, escape_percent: bool | None = None) -> str:
-    """Translate ? placeholders to %s for PostgreSQL.
+    """Translate ? placeholders to %s and LIKE to ILIKE for PostgreSQL.
 
     - ? outside strings/comments -> %s
     - ?? -> ? (jsonb operator escape)
     - ? inside strings/identifiers/comments preserved
+    - LIKE / NOT LIKE -> ILIKE / NOT ILIKE (SQLite LIKE is ASCII CI; PG LIKE is not)
+    - like inside '...' / \"...\" / comments is not rewritten
+    - already-ILIKE, likes, unlike_count are not rewritten
+    - ESCAPE clauses are left in place
+
+    When ``to_postgres`` is False the SQL is returned unchanged (SQLite path).
 
     Args:
         sql: The SQL string to translate.
@@ -126,7 +163,7 @@ def _translate_placeholders(sql: str, to_postgres: bool = True, *, escape_percen
         elif token == "??":
             tokens.append("?")
         else:
-            tokens.append(token)
+            tokens.append(_rewrite_like_to_ilike(token))
 
     should_escape = escape_percent if escape_percent is not None else has_placeholders
     if should_escape:

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build the SPA and restart the FastAPI app on http://127.0.0.1:8000/app/
+# Dev-only: build the SPA and restart FastAPI on http://127.0.0.1:8000/app/
+# with --reload. Does not honor the live Postgres mark and does not source
+# pg.env. Production / box reboot path: scripts/start-app.sh.
 # Usage (from repo root):
 #   ./scripts/dev-restart-local.sh           # npm run build + uvicorn (foreground)
 #   ./scripts/dev-restart-local.sh --rebuild # clean Vite cache then build + uvicorn

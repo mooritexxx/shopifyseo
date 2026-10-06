@@ -1148,7 +1148,7 @@ class TestInsertReturningIdPercentLiteral:
         )
         pg_conn.commit()
 
-        row = pg_conn.execute("SELECT val FROM percent_test WHERE id = %s", (row_id,)).fetchone()
+        row = pg_conn.execute("SELECT val FROM percent_test WHERE id = ?", (row_id,)).fetchone()
         assert row["val"] == "50%"
 
         pg_conn.execute("DROP TABLE percent_test")
@@ -2229,7 +2229,7 @@ class TestOnConflictDoNothing:
             )
             conn.commit()
             assert cur.rowcount == 0
-            row = conn.execute(f"SELECT note FROM {table} WHERE term = %s", ("vape",)).fetchone()
+            row = conn.execute(f"SELECT note FROM {table} WHERE term = ?", ("vape",)).fetchone()
             assert row["note"] == "first"
         finally:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -2276,7 +2276,7 @@ class TestOnConflictDoUpdate:
             execute(conn, sql, ("img1", "http://a", "image/jpeg"), backend=Backend.POSTGRES)
             execute(conn, sql, ("img1", "http://b", "image/webp"), backend=Backend.POSTGRES)
             conn.commit()
-            row = conn.execute(f"SELECT url, mime FROM {table} WHERE image_id = %s", ("img1",)).fetchone()
+            row = conn.execute(f"SELECT url, mime FROM {table} WHERE image_id = ?", ("img1",)).fetchone()
             assert row["url"] == "http://b"
             assert row["mime"] == "image/webp"
         finally:

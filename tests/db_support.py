@@ -282,7 +282,7 @@ def adapt_postgres_test_connection(conn: Any) -> Any:
               ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
             JOIN pg_class cls ON cls.oid = a.attrelid
             JOIN pg_namespace n ON n.oid = cls.relnamespace
-            WHERE cls.relname = %s
+            WHERE cls.relname = ?
               AND a.attnum > 0 AND NOT a.attisdropped
               AND (
                   n.nspname = current_schema()

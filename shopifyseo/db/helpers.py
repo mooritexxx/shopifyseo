@@ -196,7 +196,7 @@ def table_exists(conn: Any, table: str, *, backend: Backend | None = None) -> bo
             """
             SELECT 1 FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relname = %s
+            WHERE c.relname = ?
               AND c.relkind = 'r'
               AND (
                   n.nspname = current_schema()
@@ -220,12 +220,12 @@ def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> s
         backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
-        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        row = conn.execute("SELECT to_regclass(?)::oid", (table,)).fetchone()
         if row is None or row[0] is None:
             return set()
         oid = row[0]
         rows = conn.execute(
-            "SELECT attname FROM pg_attribute WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped",
+            "SELECT attname FROM pg_attribute WHERE attrelid = ? AND attnum > 0 AND NOT attisdropped",
             (oid,),
         ).fetchall()
         return {r[0] for r in rows}
@@ -245,7 +245,7 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
         backend = _resolve_conn_backend(conn, backend)
 
     if backend == Backend.POSTGRES:
-        row = conn.execute("SELECT to_regclass(%s)::oid", (table,)).fetchone()
+        row = conn.execute("SELECT to_regclass(?)::oid", (table,)).fetchone()
         if row is None or row[0] is None:
             return None
         oid = row[0]
@@ -255,7 +255,7 @@ def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str |
                    attnotnull, pg_get_expr(adbin, adrelid) AS default_expr
             FROM pg_attribute
             LEFT JOIN pg_attrdef ON adrelid = attrelid AND adnum = attnum
-            WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped
+            WHERE attrelid = ? AND attnum > 0 AND NOT attisdropped
             ORDER BY attnum
             """,
             (oid,),
@@ -292,7 +292,7 @@ def index_exists(conn: Any, index_name: str, *, backend: Backend | None = None) 
             """
             SELECT 1 FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relname = %s
+            WHERE c.relname = ?
               AND c.relkind = 'i'
               AND (
                   n.nspname = current_schema()

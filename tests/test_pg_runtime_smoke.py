@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import struct
 import sys
@@ -101,13 +102,37 @@ def _sqlite_schema_statements() -> list[str]:
     return statements
 
 
+# Cutover loads with ``no foreign keys``; sqlite_master is alphabetical so
+# blog_articles (REFERENCES blogs) is emitted before blogs.
+_TABLE_FOREIGN_KEY = re.compile(
+    r",?\s*FOREIGN\s+KEY\s*\([^)]*\)\s*REFERENCES\s+\w+\s*\([^)]*\)"
+    r"(?:\s+ON\s+DELETE\s+\w+)?",
+    re.IGNORECASE,
+)
+_COLUMN_REFERENCES = re.compile(
+    r"\s+REFERENCES\s+\w+\s*\([^)]*\)(?:\s+ON\s+DELETE\s+\w+)?",
+    re.IGNORECASE,
+)
+
+
+def _strip_sqlite_foreign_keys(sql: str) -> str:
+    sql = _TABLE_FOREIGN_KEY.sub("", sql)
+    sql = _COLUMN_REFERENCES.sub("", sql)
+    sql = re.sub(r",\s*,", ",", sql)
+    return re.sub(r",\s*\)", ")", sql)
+
+
 def _apply_sqlite_schema_to_pg(pg_conn) -> None:
     from shopifyseo.cutover.sql import apply_sql_file
     from tests.db_support import rewrite_sqlite_ddl_for_postgres
 
     for sql in _sqlite_schema_statements():
-        rewritten = rewrite_sqlite_ddl_for_postgres(sql)
-        pg_conn.execute(rewritten)
+        rewritten = rewrite_sqlite_ddl_for_postgres(_strip_sqlite_foreign_keys(sql))
+        try:
+            pg_conn.execute(rewritten)
+        except Exception as exc:
+            pg_conn.rollback()
+            raise RuntimeError(f"schema apply failed: {rewritten[:400]}") from exc
     pg_conn.commit()
     apply_sql_file(pg_conn, ROOT / "scripts" / "pg_cutover" / "post_load_constraints.sql")
 

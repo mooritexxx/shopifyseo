@@ -6,9 +6,11 @@
 # scripts/dev-restart-local.sh (they do not honor the live mark).
 #
 # Decision:
-#   - no live mark -> SQLite, DATABASE_URL explicitly unset
-#   - live mark present -> source pg.env; require DATABASE_URL and a reachable
-#     Postgres; never fall back to SQLite
+#   - no live mark -> SQLite, DATABASE_URL explicitly unset. ensure-postgres
+#     is best-effort only when $PGDATA_DIR already has PG_VERSION; otherwise
+#     it is skipped so a Postgres problem cannot block SQLite.
+#   - live mark present -> ensure-postgres is fatal; source pg.env; require
+#     DATABASE_URL and a reachable Postgres; never fall back to SQLite
 #   - tmp/pg-cutover-*/cutover_mark.json is NOT a live mark
 set -euo pipefail
 
@@ -42,12 +44,17 @@ Environment (all overridable for tests; defaults are box paths):
   SHOPIFYSEO_UVICORN_LOG      uvicorn log (default /home/box/logs/shopifyseo-uvicorn.log)
   SHOPIFYSEO_UVICORN_HOST     default 127.0.0.1
   SHOPIFYSEO_UVICORN_PORT     default 8000
+  SHOPIFYSEO_ENSURE_POSTGRES_SH  override ensure-postgres.sh path (tests)
+  SHOPIFYSEO_PYTHON           uvicorn interpreter (default $ROOT/.venv/bin/python3)
+  PGDATA_DIR                  used to decide whether to skip ensure when no mark
   SHOPIFYSEO_SKIP_ENSURE_POSTGRES=1
   SHOPIFYSEO_SKIP_BACKUP_CRON=1
 
 A stale apply-load file tmp/pg-cutover-*/cutover_mark.json does not count.
-With a live mark, a missing DATABASE_URL or unreachable Postgres is an error
-— there is no silent SQLite fallback.
+With a live mark, ensure-postgres failure, a missing DATABASE_URL, or
+unreachable Postgres is an error — there is no silent SQLite fallback.
+Without a live mark, ensure-postgres is skipped unless $PGDATA_DIR already
+contains PG_VERSION; then it is best-effort (warn and continue on SQLite).
 EOF
 }
 
@@ -165,8 +172,23 @@ decide() {
   return 0
 }
 
+ENSURE_SH="${SHOPIFYSEO_ENSURE_POSTGRES_SH:-$ROOT/scripts/ensure-postgres.sh}"
+BOX_PGDATA="${PGDATA_DIR:-/home/box/pgdata/17/main}"
+MARK_PRESENT=0
+if [[ -f "$LIVE_MARK" ]]; then
+  MARK_PRESENT=1
+fi
+
 if [[ "$SKIP_ENSURE" -eq 0 ]]; then
-  "$ROOT/scripts/ensure-postgres.sh" || exit $?
+  if [[ "$MARK_PRESENT" -eq 1 ]]; then
+    "$ENSURE_SH" || exit $?
+  elif [[ -f "$BOX_PGDATA/PG_VERSION" ]]; then
+    if ! "$ENSURE_SH"; then
+      echo "warning: ensure-postgres.sh failed; no live mark, continuing on SQLite" >&2
+    fi
+  else
+    echo "note: no live mark and no existing cluster at $BOX_PGDATA; skipping ensure-postgres" >&2
+  fi
 fi
 if [[ "$SKIP_CRON" -eq 0 ]]; then
   if ! "$ROOT/scripts/install-pg-backup-cron.sh"; then
@@ -213,17 +235,18 @@ if port_serving; then
   exit 0
 fi
 
-if [[ ! -x "$ROOT/.venv/bin/python3" ]]; then
-  echo "error: $ROOT/.venv/bin/python3 is missing" >&2
+PYTHON_BIN="${SHOPIFYSEO_PYTHON:-$ROOT/.venv/bin/python3}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "error: $PYTHON_BIN is missing" >&2
   exit 1
 fi
 
-export PATH="$ROOT/.venv/bin:$PATH"
+export PATH="$(dirname "$PYTHON_BIN"):$ROOT/.venv/bin:$PATH"
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 cd "$ROOT"
 mkdir -p "$(dirname "$UVICORN_LOG")"
 
-UVICORN_CMD=("$ROOT/.venv/bin/python3" -m uvicorn backend.app.main:app --host "$UVICORN_HOST" --port "$UVICORN_PORT")
+UVICORN_CMD=("$PYTHON_BIN" -m uvicorn backend.app.main:app --host "$UVICORN_HOST" --port "$UVICORN_PORT")
 
 if [[ "$FOREGROUND" -eq 1 ]]; then
   exec "${UVICORN_CMD[@]}"

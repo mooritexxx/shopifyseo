@@ -89,27 +89,96 @@ under `/home/box`.
 ```
 
 - Installs PostgreSQL 17 binaries if they are missing (apt; adds the PGDG
-  repo if `postgresql-17` is not in the current sources). Installs
-  `postgresql-17-pgvector` when that package is available.
+  repo if `postgresql-17` is not in the current sources). Before installing,
+  writes `create_main_cluster = false` so apt does **not** create or start a
+  Debian `17/main` on 5432. Installs `postgresql-17-pgvector` when available.
 - Data directory: `/home/box/pgdata/17/main` (override with `PGDATA_DIR` or
-  `--pgdata`). Port: `5432` (override with `PGPORT` or `--port`).
+  `--pgdata`). Port: `5432` (override with `PGPORT` or `--port`). Unix socket
+  directory: `$(dirname $PGDATA_DIR)/run` (override with `PGSOCKET_DIR` or
+  `--socket-dir`), created mode `0700`. The cluster is started with
+  `unix_socket_directories` set there so user `box` can create the lock file
+  (not `/var/run/postgresql`).
 - `initdb` **only** when the data dir is missing or empty. A non-empty
-  directory is never overwritten or re-initialized.
-- Starts the cluster if it is not running; no-op if it is already running.
+  directory is never overwritten or re-initialized. If the target port already
+  accepts connections (typically Debian `17/main` on 5432), the script exits
+  nonzero **before** `initdb` or start. Use `PGPORT=5433`, or stop that
+  cluster by hand after migrating.
+- Starts the cluster if it is not running (`pg_ctl status` on `$PGDATA_DIR`);
+  no-op if it is already running. Never deletes or stops `/var/lib/postgresql`.
 - Does **not** create or alter roles/passwords, and does **not** create the
-  `shopifyseo` database, unless you pass `--bootstrap`. `--bootstrap` creates
-  the role and database only when they do not exist; it never changes an
-  existing password.
+  `shopifyseo` database, unless you pass `--bootstrap`. `--bootstrap` talks
+  over the local unix socket with `-w` (trust). It creates the role and
+  database only when they do not exist. When the role is **newly** created
+  and `PGPASSWORD` or the password in `SHOPIFYSEO_PG_ENV`'s `DATABASE_URL`
+  is available, that password is set via a psql variable (never on a command
+  line, never echoed). An existing role is never `ALTER`ed.
 - Safe to run while Postgres is already up. Never prints secrets.
 
-If a Debian cluster config still points at `/var/lib/postgresql/17/main`,
-this script leaves it alone. Migrating that data into `/home/box` is a
-**manual operator step**: stop that cluster, copy the data directory to
-`$PGDATA_DIR`, then start via `ensure-postgres.sh`. Do not delete the old
-config until you have confirmed the copy.
+The current `shopifyseo_cutover_dryrun` database lives in
+`/var/lib/postgresql` and is **not** durable across a box reset. Re-loading
+from a SQLite snapshot (`--apply-load` with a `.backup` snapshot) is the
+alternative to migrating that cluster.
 
-`scripts/start-app.sh` runs `ensure-postgres.sh` on every start so a reset
-brings the cluster back from `/home/box/pgdata`.
+### Migrating an existing Debian `/var/lib` data dir (manual)
+
+A naive `cp` of `/var/lib/postgresql/17/main` into `$PGDATA_DIR` does **not**
+work on this box: that data dir typically contains only
+`postgresql.auto.conf`; `postgresql.conf`, `pg_hba.conf`, and `pg_ident.conf`
+live in `/etc/postgresql/17/main`; files are `postgres:postgres` mode `0700`.
+
+```bash
+# 1. Stop the Debian cluster. Do not delete it yet.
+sudo pg_ctlcluster 17 main stop
+
+# 2. Copy data as root, then hand it to box.
+sudo mkdir -p /home/box/pgdata/17/main
+sudo rsync -a /var/lib/postgresql/17/main/ /home/box/pgdata/17/main/
+sudo chown -R box:box /home/box/pgdata/17/main
+chmod 700 /home/box/pgdata/17/main
+
+# 3. Copy the Debian config files into the data dir.
+sudo cp /etc/postgresql/17/main/postgresql.conf \
+        /etc/postgresql/17/main/pg_hba.conf \
+        /etc/postgresql/17/main/pg_ident.conf \
+        /home/box/pgdata/17/main/
+sudo chown box:box /home/box/pgdata/17/main/postgresql.conf \
+                   /home/box/pgdata/17/main/pg_hba.conf \
+                   /home/box/pgdata/17/main/pg_ident.conf
+
+# 4. Edit those copies: comment or rewrite data_directory, hba_file,
+#    ident_file, external_pid_file, stats_temp_directory, and ssl* so they
+#    no longer point at /var/lib or /etc/postgresql. Set
+#    unix_socket_directories to /home/box/pgdata/17/run (or start with a
+#    minimal conf and let ensure-postgres.sh pass -c unix_socket_directories).
+
+# 5. Pick a free port if 5432 is still bound (PGPORT=5433).
+export PGDATA_DIR=/home/box/pgdata/17/main
+export PGPORT=5433   # or 5432 once the Debian cluster is retired
+./scripts/ensure-postgres.sh --no-install
+
+# 6. Verify counts against the SQLite snapshot, then retire Debian 17/main
+#    (pg_dropcluster) only after that check passes.
+```
+
+### Role and password after a box reset
+
+Binaries and `/var/lib` are gone; `$PGDATA_DIR` under `/home/box` survives.
+`ensure-postgres.sh` starts that cluster. The `shopifyseo` role is inside
+the data dir, so it comes back with the cluster. If you `initdb` a **new**
+empty data dir, recreate the role and database with:
+
+```bash
+# password from PGPASSWORD or DATABASE_URL in pg.env; never printed
+./scripts/ensure-postgres.sh --bootstrap
+```
+
+`--bootstrap` does not change an existing role's password. The other recovery
+path is `pg_restore` from `/home/box/backups/pg/shopifyseo-*.dump`.
+
+`scripts/start-app.sh` peeks at the live mark first. **No mark:** SQLite;
+`ensure-postgres.sh` is skipped unless `$PGDATA_DIR` already has `PG_VERSION`,
+and even then a failure is a warning (uvicorn still starts). **Mark present:**
+`ensure-postgres.sh` failure is fatal (no SQLite fallback).
 
 ## SQLite snapshot for `--apply-load` (required)
 
@@ -214,24 +283,33 @@ After `--apply-load` **and** the post-flip sweep passes:
 
 `scripts/start-app.sh`:
 
-- Runs `ensure-postgres.sh` first.
+- Peeks at the live mark **before** `ensure-postgres.sh`.
 - No live mark → start on SQLite with `DATABASE_URL` explicitly unset.
-- Live mark present → source `pg.env`. If `DATABASE_URL` is missing/empty or
-  Postgres is unreachable, log and exit nonzero. **Never** silently fall
-  back to SQLite.
+  `ensure-postgres.sh` is skipped when `$PGDATA_DIR` has no `PG_VERSION`; if
+  a cluster already exists, ensure is best-effort (warn on failure, still
+  start SQLite).
+- Live mark present → `ensure-postgres.sh` is fatal. Then source `pg.env`.
+  If `DATABASE_URL` is missing/empty or Postgres is unreachable, log and
+  exit nonzero. **Never** silently fall back to SQLite.
 - Starts `.venv/bin/python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000`
   with `.venv/bin` first on `PATH`, logging to
   `/home/box/logs/shopifyseo-uvicorn.log`. Does not start a second instance
   if that port is already serving.
 - `--decide-only` / `--dry-run` prints `sqlite`, `postgres`, or `error`
-  without starting uvicorn.
+  without starting uvicorn (and without running ensure-postgres).
 
 ### `/home/box/bin/restore-tailscale.sh` (outside this repo)
 
-Replace the script's own uvicorn invocation with one line:
+Back the script up first (`cp /home/box/bin/restore-tailscale.sh /home/box/bin/restore-tailscale.sh.bak`). Keep the surrounding `if ! curl …` guard. Line 17 today:
 
 ```bash
-/home/box/workspace/shopifyseo/scripts/start-app.sh
+cd /home/box/workspace/shopifyseo && setsid nohup .venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --app-dir . >/tmp/shopifyseo-uvicorn.log 2>&1 </dev/null & sleep 5
+```
+
+Replace that line with:
+
+```bash
+setsid nohup /home/box/workspace/shopifyseo/scripts/start-app.sh >>/home/box/logs/start-app.log 2>&1 </dev/null & sleep 5
 ```
 
 Do not start uvicorn directly. Do not `unset DATABASE_URL`.
@@ -276,7 +354,9 @@ when the live mark is absent. It never prints `DATABASE_URL`.
 
 The installer is idempotent (no duplicate crontab lines). Cron itself is
 wiped on a box reset; `scripts/start-app.sh` calls the installer so the job
-is restored after `ensure-postgres` brings the cluster back.
+is restored after `ensure-postgres` brings the cluster back. Cron also needs
+its daemon running (`pgrep -x cron`); `install-pg-backup-cron.sh` prints a
+warning when no cron process is found and does not try to start it.
 
 ## Orphans and FK validate
 

@@ -47,12 +47,20 @@ else
   existing=""
 fi
 
+warn_if_cron_missing() {
+  if ! pgrep -x cron >/dev/null 2>&1; then
+    echo "warning: no cron daemon process found (pgrep -x cron); crontab may be installed but jobs will not run until cron is running" >&2
+  fi
+}
+
 if printf '%s\n' "$existing" | grep -F "$MARKER" >/dev/null 2>&1; then
   echo "nightly pg_dump cron already installed"
+  warn_if_cron_missing
   exit 0
 fi
 if printf '%s\n' "$existing" | grep -F "$BACKUP_SH" >/dev/null 2>&1; then
   echo "nightly pg_dump cron already installed"
+  warn_if_cron_missing
   exit 0
 fi
 
@@ -65,3 +73,4 @@ fi
 } | crontab -
 
 echo "installed nightly pg_dump cron: $LINE"
+warn_if_cron_missing

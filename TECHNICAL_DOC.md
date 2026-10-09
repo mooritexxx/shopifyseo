@@ -835,14 +835,14 @@ which rows match.
 | Script                              | Purpose                                                                                   |
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
 | `dev-restart-local.sh`              | **Dev-only** — restart local dev server / Vite build. Does not honor the live mark |
-| `start-app.sh`                      | Production uvicorn start: `ensure-postgres.sh`, live-mark decision, log to `/home/box/logs/shopifyseo-uvicorn.log`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
+| `start-app.sh`                      | Production uvicorn start: peek live mark first; ensure-postgres is fatal only with a mark (best-effort/skip on SQLite). Log to `/home/box/logs/shopifyseo-uvicorn.log`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `mark-pg-live.sh`                   | Write or `--remove` `/home/box/.config/shopifyseo/pg_live_cutover.json` (host/dbname/SHA, no password) |
-| `pg-nightly-backup.sh`              | `pg_dump -Fc` when the live mark exists; keep the newest 7 under `/home/box/backups/pg/` |
-| `install-pg-backup-cron.sh`         | Idempotent crontab install for the nightly dump (re-run after a box reset; `start-app.sh` calls it) |
+| `pg-nightly-backup.sh`              | `pg_dump -Fc` to a `.partial` then `mv` when the live mark exists; keep the newest 7 by filename stamp under `/home/box/backups/pg/` |
+| `install-pg-backup-cron.sh`         | Idempotent crontab install for the nightly dump (warns if `pgrep -x cron` finds nothing; re-run after a box reset; `start-app.sh` calls it) |
 | `run_serp_competitors_from_seeds.py` | CLI runner for DataForSEO SERP-based competitor discovery from seed keywords             |
 | `pg_cutover.sh`                     | Plan 8 cutover runner (backup → pgloader → fixups → NOT VALID FKs → sequences → ANALYZE → verify). Does **not** set live `DATABASE_URL` or restart uvicorn. `--sqlite` must be a snapshot (the script runs `wal_checkpoint(FULL)` on the source). See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `pg_to_sqlite_delta.py`             | Plan 8 rollback helper: export PG rows newer than `cutover_mark.json` onto a SQLite **copy** (refuses the live catalog by default) |
-| `ensure-postgres.sh`                | Reset-durable PG17 cluster under `/home/box/pgdata/17/main`. `initdb` only if the data dir is empty; no role/database create unless `--bootstrap`. Called by `start-app.sh` |
+| `ensure-postgres.sh`                | Reset-durable PG17 cluster under `/home/box/pgdata/17/main` with a box-writable socket dir. `create_main_cluster=false` before apt; `initdb` only if empty; refuse a busy port before init/start; `--bootstrap` over the unix socket (password only for a new role). Called by `start-app.sh` |
 | `pg_cutover/`                       | pgloader load file (`type blob to bytea using byte-vector-to-bytea`), `post_load_*.sql` (rename pgloader `idx_<oid>_<name>` → 8 existing + 33 secondary = 41 SQLite indexes; team_task_events append-only triggers), verify/resync CLIs (BLOB length/sha256), `pg_env.example` (no secrets) |
 
 

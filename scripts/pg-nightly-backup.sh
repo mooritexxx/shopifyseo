@@ -52,6 +52,8 @@ fi
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$BACKUP_DIR/shopifyseo-${STAMP}.dump"
+PARTIAL="$OUT.partial"
+rm -f "$PARTIAL"
 
 # Export libpq vars from DATABASE_URL without printing the URL or password.
 eval "$(python3 -c '
@@ -75,15 +77,23 @@ if ! command -v pg_dump >/dev/null 2>&1; then
   exit 1
 fi
 
-pg_dump -Fc -f "$OUT" || {
+if ! pg_dump -Fc -f "$PARTIAL"; then
+  rm -f "$PARTIAL"
   unset PGPASSWORD
   echo "error: pg_dump failed (DATABASE_URL not printed)" >&2
   exit 1
-}
+fi
 unset PGPASSWORD
 
-# Keep the newest $KEEP dumps; ignore non-dump files.
-mapfile -t dumps < <(ls -1t "$BACKUP_DIR"/shopifyseo-*.dump 2>/dev/null || true)
+if [[ ! -s "$PARTIAL" ]]; then
+  rm -f "$PARTIAL"
+  echo "error: pg_dump wrote an empty file (DATABASE_URL not printed)" >&2
+  exit 1
+fi
+mv "$PARTIAL" "$OUT"
+
+# Keep the newest $KEEP completed dumps, ordered by the stamp in the filename.
+mapfile -t dumps < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'shopifyseo-*.dump' | sort -r)
 if [[ "${#dumps[@]}" -gt "$KEEP" ]]; then
   for stale in "${dumps[@]:$KEEP}"; do
     rm -f "$stale"

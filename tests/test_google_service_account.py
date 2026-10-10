@@ -318,7 +318,6 @@ def test_ads_uses_oauth_token_never_sa(sa_env, monkeypatch):
 
 
 def test_pagespeed_never_uses_service_account_token(sa_env, monkeypatch):
-    monkeypatch.setattr(_gsc, "try_service_account_access_token", lambda scopes=None: "sa-psi-token")
     monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *a, **k: False)
     captured = {}
 

@@ -322,6 +322,7 @@ def test_url_inspection_uses_search_data_token_helper(monkeypatch, db_conn):
         lambda conn: (_ for _ in ()).throw(AssertionError("oauth must not be used for inspection")),
     )
     monkeypatch.setattr(_gsc, "google_api_post", fake_post)
+    monkeypatch.setattr(_gsc, "google_api_get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no network")))
     monkeypatch.setattr(_gsc, "get_service_setting", lambda *a, **k: "sc-domain:example.com")
     out = _gsc.get_url_inspection(
         db_conn,
@@ -329,6 +330,7 @@ def test_url_inspection_uses_search_data_token_helper(monkeypatch, db_conn):
         refresh=True,
         object_type="product",
         object_handle="p",
+        site_url_override="sc-domain:example.com",
     )
     assert posted["token"] == "search-data-token"
     assert "urlInspection" in posted["url"]

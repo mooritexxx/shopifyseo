@@ -98,7 +98,7 @@ def gsc_property_breakdowns_for_signals(conn, site_url: str, period_mode: str = 
         previous_end=w_prev.end,
         refresh=False,
     )
-    if url and dg.google_configured() and _gsc_property_breakdown_slices_uncached(raw):
+    if url and dg.search_data_configured() and _gsc_property_breakdown_slices_uncached(raw):
         raw = dg.get_gsc_property_breakdowns_cached(
             conn,
             site_url=url,
@@ -132,15 +132,27 @@ def gsc_property_breakdowns_for_signals(conn, site_url: str, period_mode: str = 
     }
 
 
+def _google_signals_auth_state() -> tuple[bool, str | None, str | None]:
+    """Return (configured, mode, auth_url). mode is service_account, oauth, or None."""
+    sa_token = dg.try_service_account_access_token(dg.SEARCH_DATA_SCOPES)
+    oauth_configured = dg.google_configured()
+    auth_url = "/auth/google/start" if oauth_configured else None
+    if sa_token:
+        return True, "service_account", auth_url
+    if dg.service_account_available() or oauth_configured:
+        return True, None, auth_url
+    return False, None, auth_url
+
+
 def get_google_signals_data() -> dict[str, Any]:
     conn = open_db_connection()
     try:
-        configured = dg.google_configured()
-        auth_url = "/auth/google/start" if configured else None
+        configured, mode, auth_url = _google_signals_auth_state()
         if not configured:
             return {
                 "configured": False,
                 "connected": False,
+                "mode": None,
                 "auth_url": auth_url,
                 "selected_site": "",
                 "available_sites": [],
@@ -166,9 +178,11 @@ def get_google_signals_data() -> dict[str, Any]:
                     ga4 = dg.get_ga4_summary(conn, refresh=False)
                 except Exception as exc:
                     ga4_error = str(exc)
+            connected_mode = mode or "oauth"
             return {
                 "configured": True,
                 "connected": True,
+                "mode": connected_mode,
                 "auth_url": auth_url,
                 "selected_site": selected_site,
                 "available_sites": [site["siteUrl"] for site in sites],
@@ -189,6 +203,7 @@ def get_google_signals_data() -> dict[str, Any]:
             return {
                 "configured": True,
                 "connected": False,
+                "mode": mode,
                 "auth_url": auth_url,
                 "selected_site": dg.get_service_setting(conn, "search_console_site"),
                 "available_sites": [],

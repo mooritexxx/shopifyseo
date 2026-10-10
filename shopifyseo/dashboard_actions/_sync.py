@@ -696,7 +696,7 @@ def backfill_gsc_page_daily(db_path: str, *, days: int = GSC_BACKFILL_MAX_DAYS) 
         if not site_url:
             return {"ok": False, "error": "No Search Console property selected", "rows": 0}
 
-        access_token = dg.get_google_access_token(conn)
+        access_token = dg.get_search_data_access_token(conn)
         _start, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
         start_date = end_date - timedelta(days=max(days, 1) - 1)
 
@@ -780,7 +780,7 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
             logger.warning("Search Console bulk sync skipped: no site_url resolved")
             return summary
 
-        access_token = dg.get_google_access_token(conn)
+        access_token = dg.get_search_data_access_token(conn)
         start_date, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
 
         _sync_current("Search Console: fetching page totals for the whole property…")
@@ -1003,7 +1003,7 @@ def bulk_refresh_index_status(db_path: str, throttle_seconds: float = 0.1, force
         try:
             sites = dg.get_search_console_sites(conn)
             site_url = dg.preferred_site_url(conn, sites)
-            access_token = dg.get_google_access_token(conn)
+            access_token = dg.get_search_data_access_token(conn)
         except Exception:
             logger.warning("Could not resolve Search Console site up front for index sync", exc_info=True)
             site_url = ""

@@ -1141,6 +1141,30 @@ export const settingsSchema = z.object({
     )
 });
 
+export const googleSignalsSchema = z.object({
+  configured: z.boolean(),
+  connected: z.boolean(),
+  /** Present when Google search data is connected; omitted/null when not. */
+  mode: z.enum(["service_account", "oauth"]).nullable().optional(),
+  auth_url: z.string().nullable().optional(),
+  selected_site: z.string().default(""),
+  available_sites: z.array(z.string()).default([]),
+  ga4_property_id: z.string().default(""),
+  summary_period: z.object({
+    start_date: z.string().default(""),
+    end_date: z.string().default("")
+  }),
+  gsc_pages: z.array(z.record(z.any())).default([]),
+  gsc_queries: z.array(z.record(z.any())).default([]),
+  ga4_rows: z.array(z.record(z.any())).default([]),
+  gsc_cache: summaryGscBreakdownCacheSchema,
+  ga4_cache: summaryGscBreakdownCacheSchema,
+  gsc_property_breakdowns: summaryGscPropertyBreakdownsSchema,
+  error: z.string().default("")
+});
+
+export type GoogleSignals = z.infer<typeof googleSignalsSchema>;
+
 export const messageSchema = z.object({
   message: z.string().optional().default("ok"),
 });
@@ -1165,6 +1189,7 @@ export type StatusPayload = z.infer<typeof statusSchema>;
 export type ContentList = z.infer<typeof contentListSchema>;
 export type ContentDetail = z.infer<typeof contentDetailSchema>;
 export type SettingsPayload = z.infer<typeof settingsSchema>;
+export type GoogleSignalsPayload = GoogleSignals;
 
 export const embeddingTypeStatusSchema = z.object({
   type: z.string(),

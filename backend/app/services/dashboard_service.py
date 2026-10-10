@@ -87,7 +87,7 @@ def _resolve_gsc_site_url_for_breakdowns(conn) -> str:
         site_url = (dg.get_service_setting(conn, "search_console_site") or "").strip()
         if site_url:
             return site_url
-        if not dg.google_configured():
+        if not dg.search_data_configured():
             return ""
         sites = dg.get_search_console_sites(conn)
         return (dg.preferred_site_url(conn, sites) or "").strip()
@@ -133,7 +133,7 @@ def _gsc_site_overview_for_summary(
 ) -> dict[str, Any]:
     tz_name = DEFAULT_DASHBOARD_TZ
     anchor = gsc_anchor_date_local()
-    if not dg.google_configured():
+    if not dg.search_data_configured():
         return _gsc_site_overview_placeholder(
             tz_name, period_mode, anchor, "Google OAuth not configured", gsc_segment
         )
@@ -196,7 +196,7 @@ def _ga4_site_overview_for_summary(conn, period_mode: str) -> dict[str, Any]:
     tz_name = DEFAULT_DASHBOARD_TZ
     anchor = gsc_anchor_date_local()
     property_id = (dg.get_service_setting(conn, "ga4_property_id") or "").strip()
-    if not dg.google_configured():
+    if not dg.search_data_configured():
         return _ga4_site_overview_placeholder(
             tz_name, period_mode, anchor, "Google OAuth not configured"
         )
@@ -205,7 +205,7 @@ def _ga4_site_overview_for_summary(conn, period_mode: str) -> dict[str, Any]:
             tz_name, period_mode, anchor, "GA4 property ID not configured"
         )
     try:
-        dg.get_google_access_token(conn)
+        dg.get_search_data_access_token(conn)
     except Exception as exc:
         return _ga4_site_overview_placeholder(tz_name, period_mode, anchor, str(exc))
 
@@ -286,7 +286,7 @@ def get_dashboard_summary(
             gsc_property_breakdowns = _empty_gsc_property_breakdowns_for_signals()
             gsc_property_breakdowns["error"] = str(exc)
             gsc_property_breakdowns["errors"] = [{"message": str(exc)}]
-        if breakdown_site and gsc_site.get("available") and dg.google_configured():
+        if breakdown_site and gsc_site.get("available") and dg.search_data_configured():
             try:
                 anchor_qp, mode_qp, w_cur_qp, _w_prev_qp = _gsc_matched_period_windows(period)
                 gsc_qp_raw = dg.get_gsc_query_page_tables_cached(

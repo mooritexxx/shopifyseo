@@ -19,6 +19,15 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
     return ["shopifyseo test database: SQLite (TEST_DATABASE_URL unset)"]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_google_service_account_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests off the host service-account key. Individual tests may override."""
+    monkeypatch.setenv(
+        "GOOGLE_SERVICE_ACCOUNT_FILE",
+        "/tmp/cursor-google-sa-does-not-exist.json",
+    )
+
+
 @pytest.fixture(scope="session")
 def db_backend() -> Backend:
     """SQLite unless ``TEST_DATABASE_URL`` is a ``postgresql://`` / ``postgres://`` URL."""

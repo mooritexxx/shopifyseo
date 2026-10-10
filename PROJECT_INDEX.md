@@ -52,7 +52,7 @@ with the code, the code wins and the map is the bug.
 | `dashboard_queries/` | Read paths — `_basic_fetchers`, `_seo_facts`, `_object_detail`, `_gsc_dimensions`, `_urls`, `_editors`, `_text_tokens` |
 | `dashboard_actions/` | Background work — `_sync`, `_sync_queue`, `_sync_pagespeed`, `_ai`, `_state`, `_rpm_limiter` |
 | `dashboard_ai_engine_parts/` | AI generation — `_article_draft`, `_article_ideas`, `prompts`, `context`, `generation`, `providers`, `qa`, `article_draft_compliance`, `serp_draft_context`, `settings`, `config`, `images/` |
-| `dashboard_google/` | Google clients — `_gsc`, `_ga4`, `_ads`, `_auth`, `_cache` |
+| `dashboard_google/` | Google clients — `_gsc`, `_ga4`, `_ads`, `_auth`, `_service_account`, `_cache` |
 | `shopify_catalog_sync/` | Shopify pull — `products`, `collections`, `pages`, `blogs`, `queries`, `discovery`, `db`, `page_template_enrichment` |
 | `dashboard_article_ideas.py` | Idea generation / gap analysis |
 | `dashboard_live_updates.py` | Writebacks to Shopify (GraphQL) |

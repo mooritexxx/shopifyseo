@@ -298,7 +298,7 @@ def test_stale_reinspect_stats_in_sync_status_via_real_sync(monkeypatch, db_conn
     monkeypatch.setattr(ie, 'fetch_robots_snapshot', lambda c, url: ie.store_snapshot(c, url, 200, 'User-agent: *\nAllow: /'))
     monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
     monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
-    monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')
+    monkeypatch.setattr(_sync.dg, 'get_search_data_access_token', lambda c: '')
     monkeypatch.setattr(_sync.dg, 'get_url_inspection', lambda *a, **k: {'inspectionResult': {'indexStatusResult': {'coverageState': 'Indexed', 'verdict': 'PASS'}}})
 
     old_state = dict(SYNC_STATE)

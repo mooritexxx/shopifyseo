@@ -20,7 +20,7 @@ Merchants run a **single-process** app: **FastAPI** (`uvicorn`) serves JSON unde
 
 **Router registration** (`backend/app/main.py`): `team_tasks`, `article_ideas`, `dashboard`, `products`, `content`, `blogs`, `keywords`, `clusters`, `operations`, `status`, `sidekick`, `actions`, `ai_stream`, `auth`, `embeddings`, `image_seo`, `google_ads_lab`.
 
-**Lifespan:** on startup, reconciles PageSpeed denormalized columns from SQLite cache (`refresh_pagespeed_columns_from_cache_for_all_cached_objects`). **Exception handlers:** `HTTPException` → JSON `{ ok, error }`; `sqlite3.DatabaseError` → 503 with recovery hint; `psycopg.Error` / `shopifyseo.db.DatabaseError` → the same JSON `{ ok, error }` shape (503). **No CORS middleware** (same-origin SPA). **Agent task API uses per-actor `X-Task-Token` authentication**; the task web surface opens as Salar using trusted-network access and same-origin checks; other routes have no API-key/JWT; **Google OAuth** only for Search Console (`/auth/google/...`).
+**Lifespan:** on startup, reconciles PageSpeed denormalized columns from SQLite cache (`refresh_pagespeed_columns_from_cache_for_all_cached_objects`). **Exception handlers:** `HTTPException` → JSON `{ ok, error }`; `sqlite3.DatabaseError` → 503 with recovery hint; `psycopg.Error` / `shopifyseo.db.DatabaseError` → the same JSON `{ ok, error }` shape (503). **No CORS middleware** (same-origin SPA). **Agent task API uses per-actor `X-Task-Token` authentication**; the task web surface opens as Salar using trusted-network access and same-origin checks; other routes have no API-key/JWT; **Google Search Console / GA4** use a service-account JWT when `GOOGLE_SERVICE_ACCOUNT_FILE` is usable, otherwise **Google OAuth** (`/auth/google/...`). Google Ads stays on OAuth.
 
 ---
 
@@ -76,7 +76,7 @@ Task writes require current versions (409 on conflict), stamp the token's actor 
 
 | Method | Path                              | Request                        | Response       | Purpose                                 |
 | ------ | --------------------------------- | ------------------------------ | -------------- | --------------------------------------- |
-| GET    | `/api/google-signals`             | —                              | `{ ok, data }` | GSC/GA4-related signals for settings UI |
+| GET    | `/api/google-signals`             | —                              | `{ ok, data }` including `mode`: `service_account` / `oauth` / null | GSC/GA4-related signals for settings UI |
 | POST   | `/api/google-signals/site`        | Body: selected site / property | `{ ok, data }` | Save Search Console site / GA4 property |
 | POST   | `/api/google-signals/refresh`     | —                              | `{ ok, data }` | Refresh cached Google summary           |
 | GET    | `/api/settings`                   | —                              | `{ ok, data }` | Read settings payload                   |
@@ -607,7 +607,7 @@ Backend orchestration lives in `backend/app/services/` and delegates to `shopify
 | Article / blog flows                        | `backend/app/services/article_service.py`        | Blog/article list, detail, update                                                                                             | `dashboard_actions`, `dashboard_live_updates`, `dashboard_queries`, `dashboard_store`, `_catalog_helpers`                                   |
 | Collections / pages                         | `backend/app/services/content_service.py`        | List/detail/update, bulk meta save                                                                                            | `dashboard_actions`, `dashboard_live_updates`, `dashboard_queries`, `dashboard_store`, `_catalog_helpers`                                   |
 | Settings                                    | `backend/app/services/settings_service.py`       | Read/write settings, probes, Shopify/Google/AI tests                                                                          | `dashboard_ai`, `dashboard_google`, `dashboard_config`, `dashboard_http`, `shopify_admin`                                                   |
-| Google signals UI                           | `backend/app/services/google_signals_service.py` | GSC/GA4 cache payloads for operations                                                                                         | `dashboard_google`, `gsc_overview_calendar`, `index_status`                                                                                 |
+| Google signals UI                           | `backend/app/services/google_signals_service.py` | GSC/GA4 cache payloads for operations; `mode` is `service_account`, `oauth`, or null                                          | `dashboard_google`, `gsc_overview_calendar`, `index_status`                                                                                 |
 | Store info                                  | `backend/app/services/store_info_service.py`     | Store URL, name, market, timezone                                                                                             | `dashboard_queries`, `dashboard_google`                                                                                                     |
 | Overview metrics                            | `backend/app/services/overview_metrics.py`       | `summarize_gsc` / `summarize_ga4` over fact rows. **No longer on the dashboard path** — `get_dashboard_summary` uses `dq.fetch_signal_totals` (equivalent SQL rollup) instead of materializing a fact per catalog object | Fact rows / helpers                                                                                                                         |
 | Catalog completion                          | `backend/app/services/catalog_completion.py`     | Meta completion % by segment                                                                                                  | SQLite reads                                                                                                                                |
@@ -811,6 +811,7 @@ which rows match.
 | Module                                | Purpose                               |
 | ------------------------------------- | ------------------------------------- |
 | `dashboard_http.py`                   | Shared HTTP session, errors           |
+| `dashboard_google/_service_account.py` | JWT bearer mint + in-process success cache and 120s mint-failure cooldown for GSC/GA4 (`GOOGLE_SERVICE_ACCOUNT_FILE`) |
 | `dashboard_config.py`                 | `RUNTIME_SETTING_KEYS`, env mapping   |
 | `seo_slug.py`                         | Handle/slug normalization             |
 | `market_context.py`                   | Primary market / locale constants     |
@@ -856,7 +857,7 @@ SerpApi rank tracking uses `/search.json` (Google.ca organic results) and `/acco
 | Service                                                 | Purpose                                            | How invoked                                                                                                                     | Sync / frequency                                 |
 | ------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | Shopify Admin API                                       | Catalog sync, articles, media, live SEO writebacks | GraphQL/REST in `shopifyseo/shopify_catalog_sync/`, `shopify_admin.py`, `dashboard_live_updates.py`, `shopify_product_media.py` | On `POST /api/sync` and refreshes                |
-| Google OAuth + GSC + GA4 + Inspection + PageSpeed + Ads | Signals, analytics, lab                            | `shopifyseo/dashboard_google/`*, `GET /auth/google/*`                                                                           | On sync, refresh endpoints, and operator actions |
+| Google SA + OAuth + GSC + GA4 + Inspection + PageSpeed + Ads | Signals, analytics, lab                            | `shopifyseo/dashboard_google/`* (`_service_account` JWT for GSC/GA4, OAuth in `_auth` for Ads and fallback), `GET /auth/google/*` | On sync, refresh endpoints, and operator actions |
 | DataForSEO                                              | Keyword/competitor research                        | `backend/app/services/keyword_research/` + keywords router                                                                      | On-demand + SSE streams                          |
 | OpenAI / Anthropic / Gemini / OpenRouter / Ollama       | AI generation, review, images, vision              | `shopifyseo/dashboard_ai_engine_parts/providers.py` etc.                                                                        | Per generate/regenerate/Sidekick                 |
 | Gemini embeddings                                       | Similarity, gaps, cannibalization                  | `shopifyseo/embedding_store.py`                                                                                                 | Sync + `/api/embeddings/refresh`                 |
@@ -882,6 +883,7 @@ SerpApi rank tracking uses `/search.json` (Google.ca organic results) and `/acco
 - **Not inferred from `TODO` comments** in application source (none found in a quick `TODO|FIXME` scan of `*.py` / `*.ts` / `*.tsx` excluding tests).
 - **Operator-maintained gaps:** any roadmap items should be recorded here when known.
 - **`indexing_candidates` is deliberately absent from `/api/summary`.** It was removed during the overview redesign rather than lost. To restore: bring back `build_indexing_candidates` in `overview_metrics.py`, add the fields to `DashboardSummary` + `summarySchema`, compute it in `get_dashboard_summary`, and render it on a dedicated Indexing view — *not* as a queue on the overview, which was the explicit reason for removal. Background: [docs/archive/overview-dashboard-plan.md](docs/archive/overview-dashboard-plan.md).
+- **Google service-account known limits.** GSC/GA4/URL Inspection use `webmasters.readonly` + `analytics.readonly` (no sitemap write, no Indexing API — the app does not call `indexing.googleapis.com`). Enable Search Console API, Analytics Data API, and Analytics Admin API on the SA project (Admin is used for `accountSummaries`); enable PageSpeed Insights API for PSI in SA mode. Google Ads stays OAuth-only (`adwords`). PageSpeed Insights has no SA scope: SA mode skips the `openid` reconnect error and sends the SA bearer token; OAuth still requires `openid`. A missing `cryptography` install is treated as SA unavailable (OAuth fallback) and cannot break startup; after `pip install -e .` restart the live process. A service account only sees properties it was explicitly granted. There is no per-request OAuth fallback while the key is usable: mint failures cool down for 120s, but a 403 from a missing Search Console / GA4 property grant stays on the SA token. Remove or rename the key file to use OAuth.
 
 ---
 
@@ -938,6 +940,7 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | pillow    | 11.1.0  | Image handling             |
 | requests  | ≥2.31.0 | HTTP for integrations      |
 | numpy     | ≥1.24.0 | Numeric helpers            |
+| cryptography | ≥42.0.0 | RS256 JWT signing for Google service-account tokens (lazy import) |
 
 
 ### Frontend (`frontend/package.json` ranges)
@@ -974,7 +977,8 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 
 | Source                                                | Role                                                                                                                                       |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `.env.example` (repo root)                            | Documents `SHOPIFY_`*, `GOOGLE_*`, AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `OVERVIEW_GOAL_*`, etc. |
+| `.env.example` (repo root)                            | Documents `SHOPIFY_`*, `GOOGLE_*` (including `GOOGLE_SERVICE_ACCOUNT_FILE`), AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `OVERVIEW_GOAL_*`, etc. |
+| `GOOGLE_SERVICE_ACCOUNT_FILE`                         | Path to a Google service-account JSON key for GSC/GA4. Default `/home/box/secrets/google-sa.json`. Enable Search Console, Analytics Data, Analytics Admin, and (for PSI) PageSpeed Insights APIs. Add the SA email on the Search Console property and as a GA4 Viewer **before** placing the key — a usable key has no per-request OAuth fallback. Restart after installing `cryptography` (`pip install -e .`). Never log or commit the key. |
 | `service_settings` + `shopifyseo/dashboard_config.py` | DB-stored settings; `apply_runtime_settings` mirrors selected keys into `os.environ`                                                       |
 | `SHOPIFY_CATALOG_DB_PATH`                             | SQLite file path override                                                                                                                  |
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |

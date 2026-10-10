@@ -12,7 +12,12 @@ from ._cache import (
     _write_cache_payload,
     ensure_google_cache_schema,
 )
-from ._auth import get_google_access_token, get_service_setting, google_api_get, google_api_post
+from ._auth import (
+    get_search_data_access_token as get_google_access_token,
+    get_service_setting,
+    google_api_get,
+    google_api_post,
+)
 
 
 def _pkg():

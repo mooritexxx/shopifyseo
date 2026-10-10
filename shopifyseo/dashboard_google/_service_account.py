@@ -27,16 +27,26 @@ SEARCH_DATA_SCOPES = (SCOPE_WEBMASTERS_READONLY, SCOPE_ANALYTICS_READONLY)
 
 _JWT_LIFETIME_SECONDS = 3600
 _TOKEN_FRESHNESS_MARGIN_SECONDS = 300  # re-mint ~5 minutes before expiry
+_MINT_FAILURE_COOLDOWN_SECONDS = 120
 
 _CRYPTO_MISSING_WARNED = False
 _TOKEN_CACHE_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[str, tuple[str, int]] = {}  # scope_key -> (access_token, expires_at_epoch)
+_FAILURE_CACHE: dict[str, tuple[int, str]] = {}  # scope_key -> (failed_at, reason)
 _MINT_LOCKS: dict[str, threading.Lock] = {}
 _MINT_LOCKS_GUARD = threading.Lock()
 
 
 class ServiceAccountError(RuntimeError):
     """Key-file or mint failure. Message contains only the path and a generic reason."""
+
+
+class ServiceAccountMintCooldown(ServiceAccountError):
+    """Cached mint failure still inside the cooldown window. Do not HTTP or log again."""
+
+
+def _now() -> int:
+    return int(time.time())
 
 
 def service_account_file_path() -> str:
@@ -93,12 +103,35 @@ def _mint_lock_for(scope_key: str) -> threading.Lock:
 
 
 def invalidate_service_account_token_cache(scope_key: str | None = None) -> None:
-    """Drop one or all cached service-account access tokens."""
+    """Drop one or all cached service-account access tokens and mint-failure cooldowns."""
     with _TOKEN_CACHE_LOCK:
         if scope_key is None:
             _TOKEN_CACHE.clear()
+            _FAILURE_CACHE.clear()
         else:
             _TOKEN_CACHE.pop(scope_key, None)
+            _FAILURE_CACHE.pop(scope_key, None)
+
+
+def _failure_get(scope_key: str, now_ts: int) -> str | None:
+    with _TOKEN_CACHE_LOCK:
+        entry = _FAILURE_CACHE.get(scope_key)
+    if not entry:
+        return None
+    failed_at, reason = entry
+    if now_ts < failed_at + _MINT_FAILURE_COOLDOWN_SECONDS:
+        return reason
+    return None
+
+
+def _failure_put(scope_key: str, now_ts: int, reason: str) -> None:
+    with _TOKEN_CACHE_LOCK:
+        _FAILURE_CACHE[scope_key] = (int(now_ts), reason)
+
+
+def _failure_clear(scope_key: str) -> None:
+    with _TOKEN_CACHE_LOCK:
+        _FAILURE_CACHE.pop(scope_key, None)
 
 
 def _cache_get(scope_key: str, now_ts: int) -> str | None:
@@ -212,7 +245,7 @@ def mint_service_account_access_token(
     """POST a JWT bearer grant via ``request_json``. Returns the token endpoint payload."""
     path = service_account_file_path()
     email, private_key, token_uri = _load_service_account_fields(path)
-    now = int(time.time() if now_ts is None else now_ts)
+    now = _now() if now_ts is None else int(now_ts)
     assertion = build_signed_jwt(
         client_email=email,
         scopes=scopes,
@@ -248,16 +281,30 @@ def get_service_account_access_token(
         _warn_cryptography_once()
         raise ServiceAccountError("cryptography is not importable")
     key = _scope_key(scopes)
-    now_ts = int(time.time())
+    now_ts = _now()
     cached = _cache_get(key, now_ts)
     if cached is not None:
         return cached
+    cooldown = _failure_get(key, now_ts)
+    if cooldown is not None:
+        raise ServiceAccountMintCooldown(cooldown)
     with _mint_lock_for(key):
-        now_ts = int(time.time())
+        now_ts = _now()
         cached = _cache_get(key, now_ts)
         if cached is not None:
             return cached
-        payload = mint_service_account_access_token(scopes, now_ts=now_ts)
+        cooldown = _failure_get(key, now_ts)
+        if cooldown is not None:
+            raise ServiceAccountMintCooldown(cooldown)
+        try:
+            payload = mint_service_account_access_token(scopes, now_ts=now_ts)
+        except ServiceAccountError as exc:
+            _failure_put(key, now_ts, str(exc))
+            logger.warning(
+                "Google service-account token mint failed; falling back to OAuth: %s", exc
+            )
+            raise
+        _failure_clear(key)
         access_token = str(payload["access_token"])
         raw_expires = payload.get("expires_in")
         expires_in = _JWT_LIFETIME_SECONDS if raw_expires is None else int(raw_expires)
@@ -278,8 +325,9 @@ def try_service_account_access_token(
         return None
     try:
         return get_service_account_access_token(scopes)
-    except ServiceAccountError as exc:
-        logger.warning("Google service-account token mint failed; falling back to OAuth: %s", exc)
+    except ServiceAccountMintCooldown:
+        return None
+    except ServiceAccountError:
         return None
     except Exception:
         logger.warning(

@@ -4,8 +4,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
+pytest.importorskip("cryptography")
 from fastapi.testclient import TestClient
 
 import shopifyseo.dashboard_google as dg
@@ -343,6 +347,12 @@ def test_search_data_configured_true_with_sa_without_oauth(sa_env):
 
 
 def test_settings_treats_service_account_as_connected(sa_env, monkeypatch):
+    def fake_request_json(url, **kwargs):
+        if "oauth2.googleapis.com/token" in url:
+            return {"access_token": "sa-access-token", "expires_in": 3600}
+        return {}
+
+    _patch_request_json(monkeypatch, fake_request_json)
     monkeypatch.setattr(settings_service, "open_db_connection", lambda: _DummyConn())
     monkeypatch.setattr(dg, "get_service_setting", lambda conn, key, default="": "")
     monkeypatch.setattr(dg, "get_search_console_sites", lambda conn: [{"siteUrl": "sc-domain:example.test"}])
@@ -357,6 +367,97 @@ def test_settings_treats_service_account_as_connected(sa_env, monkeypatch):
     assert data["google_connected"] is True
     assert data["auth_url"] is None
     assert data["sync_scope_ready"]["gsc"] is True
+
+
+def test_failed_mint_cools_down_to_one_request(sa_env, monkeypatch, caplog):
+    calls: list[str] = []
+
+    def fake_request_json(url, **kwargs):
+        calls.append(url)
+        raise HttpRequestError("HTTP 400 for token", status=400, body='{"error":"invalid_grant"}')
+
+    _patch_request_json(monkeypatch, fake_request_json)
+    monkeypatch.setattr(_auth, "get_google_access_token", lambda conn: "oauth-token")
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(sa, "_now", lambda: clock["t"])
+    with caplog.at_level(logging.WARNING):
+        tokens = [_auth.get_search_data_access_token(object()) for _ in range(20)]
+    assert tokens == ["oauth-token"] * 20
+    assert len(calls) == 1
+    warnings = [r for r in caplog.records if "token mint failed" in r.getMessage()]
+    assert len(warnings) == 1
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert sa_env["pem"] not in text
+    assert "BEGIN PRIVATE KEY" not in text
+    assert PRIVATE_KEY_MARKER not in text
+
+
+def test_failed_mint_retries_after_cooldown(sa_env, monkeypatch):
+    calls: list[str] = []
+
+    def fake_request_json(url, **kwargs):
+        calls.append(url)
+        raise HttpRequestError("HTTP 503 for token", status=503, body="unavailable")
+
+    _patch_request_json(monkeypatch, fake_request_json)
+    monkeypatch.setattr(_auth, "get_google_access_token", lambda conn: "oauth-token")
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(sa, "_now", lambda: clock["t"])
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 1
+    clock["t"] += 10
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 1
+    clock["t"] += sa._MINT_FAILURE_COOLDOWN_SECONDS + 1
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 2
+
+
+def test_failed_mint_single_flight_across_threads(sa_env, monkeypatch):
+    calls: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_request_json(url, **kwargs):
+        calls.append(url)
+        started.set()
+        release.wait(timeout=2)
+        raise HttpRequestError("HTTP 400 for token", status=400, body="invalid")
+
+    _patch_request_json(monkeypatch, fake_request_json)
+    monkeypatch.setattr(_auth, "get_google_access_token", lambda conn: "oauth-token")
+
+    def _call():
+        return _auth.get_search_data_access_token(object())
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = [pool.submit(_call) for _ in range(16)]
+        assert started.wait(timeout=2)
+        release.set()
+        tokens = [f.result() for f in futures]
+    assert tokens == ["oauth-token"] * 16
+    assert len(calls) == 1
+
+
+def test_invalidate_clears_mint_failure_cooldown(sa_env, monkeypatch):
+    calls: list[str] = []
+
+    def fake_request_json(url, **kwargs):
+        calls.append(url)
+        raise HttpRequestError("HTTP 400 for token", status=400, body="invalid")
+
+    _patch_request_json(monkeypatch, fake_request_json)
+    monkeypatch.setattr(_auth, "get_google_access_token", lambda conn: "oauth-token")
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(sa, "_now", lambda: clock["t"])
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 1
+    sa.invalidate_service_account_token_cache()
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 2
+    _auth.invalidate_token_cache()
+    assert _auth.get_search_data_access_token(object()) == "oauth-token"
+    assert len(calls) == 3
 
 
 class _DummyConn:

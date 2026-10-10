@@ -122,10 +122,12 @@ Search Console and GA4 use a **service account first**. OAuth remains as a fallb
 **Service account (preferred)**
 
 1. Create a Google Cloud service account and download its JSON key. Store it outside the repo (mode `600`). Default path: `/home/box/secrets/google-sa.json`. Override with `GOOGLE_SERVICE_ACCOUNT_FILE`.
-2. Enable the **Google Search Console API** and **Google Analytics Data API** on that project.
-3. Add the service-account email as a user in Search Console (the property, e.g. `sc-domain:example.com`, with at least Site permissions sufficient to read) and as a Viewer on the GA4 property.
-4. `pip install -e .` so `cryptography` is in the venv, then **restart** the app. A missing `cryptography` package is treated as “service account unavailable” and the app falls back to OAuth; it will not break startup.
+2. Enable these APIs on that project: **Google Search Console API**, **Google Analytics Data API**, and **Google Analytics Admin API** (the property picker calls `analyticsadmin.googleapis.com/v1beta/accountSummaries`). Enable the **PageSpeed Insights API** if you want PSI refreshes in service-account mode.
+3. Add the service-account email as a user in Search Console (the property, e.g. `sc-domain:example.com`, with at least Site permissions sufficient to read) and as a Viewer on the GA4 property. A service account only sees properties it was explicitly granted. Do this **before** placing the key file and restarting — if the key is usable, GSC/GA4 calls that return 403 do **not** fall back to OAuth.
+4. `pip install -e .` so `cryptography` is in the live venv, then **restart** the app process. A missing `cryptography` package is treated as “service account unavailable” and the app falls back to OAuth; it will not break startup.
 5. Verify: `GET /api/google-signals` returns `configured=true`, `connected=true`, `mode="service_account"`. Sync GSC/GA4 from the sidebar.
+
+Service-account-first has **no per-request OAuth fallback**. OAuth is used only when no usable key exists (file missing, unreadable, or `cryptography` not importable) or the token mint itself fails (then a 120s cooldown avoids retrying the token endpoint). To go back to OAuth, remove or rename the key file. If the SA is valid but was not added to the Search Console / GA4 property, those APIs return 403 and stay on the service-account token.
 
 Scopes requested by the service account: `https://www.googleapis.com/auth/webmasters.readonly` and `https://www.googleapis.com/auth/analytics.readonly`. The app does not submit sitemaps or call the Indexing API, so read-only Webmaster is enough.
 
@@ -139,9 +141,10 @@ Scopes requested by the service account: `https://www.googleapis.com/auth/webmas
 **Known limits**
 
 - **Google Ads** stays on the user OAuth token (`adwords` scope). A service account cannot replace it.
-- **PageSpeed Insights** has no service-account-specific scope. In service-account mode the `openid` reconnect error is skipped and the SA bearer token is sent; success depends on the PageSpeed Insights API being enabled on the SA’s GCP project. The OAuth path still requires `openid`.
+- **PageSpeed Insights** has no service-account-specific scope. In service-account mode the `openid` reconnect error is skipped and the SA bearer token is sent; enable the PageSpeed Insights API on the SA’s GCP project. The OAuth path still requires `openid`.
 - **Indexing API** is not used by this app (URL Inspection is Search Console, not `indexing.googleapis.com`).
 - Service accounts cannot complete the OAuth consent flow or obtain user-delegated scopes such as `adwords` or `openid`.
+- A service account only sees Search Console / GA4 properties it was explicitly granted. There is no per-request OAuth fallback while a key is usable: 403s from a missing property grant stay on the SA token. Remove or rename the key file to use OAuth.
 
 ### AI Providers
 

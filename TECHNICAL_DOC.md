@@ -811,7 +811,7 @@ which rows match.
 | Module                                | Purpose                               |
 | ------------------------------------- | ------------------------------------- |
 | `dashboard_http.py`                   | Shared HTTP session, errors           |
-| `dashboard_google/_service_account.py` | JWT bearer mint + in-process cache for GSC/GA4 (`GOOGLE_SERVICE_ACCOUNT_FILE`) |
+| `dashboard_google/_service_account.py` | JWT bearer mint + in-process success cache and 120s mint-failure cooldown for GSC/GA4 (`GOOGLE_SERVICE_ACCOUNT_FILE`) |
 | `dashboard_config.py`                 | `RUNTIME_SETTING_KEYS`, env mapping   |
 | `seo_slug.py`                         | Handle/slug normalization             |
 | `market_context.py`                   | Primary market / locale constants     |
@@ -879,7 +879,7 @@ SerpApi rank tracking uses `/search.json` (Google.ca organic results) and `/acco
 - **Not inferred from `TODO` comments** in application source (none found in a quick `TODO|FIXME` scan of `*.py` / `*.ts` / `*.tsx` excluding tests).
 - **Operator-maintained gaps:** any roadmap items should be recorded here when known.
 - **`indexing_candidates` is deliberately absent from `/api/summary`.** It was removed during the overview redesign rather than lost. To restore: bring back `build_indexing_candidates` in `overview_metrics.py`, add the fields to `DashboardSummary` + `summarySchema`, compute it in `get_dashboard_summary`, and render it on a dedicated Indexing view — *not* as a queue on the overview, which was the explicit reason for removal. Background: [docs/archive/overview-dashboard-plan.md](docs/archive/overview-dashboard-plan.md).
-- **Google service-account known limits.** GSC/GA4/URL Inspection use `webmasters.readonly` + `analytics.readonly` (no sitemap write, no Indexing API — the app does not call `indexing.googleapis.com`). Google Ads stays OAuth-only (`adwords`). PageSpeed Insights has no SA scope: SA mode skips the `openid` reconnect error and sends the SA bearer token; OAuth still requires `openid`. A missing `cryptography` install is treated as SA unavailable (OAuth fallback) and cannot break startup.
+- **Google service-account known limits.** GSC/GA4/URL Inspection use `webmasters.readonly` + `analytics.readonly` (no sitemap write, no Indexing API — the app does not call `indexing.googleapis.com`). Enable Search Console API, Analytics Data API, and Analytics Admin API on the SA project (Admin is used for `accountSummaries`); enable PageSpeed Insights API for PSI in SA mode. Google Ads stays OAuth-only (`adwords`). PageSpeed Insights has no SA scope: SA mode skips the `openid` reconnect error and sends the SA bearer token; OAuth still requires `openid`. A missing `cryptography` install is treated as SA unavailable (OAuth fallback) and cannot break startup; after `pip install -e .` restart the live process. A service account only sees properties it was explicitly granted. There is no per-request OAuth fallback while the key is usable: mint failures cool down for 120s, but a 403 from a missing Search Console / GA4 property grant stays on the SA token. Remove or rename the key file to use OAuth.
 
 ---
 
@@ -974,7 +974,7 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | Source                                                | Role                                                                                                                                       |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `.env.example` (repo root)                            | Documents `SHOPIFY_`*, `GOOGLE_*` (including `GOOGLE_SERVICE_ACCOUNT_FILE`), AI keys, `DATAFORSEO_*`, optional Moz, `DASHBOARD_TZ`, `OVERVIEW_GOAL_*`, etc. |
-| `GOOGLE_SERVICE_ACCOUNT_FILE`                         | Path to a Google service-account JSON key for GSC/GA4. Default `/home/box/secrets/google-sa.json`. The SA email must be added as a user on the Search Console property and as a Viewer on the GA4 property. Restart after installing `cryptography` (`pip install -e .`). Never log or commit the key. |
+| `GOOGLE_SERVICE_ACCOUNT_FILE`                         | Path to a Google service-account JSON key for GSC/GA4. Default `/home/box/secrets/google-sa.json`. Enable Search Console, Analytics Data, Analytics Admin, and (for PSI) PageSpeed Insights APIs. Add the SA email on the Search Console property and as a GA4 Viewer **before** placing the key — a usable key has no per-request OAuth fallback. Restart after installing `cryptography` (`pip install -e .`). Never log or commit the key. |
 | `service_settings` + `shopifyseo/dashboard_config.py` | DB-stored settings; `apply_runtime_settings` mirrors selected keys into `os.environ`                                                       |
 | `SHOPIFY_CATALOG_DB_PATH`                             | SQLite file path override                                                                                                                  |
 | `DASHBOARD_TZ`                                        | Overview calendar default (`America/Vancouver` if unset)                                                                                   |

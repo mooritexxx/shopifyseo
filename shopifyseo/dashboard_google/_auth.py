@@ -155,10 +155,10 @@ def search_data_configured() -> bool:
 
 
 def search_data_connected(conn: Any) -> bool:
-    """True when a service-account key is usable or an OAuth refresh token is stored."""
-    from ._service_account import service_account_available
+    """True when an SA token can be minted (cached) or an OAuth refresh token is stored."""
+    from ._service_account import SEARCH_DATA_SCOPES, try_service_account_access_token
 
-    if service_account_available():
+    if try_service_account_access_token(SEARCH_DATA_SCOPES):
         return True
     return bool(get_service_token(conn, "search_console"))
 

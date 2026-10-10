@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Test-only: three `tests/test_api.py` tests no longer depend on the live DB or a stale stub.** The two targeted-refresh update tests use a stub connection that supports `record_applied` (no reviewed task, no writes); `test_page_detail_contract` and the product-detail GSC-queries test seed a temp DB instead of relying on a live "contact" page / existing products (the latter used to skip silently on an empty CI DB); `test_sqlite_utf8` builds its own invalid-UTF-8 catalog instead of skipping unless the live `shopify_catalog.sqlite3` has a corrupt row 42. The three `--deselect` flags in `.github/workflows/ci.yml` can now be removed (they pass without them); that workflow edit is a separate follow-up because the push token has no `workflow` scope. No app code changed.
 - **Postgres cutover float precision and list-order ties.** pgloader CAST
   SQLite `REAL` / `FLOAT` / `DOUBLE` / `DOUBLE PRECISION` to quoted
   `"double precision"` `using float-to-string` (the unquoted multi-word

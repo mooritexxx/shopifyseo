@@ -44,6 +44,7 @@ class SyncStatusPayload(BaseModel):
     gsc_refreshed: int = 0
     gsc_skipped: int = 0
     gsc_errors: int = 0
+    gsc_warnings: int = 0
     gsc_eligible_total: int = 0
     gsc_precheck_skipped: int = 0
     gsc_summary_pages: int = 0

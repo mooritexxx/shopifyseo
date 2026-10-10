@@ -1,8 +1,15 @@
 import json
+import re
 import urllib.parse
+from dataclasses import dataclass
 
 import requests
 from urllib3.util.retry import Retry
+
+_GOOGLE_ERROR_MESSAGE_CAP = 200
+_SECRET_IN_TEXT_RE = re.compile(
+    r"(?i)(bearer\s+|authorization:\s*|ya29\.|api[_-]?key=|key=)[^\s,&\"']+"
+)
 
 
 # Transient 429/5xx responses previously dropped that target's data point for the whole
@@ -52,6 +59,82 @@ class HttpRequestError(RuntimeError):
         self.body = body
         self.reason = reason
         self.headers = headers or {}
+
+
+@dataclass(frozen=True)
+class GoogleHttpErrorInfo:
+    """Safe, loggable slice of a Google JSON error. Never includes tokens or headers."""
+
+    status: int | None
+    google_status: str
+    reason: str
+    message: str
+
+    def short_description(self) -> str:
+        parts: list[str] = []
+        if self.status is not None:
+            parts.append(f"HTTP {self.status}")
+        else:
+            parts.append("HTTP error")
+        if self.google_status:
+            parts.append(self.google_status)
+        if self.reason:
+            parts.append(self.reason)
+        if self.message:
+            parts.append(self.message)
+        return " ".join(parts)
+
+
+def _safe_truncate(text: str, cap: int = _GOOGLE_ERROR_MESSAGE_CAP) -> str:
+    cleaned = _SECRET_IN_TEXT_RE.sub(r"\1[redacted]", text.replace("\n", " ").strip())
+    if len(cleaned) <= cap:
+        return cleaned
+    return cleaned[:cap]
+
+
+def describe_google_http_error(exc: HttpRequestError, *, message_cap: int = _GOOGLE_ERROR_MESSAGE_CAP) -> GoogleHttpErrorInfo:
+    """HTTP status plus Google JSON ``error.status``, ``error.errors[0].reason``, truncated message.
+
+    Never reads Authorization headers, request bodies, or keys. Non-JSON / empty bodies
+    yield status only.
+    """
+    google_status = ""
+    reason = ""
+    message = ""
+    body = exc.body if isinstance(exc.body, str) else ""
+    if body:
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            err = parsed.get("error")
+            if isinstance(err, dict):
+                raw_status = err.get("status")
+                if isinstance(raw_status, str):
+                    google_status = raw_status.strip()
+                raw_message = err.get("message")
+                if isinstance(raw_message, str) and raw_message.strip():
+                    message = raw_message.strip()
+                errors = err.get("errors")
+                if isinstance(errors, list) and errors:
+                    first = errors[0]
+                    if isinstance(first, dict):
+                        raw_reason = first.get("reason")
+                        if isinstance(raw_reason, str):
+                            reason = raw_reason.strip()
+                        if not message:
+                            nested_msg = first.get("message")
+                            if isinstance(nested_msg, str) and nested_msg.strip():
+                                message = nested_msg.strip()
+            elif isinstance(err, str) and err.strip():
+                message = err.strip()
+    return GoogleHttpErrorInfo(
+        status=exc.status,
+        google_status=google_status,
+        reason=reason,
+        message=_safe_truncate(message, message_cap) if message else "",
+    )
 
 
 def request_text(

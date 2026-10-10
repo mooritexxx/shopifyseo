@@ -215,7 +215,7 @@ def test_get_pagespeed_hybrid_429_slowdown_then_inline_retry_succeeds(monkeypatc
         return {"lighthouseResult": {"categories": {"performance": {"score": 1.0}}}}
 
     monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
-    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "get_oauth_access_token", lambda *_a, **_k: "tok")
     monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
     monkeypatch.setattr(_gsc, "google_api_get", _get)
     monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)
@@ -250,7 +250,7 @@ def test_get_pagespeed_hybrid_429_requeue_marker_on_second_429(monkeypatch, db_c
         raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
 
     monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
-    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "get_oauth_access_token", lambda *_a, **_k: "tok")
     monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
     monkeypatch.setattr(_gsc, "google_api_get", _get)
     monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)
@@ -280,7 +280,7 @@ def test_get_pagespeed_hybrid_429_final_pass_persists_rate_limit(monkeypatch, db
         raise HttpRequestError("429", status=429, headers={"Retry-After": "1"})
 
     monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: True)
-    monkeypatch.setattr(_gsc, "get_google_access_token", lambda *_a, **_k: "tok")
+    monkeypatch.setattr(_gsc, "get_oauth_access_token", lambda *_a, **_k: "tok")
     monkeypatch.setattr(_gsc, "_fetch_run_pagespeed_with_retries", _fetch)
     monkeypatch.setattr(_gsc, "google_api_get", _get)
     monkeypatch.setattr(_gsc, "_sleep_interruptible", lambda *_a, **_k: None)

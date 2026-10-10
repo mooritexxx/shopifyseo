@@ -986,6 +986,7 @@ export const statusSchema = z.object({
   gsc_refreshed: z.number().optional().default(0),
   gsc_skipped: z.number().optional().default(0),
   gsc_errors: z.number().optional().default(0),
+  gsc_warnings: z.number().optional().default(0),
   gsc_eligible_total: z.number().optional().default(0),
   gsc_precheck_skipped: z.number().optional().default(0),
   gsc_summary_pages: z.number().optional().default(0),

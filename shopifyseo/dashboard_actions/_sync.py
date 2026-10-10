@@ -340,6 +340,7 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "gsc_refreshed": 0,
             "gsc_skipped": 0,
             "gsc_errors": 0,
+            "gsc_warnings": 0,
             "gsc_eligible_total": 0,
             "gsc_precheck_skipped": 0,
             "gsc_summary_pages": 0,
@@ -471,6 +472,30 @@ def _image_cache_summary_suffix(cache: dict[str, int] | None) -> str:
     if e:
         tail += f", {e} errors"
     return tail
+
+
+def _gsc_breakdown_warnings_suffix(gsc: dict[str, Any] | None) -> str:
+    if not gsc:
+        return ""
+    n = int(gsc.get("warnings") or 0)
+    if n <= 0:
+        return ""
+    return f"; {n} breakdown warnings"
+
+
+def _apply_gsc_dimensional_warnings(summary: dict[str, Any]) -> dict[str, Any]:
+    snap = dg.snapshot_gsc_dimensional_warning_summary()
+    summary["warnings"] = int(snap.get("warnings") or 0)
+    summary["warning_details"] = snap.get("warning_details") or {"retried": 0, "recovered": 0}
+    SYNC_STATE["gsc_warnings"] = summary["warnings"]
+    if summary["warnings"]:
+        logger.warning(
+            "GSC dimensional fetch warnings: %s (retried=%s recovered=%s)",
+            summary["warning_details"],
+            (summary["warning_details"] or {}).get("retried", 0),
+            (summary["warning_details"] or {}).get("recovered", 0),
+        )
+    return summary
 
 
 def _normalize_sync_scopes(scope: str, selected_scopes: list[str] | None = None) -> tuple[str, list[str]]:
@@ -731,7 +756,11 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         "summary_queries": 0,
         "eligible": 0,
         "queue_total": 0,
+        "warnings": 0,
+        "warning_details": {"retried": 0, "recovered": 0},
     }
+    dg.reset_gsc_dimensional_fetch_session()
+    SYNC_STATE["gsc_warnings"] = 0
     try:
         touched_targets: list[tuple[str, str]] = []
         pending_signal_targets: list[tuple[str, str]] = []
@@ -778,7 +807,7 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
 
         if not site_url:
             logger.warning("Search Console bulk sync skipped: no site_url resolved")
-            return summary
+            return _apply_gsc_dimensional_warnings(summary)
 
         access_token = dg.get_search_data_access_token(conn)
         start_date, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
@@ -851,6 +880,12 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         if touched_targets:
             _defer_until_sync_done(_start_gsc_query_embedding_sync, db_path)
             _defer_until_sync_done(_start_internal_link_refresh, db_path)
+        _apply_gsc_dimensional_warnings(summary)
+        if summary.get("warnings"):
+            _sync_current(
+                f"Search Console: {summary.get('refreshed', 0)} pages refreshed"
+                f"{_gsc_breakdown_warnings_suffix(summary)}"
+            )
     finally:
         try:
             dg.delete_search_console_overview_timeseries_only(conn)
@@ -1450,6 +1485,10 @@ def run_sync(
                     f"Blogs {blogs_n}, Articles {articles_n}"
                     f"{_image_cache_summary_suffix(ic_d)}"
                 )
+            if isinstance(result, dict):
+                gsc_result = result.get("gsc")
+                if isinstance(gsc_result, dict):
+                    summary_message += _gsc_breakdown_warnings_suffix(gsc_result)
             _set_sync_stage(
                 stage="complete",
                 label="Sync complete",

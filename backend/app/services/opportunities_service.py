@@ -11,6 +11,7 @@ import math
 from typing import Any
 
 from shopifyseo.db import DictRow
+from shopifyseo.dashboard_queries._basic_fetchers import _live_where
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,33 @@ def _row_factory(conn: Any) -> Any:
         return conn
     conn.row_factory = _mapping_row_factory
     return conn
+
+
+# object_type -> (table, handle expression, alias-free). A row is excluded from the
+# Opportunity Inbox only when its catalog object exists and is NOT live on the Online
+# Store (unpublished / draft / unreachable; a 301-redirected article is unpublished).
+_LIVE_CHECK_TABLES: tuple[tuple[str, str, str], ...] = (
+    ("product", "products", "handle"),
+    ("collection", "collections", "handle"),
+    ("page", "pages", "handle"),
+    ("blog_article", "blog_articles", "blog_handle || '/' || handle"),
+)
+
+
+def _not_live_exclusion_sql(conn: Any, alias: str = "g") -> str:
+    """SQL predicate (no leading AND) that drops rows for known non-live objects.
+
+    Uses the same ``_live_where`` definitions as the Overview missing-meta counters.
+    Rows whose object is not in the catalog table are kept (unknown is not excluded).
+    """
+    parts = []
+    for object_type, table, handle_expr in _LIVE_CHECK_TABLES:
+        live = _live_where(conn, table)
+        parts.append(
+            f"NOT ({alias}.object_type = '{object_type}' AND EXISTS ("
+            f"SELECT 1 FROM {table} WHERE {handle_expr} = {alias}.object_handle AND NOT ({live})))"
+        )
+    return " AND ".join(parts)
 
 
 # Expected CTR by position (based on industry benchmarks)
@@ -199,14 +227,15 @@ def fetch_opportunities(
     _row_factory(conn)
 
     where_clauses = [
-        "impressions >= ?",
-        "position >= ?",
-        "position <= ?",
+        "g.impressions >= ?",
+        "g.position >= ?",
+        "g.position <= ?",
+        _not_live_exclusion_sql(conn),
     ]
     params: list[Any] = [min_impressions, min_position, max_position]
     
     if page_type and page_type != "all":
-        where_clauses.append("object_type = ?")
+        where_clauses.append("g.object_type = ?")
         params.append(page_type)
     
     where_sql = " AND ".join(where_clauses)
@@ -214,7 +243,7 @@ def fetch_opportunities(
     count_row = conn.execute(
         f"""
         SELECT COUNT(*) as cnt
-        FROM gsc_query_rows
+        FROM gsc_query_rows g
         WHERE {where_sql}
         """,
         params,
@@ -233,9 +262,9 @@ def fetch_opportunities(
             ctr,
             position,
             fetched_at
-        FROM gsc_query_rows
+        FROM gsc_query_rows g
         WHERE {where_sql}
-        ORDER BY impressions DESC, position ASC
+        ORDER BY g.impressions DESC, g.position ASC
         LIMIT 500
         """,
         params,
@@ -307,24 +336,26 @@ def get_opportunity_stats(conn: Any) -> dict[str, Any]:
         "by_page_type": {},
     }
     
-    count_row = conn.execute("SELECT COUNT(*) as cnt FROM gsc_query_rows").fetchone()
+    live_sql = _not_live_exclusion_sql(conn)
+    count_row = conn.execute(f"SELECT COUNT(*) as cnt FROM gsc_query_rows g WHERE {live_sql}").fetchone()
     stats["total_queries"] = count_row["cnt"] if count_row else 0
     
     sd_row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM gsc_query_rows WHERE position BETWEEN 4 AND 20"
+        f"SELECT COUNT(*) as cnt FROM gsc_query_rows g WHERE g.position BETWEEN 4 AND 20 AND {live_sql}"
     ).fetchone()
     stats["striking_distance"] = sd_row["cnt"] if sd_row else 0
     
     qw_row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM gsc_query_rows WHERE position BETWEEN 11 AND 20 AND impressions >= 50"
+        f"SELECT COUNT(*) as cnt FROM gsc_query_rows g WHERE g.position BETWEEN 11 AND 20 AND g.impressions >= 50 AND {live_sql}"
     ).fetchone()
     stats["quick_wins"] = qw_row["cnt"] if qw_row else 0
     
     type_rows = conn.execute(
-        """
-        SELECT object_type, COUNT(*) as cnt
-        FROM gsc_query_rows
-        GROUP BY object_type
+        f"""
+        SELECT g.object_type, COUNT(*) as cnt
+        FROM gsc_query_rows g
+        WHERE {live_sql}
+        GROUP BY g.object_type
         """
     ).fetchall()
     stats["by_page_type"] = {

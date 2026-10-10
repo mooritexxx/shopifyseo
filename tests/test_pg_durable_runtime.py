@@ -323,7 +323,7 @@ def test_docs_cover_snapshot_live_mark_and_rollback():
     assert "ensure-postgres.sh" in text
     assert "restore-tailscale.sh" in text
     assert "setsid nohup /home/box/workspace/shopifyseo/scripts/start-app.sh" in text
-    assert "rsync -a /var/lib/postgresql/17/main/" in text
+    assert "cp -a /var/lib/postgresql/17/main/." in text
     assert "chown -R box:box" in text
     assert "pgrep -x cron" in text
     assert "shopifyseo_cutover_dryrun" in text

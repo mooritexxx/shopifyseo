@@ -70,11 +70,12 @@ def is_postgres_runtime(conn: Any) -> bool:
 
 
 def _rewrite_postgres_sql(query: str, *, params: Any = None) -> str:
-    """CURRENT_TIMESTAMP rewrite then ``?`` → ``%s``.
+    """CURRENT_TIMESTAMP rewrite, ``LIKE`` → ``ILIKE``, then ``?`` → ``%s``.
 
-    This is the only placeholder translator on a production PG connection.
-    ``escape_percent`` follows psycopg: ``%`` is processed only when a params
-    sequence is passed (including empty ``()`` / ``[]``).
+    This is the only SQL translator on a production PG connection. LIKE is
+    rewritten in ``_translate_placeholders`` (same point as placeholder
+    translation). ``escape_percent`` follows psycopg: ``%`` is processed only
+    when a params sequence is passed (including empty ``()`` / ``[]``).
     """
     query = rewrite_current_timestamp_for_postgres(query)
     return _translate_placeholders(

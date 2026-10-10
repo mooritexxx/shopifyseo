@@ -103,6 +103,7 @@ class SettingsValuesPayload(BaseModel):
 class GoogleSignalsPayload(BaseModel):
     configured: bool
     connected: bool
+    mode: str | None = None
     auth_url: str | None = None
     selected_site: str = ""
     available_sites: list[str]

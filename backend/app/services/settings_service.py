@@ -50,7 +50,9 @@ def _shopify_runtime_ready(conn: Any) -> bool:
 def get_sync_scope_readiness(conn: Any) -> dict[str, bool]:
     """Which sync pipeline steps can run given current credentials and OAuth state."""
     shopify_ok = _shopify_runtime_ready(conn)
-    google_ok = dg.google_configured() and bool(dg.get_service_token(conn, "search_console"))
+    google_ok = dg.search_data_connected(conn) and (
+        dg.service_account_available() or dg.google_configured()
+    )
     return {
         "shopify": shopify_ok,
         "gsc": google_ok,
@@ -85,8 +87,10 @@ def get_settings_data() -> dict[str, Any]:
         values = {key: dg.get_service_setting(conn, key) for key in RUNTIME_SETTING_KEYS}
         for setting_key, env_key in _ENV_MAPPING.items():
             values[setting_key] = runtime_setting(conn, env_key, setting_key)[0]
-        configured = dg.google_configured()
-        connected = bool(dg.get_service_token(conn, "search_console"))
+        oauth_configured = dg.google_configured()
+        sa_available = dg.service_account_available()
+        configured = oauth_configured or sa_available
+        connected = sa_available or bool(dg.get_service_token(conn, "search_console"))
         available_gsc_sites: list[str] = []
         available_ga4_properties: list[dict] = []
         available_google_ads_customers: list[dict] = []
@@ -115,7 +119,7 @@ def get_settings_data() -> dict[str, Any]:
             "google_configured": configured,
             "google_connected": connected,
             "ai_configured": dai.ai_configured(conn),
-            "auth_url": "/auth/google/start" if configured else None,
+            "auth_url": "/auth/google/start" if oauth_configured else None,
             "available_gsc_sites": available_gsc_sites,
             "available_ga4_properties": available_ga4_properties,
             "available_google_ads_customers": available_google_ads_customers,

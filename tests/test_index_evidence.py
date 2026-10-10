@@ -275,7 +275,7 @@ def test_bulk_sync_fetches_snapshot_and_reconciles_before_targets(conn, monkeypa
     monkeypatch.setattr(_sync, '_index_inspection_targets', targets)
     monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
     monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
-    monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')
+    monkeypatch.setattr(_sync.dg, 'get_search_data_access_token', lambda c: '')
     result = _sync.bulk_refresh_index_status(':memory:')
     assert calls == ['snapshot', 'reconcile', 'targets']
     assert result['refreshed'] == 0
@@ -330,7 +330,7 @@ def test_rollup_inspection_older_than_7d_in_sync_result(conn, monkeypatch):
     monkeypatch.setattr(_sync, '_index_inspection_targets', lambda c, **k: {'targets': [], 'skipped_indexed': 0, 'stale_reinspect_selected': 0, 'stale_reinspect_deferred_budget': 0})
     monkeypatch.setattr(_sync.dg, 'get_search_console_sites', lambda c: [])
     monkeypatch.setattr(_sync.dg, 'preferred_site_url', lambda *a: '')
-    monkeypatch.setattr(_sync.dg, 'get_google_access_token', lambda c: '')
+    monkeypatch.setattr(_sync.dg, 'get_search_data_access_token', lambda c: '')
 
     result = _sync.bulk_refresh_index_status(':memory:')
     assert 'inspection_older_than_7d' in result

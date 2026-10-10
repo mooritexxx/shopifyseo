@@ -19,10 +19,10 @@ export function syncSortScopesInPipelineOrder(values: readonly string[]): SyncSe
 
 export const SYNC_SCOPE_READY_HELP: Record<SyncServiceValue, string> = {
   shopify: "Add your Shopify shop and Admin API credentials under Settings → Data sources, then save.",
-  gsc: "Configure Google OAuth in Settings → Data sources, then pick a Search Console property.",
-  ga4: "Connect Google OAuth (same as Search Console) before syncing GA4.",
+  gsc: "Configure Google (service account or OAuth) in Settings → Data sources, then pick a Search Console property.",
+  ga4: "Connect Google (same as Search Console) before syncing GA4.",
   index: "URL Inspection needs a connected Google account with Search Console access.",
-  pagespeed: "PageSpeed Insights sync uses your Google OAuth session."
+  pagespeed: "PageSpeed Insights sync uses your Google service account or OAuth session."
 };
 
 /** Pipeline row subtitles (V1 design copy deck). */

@@ -4,11 +4,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from shopifyseo.dashboard_google._auth import get_google_access_token, google_api_get, HttpRequestError
+from shopifyseo.dashboard_google._auth import get_search_data_access_token, google_api_get, HttpRequestError
 from shopifyseo.db import get_connection
 
 conn = get_connection(path="/Users/home/Projects/shopifyseo/shopify_catalog.sqlite3")
-token = get_google_access_token(conn)
+token = get_search_data_access_token(conn)
 
 cursor = conn.cursor()
 cursor.execute("SELECT handle FROM shopify_products LIMIT 20")

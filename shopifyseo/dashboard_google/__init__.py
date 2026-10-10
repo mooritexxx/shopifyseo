@@ -10,6 +10,7 @@ Sub-modules
 -----------
 _cache   Cache schema, TTL constants, SQLite read/write helpers.
 _auth    OAuth flow, service tokens, settings, generic Google API helpers.
+_service_account  JWT bearer tokens for GSC/GA4 (OAuth fallback stays in _auth).
 _gsc     Search Console analytics, URL inspection, PageSpeed Insights.
 _ga4     Google Analytics 4 analytics and properties.
 _ads     Google Ads API (KeywordPlanIdeaService, accessible customers).
@@ -82,6 +83,7 @@ from ._cache import (  # noqa: E402
 
 from ._auth import (  # noqa: E402
     get_google_access_token,
+    get_search_data_access_token,
     get_service_setting,
     get_service_token,
     google_api_get,
@@ -91,9 +93,17 @@ from ._auth import (  # noqa: E402
     google_refresh_token,
     google_token_has_scope,
     google_token_request,
+    invalidate_token_cache,
     new_oauth_state,
+    search_data_configured,
+    search_data_connected,
     set_service_setting,
     set_service_token,
+)
+from ._service_account import (  # noqa: E402
+    SEARCH_DATA_SCOPES,
+    service_account_available,
+    try_service_account_access_token,
 )
 
 # ---------------------------------------------------------------------------

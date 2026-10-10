@@ -66,7 +66,7 @@ Open `.env` and fill in at minimum:
 | `SHOPIFY_SHOP` | Your store handle e.g. `your-store.myshopify.com` |
 | `SHOPIFY_STORE_URL` | Your public store URL e.g. `https://your-store.com` |
 | `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` | Shopify catalog sync |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | GSC and GA4 data |
+| `GOOGLE_SERVICE_ACCOUNT_FILE` (preferred) or `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | GSC and GA4 data (service account first; OAuth fallback) |
 | One AI key (see [AI Providers](#ai-providers)) | All AI features |
 
 Everything else is optional. Most settings can also be configured in the **Settings** page inside the app after first launch.
@@ -99,7 +99,7 @@ Once the app is open:
 
 1. **Settings → Store** — enter your Shopify shop domain and store URL if not already set via `.env`
 2. **Settings → Integrations** — paste your Shopify access token and Google credentials
-3. **Google Signals page** — click **Connect Google Account** and complete the OAuth flow to authorize Search Console and GA4
+3. **Google Search & Analytics** — use a service-account key (see below) or open Settings and complete the OAuth fallback to authorize Search Console and GA4
 4. **Dashboard → Sync** — run your first sync. It fetches your full Shopify catalog, GSC data, GA4 data, and indexing status. The first run takes a few minutes depending on catalog size
 5. Browse the **Products**, **Collections**, **Pages**, and **Blogs** tabs to see your SEO audit results
 
@@ -117,12 +117,31 @@ The database (`shopify_catalog.sqlite3`) is created automatically in the project
 
 ### Google (Search Console + GA4)
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project
-2. Enable the **Google Search Console API** and **Google Analytics Data API**
-3. Under **APIs & Services → Credentials**, create an **OAuth 2.0 Client ID** (type: Web application)
-4. Add `http://127.0.0.1:8000/auth/google/callback` as an authorized redirect URI
-5. Copy the Client ID and Client Secret to your `.env`
-6. In the app, go to **Google Signals** and click **Connect Google Account** to complete authorization
+Search Console and GA4 use a **service account first**. OAuth remains as a fallback (`/auth/google/start` and `/callback` are unchanged).
+
+**Service account (preferred)**
+
+1. Create a Google Cloud service account and download its JSON key. Store it outside the repo (mode `600`). Default path: `/home/box/secrets/google-sa.json`. Override with `GOOGLE_SERVICE_ACCOUNT_FILE`.
+2. Enable the **Google Search Console API** and **Google Analytics Data API** on that project.
+3. Add the service-account email as a user in Search Console (the property, e.g. `sc-domain:example.com`, with at least Site permissions sufficient to read) and as a Viewer on the GA4 property.
+4. `pip install -e .` so `cryptography` is in the venv, then **restart** the app. A missing `cryptography` package is treated as “service account unavailable” and the app falls back to OAuth; it will not break startup.
+5. Verify: `GET /api/google-signals` returns `configured=true`, `connected=true`, `mode="service_account"`. Sync GSC/GA4 from the sidebar.
+
+Scopes requested by the service account: `https://www.googleapis.com/auth/webmasters.readonly` and `https://www.googleapis.com/auth/analytics.readonly`. The app does not submit sitemaps or call the Indexing API, so read-only Webmaster is enough.
+
+**OAuth fallback**
+
+1. Under **APIs & Services → Credentials**, create an **OAuth 2.0 Client ID** (type: Web application)
+2. Add `http://127.0.0.1:8000/auth/google/callback` as an authorized redirect URI
+3. Copy the Client ID and Client Secret to Settings (or `.env`)
+4. Click **Connect Google** in Settings → Data sources
+
+**Known limits**
+
+- **Google Ads** stays on the user OAuth token (`adwords` scope). A service account cannot replace it.
+- **PageSpeed Insights** has no service-account-specific scope. In service-account mode the `openid` reconnect error is skipped and the SA bearer token is sent; success depends on the PageSpeed Insights API being enabled on the SA’s GCP project. The OAuth path still requires `openid`.
+- **Indexing API** is not used by this app (URL Inspection is Search Console, not `indexing.googleapis.com`).
+- Service accounts cannot complete the OAuth consent flow or obtain user-delegated scopes such as `adwords` or `openid`.
 
 ### AI Providers
 

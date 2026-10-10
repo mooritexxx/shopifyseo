@@ -34,7 +34,7 @@ from ._cache import (
 )
 from ._auth import (
     get_google_access_token as get_oauth_access_token,
-    get_search_data_access_token as get_google_access_token,
+    search_console_access_token as get_google_access_token,
     get_service_setting,
     google_api_get,
     google_api_post,

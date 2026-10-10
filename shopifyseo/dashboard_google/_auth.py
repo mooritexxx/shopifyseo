@@ -176,6 +176,10 @@ def get_search_data_access_token(conn: Any) -> str:
     return get_google_access_token(conn)
 
 
+# Alias for GSC/GA4 callers so PSI modules never import the SA-first helper by name.
+search_console_access_token = get_search_data_access_token
+
+
 def new_oauth_state() -> str:
     pkg = _pkg()
     pkg.GOOGLE_AUTH_STATE["value"] = secrets.token_urlsafe(24)

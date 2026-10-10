@@ -88,6 +88,7 @@ from ._basic_fetchers import (  # noqa: F401
     fetch_collections_for_facts,
     fetch_counts,
     fetch_index_status_counts,
+    fetch_live_counts,
     fetch_overview_metrics,
     fetch_signal_totals,
     fetch_pages_for_facts,

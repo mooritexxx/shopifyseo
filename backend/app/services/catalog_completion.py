@@ -23,13 +23,20 @@ def build_catalog_completion(
     metrics: dict[str, int],
     *,
     articles_missing_meta: int,
+    live_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Meta-complete = both seo_title and seo_description non-empty (same rules as overview SQL)."""
-    products = _segment_meta(counts.get("products", 0), metrics.get("products_missing_meta", 0))
+    """Meta-complete = both seo_title and seo_description non-empty (same rules as overview SQL).
+
+    ``missing_meta`` only counts items live on the Online Store, so ``total`` must too:
+    pass ``live_counts`` (``dq.fetch_live_counts``) to use live-only totals. When omitted,
+    ``counts`` is used as before.
+    """
+    totals = {**counts, **(live_counts or {})}
+    products = _segment_meta(totals.get("products", 0), metrics.get("products_missing_meta", 0))
     products["thin_body"] = int(metrics.get("products_thin_body", 0))
     return {
         "products": products,
-        "collections": _segment_meta(counts.get("collections", 0), metrics.get("collections_missing_meta", 0)),
-        "pages": _segment_meta(counts.get("pages", 0), metrics.get("pages_missing_meta", 0)),
-        "articles": _segment_meta(counts.get("blog_articles", 0), articles_missing_meta),
+        "collections": _segment_meta(totals.get("collections", 0), metrics.get("collections_missing_meta", 0)),
+        "pages": _segment_meta(totals.get("pages", 0), metrics.get("pages_missing_meta", 0)),
+        "articles": _segment_meta(totals.get("blog_articles", 0), articles_missing_meta),
     }

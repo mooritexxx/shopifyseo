@@ -254,6 +254,7 @@ def get_dashboard_summary(
     gsc_segment = normalize_gsc_url_segment(gsc_segment)
     period = normalize_gsc_period_mode(gsc_period)
     articles_missing_meta = 0
+    live_counts: dict[str, int] = {}
     gsc_property_breakdowns = _empty_gsc_property_breakdowns_for_signals()
     gsc_queries: list[dict[str, Any]] = []
     gsc_pages: list[dict[str, Any]] = []
@@ -263,6 +264,7 @@ def get_dashboard_summary(
     conn = open_db_connection()
     try:
         counts = dq.fetch_counts(conn)
+        live_counts = dq.fetch_live_counts(conn)
         recent_runs = [dict(row) for row in dq.fetch_recent_runs(conn)]
         last_sync_raw = (dg.get_service_setting(conn, "last_dashboard_sync_finished_at") or "").strip()
         last_dashboard_sync_at = last_sync_raw or None
@@ -348,6 +350,7 @@ def get_dashboard_summary(
         counts,
         metrics,
         articles_missing_meta=articles_missing_meta,
+        live_counts=live_counts,
     )
     return {
         "counts": counts,

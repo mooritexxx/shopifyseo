@@ -29,12 +29,22 @@ WHOLE = 443.0
 
 
 def _cast_rules(load_text: str) -> list[str]:
-    start = load_text.find("CAST ")
-    assert start != -1, "shopifyseo.load must contain a CAST block"
-    rest = load_text[start:]
-    end = rest.find("\n\n")
-    block = rest if end == -1 else rest[:end]
-    return [line.strip().rstrip(",") for line in block.splitlines() if line.strip()]
+    """CAST clause only — skip comments that mention CAST."""
+    lines = load_text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith("CAST "):
+            start = i
+            break
+    assert start is not None, "shopifyseo.load must contain a CAST block"
+    block: list[str] = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        if line.lstrip().startswith("--"):
+            continue
+        block.append(line.strip().rstrip(","))
+    return block
 
 
 def test_postgres_float_ddl_rewrites_real_class_types():

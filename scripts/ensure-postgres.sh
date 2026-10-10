@@ -240,7 +240,7 @@ running_port_from_pidfile() {
   if [[ -f "$pidfile" ]]; then
     # postmaster.pid: line 1 pid, line 2 data dir, line 4 port
     local port
-    port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
     if [[ "$port" =~ ^[0-9]+$ ]]; then
       printf '%s' "$port"
       return 0
@@ -274,9 +274,9 @@ debian_17_main_holds_port() {
   local pidfile="$DEBIAN_PGDATA/postmaster.pid"
   if [[ -f "$pidfile" ]]; then
     local pid datadir pid_port
-    pid="$(sed -n '1p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
-    datadir="$(sed -n '2p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
-    pid_port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    pid="$(sed -n '1p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
+    datadir="$(sed -n '2p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
+    pid_port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
     if [[ "$pid_port" == "$port" && "$datadir" == "$DEBIAN_PGDATA" && "$pid" =~ ^[0-9]+$ ]]; then
       if [[ -d "/proc/$pid" ]] || kill -0 "$pid" >/dev/null 2>&1; then
         return 0
@@ -297,17 +297,29 @@ debian_17_main_holds_port() {
 
 run_pg_ctlcluster_stop() {
   # Tolerate missing binary / permission errors. Never escalate to kill.
-  local cmd=(pg_ctlcluster 17 main stop)
-  if ! command -v pg_ctlcluster >/dev/null 2>&1; then
-    echo "warning: pg_ctlcluster not found; cannot stop Debian 17/main" >&2
-    return 1
+  # Try PATH first (tests + unprivileged). sudo uses a secure PATH, so when
+  # escalating pass the resolved absolute path.
+  local bin=""
+  if command -v pg_ctlcluster >/dev/null 2>&1; then
+    bin="$(command -v pg_ctlcluster)"
   fi
   if [[ "$(id -u)" -eq 0 ]]; then
-    "${cmd[@]}" && return 0
-  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    sudo "${cmd[@]}" && return 0
-  else
-    "${cmd[@]}" && return 0
+    if [[ -n "$bin" ]] && "$bin" 17 main stop; then
+      return 0
+    fi
+    echo "warning: pg_ctlcluster not found or 17 main stop failed; not killing anything" >&2
+    return 1
+  fi
+  if [[ -n "$bin" ]] && "$bin" 17 main stop; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    if [[ -n "$bin" ]] && sudo "$bin" 17 main stop; then
+      return 0
+    fi
+    if sudo pg_ctlcluster 17 main stop; then
+      return 0
+    fi
   fi
   echo "warning: pg_ctlcluster 17 main stop failed or was not permitted; not killing anything" >&2
   return 1

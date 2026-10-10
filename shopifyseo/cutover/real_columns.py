@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Any
+
+from shopifyseo.db import connect_sqlite, execute
 
 # pgloader SQLite default: ``type real to real`` / ``type float to float``.
 # These source type names must all be overridden to double precision.
@@ -44,7 +46,7 @@ def pgloader_source_type(declared: str) -> str:
     return _TYPE_HEAD.sub(" ", head).strip().lower()
 
 
-def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
+def bootstrap_sqlite_schema(conn: Any) -> None:
     """Apply the same CREATE/ALTER path the live SQLite catalog uses."""
     from backend.app.services.team_tasks import ensure_schema as ensure_tasks
     from shopifyseo.dashboard_store import ensure_dashboard_schema
@@ -55,24 +57,25 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
 
 
 def iter_schema_typed_columns(
-    conn: sqlite3.Connection,
+    conn: Any,
 ) -> list[tuple[str, str, str]]:
     """Return ``(table, column, declared_type)`` for every user table column."""
     tables = [
         row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        for row in execute(
+            conn,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
         )
     ]
     out: list[tuple[str, str, str]] = []
     for table in tables:
-        for _cid, name, decl, *_rest in conn.execute(f"PRAGMA table_info({table})"):
+        for _cid, name, decl, *_rest in execute(conn, f"PRAGMA table_info({table})"):
             out.append((table, name, decl or ""))
     return out
 
 
 def iter_real_affinity_columns(
-    conn: sqlite3.Connection,
+    conn: Any,
 ) -> list[tuple[str, str, str]]:
     """Columns whose SQLite affinity is REAL (IEEE-754 double)."""
     return [
@@ -83,7 +86,7 @@ def iter_real_affinity_columns(
 
 
 def iter_numeric_affinity_columns(
-    conn: sqlite3.Connection,
+    conn: Any,
 ) -> list[tuple[str, str, str]]:
     """NUMERIC-affinity columns (DECIMAL/NUMERIC/BOOLEAN/DATE/untyped)."""
     return [
@@ -102,7 +105,7 @@ def real_affinity_columns_from_repo_schema() -> list[tuple[str, str, str]]:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "schema.sqlite3"
-            conn = sqlite3.connect(path)
+            conn = connect_sqlite(path, wal_mode=False)
             try:
                 bootstrap_sqlite_schema(conn)
                 return iter_real_affinity_columns(conn)

@@ -153,7 +153,7 @@ apply_listen_port_to_env() {
     return 0
   fi
   local port
-  port="$(tr -d '[:space:]' < "$port_file" 2>/dev/null || true)"
+  port="$(tr -d ' \t\r\n' < "$port_file" 2>/dev/null || true)"
   if [[ ! "$port" =~ ^[0-9]+$ ]]; then
     return 0
   fi

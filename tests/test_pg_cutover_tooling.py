@@ -79,7 +79,13 @@ def test_load_file_omits_foreign_keys_and_has_placeholders():
     assert "type blob to bytea using byte-vector-to-bytea" in load
     assert "type real to double precision" in load
     assert "using float-to-string" in load
-    assert "type real to real" not in load
+    cast_lines = [
+        line for line in load.splitlines() if line.startswith("CAST ") or line.startswith("     type ")
+    ]
+    cast_text = "\n".join(cast_lines)
+    assert "type real to double precision" in cast_text
+    assert "type real to real" not in cast_text
+    assert "type float to float" not in cast_text
     assert "keyword_metrics.updated_at" in load
     assert "PASSWORD" not in load
     assert "postgresql://shopifyseo:" not in load

@@ -657,7 +657,7 @@ exit 0
             env=env,
         )
         assert proc.returncode == 0, proc.stderr + proc.stdout
-        assert stop_called.exists()
+        assert stop_called.exists(), proc.stdout + proc.stderr
         assert stop_called.read_text(encoding="utf-8").strip() == "STOP-17-main"
         assert "Debian 17/main" in proc.stderr
         chosen = int(listen.read_text(encoding="utf-8").strip())
@@ -826,7 +826,11 @@ def test_backup_daemon_pidfile_prevents_second_loop(tmp_path):
         assert first.poll() is None
     finally:
         first.terminate()
-        first.wait(timeout=3)
+        try:
+            first.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait(timeout=3)
     deadline = time.time() + 2
     while pidfile.is_file() and time.time() < deadline:
         time.sleep(0.05)

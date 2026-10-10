@@ -112,7 +112,7 @@ pidfile_running() {
     return 1
   fi
   local old
-  old="$(tr -d '[:space:]' < "$PIDFILE" 2>/dev/null || true)"
+  old="$(tr -d ' \t\r\n' < "$PIDFILE" 2>/dev/null || true)"
   if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" >/dev/null 2>&1; then
     return 0
   fi
@@ -141,20 +141,30 @@ run_loop() {
     exit 0
   fi
   printf '%s\n' "$$" > "$PIDFILE"
+  SLEEP_PID=""
   cleanup() {
-    if [[ -f "$PIDFILE" ]] && [[ "$(tr -d '[:space:]' < "$PIDFILE" 2>/dev/null || true)" == "$$" ]]; then
+    if [[ -n "${SLEEP_PID:-}" ]]; then
+      kill "$SLEEP_PID" >/dev/null 2>&1 || true
+      wait "$SLEEP_PID" >/dev/null 2>&1 || true
+      SLEEP_PID=""
+    fi
+    if [[ -f "$PIDFILE" ]] && [[ "$(tr -d ' \t\r\n' < "$PIDFILE" 2>/dev/null || true)" == "$$" ]]; then
       rm -f "$PIDFILE"
     fi
   }
-  trap cleanup EXIT INT TERM
+  trap cleanup EXIT
+  trap 'cleanup; exit 0' INT TERM
   log "backup loop running pid $$ interval ${LOOP_SECONDS}s"
   while true; do
-    sleep "$LOOP_SECONDS" || true
+    sleep "$LOOP_SECONDS" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" || true
+    SLEEP_PID=""
     if [[ ! -f "$LIVE_MARK" ]]; then
       log "live mark removed; loop exiting"
       exit 0
     fi
-    if [[ -f "$PIDFILE" ]] && [[ "$(tr -d '[:space:]' < "$PIDFILE" 2>/dev/null || true)" != "$$" ]]; then
+    if [[ -f "$PIDFILE" ]] && [[ "$(tr -d ' \t\r\n' < "$PIDFILE" 2>/dev/null || true)" != "$$" ]]; then
       log "pidfile no longer ours; loop exiting"
       exit 0
     fi

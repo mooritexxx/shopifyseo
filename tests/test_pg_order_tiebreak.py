@@ -167,3 +167,16 @@ def test_cannibalization_tie_break_is_type_then_handle(db_conn):
         a = (row["object_a"]["type"], row["object_a"]["handle"])
         b = (row["object_b"]["type"], row["object_b"]["handle"])
         assert a < b, (a, b)
+
+
+def test_cannibalization_object_a_is_smaller_type_handle_regardless_of_insert_order(db_conn):
+    conn = _make_conn(db_conn)
+    vec = np.ones(EMBEDDING_DIMS, dtype=np.float32)
+    vec /= np.linalg.norm(vec)
+    # Reverse of (type, handle) order: product/zeta then page/about.
+    _insert_embedding(conn, "product", "zeta", vec)
+    _insert_embedding(conn, "page", "about", vec)
+    results = find_cannibalization_candidates(conn, threshold=0.5)
+    assert len(results) == 1
+    assert results[0]["object_a"] == {"type": "page", "handle": "about"}
+    assert results[0]["object_b"] == {"type": "product", "handle": "zeta"}

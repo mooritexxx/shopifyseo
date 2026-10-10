@@ -23,6 +23,10 @@ _FLOAT_CAST = re.compile(
     re.IGNORECASE,
 )
 _UNQUOTED_TARGET = re.compile(r"\bto double precision\b", re.IGNORECASE)
+_CAST_TARGET = re.compile(
+    r"\bto\s+(.+?)(?:\s+drop|\s+using|$)",
+    re.IGNORECASE,
+)
 
 
 def cast_rules(load_text: str) -> list[str]:
@@ -45,6 +49,21 @@ def cast_rules(load_text: str) -> list[str]:
     return block
 
 
+def unquoted_whitespace_targets(rules: list[str]) -> list[str]:
+    """CAST lines whose target type has whitespace and is not double-quoted."""
+    bad: list[str] = []
+    for line in rules:
+        match = _CAST_TARGET.search(line)
+        if not match:
+            continue
+        target = match.group(1).strip().rstrip(",")
+        if target.startswith('"') and target.endswith('"') and len(target) >= 2:
+            continue
+        if any(ch.isspace() for ch in target):
+            bad.append(line)
+    return bad
+
+
 def validate_load_file(path: Path | None = None) -> list[str]:
     """Require quoted ``\"double precision\"`` targets for every float CAST.
 
@@ -53,6 +72,13 @@ def validate_load_file(path: Path | None = None) -> list[str]:
     load_path = path or LOAD_FILE
     text = load_path.read_text(encoding="utf-8")
     rules = cast_rules(text)
+    bad = unquoted_whitespace_targets(rules)
+    if bad:
+        raise ValueError(
+            "pgloader 3.6.10 rejects an unquoted multi-word CAST target "
+            f"(ESRAP-PARSE-ERROR): {bad[0]!r}. Use "
+            'type … to "double precision" drop typemod using float-to-string'
+        )
     found: dict[str, str] = {}
     for line in rules:
         if _UNQUOTED_TARGET.search(line):

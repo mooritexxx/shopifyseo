@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -255,48 +255,8 @@ def _ident(name: str) -> str:
     return f'"{name}"'
 
 
-def _same_float(left: Any, right: Any) -> bool:
-    if left is None and right is None:
-        return True
-    if left is None or right is None:
-        return False
-    try:
-        lf = float(left)
-        rf = float(right)
-    except (TypeError, ValueError):
-        return False
-    if math.isnan(lf) and math.isnan(rf):
-        return True
-    return lf == rf
-
-
-def _pk_columns_sqlite(conn: Any, table: str) -> list[str]:
-    keyed: list[tuple[int, str]] = []
-    for row in execute(conn, f"PRAGMA table_info({_ident(table)})"):
-        pk = int(row[5] if not hasattr(row, "keys") else row["pk"] or 0)
-        name = row[1] if not hasattr(row, "keys") else row["name"]
-        if pk:
-            keyed.append((pk, str(name)))
-    return [name for _pk, name in sorted(keyed)]
-
-
-def _pk_columns_postgres(conn: Any, table: str) -> list[str]:
-    rows = execute(
-        conn,
-        """
-        SELECT a.attname
-        FROM pg_index i
-        JOIN pg_class c ON c.oid = i.indrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
-        WHERE n.nspname = current_schema()
-          AND c.relname = ?
-          AND i.indisprimary
-        ORDER BY array_position(i.indkey, a.attnum)
-        """,
-        (table,),
-    ).fetchall()
-    return [str(row[0]) for row in rows]
+def _norm_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _pg_column_data_types(conn: Any, table: str) -> dict[str, str]:
@@ -313,27 +273,12 @@ def _pg_column_data_types(conn: Any, table: str) -> dict[str, str]:
     return {str(row[0]): str(row[1]) for row in rows}
 
 
-def _fetch_float_map(
-    conn: Any,
-    table: str,
-    key_cols: list[str],
-    float_cols: list[str],
-) -> dict[tuple[Any, ...], tuple[Any, ...]]:
-    cols = key_cols + float_cols
-    order = ", ".join(_ident(c) for c in key_cols) if key_cols else ", ".join(
-        _ident(c) for c in float_cols
-    )
-    sql = (
-        f'SELECT {", ".join(_ident(c) for c in cols)} FROM {_ident(table)}'
-        + (f" ORDER BY {order}" if order else "")
-    )
-    out: dict[tuple[Any, ...], tuple[Any, ...]] = {}
-    n_key = len(key_cols)
-    for i, row in enumerate(execute(conn, sql)):
-        values = tuple(row[j] for j in range(len(cols)))
-        key = values[:n_key] if n_key else (i,)
-        out[key] = values[n_key:]
-    return out
+def _real_tuple_counts(conn: Any, table: str, cols: list[str]) -> Counter[tuple[Any, ...]]:
+    sql = f'SELECT {", ".join(_ident(c) for c in cols)} FROM {_ident(table)}'
+    counts: Counter[tuple[Any, ...]] = Counter()
+    for row in execute(conn, sql):
+        counts[tuple(_norm_float(row[i]) for i in range(len(cols)))] += 1
+    return counts
 
 
 def _verify_real_columns(
@@ -400,33 +345,20 @@ def _verify_real_columns(
         if not compare_cols:
             continue
         float_cols = compare_cols
-        key_cols = _pk_columns_sqlite(sqlite_conn, table)
-        if not key_cols and is_pg:
-            key_cols = _pk_columns_postgres(pg_conn, table)
-        left = _fetch_float_map(sqlite_conn, table, key_cols, float_cols)
-        right = _fetch_float_map(pg_conn, table, key_cols, float_cols)
+        left = _real_tuple_counts(sqlite_conn, table, float_cols)
+        right = _real_tuple_counts(pg_conn, table, float_cols)
+        cells += sum(left.values()) * len(float_cols)
         examples: list[str] = []
         table_mismatches = 0
-        for key, svals in left.items():
-            pvals = right.get(key)
-            if pvals is None:
-                table_mismatches += 1
-                if len(examples) < 5:
-                    examples.append(f"row {key!r} missing on postgres")
+        for key in set(left) | set(right):
+            delta = abs(left[key] - right[key])
+            if not delta:
                 continue
-            for column, sv, pv in zip(float_cols, svals, pvals, strict=True):
-                cells += 1
-                if not _same_float(sv, pv):
-                    table_mismatches += 1
-                    if len(examples) < 5:
-                        examples.append(
-                            f"{column} key={key!r} sqlite={sv!r} postgres={pv!r}"
-                        )
-        extra = set(right) - set(left)
-        if extra:
-            table_mismatches += len(extra)
+            table_mismatches += delta
             if len(examples) < 5:
-                examples.append(f"{len(extra)} postgres-only rows")
+                examples.append(
+                    f"tuple {key!r} sqlite={left[key]} postgres={right[key]}"
+                )
         checked_columns += len(float_cols)
         if table_mismatches:
             mismatch_rows += table_mismatches

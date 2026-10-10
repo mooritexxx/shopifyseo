@@ -21,7 +21,7 @@ MARK_SH = ROOT / "scripts" / "mark-pg-live.sh"
 BACKUP_SH = ROOT / "scripts" / "pg-nightly-backup.sh"
 CRON_SH = ROOT / "scripts" / "install-pg-backup-cron.sh"
 DAEMON_SH = ROOT / "scripts" / "pg-backup-daemon.sh"
-LISTEN_SH = ROOT / "scripts" / "pg-listen-port.sh"
+LISTEN_SH = ROOT / "scripts" / "lib" / "pg-listen-port.sh"
 PGLOADER_4G = ROOT / "scripts" / "pg_cutover" / "pgloader-4g.sh"
 DOCS = ROOT / "docs" / "pg-cutover.md"
 
@@ -191,6 +191,43 @@ def test_start_app_live_mark_real_pg_is_postgres(tmp_path):
     assert proc.stdout.strip() == "postgres"
     assert _PG_URL not in proc.stdout
     assert _PG_URL not in proc.stderr
+
+
+def test_nightly_backup_removes_partials_older_than_one_day(tmp_path):
+    shims = tmp_path / "bin"
+    _write_shim(
+        shims,
+        "pg_dump",
+        """
+outfile=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    outfile="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+printf 'fake-dump\\n' > "$outfile"
+""",
+    )
+    env = _base_env(tmp_path, path_prefix=shims)
+    (tmp_path / "pg_live_cutover.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pg.env").write_text(
+        "DATABASE_URL=postgresql://shopifyseo:secret@127.0.0.1:5432/shopifyseo\n",
+        encoding="utf-8",
+    )
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    stale = backup_dir / "shopifyseo-20200101T000000Z.dump.partial"
+    stale.write_text("old\n", encoding="utf-8")
+    os.utime(stale, (0, 0))
+    fresh = backup_dir / "shopifyseo-fresh.dump.partial"
+    fresh.write_text("new\n", encoding="utf-8")
+    proc = _run(["bash", str(BACKUP_SH)], env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert not stale.exists()
+    assert fresh.exists()
 
 
 def test_backup_noop_without_live_mark(tmp_path):

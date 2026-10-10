@@ -46,8 +46,10 @@ not honor the live mark. Box restarts go through `scripts/start-app.sh`.
 | [`scripts/ensure-postgres.sh`](../scripts/ensure-postgres.sh) | Reset-durable PG17 cluster under `/home/box/pgdata` (called by `start-app.sh`) |
 | [`scripts/start-app.sh`](../scripts/start-app.sh) | Production uvicorn start: ensure-postgres, live-mark decision, no silent SQLite fallback |
 | [`scripts/mark-pg-live.sh`](../scripts/mark-pg-live.sh) | Write / remove `/home/box/.config/shopifyseo/pg_live_cutover.json` |
-| [`scripts/pg-nightly-backup.sh`](../scripts/pg-nightly-backup.sh) | `pg_dump -Fc` when the live mark exists; keep the newest 7 |
+| [`scripts/pg-nightly-backup.sh`](../scripts/pg-nightly-backup.sh) | `pg_dump -Fc` when the live mark exists; keep the newest 7; drops `*.dump.partial` older than one day |
 | [`scripts/pg-backup-daemon.sh`](../scripts/pg-backup-daemon.sh) | Cron-free hook: stale-dump check + pidfile-guarded sleep loop. Launched by `start-app.sh` when the live mark says postgres |
+| [`scripts/lib/pg-listen-port.sh`](../scripts/lib/pg-listen-port.sh) | Shared `apply_listen_port_to_env` (loopback only) for start-app and nightly dump |
+| [`scripts/pg_cutover/pgloader-4g.sh`](../scripts/pg_cutover/pgloader-4g.sh) | `pgloader --dynamic-space-size 4096` wrapper |
 | [`scripts/install-pg-backup-cron.sh`](../scripts/install-pg-backup-cron.sh) | Idempotent crontab install. Used **only if** a cron daemon is running; this box often has none |
 | [`scripts/pg_cutover/pg_env.example`](../scripts/pg_cutover/pg_env.example) | Env **names** only. Never commit secrets. |
 | [`shopifyseo/cutover/`](../shopifyseo/cutover/) | Importable helpers used by the scripts and tests |
@@ -119,7 +121,7 @@ under `/home/box`.
   - The chosen port is written to `/home/box/pgdata/17/listen_port`.
     `scripts/start-app.sh` and `scripts/pg-nightly-backup.sh` source
     `pg.env` then rewrite process `PGPORT` / `DATABASE_URL` via
-    `scripts/pg-listen-port.sh` (loopback host only; unix-socket
+    `scripts/lib/pg-listen-port.sh` (loopback host only; unix-socket
     `?host=` URLs are left alone). `pg.env` on disk is not edited.
     Update `PGPORT` in `pg.env` when convenient.
   - Manual: `sudo pg_ctlcluster 17 main stop` then
@@ -281,9 +283,9 @@ When Salar has approved **loading** Postgres but not yet flipping the app:
 
 ```bash
 # Attempt 3: 4 GB heap, hard timeout, stdin closed (Lisp debugger otherwise
-# hangs a COPY session after heap exhaustion).
+# hangs a COPY session after heap exhaustion). After any failure: pkill -9 pgloader.
 export PGLOADER=/home/box/workspace/shopifyseo/scripts/pg_cutover/pgloader-4g.sh
-timeout -s KILL 600 ./scripts/pg_cutover.sh --apply-load \
+timeout -s KILL 300 ./scripts/pg_cutover.sh --apply-load \
   --env-file /home/box/.config/shopifyseo/pg.env \
   --sqlite /path/to/shopify_catalog.snapshot.sqlite3 \
   </dev/null
@@ -293,15 +295,28 @@ This rewrites the target database name to `CUTOVER_LIVE_DATABASE`
 (default `shopifyseo`) and runs the same pipeline. It still does **not**
 export `DATABASE_URL` for uvicorn and does **not** write the live mark.
 
-`include drop` replaces the 51 catalog tables, so a reload over an already
-loaded DB works. Before reloading: confirm there are no extra
-(postgres-only) tables (`verify_counts` flags them), and keep a `pg_dump`
-of the attempt-2 float4 database if diagnosis still matters.
+### Reload over an already loaded database
 
-Parse-only preflight (no catalog open): `PYTHONPATH=. python3 -c
-'from shopifyseo.cutover.load_file import validate_load_file;
-validate_load_file(); print("ok")'`. The apply-load path runs this before
-pgloader.
+`--apply-load` uses `include drop`, so the 51 catalog tables are replaced.
+Any extra table or view in the target is **not** dropped; `verify_counts`
+flags it as a `postgres-only table`. Check `\dt` first. Take a
+`pg_dump -Fc` of the old database first if it is still needed for
+diagnosis (keep the attempt-2 float4 dump if that diagnosis still matters).
+
+### Parse-only preflight
+
+Render `shopifyseo.load` with `__POSTGRES_URI__` pointing at a dead port
+(`postgresql://x@127.0.0.1:1/x`) and a tiny SQLite file, then:
+
+```bash
+timeout -s KILL 30 pgloader /tmp/parse.load </dev/null
+```
+
+`ESRAP-PARSE-ERROR` means the CAST (or another clause) does not parse.
+`DB-CONNECTION-ERROR` on port 1 means the file parsed. The static test
+`validate_load_file()` always runs; `tests/test_pg_float_precision.py`
+also runs this pgloader command when `pgloader` is on PATH. This agent
+did not run a real catalog load.
 
 ## Live mark (the app switch)
 
@@ -330,7 +345,7 @@ After `--apply-load` **and** the post-flip sweep passes:
 - Live mark present → `ensure-postgres.sh` is fatal. Then source `pg.env`.
   If `ensure-postgres.sh` wrote `/home/box/pgdata/17/listen_port`, rewrite
   process `PGPORT` and the `DATABASE_URL` port to match via
-  `scripts/pg-listen-port.sh` (never print the URL; `pg.env` on disk is
+  `scripts/lib/pg-listen-port.sh` (never print the URL; `pg.env` on disk is
   not edited). `pg-nightly-backup.sh` uses the same helper.
   If `DATABASE_URL` is missing/empty or Postgres is unreachable, log and
   exit nonzero. **Never** silently fall back to SQLite.
@@ -457,11 +472,13 @@ It does **not** require pgloader.
 
 `tests/test_pg_float_precision.py` bootstraps a throwaway SQLite schema,
 asserts every REAL-affinity column is CAST to quoted `"double precision"`,
-rejects the unquoted form pgloader 3.6.10 cannot parse, stores
+fails if any CAST target has whitespace and is not quoted, stores
 `6.682926829268292` / `0.1` / `1e-9` / `443.0` on testdb (SQLite and PG),
-and checks PG `information_schema` `data_type`. `verify_values` compares
-loaded REAL columns to a SQLite snapshot (the check that fails on the
-old 4-byte loader).
+and checks PG `information_schema` `data_type`. When `pgloader` is on PATH
+it renders the load file against a dead port and asserts no
+`ESRAP-PARSE-ERROR`. `verify_values` compares loaded REAL columns to a
+SQLite snapshot via a Counter of REAL-column tuples (the check that fails
+on the old 4-byte loader).
 
 `tests/test_pg_order_tiebreak.py` inserts tied sort keys for graph-stats,
 orphans, clusters, and cannibalization and asserts the deterministic order

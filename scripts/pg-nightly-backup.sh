@@ -48,8 +48,8 @@ source "$PG_ENV"
 set +a
 
 # Honor the port ensure-postgres.sh actually bound (same helper as start-app).
-# shellcheck source=pg-listen-port.sh
-source "$ROOT/scripts/pg-listen-port.sh"
+# shellcheck source=lib/pg-listen-port.sh
+source "$ROOT/scripts/lib/pg-listen-port.sh"
 apply_listen_port_to_env
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
@@ -58,8 +58,20 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 fi
 
 mkdir -p "$BACKUP_DIR"
-# A killed dump can leave another stamp's *.dump.partial; pruning ignores them.
-rm -f "$BACKUP_DIR"/*.dump.partial
+# A killed dump can leave another stamp's *.dump.partial. Drop those older
+# than one day; pruning of successful dumps ignores .partial.
+python3 -c '
+import time
+from pathlib import Path
+backup = Path("'"$BACKUP_DIR"'")
+now = time.time()
+for path in backup.glob("*.dump.partial"):
+    try:
+        if now - path.stat().st_mtime > 86400:
+            path.unlink()
+    except OSError:
+        pass
+'
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$BACKUP_DIR/shopifyseo-${STAMP}.dump"
 PARTIAL="$OUT.partial"

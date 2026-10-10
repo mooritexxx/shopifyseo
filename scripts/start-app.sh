@@ -142,8 +142,8 @@ except Exception:
 '
 }
 
-# shellcheck source=pg-listen-port.sh
-source "$ROOT/scripts/pg-listen-port.sh"
+# shellcheck source=lib/pg-listen-port.sh
+source "$ROOT/scripts/lib/pg-listen-port.sh"
 
 # Written by decide() in this shell (not a subshell) so sourced pg.env sticks.
 DECISION=""

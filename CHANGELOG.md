@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `pg_lsclusters` status `online` with an exact data-dir match),
   otherwise starts the durable cluster on the next free port and writes
   `listen_port`. `start-app.sh` and `pg-nightly-backup.sh` share
-  `scripts/pg-listen-port.sh` (loopback only). Nightly dumps no longer
+  `scripts/lib/pg-listen-port.sh` (loopback only). Nightly dumps no longer
   depend on cron: `scripts/pg-backup-daemon.sh` (stale-dump check +
   cmdline-checked pidfile loop) is launched from `start-app.sh` when the
   live mark says postgres. Cron install remains for boxes that actually

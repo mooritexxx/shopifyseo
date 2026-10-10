@@ -8,9 +8,17 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import sqlite3
+import subprocess
 
-from shopifyseo.cutover.load_file import cast_rules, validate_load_file
+import pytest
+
+from shopifyseo.cutover.load_file import (
+    cast_rules,
+    unquoted_whitespace_targets,
+    validate_load_file,
+)
 from shopifyseo.cutover.real_columns import (
     PGLOADER_FLOAT_SOURCE_TYPES,
     bootstrap_sqlite_schema,
@@ -55,6 +63,39 @@ def test_load_file_casts_every_real_class_type_to_double_precision():
             for line in rules
         ), (src, rules)
     assert "using float-to-string" in joined
+
+
+def test_cast_targets_with_whitespace_must_be_quoted():
+    load = (CUTOVER_SQL_DIR / "shopifyseo.load").read_text(encoding="utf-8")
+    assert unquoted_whitespace_targets(cast_rules(load)) == []
+    broken = [
+        "CAST type integer to bigint drop typemod",
+        "     type real to double precision drop typemod using float-to-string",
+    ]
+    assert unquoted_whitespace_targets(broken)
+
+
+@pytest.mark.skipif(
+    shutil.which("pgloader") is None or shutil.which("timeout") is None,
+    reason="pgloader/timeout not on PATH",
+)
+def test_load_file_pgloader_parses_without_esrap(tmp_path):
+    sqlite = tmp_path / "tiny.sqlite3"
+    sqlite3.connect(sqlite).close()
+    src = (CUTOVER_SQL_DIR / "shopifyseo.load").read_text(encoding="utf-8")
+    rendered = src.replace("__SQLITE_URI__", f"sqlite:///{sqlite}")
+    rendered = rendered.replace("__POSTGRES_URI__", "postgresql://x@127.0.0.1:1/x")
+    load = tmp_path / "parse.load"
+    load.write_text(rendered, encoding="utf-8")
+    proc = subprocess.run(
+        ["timeout", "-s", "KILL", "30", "pgloader", str(load)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = (proc.stdout or "") + (proc.stderr or "")
+    assert "ESRAP-PARSE-ERROR" not in out, out
 
 
 def test_validate_load_file_rejects_unquoted_double_precision_target(tmp_path):

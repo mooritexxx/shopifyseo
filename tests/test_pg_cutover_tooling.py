@@ -306,11 +306,24 @@ def test_verify_real_columns_exact_float_equality(tmp_path):
     for path in (left, right):
         conn = sqlite3.connect(path)
         conn.execute(
-            "CREATE TABLE products (id INTEGER PRIMARY KEY, gsc_position REAL, gsc_ctr REAL)"
+            """
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY,
+                gsc_position REAL,
+                gsc_ctr REAL,
+                ga4_avg_session_duration REAL
+            )
+            """
         )
         conn.execute(
-            "INSERT INTO products (id, gsc_position, gsc_ctr) VALUES (1, ?, ?)",
-            (position, 0.1),
+            "INSERT INTO products (id, gsc_position, gsc_ctr, ga4_avg_session_duration) "
+            "VALUES (1, ?, ?, ?)",
+            (position, 0.1, 1e-9),
+        )
+        conn.execute(
+            "INSERT INTO products (id, gsc_position, gsc_ctr, ga4_avg_session_duration) "
+            "VALUES (2, ?, ?, ?)",
+            (443.0, 0.1, 1e-9),
         )
         conn.commit()
         conn.close()

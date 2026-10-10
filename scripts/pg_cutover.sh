@@ -56,7 +56,8 @@ Env (from --env-file, never committed):
   PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
   SQLITE_PATH            default --sqlite
   CUTOVER_LIVE_DATABASE  database name for --apply-load (default: shopifyseo)
-  PGLOADER               pgloader binary
+  PGLOADER               pgloader binary (use scripts/pg_cutover/pgloader-4g.sh
+                         for a 4 GB heap; default 1 GB can exhaust on this catalog)
 
 This script never exports DATABASE_URL for uvicorn and never starts the app.
 EOF
@@ -181,14 +182,20 @@ if [[ "$SKIP_PGLOADER" -eq 0 ]]; then
   SQLITE_URI="sqlite:///${SQLITE_COPY}"
   python3 - <<PY
 from pathlib import Path
-src = Path("$ASSETS/shopifyseo.load").read_text()
+import sys
+sys.path.insert(0, "$ROOT")
+from shopifyseo.cutover.load_file import validate_load_file
+src_path = Path("$ASSETS/shopifyseo.load")
+validate_load_file(src_path)
+src = src_path.read_text()
 src = src.replace("__SQLITE_URI__", "$SQLITE_URI")
 src = src.replace("__POSTGRES_URI__", "$CUTOVER_DATABASE_URL")
 Path("$LOAD_FILE").write_text(src)
-print("wrote $LOAD_FILE")
+print("wrote $LOAD_FILE (CAST targets quoted double precision)")
 PY
   echo "==> pgloader"
-  "$PGLOADER_BIN" "$LOAD_FILE"
+  # stdin closed so a heap-exhausted Lisp debugger cannot hang on COPY.
+  "$PGLOADER_BIN" "$LOAD_FILE" </dev/null
 else
   echo "==> skipping pgloader (--skip-pgloader)"
 fi

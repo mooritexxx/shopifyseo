@@ -11,7 +11,11 @@
 #     it is skipped so a Postgres problem cannot block SQLite.
 #   - live mark present -> ensure-postgres is fatal; source pg.env; require
 #     DATABASE_URL and a reachable Postgres; never fall back to SQLite
+#   - if ensure-postgres wrote a listen_port (Debian 17/main kept 5432),
+#     rewrite PGPORT / DATABASE_URL port after sourcing pg.env
 #   - tmp/pg-cutover-*/cutover_mark.json is NOT a live mark
+#   - when the decision is postgres, launch scripts/pg-backup-daemon.sh
+#     (cron-free nightly dump). Never blocks or fails startup.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +28,7 @@ DECIDE_ONLY=0
 FOREGROUND=0
 SKIP_ENSURE=0
 SKIP_CRON=0
+SKIP_BACKUP_DAEMON=0
 
 usage() {
   cat <<'EOF'
@@ -49,12 +54,19 @@ Environment (all overridable for tests; defaults are box paths):
   PGDATA_DIR                  used to decide whether to skip ensure when no mark
   SHOPIFYSEO_SKIP_ENSURE_POSTGRES=1
   SHOPIFYSEO_SKIP_BACKUP_CRON=1
+  SHOPIFYSEO_SKIP_BACKUP_DAEMON=1
+  SHOPIFYSEO_LISTEN_PORT_FILE   port file written by ensure-postgres.sh
+  SHOPIFYSEO_PG_BACKUP_DAEMON_SH  override pg-backup-daemon.sh (tests)
+  SHOPIFYSEO_PG_BACKUP_LOG      default /home/box/logs/pg-backup-daemon.log
 
 A stale apply-load file tmp/pg-cutover-*/cutover_mark.json does not count.
 With a live mark, ensure-postgres failure, a missing DATABASE_URL, or
 unreachable Postgres is an error — there is no silent SQLite fallback.
 Without a live mark, ensure-postgres is skipped unless $PGDATA_DIR already
 contains PG_VERSION; then it is best-effort (warn and continue on SQLite).
+When the decision is postgres, a cron-free backup hook is launched unless
+SHOPIFYSEO_SKIP_BACKUP_DAEMON=1. Cron install still runs, but cron is only
+used if a cron daemon exists.
 EOF
 }
 
@@ -78,11 +90,15 @@ fi
 if [[ "${SHOPIFYSEO_SKIP_BACKUP_CRON:-}" == "1" ]]; then
   SKIP_CRON=1
 fi
+if [[ "${SHOPIFYSEO_SKIP_BACKUP_DAEMON:-}" == "1" ]]; then
+  SKIP_BACKUP_DAEMON=1
+fi
 
 # --decide-only is for tests / operators; skip box setup.
 if [[ "$DECIDE_ONLY" -eq 1 ]]; then
   SKIP_ENSURE=1
   SKIP_CRON=1
+  SKIP_BACKUP_DAEMON=1
 fi
 
 parse_database_url() {
@@ -126,6 +142,9 @@ except Exception:
 '
 }
 
+# shellcheck source=lib/pg-listen-port.sh
+source "$ROOT/scripts/lib/pg-listen-port.sh"
+
 # Written by decide() in this shell (not a subshell) so sourced pg.env sticks.
 DECISION=""
 
@@ -157,6 +176,7 @@ decide() {
   # shellcheck disable=SC1090
   source "$PG_ENV"
   set +a
+  apply_listen_port_to_env
   if [[ -z "${DATABASE_URL:-}" ]]; then
     echo "error: live mark present but DATABASE_URL is missing or empty; not falling back to SQLite" >&2
     unset DATABASE_URL
@@ -214,6 +234,19 @@ fi
 if [[ "$DECISION" == "sqlite" ]]; then
   unset DATABASE_URL
   export -n DATABASE_URL 2>/dev/null || true
+fi
+
+if [[ "$DECISION" == "postgres" && "$SKIP_BACKUP_DAEMON" -eq 0 ]]; then
+  BACKUP_DAEMON_SH="${SHOPIFYSEO_PG_BACKUP_DAEMON_SH:-$ROOT/scripts/pg-backup-daemon.sh}"
+  BACKUP_DAEMON_LOG="${SHOPIFYSEO_PG_BACKUP_LOG:-/home/box/logs/pg-backup-daemon.log}"
+  mkdir -p "$(dirname "$BACKUP_DAEMON_LOG")" 2>/dev/null || true
+  if [[ -x "$BACKUP_DAEMON_SH" ]]; then
+    # Never block or fail app startup. Cron is only used if a cron daemon exists.
+    nohup "$BACKUP_DAEMON_SH" --ensure >>"$BACKUP_DAEMON_LOG" 2>&1 &
+    echo "note: pg backup hook launched (pid $!; cron is used only if a cron daemon is running)" >&2
+  else
+    echo "warning: pg-backup-daemon.sh missing; continuing without nightly dump hook" >&2
+  fi
 fi
 
 port_serving() {

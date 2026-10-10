@@ -68,6 +68,35 @@ def orphans():
         conn.close()
 
 
+def collect_entity_graph_stats(conn) -> list[dict]:
+    """Inbound/outbound counts for every linked entity, deterministic order."""
+    outbound_map: dict[tuple[str, str], int] = {}
+    inbound_map: dict[tuple[str, str], int] = {}
+    for row in conn.execute(
+        "SELECT source_type, source_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+    ).fetchall():
+        outbound_map[(row["source_type"], row["source_handle"])] = row["c"]
+    for row in conn.execute(
+        "SELECT target_type, target_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
+    ).fetchall():
+        inbound_map[(row["target_type"], row["target_handle"])] = row["c"]
+    all_keys = set(outbound_map.keys()) | set(inbound_map.keys())
+    stats: list[dict] = []
+    for ot, h in all_keys:
+        ob = outbound_map.get((ot, h), 0)
+        ib = inbound_map.get((ot, h), 0)
+        stats.append({"object_type": ot, "handle": h, "outbound": ob, "inbound": ib})
+    # Degree desc; type+handle ASC so SQLite and PG ties match.
+    stats.sort(
+        key=lambda x: (
+            -(x["outbound"] + x["inbound"]),
+            x["object_type"] or "",
+            x["handle"] or "",
+        )
+    )
+    return stats[:500]
+
+
 @router.get("/graph-stats", response_model=SuccessResponse[dict])
 def graph_stats(
     object_type: str | None = Query(default=None),
@@ -91,25 +120,7 @@ def graph_stats(
                 "inbound": inbound,
                 "outbound": outbound,
             })
-        outbound_map: dict[tuple[str, str], int] = {}
-        inbound_map: dict[tuple[str, str], int] = {}
-        for row in conn.execute(
-            "SELECT source_type, source_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
-        ).fetchall():
-            outbound_map[(row["source_type"], row["source_handle"])] = row["c"]
-        for row in conn.execute(
-            "SELECT target_type, target_handle, COUNT(*) AS c FROM internal_links GROUP BY 1, 2"
-        ).fetchall():
-            inbound_map[(row["target_type"], row["target_handle"])] = row["c"]
-        all_keys = set(outbound_map.keys()) | set(inbound_map.keys())
-        stats: list[dict] = []
-        for ot, h in all_keys:
-            ob = outbound_map.get((ot, h), 0)
-            ib = inbound_map.get((ot, h), 0)
-            stats.append({"object_type": ot, "handle": h, "outbound": ob, "inbound": ib})
-        stats.sort(key=lambda x: x["outbound"] + x["inbound"], reverse=True)
-        stats = stats[:500]
-        return success_response({"entities": stats})
+        return success_response({"entities": collect_entity_graph_stats(conn)})
     finally:
         conn.close()
 

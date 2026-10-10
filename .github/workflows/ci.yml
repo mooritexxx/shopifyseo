@@ -55,6 +55,8 @@ jobs:
         run: |
           pip install -e '.[postgres]'
           pip install -r backend/requirements-dev.txt
+      - name: Install pgloader (parse-check only; no catalog load)
+        run: sudo apt-get update && sudo apt-get install -y pgloader
       - name: Enable pgvector extension
         env:
           PGPASSWORD: postgres

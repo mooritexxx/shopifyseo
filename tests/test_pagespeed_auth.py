@@ -161,3 +161,129 @@ def test_fetch_run_pagespeed_still_skips_retry_on_429(monkeypatch):
     with pytest.raises(HttpRequestError):
         _gsc._fetch_run_pagespeed_with_retries("https://pagespeedonline.googleapis.com/x", "tok")
     assert calls["n"] == 1
+
+
+FAKE_PAGESPEED_KEY = "FAKE-KEY-123"
+_PAGESPEED_RUN_URL = (
+    "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed"
+    f"?url=https%3A%2F%2Fexample.com%2Fp&strategy=mobile&key={FAKE_PAGESPEED_KEY}"
+)
+
+
+def _pagespeed_http_error_response(status: int):
+    import requests
+
+    class _Resp:
+        status_code = status
+        text = '{"error":{"message":"psi boom","status":"INTERNAL"}}'
+        headers = {}
+        url = _PAGESPEED_RUN_URL
+
+        def raise_for_status(self):
+            err = requests.HTTPError(f"{self.status_code} Server Error for url: {self.url}")
+            err.response = self
+            raise err
+
+    return _Resp()
+
+
+@pytest.mark.parametrize("status", [500, 429])
+def test_request_text_redacts_pagespeed_key_on_http_status(monkeypatch, status):
+    from shopifyseo.dashboard_actions._sync import _pagespeed_error_detail_for_ui
+    from shopifyseo.dashboard_http import SESSION, request_text
+
+    seen = {}
+
+    def fake_request(**kwargs):
+        seen["url"] = kwargs["url"]
+        assert FAKE_PAGESPEED_KEY in kwargs["url"]
+        return _pagespeed_http_error_response(status)
+
+    monkeypatch.setattr(SESSION, "request", fake_request)
+    with pytest.raises(HttpRequestError) as ei:
+        request_text(_PAGESPEED_RUN_URL)
+    exc = ei.value
+    assert seen["url"] == _PAGESPEED_RUN_URL
+    assert FAKE_PAGESPEED_KEY not in str(exc)
+    assert FAKE_PAGESPEED_KEY not in (exc.reason or "")
+    assert "runPagespeed" in str(exc)
+    assert str(status) in str(exc)
+    assert exc.status == status
+    detail, _extra = _pagespeed_error_detail_for_ui(exc)
+    assert FAKE_PAGESPEED_KEY not in detail
+
+
+def test_request_text_redacts_pagespeed_key_on_connection_error(monkeypatch):
+    import requests
+
+    from shopifyseo.dashboard_actions._sync import _pagespeed_error_detail_for_ui
+    from shopifyseo.dashboard_http import SESSION, request_text
+
+    seen = {}
+
+    def fake_request(**kwargs):
+        seen["url"] = kwargs["url"]
+        assert FAKE_PAGESPEED_KEY in kwargs["url"]
+        raise requests.ConnectionError(f"failed for {_PAGESPEED_RUN_URL}")
+
+    monkeypatch.setattr(SESSION, "request", fake_request)
+    with pytest.raises(HttpRequestError) as ei:
+        request_text(_PAGESPEED_RUN_URL)
+    exc = ei.value
+    assert seen["url"] == _PAGESPEED_RUN_URL
+    assert FAKE_PAGESPEED_KEY not in str(exc)
+    assert FAKE_PAGESPEED_KEY not in (exc.reason or "")
+    assert "runPagespeed" in str(exc)
+    assert "Connection error" in str(exc)
+    detail, _extra = _pagespeed_error_detail_for_ui(exc)
+    assert FAKE_PAGESPEED_KEY not in detail
+
+
+def test_get_pagespeed_failure_does_not_log_api_key(monkeypatch, db_conn, caplog):
+    from shopifyseo.dashboard_http import SESSION
+
+    conn = _prep(db_conn)
+    monkeypatch.setenv("PAGESPEED_API_KEY", FAKE_PAGESPEED_KEY)
+    monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *_a, **_k: False)
+    monkeypatch.setattr(_gsc.time, "sleep", lambda *_a, **_k: None)
+
+    def fake_request(**kwargs):
+        assert FAKE_PAGESPEED_KEY in kwargs["url"]
+        return _pagespeed_http_error_response(500)
+
+    monkeypatch.setattr(SESSION, "request", fake_request)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(HttpRequestError) as ei:
+            _gsc.get_pagespeed(
+                conn,
+                "https://example.com/p",
+                "mobile",
+                refresh=True,
+                before_each_run_pagespeed_http=lambda: None,
+            )
+    assert FAKE_PAGESPEED_KEY not in str(ei.value)
+    assert FAKE_PAGESPEED_KEY not in (ei.value.reason or "")
+    assert "runPagespeed" in str(ei.value)
+    assert "500" in str(ei.value)
+    assert FAKE_PAGESPEED_KEY not in caplog.text
+    from shopifyseo.dashboard_actions._sync import _pagespeed_error_detail_for_ui
+
+    detail, _extra = _pagespeed_error_detail_for_ui(ei.value)
+    assert FAKE_PAGESPEED_KEY not in detail
+
+
+def test_pagespeedonline_sources_do_not_use_search_data_token():
+    from pathlib import Path
+
+    roots = [Path("scripts"), Path("shopifyseo")]
+    forbidden = ("get_search_data_access_token", "try_service_account_access_token")
+    offenders: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "pagespeedonline" not in text:
+                continue
+            if any(token in text for token in forbidden):
+                offenders.append(str(path))
+    assert offenders == []
+

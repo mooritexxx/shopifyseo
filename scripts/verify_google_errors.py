@@ -1,14 +1,35 @@
+import os
 import sys
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from shopifyseo.dashboard_google._auth import get_search_data_access_token, google_api_get, HttpRequestError
+from shopifyseo.dashboard_google._auth import get_google_access_token, google_token_has_scope
+from shopifyseo.dashboard_http import HttpRequestError, request_json
 from shopifyseo.db import get_connection
 
+
+def _pagespeed_url(page_url: str) -> str:
+    params = {"url": page_url, "strategy": "mobile"}
+    api_key = (os.getenv("PAGESPEED_API_KEY") or "").strip()
+    if api_key:
+        params["key"] = api_key
+    return "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?" + urlencode(params)
+
+
+def _pagespeed_get(api_url: str, token: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return request_json(api_url, headers=headers, method="GET", timeout=120)
+
+
 conn = get_connection(path="/Users/home/Projects/shopifyseo/shopify_catalog.sqlite3")
-token = get_search_data_access_token(conn)
+token = ""
+if google_token_has_scope(conn, "openid"):
+    try:
+        token = get_google_access_token(conn)
+    except Exception as e:
+        print("OAuth token unavailable, using public quota:", type(e).__name__)
 
 cursor = conn.cursor()
 cursor.execute("SELECT handle FROM shopify_products LIMIT 20")
@@ -16,18 +37,19 @@ handles = [r[0] for r in cursor.fetchall()]
 
 urls = [f"https://vapely.ca/products/{h}" for h in handles]
 
-print(f"Blasting Google PageSpeed with {len(urls)} concurrent requests explicitly to capture RAW errors...")
+print(f"Blasting Google PageSpeed with {len(urls)} concurrent requests to capture error statuses...")
+
 
 def fetch(u):
-    enc = urllib.parse.quote_plus(u)
-    api_url = f"https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?url={enc}&strategy=mobile"
+    api_url = _pagespeed_url(u)
     try:
-        google_api_get(api_url, token, timeout=120)
+        _pagespeed_get(api_url, token)
         return "200 OK"
     except HttpRequestError as e:
-        return f"HTTP {e.status}: {e.body[:200] if e.body else 'No body'}"
+        return f"HTTP {e.status}: {type(e).__name__}"
     except Exception as e:
-        return f"Exception: {e}"
+        return f"Exception: {type(e).__name__}"
+
 
 issues = []
 with ThreadPoolExecutor(max_workers=20) as executor:
@@ -41,4 +63,4 @@ with ThreadPoolExecutor(max_workers=20) as executor:
 if not issues:
     print("All 20 requests succeeded successfully. Google API returned no errors.")
 else:
-    print(f"Captured {len(issues)} absolute RAW Google API error responses.")
+    print(f"Captured {len(issues)} PageSpeed error statuses.")

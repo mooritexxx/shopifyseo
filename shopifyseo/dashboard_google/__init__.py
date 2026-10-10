@@ -125,6 +125,7 @@ from ._gsc import (  # noqa: E402
     fetch_gsc_page_daily_rows,
     fetch_gsc_url_query_second_dimension,
     get_gsc_dimensional_fetch_session,
+    gsc_dimensional_run,
     reset_gsc_dimensional_fetch_session,
     snapshot_gsc_dimensional_warning_summary,
     fetch_search_console_summary,

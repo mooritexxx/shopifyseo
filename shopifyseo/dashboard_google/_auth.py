@@ -274,13 +274,16 @@ def google_api_get(url: str, access_token: str, *, timeout: int = 30) -> dict:
     return request_json(url, headers={"Authorization": f"Bearer {access_token}"}, method="GET", timeout=timeout)
 
 
-def google_api_post(url: str, access_token: str, payload: dict) -> dict:
+def google_api_post(url: str, access_token: str, payload: dict, *, idempotent: bool = True) -> dict:
     # Google's query APIs (searchAnalytics, runReport, urlInspection) are reads posted
     # as POST, so replaying them after a transient 429/5xx is safe.
+    # ``idempotent=True`` uses the idempotent session: urllib3 may add its own
+    # 429/5xx retries *inside* each caller attempt. Pass ``idempotent=False`` when
+    # the caller already retries those statuses (dimensional GSC fetch).
     return request_json(
         url,
         method="POST",
         headers={"Authorization": f"Bearer {access_token}"},
         payload=payload,
-        idempotent=True,
+        idempotent=idempotent,
     )

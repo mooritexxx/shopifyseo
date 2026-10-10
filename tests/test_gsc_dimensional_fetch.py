@@ -243,8 +243,10 @@ def test_search_appearance_400s_trip_breaker_after_five(monkeypatch, db_conn):
     assert len(sa_calls) == 5
     session = _gsc.get_gsc_dimensional_fetch_session()
     assert session.search_appearance_breaker is True
-    assert session.warning_counts["searchAppearance:400:invalidArgument"] == 6
-    assert session.warnings == 6
+    assert session.warning_counts["searchAppearance:400:invalidArgument"] == 5
+    assert session.warnings == 5
+    assert session.skipped == 1
+    assert session.details_dict()["skipped"] == 1
 
 
 def test_previous_dimension_rows_preserved_on_failure(monkeypatch, db_conn):
@@ -300,7 +302,9 @@ def test_sync_summary_includes_warnings_errors_unchanged():
     assert summary["warning_details"]["searchAppearance:400:invalidArgument"] == 4
     assert summary["warning_details"]["retried"] == 3
     assert summary["warning_details"]["recovered"] == 2
+    assert summary["warning_details"]["skipped"] == 0
     assert _sync._gsc_breakdown_warnings_suffix(summary) == "; 5 breakdown warnings"
+    assert _sync._gsc_breakdown_warnings_suffix({"warnings": 1}) == "; 1 breakdown warning"
     assert _sync._gsc_breakdown_warnings_suffix({"warnings": 0}) == ""
 
 
@@ -335,3 +339,180 @@ def test_url_inspection_uses_search_data_token_helper(monkeypatch, db_conn):
     assert posted["token"] == "search-data-token"
     assert "urlInspection" in posted["url"]
     assert out.get("inspectionResult")
+
+
+def _sa_400_result():
+    return _gsc.GscDimensionalFetchResult(
+        [],
+        "HTTP 400 INVALID_ARGUMENT Invalid combination of dimensions",
+        status=400,
+        reason="invalidArgument",
+        google_status="INVALID_ARGUMENT",
+        message="Invalid combination of dimensions",
+    )
+
+
+def _sa_ok_result():
+    return _gsc.GscDimensionalFetchResult(
+        [{"query": "q", "segment": "AMP", "clicks": 1, "impressions": 2, "ctr": 0.1, "position": 3.0}],
+        None,
+    )
+
+
+def test_search_appearance_streak_resets_on_success(monkeypatch, db_conn):
+    conn = _prepare_dim_conn(db_conn)
+    _gsc.reset_gsc_dimensional_fetch_session()
+    sa_n = {"n": 0}
+
+    def fake_fetch(_conn, _site, page_url, *_a, second_dimension, **_k):
+        if second_dimension != "searchAppearance":
+            return _gsc.GscDimensionalFetchResult([], None)
+        sa_n["n"] += 1
+        if sa_n["n"] <= 4:
+            return _sa_400_result()
+        if sa_n["n"] == 5:
+            return _sa_ok_result()
+        return _sa_400_result()
+
+    monkeypatch.setattr(dashboard_store.dg, "fetch_gsc_url_query_second_dimension", fake_fetch)
+    for handle in list("abcdef"):
+        dashboard_store._refresh_gsc_query_dimensions_into_table(
+            conn, "product", handle, f"https://example.com/{handle}", fetched_at=1
+        )
+    session = _gsc.get_gsc_dimensional_fetch_session()
+    assert sa_n["n"] == 6
+    assert session.search_appearance_breaker is False
+    assert session.search_appearance_400_streak == 1
+    assert session.warnings == 5
+
+
+def test_search_appearance_five_consecutive_same_reason_trips(monkeypatch, db_conn):
+    conn = _prepare_dim_conn(db_conn)
+    _gsc.reset_gsc_dimensional_fetch_session()
+    sa_n = {"n": 0}
+
+    def fake_fetch(_conn, _site, page_url, *_a, second_dimension, **_k):
+        if second_dimension != "searchAppearance":
+            return _gsc.GscDimensionalFetchResult([], None)
+        sa_n["n"] += 1
+        return _sa_400_result()
+
+    monkeypatch.setattr(dashboard_store.dg, "fetch_gsc_url_query_second_dimension", fake_fetch)
+    for handle in list("abcde"):
+        dashboard_store._refresh_gsc_query_dimensions_into_table(
+            conn, "product", handle, f"https://example.com/{handle}", fetched_at=1
+        )
+    session = _gsc.get_gsc_dimensional_fetch_session()
+    assert sa_n["n"] == 5
+    assert session.search_appearance_breaker is True
+    assert session.warnings == 5
+    assert session.skipped == 0
+
+
+def test_dimensional_run_resets_breaker_for_next_run(monkeypatch, db_conn):
+    conn = _prepare_dim_conn(db_conn)
+    calls: list[str] = []
+
+    def fail_perm(*_a, second_dimension, **_k):
+        calls.append(second_dimension)
+        return _gsc.GscDimensionalFetchResult(
+            [],
+            "HTTP 403 PERMISSION_DENIED insufficientPermissions",
+            status=403,
+            reason="insufficientPermissions",
+            google_status="PERMISSION_DENIED",
+            message="caller does not have permission",
+            throttled=False,
+        )
+
+    monkeypatch.setattr(dashboard_store.dg, "fetch_gsc_url_query_second_dimension", fail_perm)
+    with _gsc.gsc_dimensional_run() as run1:
+        dashboard_store._refresh_gsc_query_dimensions_into_table(
+            conn, "product", "a", "https://example.com/a", fetched_at=1
+        )
+        assert run1.permission_breaker is True
+        assert calls == ["country"]
+    calls.clear()
+    with _gsc.gsc_dimensional_run() as run2:
+        dashboard_store._refresh_gsc_query_dimensions_into_table(
+            conn, "product", "b", "https://example.com/b", fetched_at=1
+        )
+        assert run2.permission_breaker is True
+        assert calls == ["country"]
+        assert run2 is not run1
+
+
+def test_single_object_refresh_after_bulk_run_ignores_bulk_breaker(monkeypatch, db_conn):
+    conn = _prepare_dim_conn(db_conn)
+    calls: list[str] = []
+
+    def fail_perm(*_a, second_dimension, **_k):
+        calls.append(second_dimension)
+        return _gsc.GscDimensionalFetchResult(
+            [],
+            "HTTP 403 PERMISSION_DENIED insufficientPermissions",
+            status=403,
+            reason="insufficientPermissions",
+            google_status="PERMISSION_DENIED",
+            message="caller does not have permission",
+            throttled=False,
+        )
+
+    monkeypatch.setattr(dashboard_store.dg, "fetch_gsc_url_query_second_dimension", fail_perm)
+    monkeypatch.setattr(
+        dashboard_store.dg,
+        "get_search_console_url_detail",
+        lambda *_a, **_k: {
+            "page_rows": [{"clicks": 1, "impressions": 2, "ctr": 0.1, "position": 3.0}],
+            "query_rows": [],
+            "_cache": {"exists": True, "fetched_at": 1},
+            "period_mode": "28d",
+        },
+    )
+    monkeypatch.setattr(dashboard_store.dq, "object_url", lambda *_a, **_k: "https://example.com/p")
+    with _gsc.gsc_dimensional_run() as bulk:
+        dashboard_store._refresh_gsc_query_dimensions_into_table(
+            conn, "product", "bulk", "https://example.com/bulk", fetched_at=1
+        )
+        snap = _gsc.snapshot_gsc_dimensional_warning_summary()
+        assert bulk.permission_breaker is True
+        assert snap["warnings"] == 1
+        assert "country:403:insufficientPermissions" in snap["warning_details"]
+    calls.clear()
+    dashboard_store._refresh_object_gsc_into_table(conn, "products", "product", "after")
+    assert "country" in calls
+
+
+def test_bulk_summary_warnings_captured_before_leaving_run():
+    with _gsc.gsc_dimensional_run():
+        session = _gsc.get_gsc_dimensional_fetch_session()
+        session.record_warning("country", 403, "insufficientPermissions")
+        session.record_skip(12)
+        summary = {"errors": 0}
+        _sync._apply_gsc_dimensional_warnings(summary)
+        assert summary["errors"] == 0
+        assert summary["warnings"] == 1
+        assert summary["warning_details"]["skipped"] == 12
+        assert summary["warning_details"]["country:403:insufficientPermissions"] == 1
+        assert _sync._gsc_breakdown_warnings_suffix(summary) == "; 1 breakdown warning"
+    after = _gsc.snapshot_gsc_dimensional_warning_summary()
+    assert after["warnings"] == 0
+
+
+def test_concurrent_dimensional_run_cannot_trip_outer_breaker():
+    import threading
+
+    with _gsc.gsc_dimensional_run() as outer:
+        def _inner():
+            with _gsc.gsc_dimensional_run() as inner:
+                inner.permission_breaker = True
+                inner.record_warning("country", 403, "insufficientPermissions")
+
+        t = threading.Thread(target=_inner)
+        t.start()
+        t.join()
+        assert outer.permission_breaker is False
+        assert outer.warnings == 0
+        with _gsc.gsc_dimensional_run() as nested:
+            assert nested is outer
+

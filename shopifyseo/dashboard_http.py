@@ -8,8 +8,18 @@ from urllib3.util.retry import Retry
 
 _GOOGLE_ERROR_MESSAGE_CAP = 200
 _SECRET_IN_TEXT_RE = re.compile(
-    r"(?i)(bearer\s+|authorization:\s*|ya29\.|api[_-]?key=|key=)[^\s,&\"']+"
+    r"(?i)(bearer\s+|authorization:\s*|ya29\.|api[_-]?key=|key=|access_token=)[^\s,&\"']+"
 )
+
+
+def _redact_secrets_in_text(text: str) -> str:
+    """Strip secret query/header values from a copy of ``text`` for logs and exceptions.
+
+    Matches ``key=``, ``api_key=``, and ``access_token=`` (plus bearer tokens). The
+    original request URL is not mutated — callers must pass the live URL to
+    ``session.request`` and redact only the strings they store or raise.
+    """
+    return _SECRET_IN_TEXT_RE.sub(r"\1[redacted]", text)
 
 
 # Transient 429/5xx responses previously dropped that target's data point for the whole
@@ -86,7 +96,7 @@ class GoogleHttpErrorInfo:
 
 
 def _safe_truncate(text: str, cap: int = _GOOGLE_ERROR_MESSAGE_CAP) -> str:
-    cleaned = _SECRET_IN_TEXT_RE.sub(r"\1[redacted]", text.replace("\n", " ").strip())
+    cleaned = _redact_secrets_in_text(text.replace("\n", " ").strip())
     if len(cleaned) <= cap:
         return cleaned
     return cleaned[:cap]
@@ -159,16 +169,22 @@ def request_text(
     except requests.HTTPError as exc:
         response = exc.response
         if response is None:
-            raise HttpRequestError(f"HTTP unknown for {url}", reason=str(exc)) from exc
+            raise HttpRequestError(
+                _redact_secrets_in_text(f"HTTP unknown for {url}"),
+                reason=_redact_secrets_in_text(str(exc)),
+            ) from exc
         raise HttpRequestError(
-            f"HTTP {response.status_code} for {url}",
+            _redact_secrets_in_text(f"HTTP {response.status_code} for {url}"),
             status=response.status_code,
             body=response.text,
-            reason=str(exc),
+            reason=_redact_secrets_in_text(str(exc)),
             headers=dict(response.headers),
         ) from exc
     except requests.RequestException as exc:
-        raise HttpRequestError(f"Connection error for {url}: {exc}", reason=str(exc)) from exc
+        raise HttpRequestError(
+            _redact_secrets_in_text(f"Connection error for {url}: {exc}"),
+            reason=_redact_secrets_in_text(str(exc)),
+        ) from exc
 
 
 def request_json(

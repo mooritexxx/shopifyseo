@@ -11,7 +11,9 @@ import random
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -46,6 +48,9 @@ logger = logging.getLogger(__name__)
 # Per-page searchAnalytics breakdowns (query × country/device/searchAppearance).
 # Search Console query quota is ~600/min per site; 8 calls/s stays under ~480/min.
 GSC_DIMENSIONAL_MAX_CALLS_PER_SECOND = 8.0
+# Default min interval. The ``GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS`` env override is
+# read when the process-wide pacer is constructed (module import, or
+# ``reset_gsc_dimensional_pacer()``) — not on every ``acquire()``.
 GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS = 1.0 / GSC_DIMENSIONAL_MAX_CALLS_PER_SECOND
 GSC_DIMENSIONAL_RETRY_ATTEMPTS = 4
 GSC_DIMENSIONAL_RETRY_BASE_SECONDS = 2.0
@@ -226,6 +231,7 @@ class GscDimensionalSyncState:
     search_appearance_400_streak: int = 0
     search_appearance_breaker: bool = False
     warnings: int = 0
+    skipped: int = 0
     warning_counts: dict[str, int] = field(default_factory=dict)
     retried: int = 0
     recovered: int = 0
@@ -238,27 +244,69 @@ class GscDimensionalSyncState:
         key = f"{dimension}:{status if status is not None else '?'}:{reason or 'unknown'}"
         self.warning_counts[key] = self.warning_counts.get(key, 0) + n
 
+    def record_skip(self, count: int = 1) -> None:
+        n = max(int(count), 0)
+        if n <= 0:
+            return
+        self.skipped += n
+
     def details_dict(self) -> dict[str, int]:
         items = sorted(self.warning_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:GSC_WARNING_DETAIL_MAX_KEYS]
         out = {k: v for k, v in items}
+        out["skipped"] = int(self.skipped)
         out["retried"] = int(self.retried)
         out["recovered"] = int(self.recovered)
         return out
 
 
-_DIMENSIONAL_SESSION = GscDimensionalSyncState()
-_DIMENSIONAL_SESSION_LOCK = threading.Lock()
-
-
-def reset_gsc_dimensional_fetch_session() -> GscDimensionalSyncState:
-    global _DIMENSIONAL_SESSION
-    with _DIMENSIONAL_SESSION_LOCK:
-        _DIMENSIONAL_SESSION = GscDimensionalSyncState()
-        return _DIMENSIONAL_SESSION
+# Fallback used only when no ``gsc_dimensional_run()`` is active (tests / legacy callers).
+_FALLBACK_DIMENSIONAL_SESSION = GscDimensionalSyncState()
+_FALLBACK_DIMENSIONAL_LOCK = threading.Lock()
+_dimensional_run_state: ContextVar[GscDimensionalSyncState | None] = ContextVar(
+    "gsc_dimensional_run_state", default=None
+)
 
 
 def get_gsc_dimensional_fetch_session() -> GscDimensionalSyncState:
-    return _DIMENSIONAL_SESSION
+    current = _dimensional_run_state.get()
+    if current is not None:
+        return current
+    return _FALLBACK_DIMENSIONAL_SESSION
+
+
+def reset_gsc_dimensional_fetch_session() -> GscDimensionalSyncState:
+    """Replace the current run's state, or the no-run fallback if no run is active."""
+    global _FALLBACK_DIMENSIONAL_SESSION
+    fresh = GscDimensionalSyncState()
+    if _dimensional_run_state.get() is not None:
+        _dimensional_run_state.set(fresh)
+        return fresh
+    with _FALLBACK_DIMENSIONAL_LOCK:
+        _FALLBACK_DIMENSIONAL_SESSION = fresh
+        return _FALLBACK_DIMENSIONAL_SESSION
+
+
+@contextmanager
+def gsc_dimensional_run() -> Iterator[GscDimensionalSyncState]:
+    """Scope breaker/warning state to one sync run.
+
+    Installs a fresh ``GscDimensionalSyncState`` when this task is not already in a
+    run, and restores the previous holder on exit. A nested call on the same task
+    (bulk → per-object write) reuses the current run so object refreshes cannot
+    reset the bulk breaker. A concurrent single-object refresh on another task
+    gets its own ContextVar state and cannot trip the bulk run's breaker.
+    Snapshot ``warnings`` / ``warning_details`` *before* leaving the context.
+    """
+    existing = _dimensional_run_state.get()
+    if existing is not None:
+        yield existing
+        return
+    fresh = GscDimensionalSyncState()
+    token = _dimensional_run_state.set(fresh)
+    try:
+        yield fresh
+    finally:
+        _dimensional_run_state.reset(token)
 
 
 def snapshot_gsc_dimensional_warning_summary() -> dict[str, Any]:
@@ -1509,7 +1557,9 @@ def fetch_gsc_url_query_second_dimension(
         if pace:
             acquire_gsc_dimensional_slot()
         try:
-            resp = google_api_post(url, access_token, body)
+            # Own 4-attempt throttle loop; disable the idempotent session so urllib3
+            # does not stack extra 429/5xx retries inside each attempt.
+            resp = google_api_post(url, access_token, body, idempotent=False)
         except HttpRequestError as exc:
             info = describe_google_http_error(exc)
             last_info = info

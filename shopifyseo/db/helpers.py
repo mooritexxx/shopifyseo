@@ -1,10 +1,18 @@
 """Database helper functions for portable operations."""
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import Any, Generator, Sequence
 
 from .backend import Backend, backend_for_connection, get_backend
+
+# SQLite REAL affinity names (REAL / FLOAT / DOUBLE / DOUBLE PRECISION).
+# Match DOUBLE PRECISION before DOUBLE so we do not emit "DOUBLE PRECISION PRECISION".
+_SQLITE_FLOAT_TYPE = re.compile(
+    r"\bDOUBLE\s+PRECISION\b|\bREAL\b|\bFLOAT\b|\bDOUBLE\b",
+    re.IGNORECASE,
+)
 from .compat import _translate_placeholders
 from .pg_runtime import is_postgres_runtime
 from .timestamps import rewrite_current_timestamp_for_postgres
@@ -374,6 +382,18 @@ def connection_key(conn: Any, *, backend: Backend | None = None) -> str | None:
     except Exception:
         pass
     return None
+
+
+def postgres_float_ddl(col_type: str) -> str:
+    """Map SQLite REAL / FLOAT / DOUBLE declarations to Postgres ``double precision``.
+
+    SQLite ``REAL`` is IEEE-754 double. pgloader's default CAST and a raw
+    ``ALTER TABLE … REAL`` on Postgres create 4-byte ``real`` and drop digits
+    (e.g. ``gsc_position`` 6.682926829268292 → 6.6829267). Used by
+    ``_ensure_columns`` when the live connection is Postgres so later ADD
+    COLUMN matches the cutover CAST rules.
+    """
+    return _SQLITE_FLOAT_TYPE.sub("DOUBLE PRECISION", col_type)
 
 
 def sqlite_runtime_ddl() -> bool:

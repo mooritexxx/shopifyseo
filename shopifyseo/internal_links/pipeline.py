@@ -204,7 +204,8 @@ def _orphan_targets(conn: Any) -> list[tuple[str, str, int, int]]:
         key = ("blog_article", r["h"])
         if key not in linked and key not in collection_linked:
             orphans.append(("blog_article", r["h"], r["clicks"], r["impr"]))
-    orphans.sort(key=lambda x: (x[2] + x[3], x[2]), reverse=True)
+    # Traffic desc, then clicks desc; type+handle ASC so SQLite and PG ties match.
+    orphans.sort(key=lambda x: (-(x[2] + x[3]), -x[2], x[0], x[1]))
     return orphans
 
 

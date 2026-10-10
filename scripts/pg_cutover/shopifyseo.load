@@ -9,8 +9,14 @@
 -- Compatibility notes for pgloader 3.6.x SQLite:
 -- - Do not use MySQL-only WITH options (multiple readers per thread, rows per range).
 -- - Use EXCLUDING TABLE NAMES LIKE (not MATCHING regex).
--- - Do not override float/real casts without "using float-to-string"
---   (bare "type real to real" emits Lisp "0.0d0" and COPY fails). Leave defaults.
+-- - Override float/real/double to Postgres double precision WITH
+--   "using float-to-string" so COPY goes through text (full IEEE-754
+--   double, ~17 significant digits). The multi-word target MUST be
+--   quoted: type real to "double precision" … — pgloader 3.6.10 rejects
+--   the unquoted form with ESRAP-PARSE-ERROR. Bare "type real to real"
+--   emits Lisp "0.0d0" and COPY fails; the default "type real to real"
+--   creates 4-byte real and drops digits (gsc_position 6.682926829268292
+--   → 6.6829267).
 -- - Do not CAST keyword_metrics.updated_at with empty-string-to-null (breaks on
 --   integer epochs); sqlite_pre_fix + post_load_fixups handle mixed types.
 -- - Expression LOWER() indexes are dropped on the SQLite copy before load and
@@ -33,6 +39,10 @@ CAST type integer to bigint drop typemod,
      type smallint to smallint drop typemod,
      type bigint to bigint drop typemod,
      type numeric to numeric drop typemod,
+     type real to "double precision" drop typemod using float-to-string,
+     type float to "double precision" drop typemod using float-to-string,
+     type double to "double precision" drop typemod using float-to-string,
+     type "double precision" to "double precision" drop typemod using float-to-string,
      type text to text drop typemod,
      type varchar to text drop typemod,
      type blob to bytea using byte-vector-to-bytea,

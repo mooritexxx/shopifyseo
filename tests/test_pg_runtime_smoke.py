@@ -381,6 +381,58 @@ def client(smoke_ids):
         yield test_client
 
 
+def test_real_columns_are_double_precision_and_round_trip(smoke_ids):
+    from shopifyseo.cutover.real_columns import real_affinity_columns_from_repo_schema
+    from shopifyseo.db import connect_postgres
+
+    conn = connect_postgres(_URL)
+    try:
+        expected = {(t, c) for t, c, _d in real_affinity_columns_from_repo_schema()}
+        rows = conn.execute(
+            """
+            SELECT table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            """
+        ).fetchall()
+        got = {(r["table_name"], r["column_name"]): r["data_type"] for r in rows}
+        wrong = [
+            (table, column, got[(table, column)])
+            for table, column in expected
+            if (table, column) in got and got[(table, column)] != "double precision"
+        ]
+        assert wrong == [], wrong
+
+        conn.execute(
+            """
+            UPDATE products
+            SET gsc_position = ?, gsc_ctr = ?, ga4_avg_session_duration = ?
+            WHERE handle = ?
+            """,
+            (6.682926829268292, 0.1, 1e-9, "smoke-product"),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT gsc_position, gsc_ctr, ga4_avg_session_duration FROM products WHERE handle = ?",
+            ("smoke-product",),
+        ).fetchone()
+        assert row["gsc_position"] == 6.682926829268292
+        assert row["gsc_ctr"] == 0.1
+        assert row["ga4_avg_session_duration"] == 1e-9
+        conn.execute(
+            "UPDATE products SET ga4_avg_session_duration = ? WHERE handle = ?",
+            (443.0, "smoke-product"),
+        )
+        conn.commit()
+        whole = conn.execute(
+            "SELECT ga4_avg_session_duration FROM products WHERE handle = ?",
+            ("smoke-product",),
+        ).fetchone()[0]
+        assert float(whole) == 443.0
+    finally:
+        conn.close()
+
+
 def test_production_connection_class(smoke_ids):
     import psycopg
 

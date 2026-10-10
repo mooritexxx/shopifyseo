@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Idempotent crontab install for scripts/pg-nightly-backup.sh.
 #
-# After a box reset, crontab is gone; run this again (scripts/start-app.sh
-# calls it). Re-running does not add a duplicate line.
+# Cron is used ONLY if a cron daemon is running (pgrep -x cron). This box
+# often has no cron; the dump that actually runs is the start-app.sh hook
+# scripts/pg-backup-daemon.sh (stale-dump check + pidfile-guarded loop).
+# After a box reset, crontab is gone; start-app.sh still calls this so a
+# later-enabled cron daemon would pick the job up. Re-running does not add
+# a duplicate line.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,8 +23,10 @@ Usage: scripts/install-pg-backup-cron.sh [--help]
   Adds one crontab line for scripts/pg-nightly-backup.sh if it is not already
   present. Re-runs are a no-op (no duplicate lines).
 
-  Cron itself is wiped on a box reset. scripts/start-app.sh calls this
-  installer so the job comes back after restore.
+  Cron is used only if a cron daemon exists. This box often has none;
+  scripts/start-app.sh also launches scripts/pg-backup-daemon.sh so dumps
+  still run. Cron itself is wiped on a box reset; this installer is called
+  so a later-enabled cron daemon would pick the job up.
 
 Environment:
   SHOPIFYSEO_PG_BACKUP_CRON   schedule (default: 15 3 * * *)

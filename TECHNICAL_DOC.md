@@ -166,7 +166,9 @@ so removed keywords do not reappear at app startup.
 `/app/internal-links` supports products, collections and blog articles as sources;
 pages remain targets only. All manual applies require a live preview and explicit
 **Confirm and apply**. The preview displays escaped HTML changes and the visible-text
-diff, without executing source or AI HTML in the browser.
+diff, without executing source or AI HTML in the browser. `GET /api/internal-links/orphans`
+and `GET /api/internal-links/graph-stats` keep their primary sort (traffic / degree)
+and add `(object_type, handle)` ASC so equal keys match on SQLite and Postgres.
 
 | Method | Path | Contract |
 | ------ | ---- | -------- |
@@ -501,7 +503,7 @@ A pre-draft cannibalization check runs before article generation to prevent crea
 | POST   | `/api/keywords/target/refresh-metrics`           | Body              | SSE            | Refresh volume/difficulty/CPC                  |
 | PATCH  | `/api/keywords/target/bulk-status`               | Body              | `{ ok, data }` | Bulk status (`new` / `approved` / `dismissed`) |
 | PATCH  | `/api/keywords/target/{keyword}/status`          | Body              | `{ ok, data }` | Single keyword status                          |
-| GET    | `/api/keywords/clusters`                         | —                 | `{ ok, data }` | Clusters + coverage                            |
+| GET    | `/api/keywords/clusters`                         | —                 | `{ ok, data }` | Clusters + coverage (priority/opportunity DESC, `id` ASC tie-break) |
 | POST   | `/api/keywords/clusters/generate`                | Body              | SSE            | Generate clusters                              |
 | GET    | `/api/keywords/clusters/match-options`           | —                 | `{ ok, data }` | Page match override options                    |
 | GET    | `/api/keywords/clusters/{cluster_id}/detail`     | —                 | `{ ok, data }` | Cluster detail                                 |
@@ -548,7 +550,7 @@ Bump `OPPORTUNITY_SCORING_VERSION` in `keyword_db` when changing the scoring mod
 | GET    | `/api/embeddings/similar/{object_type}/{handle:path}`           | —                                 | `{ ok, data }` | Semantic neighbors                         |
 | GET    | `/api/embeddings/semantic-keywords/{object_type}/{handle:path}` | —                                 | `{ ok, data }` | Semantic keyword matches                   |
 | GET    | `/api/embeddings/competitive-gaps/{object_type}/{handle:path}`  | —                                 | `{ ok, data }` | Competitor gap suggestions                 |
-| GET    | `/api/embeddings/cannibalization`                               | Query: threshold                  | `{ ok, data }` | Cannibalization pairs                      |
+| GET    | `/api/embeddings/cannibalization`                               | Query: threshold                  | `{ ok, data }` | Cannibalization pairs (similarity DESC, type+handle ASC; `object_a` is the smaller `(type, handle)`) |
 
 **Post-publish embeddings refresh (C1.2):** After a successful article publish via `PATCH /api/articles/{blog_handle}/{article_handle}/publish`, the backend triggers a targeted embedding upsert for the published article in a background thread. This ensures RAG/cannibalization sees the new content without requiring a manual full refresh. The hook (`_post_publish_embedding_refresh` in `backend/app/routers/blogs.py`) uses `sync_embedding_for_handle()` from `embedding_store.py` to update embeddings for just that article, not the entire corpus. Failures are logged but do not fail the publish response. The targeted sync is much faster than a full refresh — it only embeds changed/new chunks for a single handle.
 
@@ -821,8 +823,8 @@ which rows match.
 | `dashboard_actions/_state.py`         | `SYNC_STATE`, `AI_JOBS`, locks        |
 | `dashboard_queries/_basic_fetchers.py` | `*_FACT_COLUMNS` + `fetch_*_for_facts` (narrow reads for list/fact paths), `fetch_signal_totals`, `fetch_index_status_counts`, `fetch_catalog_meta_metrics` (SQL rollups for the dashboard) |
 | `backend/app/db.py`                   | `open_db_connection`; schema migration + `apply_runtime_settings` run **once per DB path**, not per connection |
-| `shopifyseo/cutover/`                 | Plan 8 cutover helpers (`sqlite_pre_fix`, verify, identity resync, `pg_to_sqlite_delta`). Invoked by `scripts/pg_cutover.sh`; never sets live `DATABASE_URL`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
-| `shopifyseo/db/`                      | SQLite/Postgres portability: `execute`, `insert_returning_id`, `write_tx` (SQLite immediate write lock; Postgres `BEGIN` + optional `pg_advisory_xact_lock` / `FOR UPDATE`), `group_concat`, `like_ci`, `order_ci`, `order_inserted`, `on_conflict_do_nothing` / `on_conflict_do_update`, schema helpers (`table_exists` / `table_columns` / `table_ddl`), timestamp parity (`now_text` / `now_text_sql` / `now_epoch` / `as_epoch_seconds` / `nullif_empty` / `empty_to_null`; Postgres session `timezone=UTC`; `CURRENT_TIMESTAMP` rewritten to naive UTC `YYYY-MM-DD HH:MM:SS` text on PG only), mapped `IntegrityError` / `LockError` / `OperationalError` (`map_exception`, `is_*`). Production `connect_postgres` installs `pg_runtime` (`?`→`%s`, `LIKE`→`ILIKE`, `executemany`, bool→int dump, NUMERIC→float load) — SQLite connections stay plain `sqlite3.Connection`. Dashboard store/queries/actions, backend services/routers, internal_links, catalog_sync, dashboard_google, dashboard_ai_engine_parts, embedding_store, and app-DB scripts use `DictRow` + `Any` connections (not `sqlite3.Row` / `sqlite3.Connection`). `shopifyseo/sqlite_retry.py` retries SQLite lock errors and PG SQLSTATEs 40001/40P01/55P03. Box start uses `scripts/start-app.sh`: no live mark → `DATABASE_URL` unset (SQLite); live mark → source `pg.env` and require reachable Postgres (no SQLite fallback). |
+| `shopifyseo/cutover/`                 | Plan 8 cutover helpers (`sqlite_pre_fix`, verify including REAL float vs snapshot, `load_file` CAST parse-check, identity resync, `pg_to_sqlite_delta`). Invoked by `scripts/pg_cutover.sh`; never sets live `DATABASE_URL`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
+| `shopifyseo/db/`                      | SQLite/Postgres portability: `execute`, `insert_returning_id`, `write_tx` (SQLite immediate write lock; Postgres `BEGIN` + optional `pg_advisory_xact_lock` / `FOR UPDATE`), `group_concat`, `like_ci`, `order_ci`, `order_inserted`, `on_conflict_do_nothing` / `on_conflict_do_update`, schema helpers (`table_exists` / `table_columns` / `table_ddl`, `postgres_float_ddl` maps REAL/FLOAT/DOUBLE → `DOUBLE PRECISION` on PG ADD COLUMN), timestamp parity (`now_text` / `now_text_sql` / `now_epoch` / `as_epoch_seconds` / `nullif_empty` / `empty_to_null`; Postgres session `timezone=UTC`; `CURRENT_TIMESTAMP` rewritten to naive UTC `YYYY-MM-DD HH:MM:SS` text on PG only), mapped `IntegrityError` / `LockError` / `OperationalError` (`map_exception`, `is_*`). Production `connect_postgres` installs `pg_runtime` (`?`→`%s`, `LIKE`→`ILIKE`, `executemany`, bool→int dump, NUMERIC→float load) — SQLite connections stay plain `sqlite3.Connection`. Dashboard store/queries/actions, backend services/routers, internal_links, catalog_sync, dashboard_google, dashboard_ai_engine_parts, embedding_store, and app-DB scripts use `DictRow` + `Any` connections (not `sqlite3.Row` / `sqlite3.Connection`). `shopifyseo/sqlite_retry.py` retries SQLite lock errors and PG SQLSTATEs 40001/40P01/55P03. Box start uses `scripts/start-app.sh`: no live mark → `DATABASE_URL` unset (SQLite); live mark → source `pg.env` (then honor `listen_port`) and require reachable Postgres (no SQLite fallback). |
 
 
 ---
@@ -836,15 +838,17 @@ which rows match.
 | Script                              | Purpose                                                                                   |
 | ----------------------------------- | ----------------------------------------------------------------------------------------- |
 | `dev-restart-local.sh`              | **Dev-only** — restart local dev server / Vite build. Does not honor the live mark |
-| `start-app.sh`                      | Production uvicorn start: peek live mark first; ensure-postgres is fatal only with a mark (best-effort/skip on SQLite). Log to `/home/box/logs/shopifyseo-uvicorn.log`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
+| `start-app.sh`                      | Production uvicorn start: peek live mark first; ensure-postgres is fatal only with a mark (best-effort/skip on SQLite). Honors `listen_port` from ensure-postgres after sourcing `pg.env`. When the decision is postgres, launches `pg-backup-daemon.sh` (never blocks startup). Log to `/home/box/logs/shopifyseo-uvicorn.log`. See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `mark-pg-live.sh`                   | Write or `--remove` `/home/box/.config/shopifyseo/pg_live_cutover.json` (host/dbname/SHA, no password) |
-| `pg-nightly-backup.sh`              | `pg_dump -Fc` to a `.partial` then `mv` when the live mark exists; keep the newest 7 by filename stamp under `/home/box/backups/pg/` |
-| `install-pg-backup-cron.sh`         | Idempotent crontab install for the nightly dump (warns if `pgrep -x cron` finds nothing; re-run after a box reset; `start-app.sh` calls it) |
+| `pg-nightly-backup.sh`              | `pg_dump -Fc` to a `.partial` then `mv` when the live mark exists; keep the newest 7 by filename stamp under `/home/box/backups/pg/`. Honors `listen_port` via `scripts/lib/pg-listen-port.sh`. Drops `*.dump.partial` older than one day. |
+| `pg-backup-daemon.sh`               | Cron-free nightly dump: stale (>24h) check + pidfile-guarded sleep loop (`/proc/<pid>/cmdline` must be this script with `--loop`). `start-app.sh` launches `--ensure` only when the live mark says postgres. Log `/home/box/logs/pg-backup-daemon.log` |
+| `lib/pg-listen-port.sh`             | Shared `apply_listen_port_to_env` for `start-app.sh` and `pg-nightly-backup.sh` (loopback `DATABASE_URL` only) |
+| `install-pg-backup-cron.sh`         | Idempotent crontab install. Used **only if** a cron daemon is running; this box often has none. `start-app.sh` still calls it |
 | `run_serp_competitors_from_seeds.py` | CLI runner for DataForSEO SERP-based competitor discovery from seed keywords             |
 | `pg_cutover.sh`                     | Plan 8 cutover runner (backup → pgloader → fixups → NOT VALID FKs → sequences → ANALYZE → verify). Does **not** set live `DATABASE_URL` or restart uvicorn. `--sqlite` must be a snapshot (the script runs `wal_checkpoint(FULL)` on the source). See [docs/pg-cutover.md](docs/pg-cutover.md) |
 | `pg_to_sqlite_delta.py`             | Plan 8 rollback helper: export PG rows newer than `cutover_mark.json` onto a SQLite **copy** (refuses the live catalog by default) |
-| `ensure-postgres.sh`                | Reset-durable PG17 cluster under `/home/box/pgdata/17/main` with a box-writable socket dir. `create_main_cluster=false` before apt; `initdb` only if empty; refuse a busy port before init/start; `--bootstrap` over the unix socket (password only for a new role). Called by `start-app.sh` |
-| `pg_cutover/`                       | pgloader load file (`type blob to bytea using byte-vector-to-bytea`), `post_load_*.sql` (rename pgloader `idx_<oid>_<name>` → 8 existing + 33 secondary = 41 SQLite indexes; team_task_events append-only triggers), verify/resync CLIs (BLOB length/sha256), `pg_env.example` (no secrets) |
+| `ensure-postgres.sh`                | Reset-durable PG17 cluster under `/home/box/pgdata/17/main` with socket dir `/home/box/pgdata/17/run`. `create_main_cluster=false` before apt; `initdb` only if empty; if 5432 is held by Debian `17/main` (identified via `postmaster.pid` + postgres comm, or `pg_lsclusters` status `online` + exact data dir) stop that cluster, else next free port + `listen_port` file; `--bootstrap` over the unix socket (password only for a new role). Called by `start-app.sh` |
+| `pg_cutover/`                       | pgloader load file (`type blob to bytea using byte-vector-to-bytea`; SQLite REAL-class types → quoted `"double precision"` `using float-to-string`), `pgloader-4g.sh` (4 GB heap), `post_load_*.sql` (rename pgloader `idx_<oid>_<name>` → 8 existing + 33 secondary = 41 SQLite indexes; team_task_events append-only triggers), verify/resync CLIs (BLOB + REAL float vs SQLite snapshot), `pg_env.example` (no secrets) |
 
 
 ---
@@ -989,7 +993,7 @@ and detail pages that must always read through set `staleTime: 0` themselves.
 | `CUTOVER_DATABASE_URL` / `PG*`                        | CoS-owned cutover tooling (`scripts/pg_cutover.sh`, sourced from `/home/box/.config/shopifyseo/pg.env` at run time). Never commit `pg.env`. See [docs/pg-cutover.md](docs/pg-cutover.md). |
 | `SHOPIFYSEO_PG_LIVE_MARK`                             | Live cutover mark JSON (default `/home/box/.config/shopifyseo/pg_live_cutover.json`). Written by `scripts/mark-pg-live.sh`. `tmp/pg-cutover-*/cutover_mark.json` does not count. |
 | `SHOPIFYSEO_PG_ENV`                                   | Override path for `pg.env` (default `/home/box/.config/shopifyseo/pg.env`). |
-| `PGDATA_DIR` / `PGPORT`                               | `scripts/ensure-postgres.sh` data dir (default `/home/box/pgdata/17/main`) and port (default `5432`). |
+| `PGDATA_DIR` / `PGPORT`                               | `scripts/ensure-postgres.sh` data dir (default `/home/box/pgdata/17/main`) and port (default `5432`). Socket dir `/home/box/pgdata/17/run`. Chosen port is also written to `$(dirname $PGDATA_DIR)/listen_port` for `start-app.sh`. |
 
 ---
 

@@ -2,7 +2,8 @@
 # Nightly custom-format pg_dump of the live Postgres catalog.
 #
 # No-op (exit 0) when the live mark is absent. Keeps the newest 7 dumps.
-# Never prints DATABASE_URL.
+# Never prints DATABASE_URL. Called by scripts/pg-backup-daemon.sh (no cron
+# required) and optionally by crontab if a cron daemon is running.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +22,9 @@ Usage: scripts/pg-nightly-backup.sh [--help]
   Live mark    -> source pg.env, dump to $SHOPIFYSEO_PG_BACKUP_DIR
                   (default /home/box/backups/pg), keep the newest 7 files.
 
-Never prints DATABASE_URL. Installed by scripts/install-pg-backup-cron.sh.
+Never prints DATABASE_URL. Invoked by scripts/pg-backup-daemon.sh (the
+path that works without cron) and, if a cron daemon exists, by the
+crontab line from scripts/install-pg-backup-cron.sh.
 EOF
 }
 
@@ -44,12 +47,31 @@ set -a
 source "$PG_ENV"
 set +a
 
+# Honor the port ensure-postgres.sh actually bound (same helper as start-app).
+# shellcheck source=lib/pg-listen-port.sh
+source "$ROOT/scripts/lib/pg-listen-port.sh"
+apply_listen_port_to_env
+
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "error: live mark present but DATABASE_URL is missing or empty" >&2
   exit 1
 fi
 
 mkdir -p "$BACKUP_DIR"
+# A killed dump can leave another stamp's *.dump.partial. Drop those older
+# than one day; pruning of successful dumps ignores .partial.
+python3 -c '
+import time
+from pathlib import Path
+backup = Path("'"$BACKUP_DIR"'")
+now = time.time()
+for path in backup.glob("*.dump.partial"):
+    try:
+        if now - path.stat().st_mtime > 86400:
+            path.unlink()
+    except OSError:
+        pass
+'
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$BACKUP_DIR/shopifyseo-${STAMP}.dump"
 PARTIAL="$OUT.partial"

@@ -77,6 +77,16 @@ def test_load_file_omits_foreign_keys_and_has_placeholders():
     assert "__POSTGRES_URI__" in load
     assert "no foreign keys" in load
     assert "type blob to bytea using byte-vector-to-bytea" in load
+    assert 'type real to "double precision"' in load
+    assert "using float-to-string" in load
+    cast_lines = [
+        line for line in load.splitlines() if line.startswith("CAST ") or line.startswith("     type ")
+    ]
+    cast_text = "\n".join(cast_lines)
+    assert 'type real to "double precision"' in cast_text
+    assert "type real to double precision" not in cast_text
+    assert "type real to real" not in cast_text
+    assert "type float to float" not in cast_text
     assert "keyword_metrics.updated_at" in load
     assert "PASSWORD" not in load
     assert "postgresql://shopifyseo:" not in load
@@ -287,6 +297,86 @@ def test_verify_blob_length_and_sha256(tmp_path):
         a.close()
         b.close()
     assert hashlib.sha256(blob).digest()
+
+
+def test_verify_real_columns_exact_float_equality(tmp_path):
+    position = 6.682926829268292
+    left = tmp_path / "left.sqlite3"
+    right = tmp_path / "right.sqlite3"
+    for path in (left, right):
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """
+            CREATE TABLE products (
+                id INTEGER PRIMARY KEY,
+                gsc_position REAL,
+                gsc_ctr REAL,
+                ga4_avg_session_duration REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO products (id, gsc_position, gsc_ctr, ga4_avg_session_duration) "
+            "VALUES (1, ?, ?, ?)",
+            (position, 0.1, 1e-9),
+        )
+        conn.execute(
+            "INSERT INTO products (id, gsc_position, gsc_ctr, ga4_avg_session_duration) "
+            "VALUES (2, ?, ?, ?)",
+            (443.0, 0.1, 1e-9),
+        )
+        conn.commit()
+        conn.close()
+    a = sqlite3.connect(left)
+    b = sqlite3.connect(right)
+    try:
+        report = verify_values(b, sqlite_conn=a)
+        assert not any(i.kind.startswith("float") for i in report.issues)
+        assert any("REAL-affinity" in n for n in report.notes)
+        import struct
+
+        truncated = struct.unpack("f", struct.pack("f", position))[0]
+        b.execute("UPDATE products SET gsc_position = ?", (truncated,))
+        b.commit()
+        report = verify_values(b, sqlite_conn=a)
+        assert any(i.kind == "float_mismatch" for i in report.issues)
+    finally:
+        a.close()
+        b.close()
+
+
+def test_verify_real_columns_flags_postgres_real_not_double(db_conn, tmp_path):
+    if backend_for_connection(db_conn) != Backend.POSTGRES:
+        pytest.skip("needs testdb Postgres to create a 4-byte real column")
+    position = 6.682926829268292
+    sqlite_path = tmp_path / "snap.sqlite3"
+    sqlite_conn = sqlite3.connect(sqlite_path)
+    sqlite_conn.execute(
+        "CREATE TABLE cutover_float_probe (id INTEGER PRIMARY KEY, gsc_position REAL)"
+    )
+    sqlite_conn.execute(
+        "INSERT INTO cutover_float_probe (id, gsc_position) VALUES (1, ?)",
+        (position,),
+    )
+    sqlite_conn.commit()
+    # testdb rewrites REAL → DOUBLE PRECISION; FLOAT4 stays 4-byte real.
+    db_conn.execute(
+        "CREATE TABLE cutover_float_probe (id INTEGER PRIMARY KEY, gsc_position FLOAT4)"
+    )
+    db_conn.execute(
+        "INSERT INTO cutover_float_probe (id, gsc_position) VALUES (1, ?)",
+        (position,),
+    )
+    db_conn.commit()
+    try:
+        report = verify_values(db_conn, sqlite_conn=sqlite_conn)
+        kinds = {i.kind for i in report.issues}
+        assert "float_not_double_precision" in kinds
+        assert "float_mismatch" in kinds
+    finally:
+        sqlite_conn.close()
+        db_conn.execute("DROP TABLE IF EXISTS cutover_float_probe")
+        db_conn.commit()
 
 
 def test_verify_counts_mismatch(tmp_path):

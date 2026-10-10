@@ -21,6 +21,7 @@ from .db import (
     backend_for_connection,
     get_connection,
     isolated_sql,
+    postgres_float_ddl,
     sqlite_runtime_ddl,
     table_columns,
     table_ddl,
@@ -176,9 +177,11 @@ def _sqlite_ddl(conn: Any, sql: str) -> None:
 
 def _ensure_columns(conn: Any, table: str, columns: dict[str, str]) -> None:
     existing = table_columns(conn, table)
+    rewrite_floats = backend_for_connection(conn) == Backend.POSTGRES
     for name, col_type in columns.items():
         if name not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+            ddl = postgres_float_ddl(col_type) if rewrite_floats else col_type
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def ensure_dashboard_schema(conn: Any) -> None:

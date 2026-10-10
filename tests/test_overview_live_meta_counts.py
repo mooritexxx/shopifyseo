@@ -426,3 +426,47 @@ def test_schema_tolerance_missing_columns(db_conn):
 
     overview_metrics = dq.fetch_overview_metrics(conn)
     assert overview_metrics["products_missing_meta"] == 1
+
+
+def test_fetch_live_counts_excludes_unpublished(db_conn):
+    """#113: live totals match the live definition used by the missing-meta counters."""
+    conn = db_conn
+    _create_schema(conn)
+
+    _insert_product(conn, "p1", "live-prod", seo_title="t", seo_description="d")
+    _insert_product(conn, "p2", "draft-prod", status="DRAFT")
+    _insert_product(conn, "p3", "no-url-prod", online_store_url="")
+    _insert_collection(conn, "c1", "live-coll")
+    _insert_collection(conn, "c2", "unreachable-coll", api_unreachable=1)
+    for i in range(2):
+        _insert_page(conn, f"pg{i}", f"live-page-{i}", is_published=1, seo_title="t", seo_description="d")
+    _insert_page(conn, "pg-null", "legacy-page", is_published=None)
+    _insert_page(conn, "pg-off", "unpub-page", is_published=0)
+    _insert_article(conn, "a1", "live-article", is_published=1)
+    _insert_article(conn, "a2", "unpub-article", is_published=0)
+    conn.commit()
+
+    assert dq.fetch_counts(conn)["pages"] == 4
+    live = dq.fetch_live_counts(conn)
+    assert live == {"products": 1, "collections": 1, "pages": 3, "blog_articles": 1}
+
+
+def test_summary_pages_tile_uses_live_pages_only(db_conn):
+    """#113: 3 unpublished pages with empty meta must not count as complete."""
+    from backend.app.services.catalog_completion import build_catalog_completion
+
+    conn = db_conn
+    _create_schema(conn)
+    for i in range(16):
+        _insert_page(conn, f"pub-{i}", f"published-page-{i}", is_published=1, seo_title="t", seo_description="d")
+    for h in ("shipping", "returns", "information-security-policy"):
+        _insert_page(conn, f"un-{h}", h, is_published=0)
+    conn.commit()
+
+    cc = build_catalog_completion(
+        dq.fetch_counts(conn),
+        dq.fetch_catalog_meta_metrics(conn),
+        articles_missing_meta=dq.count_blog_articles_missing_meta(conn),
+        live_counts=dq.fetch_live_counts(conn),
+    )
+    assert cc["pages"] == {"total": 16, "missing_meta": 0, "meta_complete": 16, "pct_meta_complete": 100.0}

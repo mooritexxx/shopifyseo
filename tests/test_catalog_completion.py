@@ -36,3 +36,17 @@ def test_empty_totals_are_handled():
         articles_missing_meta=0,
     )
     assert out["products"]["pct_meta_complete"] == 100.0
+
+
+def test_live_counts_replace_totals_so_unpublished_are_not_complete():
+    """#113: 19 pages of which 3 unpublished -> tile is 16/16 live, not 19/19."""
+    counts = {"products": 10, "collections": 4, "pages": 19, "blog_articles": 93}
+    metrics = {"products_missing_meta": 0, "collections_missing_meta": 0, "pages_missing_meta": 0}
+    live = {"products": 10, "collections": 4, "pages": 16, "blog_articles": 85}
+    out = build_catalog_completion(counts, metrics, articles_missing_meta=0, live_counts=live)
+    assert out["pages"]["total"] == 16
+    assert out["pages"]["meta_complete"] == 16
+    assert out["articles"]["total"] == 85
+    # Without live_counts the old totals are kept.
+    old = build_catalog_completion(counts, metrics, articles_missing_meta=0)
+    assert old["pages"]["total"] == 19

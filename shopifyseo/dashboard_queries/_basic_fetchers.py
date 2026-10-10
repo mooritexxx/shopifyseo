@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from shopifyseo.db import DictRow, nullif_empty, table_columns
+from shopifyseo.db import execute as db_execute
 
 from ._urls import object_url
 from ..index_evidence import INDEX_STORED_FIELDS
@@ -243,6 +244,21 @@ def count_blog_articles_missing_meta(conn: Any) -> int:
         """
     ).fetchone()
     return int(row[0]) if row else 0
+
+
+def fetch_live_counts(conn: Any) -> dict[str, int]:
+    """Totals of items live on the Online Store (per ``_live_where``).
+
+    Denominator for the Overview completion tiles so ``total`` and
+    ``missing_meta`` use the same live-only definition. Keys match
+    ``fetch_counts`` (``products``, ``collections``, ``pages``, ``blog_articles``).
+    """
+    out: dict[str, int] = {}
+    for table in ("products", "collections", "pages", "blog_articles"):
+        live = _live_where(conn, table)
+        row = db_execute(conn, f"SELECT COUNT(*) FROM {table} WHERE ({live})").fetchone()
+        out[table] = int(row[0]) if row else 0
+    return out
 
 
 def fetch_counts(conn: Any) -> dict[str, int]:

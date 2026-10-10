@@ -24,7 +24,7 @@ with the code, the code wins and the map is the bug.
 | Backend app | `backend/app/main.py` (FastAPI; registers all routers, lifespan, exception handlers) |
 | DB connections | `backend/app/db.py` (`open_db_connection`, schema bootstrap per path) |
 | Frontend root | `frontend/src/main.tsx` → `frontend/src/app/` (providers, router; SPA basename `/app`) |
-| Run everything | Production: `scripts/start-app.sh`. Dev: `start_app.sh`; `scripts/dev-restart-local.sh` |
+| Run everything | Production: `scripts/start-app.sh` (ensure-postgres + live mark + cron-free PG backup hook). Dev: `start_app.sh`; `scripts/dev-restart-local.sh` |
 | Default database | `shopify_catalog.sqlite3` (override `SHOPIFY_CATALOG_DB_PATH`) |
 
 ---
@@ -62,6 +62,7 @@ with the code, the code wins and the map is the bug.
 | `shopify_admin.py`, `dashboard_http.py` | Admin API and HTTP helpers |
 | image pipeline | `product_image_seo.py`, `catalog_image_work.py`, `shopify_image_cache.py`, `shopify_product_media.py`, `html_images.py`, `theme_template_images.py` |
 | misc | `api_usage.py`, `market_context.py`, `seo_slug.py`, `gsc_query_limits.py`, `sqlite_utf8.py`, `exceptions.py` |
+| `cutover/` | SQLite→PG helpers (`real_columns.py` lists REAL-affinity columns for the double-precision CAST) |
 
 ## `frontend/src/` — React SPA
 
@@ -101,7 +102,8 @@ PYTHONPATH=. python3 -m pytest tests/ -q       # full python suite
 ruff check . --fix && ruff format .            # python lint/format
 cd frontend && npx tsc --noEmit                # typecheck
 cd frontend && npm run build                   # build SPA (npm run rebuild clears cache)
-./scripts/start-app.sh                         # production start (ensure-postgres + live mark)
+./scripts/start-app.sh                         # production start (ensure-postgres + live mark + backup hook)
+./scripts/pg-backup-daemon.sh --ensure         # cron-free nightly dump (live mark only)
 ./scripts/dev-restart-local.sh                 # stop :8000, build, serve (dev-only)
 ```
 

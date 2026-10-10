@@ -942,15 +942,18 @@ def _load_embedding_matrix(
     exclude: tuple[str, str] | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Load embeddings into a numpy matrix and metadata list."""
+    order_sql = " ORDER BY object_type ASC, object_handle ASC, chunk_index ASC"
     if object_types:
         placeholders = ",".join("?" for _ in object_types)
         rows = conn.execute(
-            f"SELECT object_type, object_handle, chunk_index, embedding, source_text_preview FROM embeddings WHERE object_type IN ({placeholders})",
+            f"SELECT object_type, object_handle, chunk_index, embedding, source_text_preview FROM embeddings WHERE object_type IN ({placeholders})"
+            + order_sql,
             object_types,
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT object_type, object_handle, chunk_index, embedding, source_text_preview FROM embeddings"
+            + order_sql
         ).fetchall()
 
     if not rows:
@@ -1248,7 +1251,15 @@ def find_cannibalization_candidates(
             "shared_queries": shared_queries[:10],
         })
 
-    candidates.sort(key=lambda x: x["content_similarity"], reverse=True)
+    candidates.sort(
+        key=lambda x: (
+            -x["content_similarity"],
+            x["object_a"]["type"],
+            x["object_a"]["handle"],
+            x["object_b"]["type"],
+            x["object_b"]["handle"],
+        )
+    )
     return candidates
 
 

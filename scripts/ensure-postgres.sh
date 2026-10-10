@@ -12,6 +12,10 @@
 #   - initdb ONLY when the data dir is missing or empty
 #   - never overwrites or re-inits a non-empty data dir
 #   - starts the cluster with a box-writable unix_socket_directories
+#   - if 5432 is held by the Debian 17/main cluster (identified only via
+#     postmaster.pid / data_directory), stop that cluster with
+#     pg_ctlcluster and start the durable one; otherwise pick the next
+#     free port and write it to $(dirname $PGDATA_DIR)/listen_port
 #   - does NOT create/alter roles or databases unless --bootstrap
 #   - never prints secrets
 #
@@ -48,19 +52,26 @@ Environment:
   SHOPIFYSEO_ENSURE_POSTGRES_NO_INSTALL=1   same as --no-install
   SHOPIFYSEO_PG_ENV   pg.env used by --bootstrap for a new-role password
   PGPASSWORD          preferred source for a new-role password (never printed)
+  SHOPIFYSEO_DEBIAN_PGDATA   Debian 17/main data dir
+                             (default /var/lib/postgresql/17/main; tests only)
+  SHOPIFYSEO_LISTEN_PORT_FILE   where the chosen port is written
+                                (default $(dirname $PGDATA_DIR)/listen_port)
 
 Behavior:
   - initdb only when the data dir is missing or empty
   - refuses to init a non-empty directory (even if it is not a cluster)
-  - refuses to initdb/start when the target port is already in use by
-    another process (does not leave a new empty cluster behind)
   - starts with unix_socket_directories=$PGSOCKET_DIR (box-writable; not
     /var/run/postgresql)
-  - does not delete or stop an existing Debian cluster under /var/lib/postgresql
+  - does not delete /var/lib/postgresql
   - apt install writes create_main_cluster=false so postgresql-17 does not
     auto-create 17/main on 5432
-  - if a Debian 17/main cluster already owns 5432, use PGPORT=5433 or stop
-    that cluster by hand after migrating (see docs/pg-cutover.md)
+  - if the durable cluster is down and the target port is held by a
+    postgres we can positively identify as Debian 17/main (postmaster.pid
+    data_directory / port, or pg_lsclusters), stop only that cluster
+    (pg_ctlcluster 17 main stop). Never kill an unidentified postgres.
+    If stop fails or identification is not positive, start on the next
+    free port (typically 5433) and write it to the listen_port file so
+    start-app.sh / pg.env honor it. Manual: sudo pg_ctlcluster 17 main stop
   - --bootstrap talks over the local unix socket (trust) with -w; sets a
     password only when the role is newly created
   - never prints secrets
@@ -90,6 +101,9 @@ fi
 if [[ -z "$PGSOCKET_DIR" ]]; then
   PGSOCKET_DIR="$(dirname "$PGDATA_DIR")/run"
 fi
+
+DEBIAN_PGDATA="${SHOPIFYSEO_DEBIAN_PGDATA:-/var/lib/postgresql/17/main}"
+LISTEN_PORT_FILE="${SHOPIFYSEO_LISTEN_PORT_FILE:-$(dirname "$PGDATA_DIR")/listen_port}"
 
 die() {
   echo "error: $*" >&2
@@ -214,9 +228,113 @@ sys.exit(1)
 ' "$PGPORT"
 }
 
-refuse_busy_port() {
+write_listen_port() {
+  local port="$1"
+  mkdir -p "$(dirname "$LISTEN_PORT_FILE")" || true
+  printf '%s\n' "$port" > "$LISTEN_PORT_FILE" || \
+    echo "warning: could not write listen port to $LISTEN_PORT_FILE" >&2
+}
+
+running_port_from_pidfile() {
+  local pidfile="$1"
+  if [[ -f "$pidfile" ]]; then
+    # postmaster.pid: line 1 pid, line 2 data dir, line 4 port
+    local port
+    port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$port" =~ ^[0-9]+$ ]]; then
+      printf '%s' "$port"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+next_free_port() {
+  local start="$1"
+  python3 -c '
+import socket, sys
+start = int(sys.argv[1])
+for port in range(start, min(start + 64, 65535)):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError:
+        continue
+    finally:
+        s.close()
+    print(port)
+    raise SystemExit
+raise SystemExit("no free port")
+' "$start"
+}
+
+debian_17_main_holds_port() {
+  # Positive identification only. Never treat an unknown listener as Debian.
+  local port="$1"
+  local pidfile="$DEBIAN_PGDATA/postmaster.pid"
+  if [[ -f "$pidfile" ]]; then
+    local pid datadir pid_port
+    pid="$(sed -n '1p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    datadir="$(sed -n '2p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    pid_port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$pid_port" == "$port" && "$datadir" == "$DEBIAN_PGDATA" && "$pid" =~ ^[0-9]+$ ]]; then
+      if [[ -d "/proc/$pid" ]] || kill -0 "$pid" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+  fi
+  if command -v pg_lsclusters >/dev/null 2>&1; then
+    local line
+    line="$(pg_lsclusters --no-header 2>/dev/null | awk -v ver=17 -v name=main -v port="$port" -v data="$DEBIAN_PGDATA" '
+      $1 == ver && $2 == name && $3 == port && $6 == data { print; exit }
+    ' || true)"
+    if [[ -n "$line" ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+run_pg_ctlcluster_stop() {
+  # Tolerate missing binary / permission errors. Never escalate to kill.
+  local cmd=(pg_ctlcluster 17 main stop)
+  if ! command -v pg_ctlcluster >/dev/null 2>&1; then
+    echo "warning: pg_ctlcluster not found; cannot stop Debian 17/main" >&2
+    return 1
+  fi
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "${cmd[@]}" && return 0
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo "${cmd[@]}" && return 0
+  else
+    "${cmd[@]}" && return 0
+  fi
+  echo "warning: pg_ctlcluster 17 main stop failed or was not permitted; not killing anything" >&2
+  return 1
+}
+
+claim_or_fallback_port() {
   local action="$1"
-  die "port $PGPORT already accepts connections or is in use by another process; refusing to ${action} $PGDATA_DIR. If a Debian 17/main cluster is on 5432, use PGPORT=5433 or stop that cluster by hand after migrating (see docs/pg-cutover.md). This script does not delete or stop /var/lib/postgresql."
+  if ! port_held_by_other; then
+    return 0
+  fi
+  if debian_17_main_holds_port "$PGPORT"; then
+    echo "note: port $PGPORT is held by Debian 17/main ($DEBIAN_PGDATA); stopping only that cluster" >&2
+    if run_pg_ctlcluster_stop; then
+      if ! port_held_by_other; then
+        echo "note: Debian 17/main stopped; using port $PGPORT for $PGDATA_DIR" >&2
+        return 0
+      fi
+      echo "warning: port $PGPORT still busy after pg_ctlcluster 17 main stop" >&2
+    fi
+  else
+    echo "note: port $PGPORT is busy and the holder is not positively Debian 17/main; not stopping it" >&2
+  fi
+  local fallback
+  fallback="$(next_free_port $((PGPORT + 1)))" || \
+    die "port $PGPORT is busy and no free fallback port was found; refusing to ${action} $PGDATA_DIR"
+  echo "note: starting durable cluster on port $fallback instead of $PGPORT (update PGPORT in pg.env when convenient; start-app.sh honors $LISTEN_PORT_FILE)" >&2
+  PGPORT="$fallback"
 }
 
 pg_ctl_options() {
@@ -289,9 +407,7 @@ if [[ ! -d "$PGDATA_DIR" ]]; then
 fi
 
 if [[ -z "$(ls -A "$PGDATA_DIR" 2>/dev/null || true)" ]]; then
-  if port_held_by_other; then
-    refuse_busy_port "initdb"
-  fi
+  claim_or_fallback_port "initdb"
   echo "initializing new cluster in $PGDATA_DIR"
   "$INITDB" -D "$PGDATA_DIR" --encoding=UTF8 --locale=C \
     --auth-local=trust --auth-host=scram-sha-256 \
@@ -303,16 +419,20 @@ else
 fi
 
 if cluster_running_here; then
+  running="$(running_port_from_pidfile "$PGDATA_DIR/postmaster.pid" || true)"
+  if [[ -n "$running" ]]; then
+    PGPORT="$running"
+  fi
   echo "cluster already running ($PGDATA_DIR port $PGPORT)"
 else
-  if port_held_by_other; then
-    refuse_busy_port "start"
-  fi
+  claim_or_fallback_port "start"
   echo "starting cluster ($PGDATA_DIR port $PGPORT socket $PGSOCKET_DIR)"
   "$PG_CTL" -D "$PGDATA_DIR" -l "$PGDATA_DIR/pg_ctl.log" \
     -o "$(pg_ctl_options)" start \
     || die "failed to start PostgreSQL at $PGDATA_DIR on port $PGPORT"
 fi
+
+write_listen_port "$PGPORT"
 
 if [[ "$BOOTSTRAP" -eq 1 ]]; then
   if [[ ! -x "$PSQL_BIN" ]]; then
@@ -343,4 +463,4 @@ SQL
   fi
 fi
 
-echo "Postgres is ready (data dir $PGDATA_DIR, port $PGPORT, socket dir $PGSOCKET_DIR)."
+echo "Postgres is ready (data dir $PGDATA_DIR, port $PGPORT, socket dir $PGSOCKET_DIR, listen_port file $LISTEN_PORT_FILE)."

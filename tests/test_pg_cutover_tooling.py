@@ -77,6 +77,9 @@ def test_load_file_omits_foreign_keys_and_has_placeholders():
     assert "__POSTGRES_URI__" in load
     assert "no foreign keys" in load
     assert "type blob to bytea using byte-vector-to-bytea" in load
+    assert "type real to double precision" in load
+    assert "using float-to-string" in load
+    assert "type real to real" not in load
     assert "keyword_metrics.updated_at" in load
     assert "PASSWORD" not in load
     assert "postgresql://shopifyseo:" not in load

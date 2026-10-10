@@ -172,9 +172,9 @@ def load_clusters(conn: Any) -> dict:
 
     cluster_cols = table_columns(conn, "clusters")
     order_expr = (
-        "COALESCE(NULLIF(priority_score, 0), avg_opportunity) DESC, avg_opportunity DESC"
+        "COALESCE(NULLIF(priority_score, 0), avg_opportunity) DESC, avg_opportunity DESC, id ASC"
         if "priority_score" in cluster_cols
-        else "avg_opportunity DESC"
+        else "avg_opportunity DESC, id ASC"
     )
     rows = conn.execute(f"SELECT * FROM clusters ORDER BY {order_expr}").fetchall()
 

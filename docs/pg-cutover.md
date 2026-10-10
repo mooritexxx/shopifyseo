@@ -36,7 +36,7 @@ not honor the live mark. Box restarts go through `scripts/start-app.sh`.
 | Path | Role |
 | --- | --- |
 | [`scripts/pg_cutover.sh`](../scripts/pg_cutover.sh) | Entrypoint: backup → pre-fix → pgloader → fixups → constraints → sequences → `ANALYZE` → verify |
-| [`scripts/pg_cutover/shopifyseo.load`](../scripts/pg_cutover/shopifyseo.load) | pgloader command file (`no foreign keys`; `type blob to bytea using byte-vector-to-bytea`) |
+| [`scripts/pg_cutover/shopifyseo.load`](../scripts/pg_cutover/shopifyseo.load) | pgloader command file (`no foreign keys`; `type blob to bytea using byte-vector-to-bytea`; SQLite `real`/`float`/`double`/`double precision` → Postgres `double precision using float-to-string`) |
 | [`scripts/pg_cutover/post_load_fixups.sql`](../scripts/pg_cutover/post_load_fixups.sql) | Mixed-type leftovers (`keyword_metrics.updated_at` text-in-int, siblings) |
 | [`scripts/pg_cutover/post_load_constraints.sql`](../scripts/pg_cutover/post_load_constraints.sql) | Rename pgloader `idx_<oid>_<name>` → `<name>` (8 existing + 33 secondary = all 41 SQLite indexes), team_task_events append-only triggers, FKs **`NOT VALID`** |
 | [`scripts/pg_cutover/verify_counts.py`](../scripts/pg_cutover/verify_counts.py) | Per-table `COUNT(*)` SQLite vs Postgres |
@@ -47,7 +47,8 @@ not honor the live mark. Box restarts go through `scripts/start-app.sh`.
 | [`scripts/start-app.sh`](../scripts/start-app.sh) | Production uvicorn start: ensure-postgres, live-mark decision, no silent SQLite fallback |
 | [`scripts/mark-pg-live.sh`](../scripts/mark-pg-live.sh) | Write / remove `/home/box/.config/shopifyseo/pg_live_cutover.json` |
 | [`scripts/pg-nightly-backup.sh`](../scripts/pg-nightly-backup.sh) | `pg_dump -Fc` when the live mark exists; keep the newest 7 |
-| [`scripts/install-pg-backup-cron.sh`](../scripts/install-pg-backup-cron.sh) | Idempotent crontab install (re-run after a box reset) |
+| [`scripts/pg-backup-daemon.sh`](../scripts/pg-backup-daemon.sh) | Cron-free hook: stale-dump check + pidfile-guarded sleep loop. Launched by `start-app.sh` when the live mark says postgres |
+| [`scripts/install-pg-backup-cron.sh`](../scripts/install-pg-backup-cron.sh) | Idempotent crontab install. Used **only if** a cron daemon is running; this box often has none |
 | [`scripts/pg_cutover/pg_env.example`](../scripts/pg_cutover/pg_env.example) | Env **names** only. Never commit secrets. |
 | [`shopifyseo/cutover/`](../shopifyseo/cutover/) | Importable helpers used by the scripts and tests |
 
@@ -94,17 +95,31 @@ under `/home/box`.
   Debian `17/main` on 5432. Installs `postgresql-17-pgvector` when available.
 - Data directory: `/home/box/pgdata/17/main` (override with `PGDATA_DIR` or
   `--pgdata`). Port: `5432` (override with `PGPORT` or `--port`). Unix socket
-  directory: `$(dirname $PGDATA_DIR)/run` (override with `PGSOCKET_DIR` or
-  `--socket-dir`), created mode `0700`. The cluster is started with
-  `unix_socket_directories` set there so user `box` can create the lock file
-  (not `/var/run/postgresql`).
+  directory: **`/home/box/pgdata/17/run`** (`$(dirname $PGDATA_DIR)/run`;
+  override with `PGSOCKET_DIR` or `--socket-dir`), created mode `0700`. The
+  cluster is started with `unix_socket_directories` set there so user `box`
+  can create the lock file (not `/var/run/postgresql`).
 - `initdb` **only** when the data dir is missing or empty. A non-empty
-  directory is never overwritten or re-initialized. If the target port already
-  accepts connections (typically Debian `17/main` on 5432), the script exits
-  nonzero **before** `initdb` or start. Use `PGPORT=5433`, or stop that
-  cluster by hand after migrating.
+  directory is never overwritten or re-initialized.
 - Starts the cluster if it is not running (`pg_ctl status` on `$PGDATA_DIR`);
-  no-op if it is already running. Never deletes or stops `/var/lib/postgresql`.
+  no-op if it is already running. Never deletes `/var/lib/postgresql`.
+- **Debian `17/main` grabbing 5432 after a box restart.** Apt may recreate
+  the packaged cluster on 5432 even with `create_main_cluster=false` from a
+  previous run (packages were wiped). On start, if the durable cluster is
+  down and 5432 is held by another postgres, `ensure-postgres.sh` identifies
+  the holder **only** by `postmaster.pid` `data_directory` / port (default
+  `/var/lib/postgresql/17/main`) or `pg_lsclusters`. It never kills a
+  postgres it cannot positively identify as Debian `17/main`.
+  - Identified: `pg_ctlcluster 17 main stop` (or sudo -n). Absence and
+    permission errors are warnings, not fatal.
+  - Then start the durable cluster on 5432, or on the next free port
+    (typically 5433) if stop did not free 5432 / identification failed.
+  - The chosen port is written to `/home/box/pgdata/17/listen_port`.
+    `scripts/start-app.sh` sources `pg.env` then rewrites process `PGPORT`
+    and the `DATABASE_URL` port to match (it does not edit `pg.env` on
+    disk). Update `PGPORT` in `pg.env` when convenient.
+  - Manual: `sudo pg_ctlcluster 17 main stop` then
+    `./scripts/ensure-postgres.sh --no-install`.
 - Does **not** create or alter roles/passwords, and does **not** create the
   `shopifyseo` database, unless you pass `--bootstrap`. `--bootstrap` talks
   over the local unix socket with `-w` (trust). It creates the role and
@@ -293,8 +308,13 @@ After `--apply-load` **and** the post-flip sweep passes:
   a cluster already exists, ensure is best-effort (warn on failure, still
   start SQLite).
 - Live mark present → `ensure-postgres.sh` is fatal. Then source `pg.env`.
+  If `ensure-postgres.sh` wrote `/home/box/pgdata/17/listen_port`, rewrite
+  process `PGPORT` and the `DATABASE_URL` port to match (never print the
+  URL; `pg.env` on disk is not edited).
   If `DATABASE_URL` is missing/empty or Postgres is unreachable, log and
   exit nonzero. **Never** silently fall back to SQLite.
+- When the decision is postgres, launch `scripts/pg-backup-daemon.sh
+  --ensure` in the background (never blocks or fails startup).
 - Starts `.venv/bin/python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000`
   with `.venv/bin` first on `PATH`, logging to
   `/home/box/logs/shopifyseo-uvicorn.log`. Does not start a second instance
@@ -351,18 +371,32 @@ needed). See `TIMESTAMP_COLUMNS` in `shopifyseo/cutover/catalog.py`.
 ## Nightly `pg_dump`
 
 `scripts/pg-nightly-backup.sh` runs `pg_dump -Fc` into
-`/home/box/backups/pg/` and keeps the newest 7 dumps. It is a no-op (exit 0)
-when the live mark is absent. It never prints `DATABASE_URL`.
+`/home/box/backups/pg/` (`.partial` then `mv`) and keeps the newest 7 dumps.
+It is a no-op (exit 0) when the live mark is absent. It never prints
+`DATABASE_URL`.
+
+**This box has no cron daemon.** `scripts/install-pg-backup-cron.sh` alone
+does nothing useful until `cron` is running (`pgrep -x cron`). Cron is used
+only if that daemon exists. The installer still runs from `start-app.sh`
+(idempotent; warns when cron is missing) so a later-enabled cron would pick
+the job up.
+
+The dump that actually runs without cron is `scripts/pg-backup-daemon.sh`,
+launched by `scripts/start-app.sh` only when the live mark says postgres:
+
+- On each start, if the newest successful `shopifyseo-*.dump` is missing or
+  older than 24h, run `pg-nightly-backup.sh` once.
+- Start a sleep-loop (default 3600s) guarded by
+  `/home/box/logs/pg-backup-daemon.pid`. A second start is a no-op. The
+  loop exits when the live mark is removed, the pidfile is no longer ours,
+  or on TERM/INT (pidfile removed).
+- Never blocks or fails app startup. Logs to
+  `/home/box/logs/pg-backup-daemon.log`.
 
 ```bash
-./scripts/install-pg-backup-cron.sh
+./scripts/install-pg-backup-cron.sh   # only useful if cron is running
+./scripts/pg-backup-daemon.sh --ensure
 ```
-
-The installer is idempotent (no duplicate crontab lines). Cron itself is
-wiped on a box reset; `scripts/start-app.sh` calls the installer so the job
-is restored after `ensure-postgres` brings the cluster back. Cron also needs
-its daemon running (`pgrep -x cron`); `install-pg-backup-cron.sh` prints a
-warning when no cron process is found and does not try to start it.
 
 ## Orphans and FK validate
 
@@ -388,20 +422,33 @@ add the FK as `NOT VALID`.
 | pgloader sequence not at `max(id)+1` | `resync_sequences.py` / `ensure_identity` |
 | `seo_change_events.task_id` must not become IDENTITY | skipped |
 | SQLite `LIKE` is ASCII case-insensitive; PG `LIKE` is not (873 vs 867 rows for `%a%`) | `LIKE` → `ILIKE` in `shopifyseo/db/compat.py` `_translate_placeholders` (PG path only) |
+| pgloader default CAST maps SQLite `REAL` → Postgres 4-byte `real` (e.g. `gsc_position` 6.682926829268292 → 6.6829267) | `shopifyseo.load` CAST `real`/`float`/`double`/`double precision` → `double precision using float-to-string`. `ALTER TABLE … ADD COLUMN` on PG uses `postgres_float_ddl`. Testdb rewrite already mapped `REAL` → `DOUBLE PRECISION`. |
+| Whole numbers such as `443` come back as `443` (SQLite, possibly `int`) vs `443.0` (psycopg `float`) | **Known harmless difference.** Same numeric value; JSON `443` and `443.0` compare equal in JS and Python. API output shape is not normalized. |
+| Equal sort keys in graph-stats / orphans / clusters / cannibalization differ between SQLite and PG | Final tie-break: graph-stats and orphans use `(object_type, handle)` ASC; clusters `ORDER BY …, id ASC`; cannibalization sorts by handles after similarity. Primary sort is unchanged. |
 
 ## CI
 
 `tests/test_pg_cutover_tooling.py` checks cutover script syntax, SQL guards,
-pre-fix, verify, orphan default, and delta-to-copy. It does **not** require
-pgloader.
+pre-fix, verify, orphan default, delta-to-copy, and the `.load` CAST rules.
+It does **not** require pgloader.
+
+`tests/test_pg_float_precision.py` bootstraps a throwaway SQLite schema,
+asserts every REAL-affinity column is CAST to `double precision`, stores
+`6.682926829268292` / `0.1` / `1e-9` / `443.0` on testdb (SQLite and PG),
+and checks PG `information_schema` `data_type`.
+
+`tests/test_pg_order_tiebreak.py` inserts tied sort keys for graph-stats,
+orphans, clusters, and cannibalization and asserts the deterministic order
+on both backends.
 
 `tests/test_pg_durable_runtime.py` checks start-app decision logic (temp dirs
 + env overrides, no real `/home/box` paths), backup retention, cron
-installer idempotency, and `ensure-postgres.sh` refusing to init a non-empty
-data dir.
+installer idempotency, Debian `17/main` port claim / fallback, listen-port
+rewrite, and the cron-free backup daemon (temp dirs + stubbed `pg_*`).
 
 `tests/test_pg_runtime_smoke.py` is the production PG smoke (CI
-`backend-postgres` extra step with `DATABASE_URL` set).
+`backend-postgres` extra step with `DATABASE_URL` set), including the
+double-precision column and round-trip assertions.
 
 ## Secrets
 

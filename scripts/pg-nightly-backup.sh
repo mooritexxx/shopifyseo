@@ -2,7 +2,8 @@
 # Nightly custom-format pg_dump of the live Postgres catalog.
 #
 # No-op (exit 0) when the live mark is absent. Keeps the newest 7 dumps.
-# Never prints DATABASE_URL.
+# Never prints DATABASE_URL. Called by scripts/pg-backup-daemon.sh (no cron
+# required) and optionally by crontab if a cron daemon is running.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +22,9 @@ Usage: scripts/pg-nightly-backup.sh [--help]
   Live mark    -> source pg.env, dump to $SHOPIFYSEO_PG_BACKUP_DIR
                   (default /home/box/backups/pg), keep the newest 7 files.
 
-Never prints DATABASE_URL. Installed by scripts/install-pg-backup-cron.sh.
+Never prints DATABASE_URL. Invoked by scripts/pg-backup-daemon.sh (the
+path that works without cron) and, if a cron daemon exists, by the
+crontab line from scripts/install-pg-backup-cron.sh.
 EOF
 }
 

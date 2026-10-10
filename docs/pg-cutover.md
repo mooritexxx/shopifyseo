@@ -132,7 +132,8 @@ sudo pg_ctlcluster 17 main stop
 
 # 2. Copy data as root, then hand it to box.
 sudo mkdir -p /home/box/pgdata/17/main
-sudo rsync -a /var/lib/postgresql/17/main/ /home/box/pgdata/17/main/
+sudo cp -a /var/lib/postgresql/17/main/. /home/box/pgdata/17/main/   # note the trailing /. ; rsync is not installed on this box
+sudo rm -f /home/box/pgdata/17/main/postmaster.pid
 sudo chown -R box:box /home/box/pgdata/17/main
 chmod 700 /home/box/pgdata/17/main
 
@@ -150,6 +151,9 @@ sudo chown box:box /home/box/pgdata/17/main/postgresql.conf \
 #    no longer point at /var/lib or /etc/postgresql. Set
 #    unix_socket_directories to /home/box/pgdata/17/run (or start with a
 #    minimal conf and let ensure-postgres.sh pass -c unix_socket_directories).
+#    The Debian conf has a relative `include_dir = 'conf.d'`. The copy has no
+#    conf.d, so the server would die. Create it (or comment out include_dir):
+mkdir -p /home/box/pgdata/17/main/conf.d
 
 # 5. Pick a free port if 5432 is still bound (PGPORT=5433).
 export PGDATA_DIR=/home/box/pgdata/17/main
@@ -309,8 +313,10 @@ cd /home/box/workspace/shopifyseo && setsid nohup .venv/bin/uvicorn backend.app.
 Replace that line with:
 
 ```bash
-setsid nohup /home/box/workspace/shopifyseo/scripts/start-app.sh >>/home/box/logs/start-app.log 2>&1 </dev/null & sleep 5
+mkdir -p /home/box/logs && setsid nohup /home/box/workspace/shopifyseo/scripts/start-app.sh >>/home/box/logs/start-app.log 2>&1 </dev/null & sleep 5
 ```
+
+The `mkdir -p /home/box/logs` part is required. The shell opens the log file before it runs the command, so a missing `/home/box/logs` stops start-app.sh from running at all. Keep this line inside the `if ! curl …` block.
 
 Do not start uvicorn directly. Do not `unset DATABASE_URL`.
 

@@ -4,10 +4,30 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.routers import content as content_router
 from backend.app.routers import operations as operations_router
-from backend.app.services import content_service, dashboard_service
+from backend.app.services import content_service, dashboard_service, product_service
+from shopifyseo.dashboard_store import ensure_dashboard_schema
 
 
 client = TestClient(app)
+
+
+class _NoTaskRowCursor:
+    def fetchone(self):
+        return None
+
+
+class _UpdateDummyConn:
+    """Stub for update_content(): ``record_applied`` looks for a reviewed
+    opportunity task, finds none, and writes nothing."""
+
+    def execute(self, *args, **kwargs):
+        return _NoTaskRowCursor()
+
+    def commit(self):
+        return None
+
+    def close(self):
+        return None
 
 
 def test_summary_contract():
@@ -217,11 +237,18 @@ def test_products_contract():
         assert "has_dimensional" in it["gsc_segment_flags"]
 
 
-def test_product_detail_includes_gsc_queries_from_gsc_payload(monkeypatch):
-    prod = client.get("/api/products?limit=1").json()["data"]["items"]
-    if not prod:
-        pytest.skip("no products in database")
-    handle = prod[0]["handle"]
+def test_product_detail_includes_gsc_queries_from_gsc_payload(testdb, monkeypatch):
+    # Seeded temp DB so the test runs on an empty CI database instead of skipping.
+    seed = testdb.connect()
+    ensure_dashboard_schema(seed)
+    seed.execute(
+        "INSERT INTO products (shopify_id, handle, title, tags_json, options_json, raw_json, synced_at) "
+        "VALUES ('gid://shopify/Product/901', 'gsc-queries-product', 'GSC Queries Product', '[]', '[]', '{}', '')"
+    )
+    seed.commit()
+    seed.close()
+    monkeypatch.setattr(product_service, "open_db_connection", lambda: testdb.connect())
+    handle = "gsc-queries-product"
 
     fake_rows = [
         {"keys": ["vape test query"], "clicks": 2, "impressions": 9, "ctr": 0.222, "position": 4.1},
@@ -402,11 +429,7 @@ def test_auth_start_redirects_when_not_configured():
 def test_collection_update_uses_targeted_refresh(monkeypatch):
     calls: dict[str, object] = {}
 
-    class DummyConn:
-        def close(self):
-            return None
-
-    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: _UpdateDummyConn())
     monkeypatch.setattr(
         content_service.dq,
         "fetch_collection_detail",
@@ -625,13 +648,25 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
     ]
 
 
-def test_page_detail_contract():
+def test_page_detail_contract(testdb, monkeypatch):
+    conn = testdb.connect()
+    ensure_dashboard_schema(conn)
+    conn.execute(
+        "INSERT INTO pages (shopify_id, title, handle, body, seo_title, seo_description, raw_json, synced_at) "
+        "VALUES ('gid://shopify/Page/900', 'Contact', 'contact', '<p>Contact us.</p>', "
+        "'Contact Us', 'Get in touch with our team.', '{}', '')"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: testdb.connect())
+
     response = client.get("/api/pages/contact")
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["object_type"] == "page"
-    assert payload["data"]["draft"]["title"] == payload["data"]["current"]["title"]
+    assert payload["data"]["current"]["handle"] == "contact"
+    assert payload["data"]["draft"]["title"] == payload["data"]["current"]["title"] == "Contact"
 
 
 def test_page_bulk_save_returns_json_error_when_shopify_write_fails(monkeypatch):
@@ -670,11 +705,7 @@ def test_page_bulk_save_returns_json_error_when_shopify_write_fails(monkeypatch)
 def test_page_update_uses_targeted_refresh(monkeypatch):
     calls: dict[str, object] = {}
 
-    class DummyConn:
-        def close(self):
-            return None
-
-    monkeypatch.setattr(content_service, "open_db_connection", lambda: DummyConn())
+    monkeypatch.setattr(content_service, "open_db_connection", lambda: _UpdateDummyConn())
     monkeypatch.setattr(
         content_service.dq,
         "fetch_page_detail",

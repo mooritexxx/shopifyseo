@@ -8,27 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **Postgres cutover float precision and list-order ties.** pgloader now CAST
-  SQLite `REAL` / `FLOAT` / `DOUBLE` / `DOUBLE PRECISION` to Postgres
-  `double precision using float-to-string` so values such as
+- **Postgres cutover float precision and list-order ties.** pgloader CAST
+  SQLite `REAL` / `FLOAT` / `DOUBLE` / `DOUBLE PRECISION` to quoted
+  `"double precision"` `using float-to-string` (the unquoted multi-word
+  target does not parse in pgloader 3.6.10). Values such as
   `gsc_position` 6.682926829268292 survive the load (cutover attempt 2
-  mapped them to 4-byte `real`). `ALTER TABLE … ADD COLUMN` on PG uses the
-  same mapping. Graph-stats, orphans, clusters, and cannibalization add a
-  deterministic final tie-break so equal sort keys match on SQLite and PG.
-  Whole numbers such as `443` vs `443.0` are a known harmless
-  SQLite-int / psycopg-float difference; API output is not rewritten.
+  mapped them to 4-byte `real`). `verify_values.py` compares every SQLite
+  REAL-affinity column to the loaded catalog (`data_type` + exact float
+  equality). `ALTER TABLE … ADD COLUMN` on PG uses the same mapping.
+  Graph-stats, orphans, clusters, and cannibalization add a deterministic
+  final tie-break so equal sort keys match on SQLite and PG.
+  Cannibalization `object_a` is the smaller `(type, handle)` — that can
+  swap a/b vs main on SQLite when the embedding matrix is ordered.
+  `443` vs `443.0` is `SUM(bigint)` → PG `numeric` loaded as float, not
+  SQLite REAL affinity; API output is not rewritten.
 
 ### Added
 
 - **Cron-free PG backup hook and Debian 17/main port claim.** After a box
   restart the packaged `17/main` cluster may grab 5432.
   `scripts/ensure-postgres.sh` stops only a positively identified Debian
-  cluster (`postmaster.pid` / `pg_lsclusters`), otherwise starts the
-  durable cluster on the next free port and writes `listen_port` for
-  `start-app.sh` / `pg.env`. Nightly dumps no longer depend on cron:
-  `scripts/pg-backup-daemon.sh` (stale-dump check + pidfile-guarded loop)
-  is launched from `start-app.sh` when the live mark says postgres. Cron
-  install remains for boxes that actually run `cron`.
+  cluster (`postmaster.pid` + `/proc/<pid>/comm == postgres`, or
+  `pg_lsclusters` status `online` with an exact data-dir match),
+  otherwise starts the durable cluster on the next free port and writes
+  `listen_port`. `start-app.sh` and `pg-nightly-backup.sh` share
+  `scripts/pg-listen-port.sh` (loopback only). Nightly dumps no longer
+  depend on cron: `scripts/pg-backup-daemon.sh` (stale-dump check +
+  cmdline-checked pidfile loop) is launched from `start-app.sh` when the
+  live mark says postgres. Cron install remains for boxes that actually
+  run `cron`.
 
 - **Google service-account auth for Search Console and GA4.** GSC/GA4/URL Inspection/sync mint an RS256 JWT bearer token from `GOOGLE_SERVICE_ACCOUNT_FILE` (default `/home/box/secrets/google-sa.json`) when the file parses as a service-account JSON and `cryptography` is importable. OAuth (`/auth/google/start` + `/callback`, stored `service_tokens`) is unchanged and used when the key is missing or the token mint fails (mint failures cool down 120s so GSC/GA4 callers do not retry-storm). Google Ads keeps the OAuth token (`adwords`). `GET /api/google-signals` gains `mode` (`service_account` / `oauth` / null). Settings and sync readiness treat a minted service-account token as connected.
 - **Durable PostgreSQL box runtime.** `scripts/ensure-postgres.sh` is reset-durable (`/home/box/pgdata/17/main`, box-writable `unix_socket_directories`, `create_main_cluster=false` before apt, `initdb` only when empty, refuse a busy port before init/start, no role/database create unless `--bootstrap` over the unix socket). `scripts/start-app.sh` peeks at the live mark first: no mark → SQLite (`DATABASE_URL` unset) and ensure-postgres is skipped unless `$PGDATA_DIR` already has `PG_VERSION` (then best-effort); with `/home/box/.config/shopifyseo/pg_live_cutover.json` ensure-postgres is fatal, then `pg.env` is sourced and a missing `DATABASE_URL` or unreachable Postgres is a hard error (a stale `tmp/pg-cutover-*/cutover_mark.json` does not count). `scripts/mark-pg-live.sh` writes/removes that mark. `scripts/pg-nightly-backup.sh` writes `*.dump.partial` and `mv`s on success (`pg_dump -Fc`, keep 7 by filename stamp); `scripts/install-pg-backup-cron.sh` is idempotent, warns if `cron` is not running, and is called from `start-app.sh`. PG path only: `LIKE` → `ILIKE` in `_translate_placeholders`. Runbook: [docs/pg-cutover.md](docs/pg-cutover.md).

@@ -163,3 +163,7 @@ def test_cannibalization_tie_break_is_type_then_handle(db_conn):
         ("product", "alpha", "product", "zeta"),
     ]
     assert all(row["content_similarity"] == results[0]["content_similarity"] for row in results)
+    for row in results:
+        a = (row["object_a"]["type"], row["object_a"]["handle"])
+        b = (row["object_b"]["type"], row["object_b"]["handle"])
+        assert a < b, (a, b)

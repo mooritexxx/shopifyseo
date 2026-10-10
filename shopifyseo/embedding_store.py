@@ -1243,9 +1243,16 @@ def find_cannibalization_candidates(
             b_queries = _queries_for(meta[j]["object_type"], meta[j]["object_handle"])
             shared_queries = sorted(a_queries & b_queries)
 
+        a_type, a_handle = meta[i]["object_type"], meta[i]["object_handle"]
+        b_type, b_handle = meta[j]["object_type"], meta[j]["object_handle"]
+        # Pin orientation: object_a is the smaller (type, handle). The matrix
+        # ORDER BY already yields this when rows are sorted, but normalize so
+        # a/b does not flip if load order changes.
+        if (a_type, a_handle) > (b_type, b_handle):
+            a_type, a_handle, b_type, b_handle = b_type, b_handle, a_type, a_handle
         candidates.append({
-            "object_a": {"type": meta[i]["object_type"], "handle": meta[i]["object_handle"]},
-            "object_b": {"type": meta[j]["object_type"], "handle": meta[j]["object_handle"]},
+            "object_a": {"type": a_type, "handle": a_handle},
+            "object_b": {"type": b_type, "handle": b_handle},
             "content_similarity": round(content_sim, 4),
             "query_similarity": round(query_sim, 4),
             "shared_queries": shared_queries[:10],

@@ -47,12 +47,19 @@ set -a
 source "$PG_ENV"
 set +a
 
+# Honor the port ensure-postgres.sh actually bound (same helper as start-app).
+# shellcheck source=pg-listen-port.sh
+source "$ROOT/scripts/pg-listen-port.sh"
+apply_listen_port_to_env
+
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "error: live mark present but DATABASE_URL is missing or empty" >&2
   exit 1
 fi
 
 mkdir -p "$BACKUP_DIR"
+# A killed dump can leave another stamp's *.dump.partial; pruning ignores them.
+rm -f "$BACKUP_DIR"/*.dump.partial
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$BACKUP_DIR/shopifyseo-${STAMP}.dump"
 PARTIAL="$OUT.partial"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -20,6 +21,8 @@ MARK_SH = ROOT / "scripts" / "mark-pg-live.sh"
 BACKUP_SH = ROOT / "scripts" / "pg-nightly-backup.sh"
 CRON_SH = ROOT / "scripts" / "install-pg-backup-cron.sh"
 DAEMON_SH = ROOT / "scripts" / "pg-backup-daemon.sh"
+LISTEN_SH = ROOT / "scripts" / "pg-listen-port.sh"
+PGLOADER_4G = ROOT / "scripts" / "pg_cutover" / "pgloader-4g.sh"
 DOCS = ROOT / "docs" / "pg-cutover.md"
 
 _PG_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
@@ -95,11 +98,14 @@ def _base_env(tmp: Path, *, path_prefix: Path | None = None, extra: dict[str, st
 
 
 def test_runtime_scripts_exist_executable_and_have_valid_syntax():
-    for path in (ENSURE_SH, START_APP, MARK_SH, BACKUP_SH, CRON_SH, DAEMON_SH):
+    for path in (ENSURE_SH, START_APP, MARK_SH, BACKUP_SH, CRON_SH, DAEMON_SH, PGLOADER_4G):
         assert path.is_file(), path
         assert os.access(path, os.X_OK), f"{path} should be executable"
         proc = _run(["bash", "-n", str(path)])
         assert proc.returncode == 0, proc.stderr
+    assert LISTEN_SH.is_file()
+    proc = _run(["bash", "-n", str(LISTEN_SH)])
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_runtime_scripts_help():
@@ -610,14 +616,38 @@ def _write_debian_pidfile(directory: Path, port: int, pid: int) -> None:
     )
 
 
+def _spawn_named(tmp_path: Path, name: str) -> subprocess.Popen:
+    # Copy a real binary so /proc/<pid>/comm is `name` (a bash wrapper becomes
+    # "bash" or "sleep" after exec).
+    exe = tmp_path / name
+    shutil.copy("/bin/sleep", exe)
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return subprocess.Popen([str(exe), "300"], start_new_session=True)
+
+
+def _ensure_busy_port_args(tmp_path: Path, data: Path, port: int) -> list[str]:
+    return [
+        "bash",
+        str(ENSURE_SH),
+        "--pgdata",
+        str(data),
+        "--port",
+        str(port),
+        "--socket-dir",
+        str(tmp_path / "run"),
+        "--no-install",
+    ]
+
+
 def test_ensure_postgres_stops_only_identified_debian_cluster(tmp_path):
     holder = socket.socket()
     holder.bind(("127.0.0.1", 0))
     port = int(holder.getsockname()[1])
     holder.listen(1)
+    fake_pg = _spawn_named(tmp_path, "postgres")
     try:
         debian = tmp_path / "debian" / "17" / "main"
-        _write_debian_pidfile(debian, port, os.getpid())
+        _write_debian_pidfile(debian, port, fake_pg.pid)
         data = tmp_path / "pgdata"
         data.mkdir()
         stop_called = tmp_path / "pg_ctlcluster.called"
@@ -642,20 +672,7 @@ exit 0
                 "SHOPIFYSEO_LISTEN_PORT_FILE": str(listen),
             },
         )
-        proc = _run(
-            [
-                "bash",
-                str(ENSURE_SH),
-                "--pgdata",
-                str(data),
-                "--port",
-                str(port),
-                "--socket-dir",
-                str(tmp_path / "run"),
-                "--no-install",
-            ],
-            env=env,
-        )
+        proc = _run(_ensure_busy_port_args(tmp_path, data, port), env=env)
         assert proc.returncode == 0, proc.stderr + proc.stdout
         assert stop_called.exists(), proc.stdout + proc.stderr
         assert stop_called.read_text(encoding="utf-8").strip() == "STOP-17-main"
@@ -663,6 +680,8 @@ exit 0
         chosen = int(listen.read_text(encoding="utf-8").strip())
         assert chosen != port
     finally:
+        fake_pg.terminate()
+        fake_pg.wait(timeout=3)
         holder.close()
 
 
@@ -718,6 +737,190 @@ exit 0
         holder.close()
 
 
+def test_ensure_postgres_ignores_debian_pidfile_when_pid_is_not_postgres(tmp_path):
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    port = int(holder.getsockname()[1])
+    holder.listen(1)
+    try:
+        debian = tmp_path / "debian" / "17" / "main"
+        # Live pid, matching data dir and port, but comm is pytest — not postgres.
+        _write_debian_pidfile(debian, port, os.getpid())
+        stop_called = tmp_path / "pg_ctlcluster.called"
+        shims = tmp_path / "bin"
+        _write_shim(shims, "initdb", "exit 0\n")
+        _write_shim(
+            shims,
+            "pg_ctl",
+            """
+if [[ " $* " == *" status "* ]]; then exit 1; fi
+exit 0
+""",
+        )
+        _write_shim(shims, "pg_ctlcluster", f"echo STOP >> {stop_called}\nexit 0\n")
+        env = _base_env(
+            tmp_path,
+            path_prefix=shims,
+            extra={
+                "PG_BINDIR": str(shims),
+                "SHOPIFYSEO_DEBIAN_PGDATA": str(debian),
+            },
+        )
+        data = tmp_path / "pgdata"
+        data.mkdir()
+        proc = _run(_ensure_busy_port_args(tmp_path, data, port), env=env)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert not stop_called.exists()
+        assert "not positively Debian 17/main" in proc.stderr
+    finally:
+        holder.close()
+
+
+def test_ensure_postgres_ignores_pg_lsclusters_when_status_down(tmp_path):
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    port = int(holder.getsockname()[1])
+    holder.listen(1)
+    try:
+        debian = tmp_path / "debian" / "17" / "main"
+        debian.mkdir(parents=True)
+        stop_called = tmp_path / "pg_ctlcluster.called"
+        shims = tmp_path / "bin"
+        _write_shim(shims, "initdb", "exit 0\n")
+        _write_shim(
+            shims,
+            "pg_ctl",
+            """
+if [[ " $* " == *" status "* ]]; then exit 1; fi
+exit 0
+""",
+        )
+        _write_shim(shims, "pg_ctlcluster", f"echo STOP >> {stop_called}\nexit 0\n")
+        _write_shim(
+            shims,
+            "pg_lsclusters",
+            f"""
+if [[ "$*" == *"--no-header"* ]]; then
+  echo "17 main {port} down postgres {debian} /tmp/log"
+fi
+exit 0
+""",
+        )
+        env = _base_env(
+            tmp_path,
+            path_prefix=shims,
+            extra={
+                "PG_BINDIR": str(shims),
+                "SHOPIFYSEO_DEBIAN_PGDATA": str(debian),
+            },
+        )
+        data = tmp_path / "pgdata"
+        data.mkdir()
+        proc = _run(_ensure_busy_port_args(tmp_path, data, port), env=env)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert not stop_called.exists(), proc.stderr
+        assert "not positively Debian 17/main" in proc.stderr
+    finally:
+        holder.close()
+
+
+def test_ensure_postgres_stops_debian_when_pg_lsclusters_online(tmp_path):
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    port = int(holder.getsockname()[1])
+    holder.listen(1)
+    try:
+        debian = tmp_path / "debian" / "17" / "main"
+        debian.mkdir(parents=True)
+        stop_called = tmp_path / "pg_ctlcluster.called"
+        listen = tmp_path / "listen_port"
+        shims = tmp_path / "bin"
+        _write_shim(shims, "initdb", "exit 0\n")
+        _write_shim(
+            shims,
+            "pg_ctl",
+            """
+if [[ " $* " == *" status "* ]]; then exit 1; fi
+exit 0
+""",
+        )
+        _write_shim(shims, "pg_ctlcluster", f"echo STOP-17-main >> {stop_called}\nexit 0\n")
+        _write_shim(
+            shims,
+            "pg_lsclusters",
+            f"""
+if [[ "$*" == *"--no-header"* ]]; then
+  echo "17 main {port} online postgres {debian} /tmp/log"
+fi
+exit 0
+""",
+        )
+        env = _base_env(
+            tmp_path,
+            path_prefix=shims,
+            extra={
+                "PG_BINDIR": str(shims),
+                "SHOPIFYSEO_DEBIAN_PGDATA": str(debian),
+                "SHOPIFYSEO_LISTEN_PORT_FILE": str(listen),
+            },
+        )
+        data = tmp_path / "pgdata"
+        data.mkdir()
+        proc = _run(_ensure_busy_port_args(tmp_path, data, port), env=env)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert stop_called.exists(), proc.stderr + proc.stdout
+        assert stop_called.read_text(encoding="utf-8").strip() == "STOP-17-main"
+    finally:
+        holder.close()
+
+
+def test_ensure_postgres_pg_lsclusters_requires_exact_data_dir(tmp_path):
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    port = int(holder.getsockname()[1])
+    holder.listen(1)
+    try:
+        debian = tmp_path / "debian" / "17" / "main"
+        debian.mkdir(parents=True)
+        stop_called = tmp_path / "pg_ctlcluster.called"
+        shims = tmp_path / "bin"
+        _write_shim(shims, "initdb", "exit 0\n")
+        _write_shim(
+            shims,
+            "pg_ctl",
+            """
+if [[ " $* " == *" status "* ]]; then exit 1; fi
+exit 0
+""",
+        )
+        _write_shim(shims, "pg_ctlcluster", f"echo STOP >> {stop_called}\nexit 0\n")
+        _write_shim(
+            shims,
+            "pg_lsclusters",
+            f"""
+if [[ "$*" == *"--no-header"* ]]; then
+  echo "17 main {port} online postgres {debian}-extra /tmp/log"
+fi
+exit 0
+""",
+        )
+        env = _base_env(
+            tmp_path,
+            path_prefix=shims,
+            extra={
+                "PG_BINDIR": str(shims),
+                "SHOPIFYSEO_DEBIAN_PGDATA": str(debian),
+            },
+        )
+        data = tmp_path / "pgdata"
+        data.mkdir()
+        proc = _run(_ensure_busy_port_args(tmp_path, data, port), env=env)
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+        assert not stop_called.exists()
+    finally:
+        holder.close()
+
+
 def test_start_app_honors_listen_port_file(tmp_path):
     shims = tmp_path / "bin"
     ready_args = tmp_path / "pg_isready.args"
@@ -737,6 +940,87 @@ def test_start_app_honors_listen_port_file(tmp_path):
     logged = ready_args.read_text(encoding="utf-8")
     assert "-p 55433" in logged
     assert "-p 5432" not in logged
+
+
+def _apply_listen_port(tmp_path: Path, url: str, port: str) -> str:
+    (tmp_path / "listen_port").write_text(f"{port}\n", encoding="utf-8")
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        f"""#!/bin/bash
+set -euo pipefail
+source {LISTEN_SH}
+export DATABASE_URL={url!r}
+export SHOPIFYSEO_LISTEN_PORT_FILE={tmp_path / "listen_port"}
+apply_listen_port_to_env
+printf '%s\\n' "${{PGPORT:-unset}}"
+""",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    proc = _run(["bash", str(script)])
+    assert proc.returncode == 0, proc.stderr
+    assert "secret" not in proc.stdout
+    return proc.stdout.strip()
+
+
+def test_listen_port_rewrites_loopback_only(tmp_path):
+    assert (
+        _apply_listen_port(
+            tmp_path,
+            "postgresql://shopifyseo:secret@127.0.0.1:5499/shopifyseo",
+            "5461",
+        )
+        == "5461"
+    )
+    assert (
+        _apply_listen_port(
+            tmp_path,
+            "postgresql://shopifyseo:secret@/shopifyseo?host=/tmp/pg",
+            "5461",
+        )
+        == "unset"
+    )
+    assert (
+        _apply_listen_port(
+            tmp_path,
+            "postgresql://shopifyseo:secret@10.1.2.3:5432/shopifyseo",
+            "5461",
+        )
+        == "unset"
+    )
+
+
+def test_nightly_backup_honors_listen_port(tmp_path):
+    shims = tmp_path / "bin"
+    port_log = tmp_path / "pg_dump.port"
+    _write_shim(
+        shims,
+        "pg_dump",
+        f"""
+printf 'PGPORT=%s\\n' "${{PGPORT:-}}" > {port_log}
+outfile=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    outfile="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+printf 'fake-dump\\n' > "$outfile"
+""",
+    )
+    env = _base_env(tmp_path, path_prefix=shims)
+    (tmp_path / "pg_live_cutover.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pg.env").write_text(
+        "DATABASE_URL=postgresql://shopifyseo:secret@127.0.0.1:5499/shopifyseo\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "listen_port").write_text("5461\n", encoding="utf-8")
+    proc = _run(["bash", str(BACKUP_SH)], env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert port_log.read_text(encoding="utf-8").strip() == "PGPORT=5461"
+    assert "secret" not in proc.stdout + proc.stderr
 
 
 def test_backup_daemon_noop_without_live_mark(tmp_path):
@@ -835,6 +1119,64 @@ def test_backup_daemon_pidfile_prevents_second_loop(tmp_path):
     while pidfile.is_file() and time.time() < deadline:
         time.sleep(0.05)
     assert not pidfile.exists()
+
+
+def test_backup_daemon_treats_unrelated_live_pid_as_stale(tmp_path):
+    shims = tmp_path / "bin"
+    _write_shim(
+        shims,
+        "pg_dump",
+        """
+outfile=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-f" ]]; then
+    outfile="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+printf 'fake-dump\\n' > "$outfile"
+""",
+    )
+    env = _base_env(tmp_path, path_prefix=shims)
+    env["SHOPIFYSEO_PG_BACKUP_LOOP_SECONDS"] = "60"
+    (tmp_path / "pg_live_cutover.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pg.env").write_text(
+        "DATABASE_URL=postgresql://shopifyseo:secret@127.0.0.1:5432/shopifyseo\n",
+        encoding="utf-8",
+    )
+    sleeper = subprocess.Popen(["sleep", "300"])
+    pidfile = tmp_path / "logs" / "pg-backup-daemon.pid"
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(f"{sleeper.pid}\n", encoding="utf-8")
+    try:
+        proc = _run(["bash", str(DAEMON_SH), "--ensure"], env=env)
+        assert proc.returncode == 0, proc.stderr
+        deadline = time.time() + 3
+        owner = ""
+        while time.time() < deadline:
+            if pidfile.is_file():
+                owner = pidfile.read_text(encoding="utf-8").strip()
+                if owner.isdigit() and owner != str(sleeper.pid):
+                    break
+            time.sleep(0.05)
+        assert owner != str(sleeper.pid), proc.stderr
+        assert owner.isdigit()
+        assert "already running" not in proc.stderr
+    finally:
+        sleeper.terminate()
+        try:
+            sleeper.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            sleeper.kill()
+        if pidfile.is_file():
+            raw = pidfile.read_text(encoding="utf-8").strip()
+            if raw.isdigit() and int(raw) != sleeper.pid:
+                try:
+                    os.kill(int(raw), 15)
+                except OSError:
+                    pass
 
 
 def test_start_app_launches_backup_hook_only_for_postgres(tmp_path):

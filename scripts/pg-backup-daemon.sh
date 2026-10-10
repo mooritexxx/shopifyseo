@@ -56,9 +56,12 @@ EOF
 log() {
   local line
   line="$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"
-  mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-  printf '%s\n' "$line" >>"$LOG" 2>/dev/null || true
   printf '%s\n' "$line" >&2
+  # start-app / --loop already redirect stderr onto $LOG; skip the second write.
+  if [[ -n "${LOG:-}" ]] && { [[ ! -e "$LOG" ]] || ! [[ /dev/stderr -ef "$LOG" ]]; }; then
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+    printf '%s\n' "$line" >>"$LOG" 2>/dev/null || true
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -107,13 +110,23 @@ run_backup_if_stale() {
   fi
 }
 
+_pid_is_backup_loop() {
+  local pid="$1"
+  local cmd
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    return 1
+  fi
+  cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmd" == *"pg-backup-daemon.sh"* && "$cmd" == *"--loop"* ]]
+}
+
 pidfile_running() {
   if [[ ! -f "$PIDFILE" ]]; then
     return 1
   fi
   local old
   old="$(tr -d ' \t\r\n' < "$PIDFILE" 2>/dev/null || true)"
-  if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" >/dev/null 2>&1; then
+  if [[ "$old" =~ ^[0-9]+$ ]] && _pid_is_backup_loop "$old"; then
     return 0
   fi
   rm -f "$PIDFILE"

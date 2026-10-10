@@ -62,7 +62,7 @@ with the code, the code wins and the map is the bug.
 | `shopify_admin.py`, `dashboard_http.py` | Admin API and HTTP helpers |
 | image pipeline | `product_image_seo.py`, `catalog_image_work.py`, `shopify_image_cache.py`, `shopify_product_media.py`, `html_images.py`, `theme_template_images.py` |
 | misc | `api_usage.py`, `market_context.py`, `seo_slug.py`, `gsc_query_limits.py`, `sqlite_utf8.py`, `exceptions.py` |
-| `cutover/` | SQLite→PG helpers (`real_columns.py` lists REAL-affinity columns for the double-precision CAST) |
+| `cutover/` | SQLite→PG helpers (`real_columns.py` lists REAL-affinity columns; `load_file.py` requires quoted `"double precision"` CAST targets; `verify.py` compares those columns to the loaded catalog) |
 
 ## `frontend/src/` — React SPA
 

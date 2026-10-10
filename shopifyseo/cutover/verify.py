@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from shopifyseo.db import Backend, backend_for_connection, execute
 
 from .catalog import INTEGER_EPOCH_COLUMNS, list_user_tables
+from .real_columns import iter_real_affinity_columns
 
 
 @dataclass
@@ -243,13 +246,214 @@ def cluster_keyword_orphan_count(conn: Any) -> int | None:
     return int(row[0])
 
 
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _ident(name: str) -> str:
+    if not _IDENT.fullmatch(name):
+        raise ValueError(f"refusing unexpected identifier {name!r}")
+    return f'"{name}"'
+
+
+def _same_float(left: Any, right: Any) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    try:
+        lf = float(left)
+        rf = float(right)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(lf) and math.isnan(rf):
+        return True
+    return lf == rf
+
+
+def _pk_columns_sqlite(conn: Any, table: str) -> list[str]:
+    keyed: list[tuple[int, str]] = []
+    for row in execute(conn, f"PRAGMA table_info({_ident(table)})"):
+        pk = int(row[5] if not hasattr(row, "keys") else row["pk"] or 0)
+        name = row[1] if not hasattr(row, "keys") else row["name"]
+        if pk:
+            keyed.append((pk, str(name)))
+    return [name for _pk, name in sorted(keyed)]
+
+
+def _pk_columns_postgres(conn: Any, table: str) -> list[str]:
+    rows = execute(
+        conn,
+        """
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+        WHERE n.nspname = current_schema()
+          AND c.relname = ?
+          AND i.indisprimary
+        ORDER BY array_position(i.indkey, a.attnum)
+        """,
+        (table,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _pg_column_data_types(conn: Any, table: str) -> dict[str, str]:
+    rows = execute(
+        conn,
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ?
+        """,
+        (table,),
+    ).fetchall()
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def _fetch_float_map(
+    conn: Any,
+    table: str,
+    key_cols: list[str],
+    float_cols: list[str],
+) -> dict[tuple[Any, ...], tuple[Any, ...]]:
+    cols = key_cols + float_cols
+    order = ", ".join(_ident(c) for c in key_cols) if key_cols else ", ".join(
+        _ident(c) for c in float_cols
+    )
+    sql = (
+        f'SELECT {", ".join(_ident(c) for c in cols)} FROM {_ident(table)}'
+        + (f" ORDER BY {order}" if order else "")
+    )
+    out: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+    n_key = len(key_cols)
+    for i, row in enumerate(execute(conn, sql)):
+        values = tuple(row[j] for j in range(len(cols)))
+        key = values[:n_key] if n_key else (i,)
+        out[key] = values[n_key:]
+    return out
+
+
+def _verify_real_columns(
+    report: ValueReport,
+    pg_conn: Any,
+    sqlite_conn: Any,
+) -> None:
+    """Assert PG double precision + exact float equality for SQLite REAL columns.
+
+    Detects the cutover-2 bug (pgloader ``type real to real`` → 4-byte ``real``,
+    ``gsc_position`` 6.682926829268292 → 6.6829267). Testdb schema rewrite
+    already maps REAL → DOUBLE PRECISION, so this must compare a SQLite
+    snapshot to the loaded catalog, not a harness-created schema.
+    """
+    pg_tables = set(list_user_tables(pg_conn))
+    sqlite_tables = set(list_user_tables(sqlite_conn))
+    by_table: dict[str, list[str]] = {}
+    for table, column, _decl in iter_real_affinity_columns(sqlite_conn):
+        if table not in sqlite_tables:
+            continue
+        by_table.setdefault(table, []).append(column)
+
+    cells = 0
+    mismatch_rows = 0
+    checked_columns = 0
+    is_pg = backend_for_connection(pg_conn) == Backend.POSTGRES
+
+    for table, float_cols in sorted(by_table.items()):
+        if table not in pg_tables:
+            report.notes.append(
+                f"sqlite REAL columns on {table} skipped (table missing on postgres)"
+            )
+            continue
+        compare_cols = list(float_cols)
+        if is_pg:
+            types = _pg_column_data_types(pg_conn, table)
+            present: list[str] = []
+            for column in float_cols:
+                data_type = types.get(column)
+                if data_type is None:
+                    report.issues.append(
+                        ValueIssue(
+                            table,
+                            column,
+                            "float_missing",
+                            1,
+                            "SQLite REAL-affinity column is absent on postgres",
+                        )
+                    )
+                    continue
+                if data_type != "double precision":
+                    report.issues.append(
+                        ValueIssue(
+                            table,
+                            column,
+                            "float_not_double_precision",
+                            1,
+                            f"postgres data_type={data_type!r} (need double precision; "
+                            "pgloader default real is 4-byte)",
+                        )
+                    )
+                present.append(column)
+            compare_cols = present
+        if not compare_cols:
+            continue
+        float_cols = compare_cols
+        key_cols = _pk_columns_sqlite(sqlite_conn, table)
+        if not key_cols and is_pg:
+            key_cols = _pk_columns_postgres(pg_conn, table)
+        left = _fetch_float_map(sqlite_conn, table, key_cols, float_cols)
+        right = _fetch_float_map(pg_conn, table, key_cols, float_cols)
+        examples: list[str] = []
+        table_mismatches = 0
+        for key, svals in left.items():
+            pvals = right.get(key)
+            if pvals is None:
+                table_mismatches += 1
+                if len(examples) < 5:
+                    examples.append(f"row {key!r} missing on postgres")
+                continue
+            for column, sv, pv in zip(float_cols, svals, pvals, strict=True):
+                cells += 1
+                if not _same_float(sv, pv):
+                    table_mismatches += 1
+                    if len(examples) < 5:
+                        examples.append(
+                            f"{column} key={key!r} sqlite={sv!r} postgres={pv!r}"
+                        )
+        extra = set(right) - set(left)
+        if extra:
+            table_mismatches += len(extra)
+            if len(examples) < 5:
+                examples.append(f"{len(extra)} postgres-only rows")
+        checked_columns += len(float_cols)
+        if table_mismatches:
+            mismatch_rows += table_mismatches
+            report.issues.append(
+                ValueIssue(
+                    table,
+                    ",".join(float_cols),
+                    "float_mismatch",
+                    table_mismatches,
+                    "; ".join(examples) or "REAL values differ from the SQLite snapshot",
+                )
+            )
+
+    if checked_columns:
+        report.notes.append(
+            f"{checked_columns} SQLite REAL-affinity columns compared "
+            f"({cells} cells); {mismatch_rows} differing row-tuples"
+        )
+
+
 def verify_values(
     pg_conn: Any,
     *,
     sqlite_conn: Any | None = None,
     fail_on_orphans: bool = False,
 ) -> ValueReport:
-    """Check mixed-type leftovers and optionally fail on cluster_keywords orphans."""
+    """Check mixed-type leftovers, REAL float precision, and optionally fail on orphans."""
     report = ValueReport()
     for table, columns in INTEGER_EPOCH_COLUMNS.items():
         for column in columns:
@@ -275,6 +479,8 @@ def verify_values(
                     )
 
     _verify_blob_columns(report, pg_conn, sqlite_conn)
+    if sqlite_conn is not None:
+        _verify_real_columns(report, pg_conn, sqlite_conn)
 
     orphans = cluster_keyword_orphan_count(pg_conn)
     if orphans is None:

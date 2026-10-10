@@ -268,8 +268,22 @@ raise SystemExit("no free port")
 ' "$start"
 }
 
+_pid_is_postgres() {
+  local pid="$1"
+  local comm exe base
+  comm="$(tr -d '\0\n' < "/proc/$pid/comm" 2>/dev/null || true)"
+  if [[ "$comm" == "postgres" ]]; then
+    return 0
+  fi
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  base="$(basename "$exe" 2>/dev/null || true)"
+  [[ "$base" == "postgres" ]]
+}
+
 debian_17_main_holds_port() {
   # Positive identification only. Never treat an unknown listener as Debian.
+  # postmaster.pid is often mode 0700 postgres (user box cannot read it);
+  # on this box the pg_lsclusters branch is the one that can fire.
   local port="$1"
   local pidfile="$DEBIAN_PGDATA/postmaster.pid"
   if [[ -f "$pidfile" ]]; then
@@ -277,16 +291,18 @@ debian_17_main_holds_port() {
     pid="$(sed -n '1p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
     datadir="$(sed -n '2p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
     pid_port="$(sed -n '4p' "$pidfile" 2>/dev/null | tr -d ' \t\r\n' || true)"
+    # Exact data_directory match (not a prefix) + live postgres process.
     if [[ "$pid_port" == "$port" && "$datadir" == "$DEBIAN_PGDATA" && "$pid" =~ ^[0-9]+$ ]]; then
-      if [[ -d "/proc/$pid" ]] || kill -0 "$pid" >/dev/null 2>&1; then
+      if _pid_is_postgres "$pid"; then
         return 0
       fi
     fi
   fi
   if command -v pg_lsclusters >/dev/null 2>&1; then
     local line
+    # $4 is Status (must be online). $6 is Data directory (exact match).
     line="$(pg_lsclusters --no-header 2>/dev/null | awk -v ver=17 -v name=main -v port="$port" -v data="$DEBIAN_PGDATA" '
-      $1 == ver && $2 == name && $3 == port && $6 == data { print; exit }
+      $1 == ver && $2 == name && $3 == port && $4 == "online" && $6 == data { print; exit }
     ' || true)"
     if [[ -n "$line" ]]; then
       return 0

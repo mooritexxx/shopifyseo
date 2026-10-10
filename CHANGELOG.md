@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Overview completion tiles count live items only.** `catalog_completion` used the all-rows totals (pages 19, articles 93) against live-only missing-meta counts, so 3 unpublished pages (empty `seo_description`) showed as "complete" (19/19) and 8 unpublished articles inflated the articles total. New `dq.fetch_live_counts` (same `_live_where` definition as the missing-meta counters) supplies the totals: pages 16/16, articles 85/85; products (882) and collections (78) are unchanged. `counts` in `/api/summary` is unchanged.
 - **Postgres cutover float precision and list-order ties.** pgloader CAST
   SQLite `REAL` / `FLOAT` / `DOUBLE` / `DOUBLE PRECISION` to quoted
   `"double precision"` `using float-to-string` (the unquoted multi-word

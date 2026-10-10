@@ -9,14 +9,18 @@ import logging
 import os
 import random
 import sys
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from ..dashboard_http import HttpRequestError
+from ..dashboard_http import HttpRequestError, describe_google_http_error, request_json
 from ..gsc_query_limits import GSC_CATALOG_PERIOD_MODE, GSC_PER_URL_QUERY_ROW_LIMIT
 from ._cache import (
     CACHE_TTLS,
@@ -29,17 +33,36 @@ from ._cache import (
     ensure_google_cache_schema,
 )
 from ._auth import (
-    get_search_data_access_token as get_google_access_token,
+    get_google_access_token as get_oauth_access_token,
+    search_console_access_token as get_google_access_token,
     get_service_setting,
     google_api_get,
     google_api_post,
     google_token_has_scope,
     set_service_setting,
 )
-from ._service_account import try_service_account_access_token
 
 
 logger = logging.getLogger(__name__)
+
+# Per-page searchAnalytics breakdowns (query × country/device/searchAppearance).
+# Search Console query quota is ~600/min per site; 8 calls/s stays under ~480/min.
+GSC_DIMENSIONAL_MAX_CALLS_PER_SECOND = 8.0
+# Default min interval. The ``GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS`` env override is
+# read when the process-wide pacer is constructed (module import, or
+# ``reset_gsc_dimensional_pacer()``) — not on every ``acquire()``.
+GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS = 1.0 / GSC_DIMENSIONAL_MAX_CALLS_PER_SECOND
+GSC_DIMENSIONAL_RETRY_ATTEMPTS = 4
+GSC_DIMENSIONAL_RETRY_BASE_SECONDS = 2.0
+GSC_DIMENSIONAL_RETRY_CAP_SECONDS = 16.0
+GSC_SEARCH_APPEARANCE_400_BREAKER = 5
+GSC_WARNING_DETAIL_MAX_KEYS = 10
+_THROTTLE_REASONS = frozenset({
+    "ratelimitexceeded",
+    "userratelimitexceeded",
+    "quotaexceeded",
+})
+_THROTTLE_STATUSES = frozenset({"RESOURCE_EXHAUSTED"})
 
 
 def _pkg():
@@ -52,6 +75,243 @@ def _default_acquire_pagespeed_http_rate_slot(cancel_check=None) -> None:
     from ..dashboard_actions._state import acquire_pagespeed_http_rate_slot
 
     acquire_pagespeed_http_rate_slot(cancel_check)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+class MinIntervalLimiter:
+    """Thread-safe minimum interval between calls. Injectable clock/sleep for tests."""
+
+    def __init__(
+        self,
+        min_interval: float,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
+        self.min_interval = max(float(min_interval or 0.0), 0.0)
+        self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self._lock = threading.Lock()
+        self._next_ok = 0.0
+
+    def acquire(self) -> None:
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            now = float(self._clock())
+            wait = self._next_ok - now
+            if wait > 0:
+                self._sleep(wait)
+                now = float(self._clock())
+            self._next_ok = now + self.min_interval
+
+
+def _dimensional_min_interval() -> float:
+    return max(_env_float("GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS", GSC_DIMENSIONAL_MIN_INTERVAL_SECONDS), 0.0)
+
+
+_DIMENSIONAL_PACER = MinIntervalLimiter(_dimensional_min_interval())
+_dimensional_clock: Callable[[], float] = time.monotonic
+_dimensional_sleep: Callable[[float], None] = time.sleep
+
+
+def set_gsc_dimensional_pacer_for_tests(
+    pacer: MinIntervalLimiter | None = None,
+    *,
+    clock: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> MinIntervalLimiter:
+    """Replace the process-wide dimensional pacer (tests). ``None`` installs a no-op pacer."""
+    global _DIMENSIONAL_PACER, _dimensional_clock, _dimensional_sleep
+    if clock is not None:
+        _dimensional_clock = clock
+    if sleeper is not None:
+        _dimensional_sleep = sleeper
+    if pacer is None:
+        pacer = MinIntervalLimiter(
+            0.0,
+            clock=_dimensional_clock,
+            sleeper=_dimensional_sleep,
+        )
+    _DIMENSIONAL_PACER = pacer
+    return pacer
+
+
+def reset_gsc_dimensional_pacer() -> MinIntervalLimiter:
+    global _DIMENSIONAL_PACER, _dimensional_clock, _dimensional_sleep
+    _dimensional_clock = time.monotonic
+    _dimensional_sleep = time.sleep
+    _DIMENSIONAL_PACER = MinIntervalLimiter(_dimensional_min_interval())
+    return _DIMENSIONAL_PACER
+
+
+def acquire_gsc_dimensional_slot() -> None:
+    _DIMENSIONAL_PACER.acquire()
+
+
+def is_google_throttle_error(exc: HttpRequestError) -> bool:
+    """True when the error looks like quota/rate-limit or a leftover 5xx after session retries."""
+    status = exc.status
+    if status == 429:
+        return True
+    if status is not None and status >= 500:
+        return True
+    if status != 403:
+        return False
+    info = describe_google_http_error(exc)
+    reason = (info.reason or "").strip()
+    google_status = (info.google_status or "").strip()
+    message = (info.message or "").strip()
+    if reason.lower() in _THROTTLE_REASONS:
+        return True
+    if google_status in _THROTTLE_STATUSES or google_status.lower() in _THROTTLE_REASONS:
+        return True
+    blob = f"{reason} {google_status} {message}".lower()
+    return "quota" in blob or "rate limit" in blob or "ratelimit" in blob.replace(" ", "")
+
+
+def _dimensional_retry_delay_seconds(attempt: int, exc: HttpRequestError) -> float:
+    """Backoff before retry ``attempt`` (1-based). Caps exponential at 16s; honors Retry-After."""
+    expo = min(
+        GSC_DIMENSIONAL_RETRY_CAP_SECONDS,
+        GSC_DIMENSIONAL_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+    )
+    retry_after = _pagespeed_retry_after_header_float(exc)
+    if retry_after > 0:
+        delay = min(max(expo, retry_after), 60.0)
+    else:
+        delay = expo
+    jitter = random.uniform(0, min(0.25, 0.1 * delay + 0.05))
+    return delay + jitter
+
+
+@dataclass
+class GscDimensionalFetchResult:
+    """``(rows, err)`` unpacking still works; extra fields carry Google status/reason."""
+
+    rows: list[dict[str, Any]]
+    err: str | None
+    status: int | None = None
+    reason: str = ""
+    google_status: str = ""
+    message: str = ""
+    retried: int = 0
+    recovered: bool = False
+    throttled: bool = False
+
+    def __iter__(self):
+        yield self.rows
+        yield self.err
+
+
+@dataclass
+class GscDimensionalSyncState:
+    permission_breaker: bool = False
+    permission_warning_recorded: bool = False
+    search_appearance_400_reason: str = ""
+    search_appearance_400_streak: int = 0
+    search_appearance_breaker: bool = False
+    warnings: int = 0
+    skipped: int = 0
+    warning_counts: dict[str, int] = field(default_factory=dict)
+    retried: int = 0
+    recovered: int = 0
+
+    def record_warning(self, dimension: str, status: int | None, reason: str, *, count: int = 1) -> None:
+        n = max(int(count), 0)
+        if n <= 0:
+            return
+        self.warnings += n
+        key = f"{dimension}:{status if status is not None else '?'}:{reason or 'unknown'}"
+        self.warning_counts[key] = self.warning_counts.get(key, 0) + n
+
+    def record_skip(self, count: int = 1) -> None:
+        n = max(int(count), 0)
+        if n <= 0:
+            return
+        self.skipped += n
+
+    def details_dict(self) -> dict[str, int]:
+        items = sorted(self.warning_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:GSC_WARNING_DETAIL_MAX_KEYS]
+        out = {k: v for k, v in items}
+        out["skipped"] = int(self.skipped)
+        out["retried"] = int(self.retried)
+        out["recovered"] = int(self.recovered)
+        return out
+
+
+# Fallback used only when no ``gsc_dimensional_run()`` is active (tests / legacy callers).
+_FALLBACK_DIMENSIONAL_SESSION = GscDimensionalSyncState()
+_FALLBACK_DIMENSIONAL_LOCK = threading.Lock()
+_dimensional_run_state: ContextVar[GscDimensionalSyncState | None] = ContextVar(
+    "gsc_dimensional_run_state", default=None
+)
+
+
+def get_gsc_dimensional_fetch_session() -> GscDimensionalSyncState:
+    current = _dimensional_run_state.get()
+    if current is not None:
+        return current
+    return _FALLBACK_DIMENSIONAL_SESSION
+
+
+def reset_gsc_dimensional_fetch_session() -> GscDimensionalSyncState:
+    """Replace the current run's state, or the no-run fallback if no run is active."""
+    global _FALLBACK_DIMENSIONAL_SESSION
+    fresh = GscDimensionalSyncState()
+    if _dimensional_run_state.get() is not None:
+        _dimensional_run_state.set(fresh)
+        return fresh
+    with _FALLBACK_DIMENSIONAL_LOCK:
+        _FALLBACK_DIMENSIONAL_SESSION = fresh
+        return _FALLBACK_DIMENSIONAL_SESSION
+
+
+@contextmanager
+def gsc_dimensional_run() -> Iterator[GscDimensionalSyncState]:
+    """Scope breaker/warning state to one sync run.
+
+    Installs a fresh ``GscDimensionalSyncState`` when this task is not already in a
+    run, and restores the previous holder on exit. A nested call on the same task
+    (bulk → per-object write) reuses the current run so object refreshes cannot
+    reset the bulk breaker. A concurrent single-object refresh on another task
+    gets its own ContextVar state and cannot trip the bulk run's breaker.
+    Snapshot ``warnings`` / ``warning_details`` *before* leaving the context.
+    """
+    existing = _dimensional_run_state.get()
+    if existing is not None:
+        yield existing
+        return
+    fresh = GscDimensionalSyncState()
+    token = _dimensional_run_state.set(fresh)
+    try:
+        yield fresh
+    finally:
+        _dimensional_run_state.reset(token)
+
+
+def snapshot_gsc_dimensional_warning_summary() -> dict[str, Any]:
+    session = get_gsc_dimensional_fetch_session()
+    return {"warnings": int(session.warnings), "warning_details": session.details_dict()}
 
 
 # -- Cache key helpers --------------------------------------------------------
@@ -1242,38 +1502,7 @@ GSC_URL_QUERY_SECOND_DIMS = frozenset({"country", "device", "searchAppearance"})
 GSC_URL_QUERY_SECOND_DIMENSION_ROW_LIMIT = 250
 
 
-def fetch_gsc_url_query_second_dimension(
-    conn: Any,
-    site_url: str,
-    page_url: str,
-    start: date,
-    end: date,
-    *,
-    second_dimension: str,
-    row_limit: int = GSC_URL_QUERY_SECOND_DIMENSION_ROW_LIMIT,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """searchAnalytics/query with dimensions [query, second_dimension] and page equals filter."""
-    if second_dimension not in GSC_URL_QUERY_SECOND_DIMS:
-        return [], f"unsupported second dimension: {second_dimension}"
-    access_token = get_google_access_token(conn)
-    body: dict[str, Any] = {
-        "startDate": start.isoformat(),
-        "endDate": end.isoformat(),
-        "dimensions": ["query", second_dimension],
-        "dimensionFilterGroups": [{"filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]}],
-        "rowLimit": row_limit,
-        "orderBys": [{"metric": "IMPRESSIONS", "direction": "DESCENDING"}],
-    }
-    try:
-        resp = google_api_post(
-            f"https://searchconsole.googleapis.com/webmasters/v3/sites/{quote(site_url, safe='')}/searchAnalytics/query",
-            access_token,
-            body,
-        )
-    except HttpRequestError as exc:
-        return [], str(exc)
-    except Exception as exc:
-        return [], str(exc)
+def _parse_dimensional_rows(resp: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in resp.get("rows") or []:
         keys = row.get("keys") or []
@@ -1287,7 +1516,89 @@ def fetch_gsc_url_query_second_dimension(
             "ctr": float(row.get("ctr") or 0),
             "position": float(row.get("position") or 0),
         })
-    return out, None
+    return out
+
+
+def fetch_gsc_url_query_second_dimension(
+    conn: Any,
+    site_url: str,
+    page_url: str,
+    start: date,
+    end: date,
+    *,
+    second_dimension: str,
+    row_limit: int = GSC_URL_QUERY_SECOND_DIMENSION_ROW_LIMIT,
+    pace: bool = True,
+) -> GscDimensionalFetchResult:
+    """searchAnalytics/query with dimensions [query, second_dimension] and page equals filter.
+
+    Retries throttle/5xx with exponential backoff. ``(rows, err) = result`` still works.
+    """
+    if second_dimension not in GSC_URL_QUERY_SECOND_DIMS:
+        return GscDimensionalFetchResult([], f"unsupported second dimension: {second_dimension}")
+    access_token = get_google_access_token(conn)
+    body: dict[str, Any] = {
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "dimensions": ["query", second_dimension],
+        "dimensionFilterGroups": [{"filters": [{"dimension": "page", "operator": "equals", "expression": page_url}]}],
+        "rowLimit": row_limit,
+        "orderBys": [{"metric": "IMPRESSIONS", "direction": "DESCENDING"}],
+    }
+    url = (
+        f"https://searchconsole.googleapis.com/webmasters/v3/sites/"
+        f"{quote(site_url, safe='')}/searchAnalytics/query"
+    )
+    max_attempts = max(_env_int("GSC_DIMENSIONAL_RETRY_ATTEMPTS", GSC_DIMENSIONAL_RETRY_ATTEMPTS), 1)
+    last_info = None
+    last_err = ""
+    retried = 0
+    for attempt in range(1, max_attempts + 1):
+        if pace:
+            acquire_gsc_dimensional_slot()
+        try:
+            # Own 4-attempt throttle loop; disable the idempotent session so urllib3
+            # does not stack extra 429/5xx retries inside each attempt.
+            resp = google_api_post(url, access_token, body, idempotent=False)
+        except HttpRequestError as exc:
+            info = describe_google_http_error(exc)
+            last_info = info
+            last_err = info.short_description()
+            throttled = is_google_throttle_error(exc)
+            if throttled and attempt < max_attempts:
+                retried += 1
+                _dimensional_sleep(_dimensional_retry_delay_seconds(attempt, exc))
+                continue
+            return GscDimensionalFetchResult(
+                [],
+                last_err,
+                status=info.status,
+                reason=info.reason,
+                google_status=info.google_status,
+                message=info.message,
+                retried=retried,
+                throttled=throttled,
+            )
+        except Exception as exc:
+            return GscDimensionalFetchResult([], str(exc), retried=retried)
+        return GscDimensionalFetchResult(
+            _parse_dimensional_rows(resp),
+            None,
+            retried=retried,
+            recovered=retried > 0,
+        )
+    if last_info is None:
+        return GscDimensionalFetchResult([], last_err or "dimensional fetch failed", retried=retried)
+    return GscDimensionalFetchResult(
+        [],
+        last_err,
+        status=last_info.status,
+        reason=last_info.reason,
+        google_status=last_info.google_status,
+        message=last_info.message,
+        retried=retried,
+        throttled=True,
+    )
 
 
 # -- URL inspection -----------------------------------------------------------
@@ -1531,6 +1842,40 @@ def _finalize_pagespeed_rate_limited(
     return merged
 
 
+def _pagespeed_api_key() -> str:
+    return (os.getenv("PAGESPEED_API_KEY") or "").strip()
+
+
+def _pagespeed_run_url(page_url: str, strategy: str) -> str:
+    params: dict[str, Any] = {"url": page_url, "strategy": strategy, "category": ["PERFORMANCE"]}
+    api_key = _pagespeed_api_key()
+    if api_key:
+        params["key"] = api_key
+    return (
+        "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?"
+        + urlencode(params, doseq=True)
+    )
+
+
+def _pagespeed_oauth_bearer(conn: Any) -> str:
+    """OAuth bearer only — never the service-account token. Empty string = public quota."""
+    if not google_token_has_scope(conn, "openid"):
+        return ""
+    try:
+        token = get_oauth_access_token(conn)
+    except Exception:
+        logger.info("PageSpeed OAuth token unavailable; using public quota")
+        return ""
+    return (token or "").strip()
+
+
+def _pagespeed_http_get(api_url: str, access_token: str, *, timeout: int = 120) -> dict:
+    """GET runPagespeed. Authorization is omitted when ``access_token`` is empty."""
+    if access_token:
+        return google_api_get(api_url, access_token, timeout=timeout)
+    return request_json(api_url, method="GET", timeout=timeout)
+
+
 def _fetch_run_pagespeed_with_retries(
     api_url: str,
     access_token: str,
@@ -1541,6 +1886,7 @@ def _fetch_run_pagespeed_with_retries(
 
     ``before_each_http`` runs immediately before every HTTP attempt (including the first),
     so callers can rate-limit **total** API calls including retries.
+    Empty ``access_token`` calls PSI with no bearer (public quota).
     """
     max_attempts = 3
     last_exc: HttpRequestError | None = None
@@ -1548,7 +1894,7 @@ def _fetch_run_pagespeed_with_retries(
         try:
             if before_each_http is not None:
                 before_each_http()
-            return google_api_get(api_url, access_token, timeout=120)
+            return _pagespeed_http_get(api_url, access_token, timeout=120)
         except HttpRequestError as exc:
             last_exc = exc
             if not _pagespeed_transient_http_error(exc) or attempt >= max_attempts:
@@ -1596,19 +1942,8 @@ def get_pagespeed(
         return payload
     if not refresh:
         return {"_cache": meta}
-    sa_token = try_service_account_access_token()
-    if sa_token:
-        # PageSpeed Insights has no dedicated SA scope; skip the OAuth openid
-        # reconnect error and use the same SA bearer token as GSC/GA4.
-        access_token = sa_token
-    else:
-        if not google_token_has_scope(conn, "openid"):
-            raise RuntimeError("Reconnect Google so the token includes the openid scope for PageSpeed.")
-        access_token = get_google_access_token(conn)
-    api_url = (
-        "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?"
-        + urlencode({"url": url, "strategy": strategy, "category": ["PERFORMANCE"]}, doseq=True)
-    )
+    access_token = _pagespeed_oauth_bearer(conn)
+    api_url = _pagespeed_run_url(url, strategy)
 
     def _before_each_run_pagespeed_http_effective() -> None:
         if before_each_run_pagespeed_http is not None:
@@ -1641,7 +1976,7 @@ def get_pagespeed(
             _sleep_interruptible(wait_s, cancel_check)
             try:
                 _before_each_run_pagespeed_http_effective()
-                payload = google_api_get(api_url, access_token, timeout=120)
+                payload = _pagespeed_http_get(api_url, access_token, timeout=120)
             except HttpRequestError as exc2:
                 if exc2.status == 429:
                     if pagespeed_429_requeue_pass == 0:

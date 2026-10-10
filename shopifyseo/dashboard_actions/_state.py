@@ -111,6 +111,7 @@ SYNC_STATE = {
     "gsc_refreshed": 0,
     "gsc_skipped": 0,
     "gsc_errors": 0,
+    "gsc_warnings": 0,
     "gsc_eligible_total": 0,
     "gsc_precheck_skipped": 0,
     "gsc_summary_pages": 0,

@@ -1404,19 +1404,75 @@ def _refresh_gsc_query_dimensions_into_table(
         return
     start, end = _gsc_window_for_dimensional_fetch(gsc_detail, gsc_period)
     ts = int(fetched_at or time.time())
+    session = dg.get_gsc_dimensional_fetch_session()
     for second_dim in ("country", "device", "searchAppearance"):
-        rows, err = dg.fetch_gsc_url_query_second_dimension(
+        if session.permission_breaker:
+            continue
+        if second_dim == "searchAppearance" and session.search_appearance_breaker:
+            session.record_skip()
+            continue
+        result = dg.fetch_gsc_url_query_second_dimension(
             conn, site_url, page_url, start, end, second_dimension=second_dim
         )
+        rows, err = result
+        session.retried += int(getattr(result, "retried", 0) or 0)
+        if getattr(result, "recovered", False):
+            session.recovered += 1
         if err:
+            status = getattr(result, "status", None)
+            reason = (getattr(result, "reason", None) or getattr(result, "google_status", None) or "").strip()
+            message = (getattr(result, "message", None) or "").strip()
+            throttled = bool(getattr(result, "throttled", False))
             _LOG.warning(
-                "GSC dimensional fetch failed (%s %s %s): %s",
-                object_type,
+                "GSC dimensional fetch failed page=%s handle=%s dimension=%s status=%s reason=%s message=%s",
+                page_url,
                 handle,
                 second_dim,
-                err,
+                status if status is not None else "?",
+                reason or "unknown",
+                message or err,
             )
+            if status == 403 and not throttled:
+                if not session.permission_warning_recorded:
+                    session.record_warning(second_dim, status, reason or "permissionDenied")
+                    session.permission_warning_recorded = True
+                    session.permission_breaker = True
+                    _LOG.warning(
+                        "GSC dimensional permission error; skipping remaining breakdowns this sync: "
+                        "page=%s handle=%s dimension=%s status=%s reason=%s message=%s",
+                        page_url,
+                        handle,
+                        second_dim,
+                        status,
+                        reason or "unknown",
+                        message or err,
+                    )
+                continue
+            if second_dim == "searchAppearance" and status == 400:
+                key_reason = reason or "invalidArgument"
+                if session.search_appearance_400_reason == key_reason:
+                    session.search_appearance_400_streak += 1
+                else:
+                    session.search_appearance_400_reason = key_reason
+                    session.search_appearance_400_streak = 1
+                session.record_warning("searchAppearance", 400, key_reason)
+                breaker_n = int(getattr(dg, "GSC_SEARCH_APPEARANCE_400_BREAKER", 5))
+                if session.search_appearance_400_streak >= breaker_n:
+                    session.search_appearance_breaker = True
+                    _LOG.warning(
+                        "GSC searchAppearance+query is not supported by Search Analytics; "
+                        "skipping remaining searchAppearance calls this sync (reason=%s)",
+                        key_reason,
+                    )
+                continue
+            if second_dim == "searchAppearance":
+                session.search_appearance_400_streak = 0
+                session.search_appearance_400_reason = ""
+            session.record_warning(second_dim, status, reason or "unknown")
             continue
+        if second_dim == "searchAppearance":
+            session.search_appearance_400_streak = 0
+            session.search_appearance_400_reason = ""
         rows_sorted = sorted(rows, key=lambda r: int(r.get("impressions") or 0), reverse=True)[:GSC_QUERY_DIMENSION_ROW_CAP]
         conn.execute(
             """
@@ -1453,6 +1509,11 @@ def _refresh_gsc_query_dimensions_into_table(
 
 
 def _refresh_object_gsc_into_table(conn: Any, table: str, object_type: str, handle: str) -> None:
+    with dg.gsc_dimensional_run():
+        _refresh_object_gsc_into_table_body(conn, table, object_type, handle)
+
+
+def _refresh_object_gsc_into_table_body(conn: Any, table: str, object_type: str, handle: str) -> None:
     url = dq.object_url(object_type, handle)
     gsc_detail = dg.get_search_console_url_detail(conn, url, refresh=False, object_type=object_type, object_handle=handle)
     gsc_row = (gsc_detail.get("page_rows") or [None])[0] if gsc_detail else None
@@ -1655,6 +1716,11 @@ def _refresh_blog_article_signals_into_table(
 
 
 def _refresh_object_gsc_into_blog_article(conn: Any, composite_handle: str) -> None:
+    with dg.gsc_dimensional_run():
+        _refresh_object_gsc_into_blog_article_body(conn, composite_handle)
+
+
+def _refresh_object_gsc_into_blog_article_body(conn: Any, composite_handle: str) -> None:
     parts = _parse_blog_article_parts(composite_handle)
     if not parts:
         return
@@ -1697,18 +1763,19 @@ def _refresh_object_gsc_into_blog_article(conn: Any, composite_handle: str) -> N
 
 
 def refresh_object_structured_seo_data(conn: Any, object_type: str, handle: str, *, snapshot_recommendation: bool = False) -> None:
-    ensure_dashboard_schema(conn)
-    if object_type == "blog_article":
-        _refresh_blog_article_signals_into_table(conn, handle)
+    with dg.gsc_dimensional_run():
+        ensure_dashboard_schema(conn)
+        if object_type == "blog_article":
+            _refresh_blog_article_signals_into_table(conn, handle)
+            conn.commit()
+            return
+        table = {
+            "product": "products",
+            "collection": "collections",
+            "page": "pages",
+        }[object_type]
+        _refresh_object_signals_into_table(conn, table, object_type, handle)
         conn.commit()
-        return
-    table = {
-        "product": "products",
-        "collection": "collections",
-        "page": "pages",
-    }[object_type]
-    _refresh_object_signals_into_table(conn, table, object_type, handle)
-    conn.commit()
 
 
 def refresh_object_pagespeed_signal_data(conn: Any, object_type: str, handle: str) -> None:

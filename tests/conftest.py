@@ -28,6 +28,18 @@ def _isolate_google_service_account_file(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
 
+@pytest.fixture(autouse=True)
+def _noop_gsc_dimensional_pacer() -> None:
+    """Dimensional pacing must not add wall-clock cost in the suite unless a test injects a clock."""
+    from shopifyseo.dashboard_google import _gsc
+
+    _gsc.set_gsc_dimensional_pacer_for_tests()
+    _gsc.reset_gsc_dimensional_fetch_session()
+    yield
+    _gsc.reset_gsc_dimensional_pacer()
+    _gsc.reset_gsc_dimensional_fetch_session()
+
+
 @pytest.fixture(scope="session")
 def db_backend() -> Backend:
     """SQLite unless ``TEST_DATABASE_URL`` is a ``postgresql://`` / ``postgres://`` URL."""

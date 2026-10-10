@@ -317,13 +317,8 @@ def test_ads_uses_oauth_token_never_sa(sa_env, monkeypatch):
     assert "sa-must-not-reach-ads" not in json.dumps(seen_headers)
 
 
-def test_pagespeed_skips_openid_in_service_account_mode(sa_env, monkeypatch):
-    monkeypatch.setattr(_gsc, "try_service_account_access_token", lambda scopes=None: "sa-psi-token")
-    monkeypatch.setattr(
-        _gsc,
-        "google_token_has_scope",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("openid check must be skipped in SA mode")),
-    )
+def test_pagespeed_never_uses_service_account_token(sa_env, monkeypatch):
+    monkeypatch.setattr(_gsc, "google_token_has_scope", lambda *a, **k: False)
     captured = {}
 
     def fake_fetch(api_url, access_token, **kwargs):
@@ -336,7 +331,7 @@ def test_pagespeed_skips_openid_in_service_account_mode(sa_env, monkeypatch):
     monkeypatch.setattr(_gsc, "trim_pagespeed_payload", lambda payload: payload)
     monkeypatch.setattr(_gsc, "_pkg", lambda: type("P", (), {"GSC_CACHE": {"pagespeed": {}}})())
     payload = _gsc.get_pagespeed(object(), "https://example.test/", "mobile", refresh=True)
-    assert captured["token"] == "sa-psi-token"
+    assert captured["token"] == ""
     assert payload.get("lighthouseResult") is not None
 
 

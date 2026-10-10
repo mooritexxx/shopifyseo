@@ -599,11 +599,12 @@ def refresh_object_signal_step(
 def refresh_object_signals(
     db_connect, kind: str, handle: str, db_path: str | None = None, *, gsc_period: str = GSC_CATALOG_PERIOD_MODE
 ) -> dict:
-    ordered_steps = ("gsc", "index", "speed", "speed_desktop")
-    return {
-        step: refresh_object_signal_step(db_connect, kind, handle, step, db_path=db_path, gsc_period=gsc_period)
-        for step in ordered_steps
-    }
+    with dg.gsc_dimensional_run():
+        ordered_steps = ("gsc", "index", "speed", "speed_desktop")
+        return {
+            step: refresh_object_signal_step(db_connect, kind, handle, step, db_path=db_path, gsc_period=gsc_period)
+            for step in ordered_steps
+        }
 
 
 def _inspection_deep_link(payload: dict | None) -> str:

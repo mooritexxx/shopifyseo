@@ -340,6 +340,7 @@ def _reset_sync_progress(scope: str, selected_scopes: list[str] | None = None) -
             "gsc_refreshed": 0,
             "gsc_skipped": 0,
             "gsc_errors": 0,
+            "gsc_warnings": 0,
             "gsc_eligible_total": 0,
             "gsc_precheck_skipped": 0,
             "gsc_summary_pages": 0,
@@ -471,6 +472,31 @@ def _image_cache_summary_suffix(cache: dict[str, int] | None) -> str:
     if e:
         tail += f", {e} errors"
     return tail
+
+
+def _gsc_breakdown_warnings_suffix(gsc: dict[str, Any] | None) -> str:
+    if not gsc:
+        return ""
+    n = int(gsc.get("warnings") or 0)
+    if n <= 0:
+        return ""
+    label = "warning" if n == 1 else "warnings"
+    return f"; {n} breakdown {label}"
+
+
+def _apply_gsc_dimensional_warnings(summary: dict[str, Any]) -> dict[str, Any]:
+    snap = dg.snapshot_gsc_dimensional_warning_summary()
+    summary["warnings"] = int(snap.get("warnings") or 0)
+    summary["warning_details"] = snap.get("warning_details") or {"retried": 0, "recovered": 0, "skipped": 0}
+    SYNC_STATE["gsc_warnings"] = summary["warnings"]
+    if summary["warnings"]:
+        logger.warning(
+            "GSC dimensional fetch warnings: %s (retried=%s recovered=%s)",
+            summary["warning_details"],
+            (summary["warning_details"] or {}).get("retried", 0),
+            (summary["warning_details"] or {}).get("recovered", 0),
+        )
+    return summary
 
 
 def _normalize_sync_scopes(scope: str, selected_scopes: list[str] | None = None) -> tuple[str, list[str]]:
@@ -731,126 +757,136 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
         "summary_queries": 0,
         "eligible": 0,
         "queue_total": 0,
+        "warnings": 0,
+        "warning_details": {"retried": 0, "recovered": 0, "skipped": 0},
     }
+    SYNC_STATE["gsc_warnings"] = 0
     try:
-        touched_targets: list[tuple[str, str]] = []
-        pending_signal_targets: list[tuple[str, str]] = []
+        with dg.gsc_dimensional_run():
+            touched_targets: list[tuple[str, str]] = []
+            pending_signal_targets: list[tuple[str, str]] = []
 
-        def _flush_gsc_signal_targets(*, final: bool = False) -> None:
-            if not pending_signal_targets:
-                return
-            if final:
-                _sync_current("Search Console: finalizing catalog rows")
-            else:
-                _sync_current("Search Console: updating catalog rows")
-            batch = list(pending_signal_targets)
-            pending_signal_targets.clear()
-            refresh_gsc_signal_data_for_objects(
-                conn,
-                batch,
-                batch_size=GSC_SIGNAL_BATCH_SIZE,
-                sync_query_embeddings=False,
-            )
-
-        summary_payload = dg.get_search_console_summary_cached(conn, refresh=True)
-        summary["summary_pages"] = len(summary_payload.get("pages", []))
-        summary["summary_queries"] = len(summary_payload.get("queries", []))
-        SYNC_STATE["gsc_summary_pages"] = summary["summary_pages"]
-        SYNC_STATE["gsc_summary_queries"] = summary["summary_queries"]
-
-        site_url = (summary_payload.get("site_url") or dg.get_service_setting(conn, "search_console_site") or "").strip()
-        if site_url:
-            dg.refresh_gsc_property_breakdowns_for_site(conn, site_url)
-
-        all_targets = _all_object_targets(conn)
-        summary["eligible"] = len(all_targets)
-        SYNC_STATE["gsc_eligible_total"] = len(all_targets)
-        # Bulk pulls cover the whole property in a handful of calls, so there is no
-        # per-URL quota left to protect by skipping fresh rows.
-        summary["skipped_fresh"] = 0
-        summary["queue_total"] = len(all_targets)
-        SYNC_STATE["gsc_precheck_skipped"] = 0
-        SYNC_STATE["gsc_skipped"] = 0
-        SYNC_STATE["gsc_progress_total"] = max(len(all_targets), 1)
-        SYNC_STATE["gsc_progress_done"] = 0
-        # The queue panel visualised per-URL HTTP work that no longer exists.
-        sync_queue_reset("gsc")
-
-        if not site_url:
-            logger.warning("Search Console bulk sync skipped: no site_url resolved")
-            return summary
-
-        access_token = dg.get_search_data_access_token(conn)
-        start_date, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
-
-        _sync_current("Search Console: fetching page totals for the whole property…")
-        page_row_by_url = dg.fetch_gsc_all_page_rows(
-            site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
-        )
-        _raise_if_sync_cancelled()
-        _sync_current(f"Search Console: fetching query breakdowns ({len(page_row_by_url)} pages with data)…")
-        query_rows_by_url = dg.fetch_gsc_all_page_query_rows(
-            site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
-        )
-        _raise_if_sync_cancelled()
-
-        # Daily history so catalog rows can show direction, not just a current level.
-        targets_by_url = {url: (kind, handle) for kind, handle, url in all_targets}
-        _sync_current("Search Console: fetching daily history…")
-        try:
-            daily_rows = dg.fetch_gsc_page_daily_rows(
-                site_url,
-                access_token,
-                _gsc_trend_history_start(end_date),
-                end_date,
-                cancel_check=_raise_if_sync_cancelled,
-            )
-            written = upsert_gsc_page_daily(conn, daily_rows, targets_by_url)
-            summary["daily_rows"] = written
-            _sync_current(f"Search Console: stored {written} daily page rows")
-        except SyncCancelledError:
-            raise
-        except Exception:
-            logger.warning("GSC daily history refresh failed (non-fatal)", exc_info=True)
-        _raise_if_sync_cancelled()
-
-        for kind, handle, url in all_targets:
-            _raise_if_sync_cancelled()
-            summary["considered"] += 1
-            try:
-                payload = dg.build_gsc_url_detail(
-                    url,
-                    site_url,
-                    page_row=page_row_by_url.get(url),
-                    query_rows=query_rows_by_url.get(url),
-                    start=start_date,
-                    end=end_date,
-                    period_mode=GSC_CATALOG_PERIOD_MODE,
-                )
-                dg.write_gsc_url_detail_cache(
+            def _flush_gsc_signal_targets(*, final: bool = False) -> None:
+                if not pending_signal_targets:
+                    return
+                if final:
+                    _sync_current("Search Console: finalizing catalog rows")
+                else:
+                    _sync_current("Search Console: updating catalog rows")
+                batch = list(pending_signal_targets)
+                pending_signal_targets.clear()
+                refresh_gsc_signal_data_for_objects(
                     conn,
-                    payload,
-                    site_url=site_url,
-                    period_mode=GSC_CATALOG_PERIOD_MODE,
-                    object_type=kind,
-                    object_handle=handle,
+                    batch,
+                    batch_size=GSC_SIGNAL_BATCH_SIZE,
+                    sync_query_embeddings=False,
                 )
-                summary["refreshed"] += 1
-                SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
-            except Exception as exc:
-                logger.warning("GSC cache write failed for %s:%s — %s", kind, handle, exc)
-                summary["errors"] += 1
-                SYNC_STATE["gsc_errors"] = summary["errors"]
-            touched_targets.append((kind, handle))
-            pending_signal_targets.append((kind, handle))
-            if len(pending_signal_targets) >= GSC_SIGNAL_BATCH_SIZE:
-                _flush_gsc_signal_targets()
-            SYNC_STATE["gsc_progress_done"] = summary["considered"]
-        _raise_if_sync_cancelled()
-        _flush_gsc_signal_targets(final=True)
-        if touched_targets:
-            _defer_until_sync_done(_start_gsc_query_embedding_sync, db_path)
-            _defer_until_sync_done(_start_internal_link_refresh, db_path)
+
+            summary_payload = dg.get_search_console_summary_cached(conn, refresh=True)
+            summary["summary_pages"] = len(summary_payload.get("pages", []))
+            summary["summary_queries"] = len(summary_payload.get("queries", []))
+            SYNC_STATE["gsc_summary_pages"] = summary["summary_pages"]
+            SYNC_STATE["gsc_summary_queries"] = summary["summary_queries"]
+
+            site_url = (summary_payload.get("site_url") or dg.get_service_setting(conn, "search_console_site") or "").strip()
+            if site_url:
+                dg.refresh_gsc_property_breakdowns_for_site(conn, site_url)
+
+            all_targets = _all_object_targets(conn)
+            summary["eligible"] = len(all_targets)
+            SYNC_STATE["gsc_eligible_total"] = len(all_targets)
+            # Bulk pulls cover the whole property in a handful of calls, so there is no
+            # per-URL quota left to protect by skipping fresh rows.
+            summary["skipped_fresh"] = 0
+            summary["queue_total"] = len(all_targets)
+            SYNC_STATE["gsc_precheck_skipped"] = 0
+            SYNC_STATE["gsc_skipped"] = 0
+            SYNC_STATE["gsc_progress_total"] = max(len(all_targets), 1)
+            SYNC_STATE["gsc_progress_done"] = 0
+            # The queue panel visualised per-URL HTTP work that no longer exists.
+            sync_queue_reset("gsc")
+
+            if not site_url:
+                logger.warning("Search Console bulk sync skipped: no site_url resolved")
+                return _apply_gsc_dimensional_warnings(summary)
+
+            access_token = dg.get_search_data_access_token(conn)
+            start_date, end_date = dg.gsc_url_report_window(GSC_CATALOG_PERIOD_MODE)
+
+            _sync_current("Search Console: fetching page totals for the whole property…")
+            page_row_by_url = dg.fetch_gsc_all_page_rows(
+                site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
+            )
+            _raise_if_sync_cancelled()
+            _sync_current(f"Search Console: fetching query breakdowns ({len(page_row_by_url)} pages with data)…")
+            query_rows_by_url = dg.fetch_gsc_all_page_query_rows(
+                site_url, access_token, start_date, end_date, cancel_check=_raise_if_sync_cancelled
+            )
+            _raise_if_sync_cancelled()
+
+            # Daily history so catalog rows can show direction, not just a current level.
+            targets_by_url = {url: (kind, handle) for kind, handle, url in all_targets}
+            _sync_current("Search Console: fetching daily history…")
+            try:
+                daily_rows = dg.fetch_gsc_page_daily_rows(
+                    site_url,
+                    access_token,
+                    _gsc_trend_history_start(end_date),
+                    end_date,
+                    cancel_check=_raise_if_sync_cancelled,
+                )
+                written = upsert_gsc_page_daily(conn, daily_rows, targets_by_url)
+                summary["daily_rows"] = written
+                _sync_current(f"Search Console: stored {written} daily page rows")
+            except SyncCancelledError:
+                raise
+            except Exception:
+                logger.warning("GSC daily history refresh failed (non-fatal)", exc_info=True)
+            _raise_if_sync_cancelled()
+
+            for kind, handle, url in all_targets:
+                _raise_if_sync_cancelled()
+                summary["considered"] += 1
+                try:
+                    payload = dg.build_gsc_url_detail(
+                        url,
+                        site_url,
+                        page_row=page_row_by_url.get(url),
+                        query_rows=query_rows_by_url.get(url),
+                        start=start_date,
+                        end=end_date,
+                        period_mode=GSC_CATALOG_PERIOD_MODE,
+                    )
+                    dg.write_gsc_url_detail_cache(
+                        conn,
+                        payload,
+                        site_url=site_url,
+                        period_mode=GSC_CATALOG_PERIOD_MODE,
+                        object_type=kind,
+                        object_handle=handle,
+                    )
+                    summary["refreshed"] += 1
+                    SYNC_STATE["gsc_refreshed"] = summary["refreshed"]
+                except Exception as exc:
+                    logger.warning("GSC cache write failed for %s:%s — %s", kind, handle, exc)
+                    summary["errors"] += 1
+                    SYNC_STATE["gsc_errors"] = summary["errors"]
+                touched_targets.append((kind, handle))
+                pending_signal_targets.append((kind, handle))
+                if len(pending_signal_targets) >= GSC_SIGNAL_BATCH_SIZE:
+                    _flush_gsc_signal_targets()
+                SYNC_STATE["gsc_progress_done"] = summary["considered"]
+            _raise_if_sync_cancelled()
+            _flush_gsc_signal_targets(final=True)
+            if touched_targets:
+                _defer_until_sync_done(_start_gsc_query_embedding_sync, db_path)
+                _defer_until_sync_done(_start_internal_link_refresh, db_path)
+            _apply_gsc_dimensional_warnings(summary)
+            if summary.get("warnings"):
+                _sync_current(
+                    f"Search Console: {summary.get('refreshed', 0)} pages refreshed"
+                    f"{_gsc_breakdown_warnings_suffix(summary)}"
+                )
     finally:
         try:
             dg.delete_search_console_overview_timeseries_only(conn)
@@ -1450,6 +1486,10 @@ def run_sync(
                     f"Blogs {blogs_n}, Articles {articles_n}"
                     f"{_image_cache_summary_suffix(ic_d)}"
                 )
+            if isinstance(result, dict):
+                gsc_result = result.get("gsc")
+                if isinstance(gsc_result, dict):
+                    summary_message += _gsc_breakdown_warnings_suffix(gsc_result)
             _set_sync_stage(
                 stage="complete",
                 label="Sync complete",

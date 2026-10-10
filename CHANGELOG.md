@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Opportunity Inbox skips queries for objects that are not live on the Online Store.** `GET /api/opportunities` and `/api/opportunities/stats` now exclude `gsc_query_rows` whose catalog object exists but is unpublished/draft/unreachable (same `_live_where` definition as the Overview counters; a 301-redirected article is unpublished). Rows for objects missing from the catalog are kept. On live data the default list drops 31 of 422 rows (4 unpublished articles, 3,056 of 18,897 impressions), including `many-cigarettes-pack-understanding-smoking`. Dismiss-with-reason is not part of this change.
 - **Postgres cutover float precision and list-order ties.** pgloader CAST
   SQLite `REAL` / `FLOAT` / `DOUBLE` / `DOUBLE PRECISION` to quoted
   `"double precision"` `using float-to-string` (the unquoted multi-word

@@ -214,7 +214,7 @@ class TestTranslatePlaceholders:
     def test_escapes_percent_for_like_with_placeholders(self):
         sql = "SELECT * FROM t WHERE name LIKE 'a%' AND id = ?"
         result = _translate_placeholders(sql, to_postgres=True)
-        assert result == "SELECT * FROM t WHERE name LIKE 'a%%' AND id = %s"
+        assert result == "SELECT * FROM t WHERE name ILIKE 'a%%' AND id = %s"
 
     def test_escapes_percent_for_modulo_with_placeholders(self):
         sql = "SELECT 7 % 3 AS r, ? AS v"
@@ -264,7 +264,7 @@ class TestTranslatePlaceholders:
     def test_mixed_like_patterns(self):
         sql = "SELECT * FROM t WHERE name LIKE 'how%' AND title LIKE '%' || ? || '%'"
         result = _translate_placeholders(sql, to_postgres=True)
-        assert result == "SELECT * FROM t WHERE name LIKE 'how%%' AND title LIKE '%%' || %s || '%%'"
+        assert result == "SELECT * FROM t WHERE name ILIKE 'how%%' AND title ILIKE '%%' || %s || '%%'"
 
     def test_empty_sql(self):
         assert _translate_placeholders("", to_postgres=True) == ""
@@ -272,6 +272,55 @@ class TestTranslatePlaceholders:
     def test_no_placeholders(self):
         sql = "SELECT * FROM users"
         assert _translate_placeholders(sql, to_postgres=True) == sql
+
+    def test_like_to_ilike_on_postgres(self):
+        sql = "SELECT * FROM t WHERE name LIKE 'a%' AND title NOT LIKE 'x%'"
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == "SELECT * FROM t WHERE name ILIKE 'a%' AND title NOT ILIKE 'x%'"
+
+    def test_like_not_rewritten_for_sqlite(self):
+        sql = "SELECT * FROM t WHERE name LIKE 'a%' AND title NOT LIKE 'x%'"
+        assert _translate_placeholders(sql, to_postgres=False) == sql
+
+    def test_like_inside_string_literal_untouched(self):
+        sql = "SELECT * FROM t WHERE note = 'looks LIKE this' AND name LIKE 'a%'"
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == "SELECT * FROM t WHERE note = 'looks LIKE this' AND name ILIKE 'a%'"
+
+    def test_like_inside_quoted_identifier_untouched(self):
+        sql = 'SELECT * FROM t WHERE "LIKE" = 1 AND "likes" LIKE \'a%\''
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == 'SELECT * FROM t WHERE "LIKE" = 1 AND "likes" ILIKE \'a%\''
+
+    def test_already_ilike_untouched(self):
+        sql = "SELECT * FROM t WHERE name ILIKE 'a%' OR title ilike 'b%'"
+        assert _translate_placeholders(sql, to_postgres=True) == sql
+
+    def test_likes_and_unlike_count_column_names_untouched(self):
+        sql = "SELECT likes, unlike_count FROM t WHERE likes > 0 AND unlike_count LIKE 'x'"
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == "SELECT likes, unlike_count FROM t WHERE likes > 0 AND unlike_count ILIKE 'x'"
+
+    def test_like_preserves_escape_clause(self):
+        sql = r"SELECT * FROM t WHERE name LIKE '%\_%' ESCAPE '\' AND id = ?"
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == r"SELECT * FROM t WHERE name ILIKE '%%\_%%' ESCAPE '\' AND id = %s"
+        sql_no_params = r"SELECT * FROM t WHERE name LIKE '%\_%' ESCAPE '\'"
+        assert (
+            _translate_placeholders(sql_no_params, to_postgres=True)
+            == r"SELECT * FROM t WHERE name ILIKE '%\_%' ESCAPE '\'"
+        )
+
+    def test_like_in_comment_untouched(self):
+        sql = "SELECT 1 AS n -- keep LIKE here\n"
+        assert _translate_placeholders(sql, to_postgres=True) == sql
+        sql_block = "SELECT 1 AS n /* LIKE inside */"
+        assert _translate_placeholders(sql_block, to_postgres=True) == sql_block
+
+    def test_lowercase_like_to_ilike(self):
+        sql = "SELECT * FROM t WHERE name like 'a%' AND title not like 'x%'"
+        result = _translate_placeholders(sql, to_postgres=True)
+        assert result == "SELECT * FROM t WHERE name ilike 'a%' AND title not ilike 'x%'"
 
 
 class TestDictRow:
@@ -2897,6 +2946,28 @@ class TestPostgresRuntimeCompat:
                 ("winter sale",),
             ).fetchone()
             assert row["name"] == "winter sale"
+        finally:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+            conn.close()
+
+    def test_like_is_case_insensitive_on_postgres(self, pg_url):
+        """SQLite LIKE is ASCII CI; PG LIKE is not. Runtime must use ILIKE."""
+        from shopifyseo.db import connect_postgres
+
+        conn = connect_postgres(pg_url)
+        table = "_test_pg_runtime_like_ci"
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.execute(f"CREATE TABLE {table} (name TEXT)")
+            conn.commit()
+            conn.execute(f"INSERT INTO {table} (name) VALUES (?)", ("Alpha",))
+            conn.execute(f"INSERT INTO {table} (name) VALUES (?)", ("beta",))
+            conn.commit()
+            count = conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE name LIKE '%a%'"
+            ).fetchone()["n"]
+            assert count == 2
         finally:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()

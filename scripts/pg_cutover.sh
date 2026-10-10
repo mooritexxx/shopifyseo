@@ -7,11 +7,12 @@
 # This script does NOT:
 #   - set or persist live DATABASE_URL
 #   - source pg.env into the parent shell / uvicorn
-#   - restart or reconfigure start_app.sh
+#   - restart or reconfigure start_app.sh / scripts/start-app.sh
+#   - write the live mark (that is scripts/mark-pg-live.sh)
 #   - delete cluster_keywords orphans unless --delete-cluster-orphans
 #   - VALIDATE FKs unless --validate-fks
 #
-# Live deploy stays on SQLite until Salar approves the app switch.
+# The app switch is scripts/mark-pg-live.sh + scripts/start-app.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,7 +37,10 @@ usage() {
 Usage: scripts/pg_cutover.sh [options]
 
   --env-file PATH              CoS pg.env (default: $HOME/.config/shopifyseo/pg.env)
-  --sqlite PATH                Live SQLite catalog (copied; never written)
+  --sqlite PATH                SQLite catalog snapshot (copied). Must be made
+                               with sqlite3.Connection.backup while uvicorn is
+                               stopped — this script runs wal_checkpoint(FULL)
+                               on the source. Never pass the live file.
   --work-dir PATH              Working directory (default: ./tmp/pg-cutover-<ts>)
   --dry-run                    Load into CUTOVER_DATABASE_URL / PGDATABASE (default)
   --apply-load                 Load into CUTOVER_LIVE_DATABASE (still no app flip)

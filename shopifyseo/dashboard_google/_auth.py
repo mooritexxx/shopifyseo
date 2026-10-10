@@ -63,6 +63,10 @@ def invalidate_token_cache(service: str | None = None) -> None:
             _TOKEN_CACHE.clear()
         else:
             _TOKEN_CACHE.pop(service, None)
+    if service is None:
+        from ._service_account import invalidate_service_account_token_cache
+
+        invalidate_service_account_token_cache()
 
 
 def _pkg():
@@ -138,8 +142,38 @@ def set_service_setting(conn: Any, key: str, value: str) -> None:
 # -- OAuth --------------------------------------------------------------------
 
 def google_configured() -> bool:
+    """True when the OAuth client id/secret are set. Ads and /auth/google stay on this."""
     pkg = _pkg()
     return bool(pkg.GOOGLE_CLIENT_ID and pkg.GOOGLE_CLIENT_SECRET)
+
+
+def search_data_configured() -> bool:
+    """True when GSC/GA4 can authenticate via service account or OAuth client."""
+    from ._service_account import service_account_available
+
+    return service_account_available() or google_configured()
+
+
+def search_data_connected(conn: Any) -> bool:
+    """True when an SA token can be minted (cached) or an OAuth refresh token is stored."""
+    from ._service_account import SEARCH_DATA_SCOPES, try_service_account_access_token
+
+    if try_service_account_access_token(SEARCH_DATA_SCOPES):
+        return True
+    return bool(get_service_token(conn, "search_console"))
+
+
+def get_search_data_access_token(conn: Any) -> str:
+    """Access token for Search Console and GA4: service account first, then OAuth.
+
+    Google Ads and other OAuth-only scopes must keep calling ``get_google_access_token``.
+    """
+    from ._service_account import SEARCH_DATA_SCOPES, try_service_account_access_token
+
+    sa_token = try_service_account_access_token(SEARCH_DATA_SCOPES)
+    if sa_token:
+        return sa_token
+    return get_google_access_token(conn)
 
 
 def new_oauth_state() -> str:

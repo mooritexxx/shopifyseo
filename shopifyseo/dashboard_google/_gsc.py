@@ -29,13 +29,14 @@ from ._cache import (
     ensure_google_cache_schema,
 )
 from ._auth import (
-    get_google_access_token,
+    get_search_data_access_token as get_google_access_token,
     get_service_setting,
     google_api_get,
     google_api_post,
     google_token_has_scope,
     set_service_setting,
 )
+from ._service_account import try_service_account_access_token
 
 
 logger = logging.getLogger(__name__)
@@ -1595,9 +1596,15 @@ def get_pagespeed(
         return payload
     if not refresh:
         return {"_cache": meta}
-    if not google_token_has_scope(conn, "openid"):
-        raise RuntimeError("Reconnect Google so the token includes the openid scope for PageSpeed.")
-    access_token = get_google_access_token(conn)
+    sa_token = try_service_account_access_token()
+    if sa_token:
+        # PageSpeed Insights has no dedicated SA scope; skip the OAuth openid
+        # reconnect error and use the same SA bearer token as GSC/GA4.
+        access_token = sa_token
+    else:
+        if not google_token_has_scope(conn, "openid"):
+            raise RuntimeError("Reconnect Google so the token includes the openid scope for PageSpeed.")
+        access_token = get_google_access_token(conn)
     api_url = (
         "https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?"
         + urlencode({"url": url, "strategy": strategy, "category": ["PERFORMANCE"]}, doseq=True)

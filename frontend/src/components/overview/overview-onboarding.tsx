@@ -177,7 +177,7 @@ export function OverviewOnboarding({ data }: { data: Summary }) {
           <StepRow
             step={3}
             label="Google Search & Analytics"
-            description="Connect Google OAuth in Settings → Data sources for Search Console and GA4 site-level charts (optional)."
+            description="Connect Google (service account or OAuth) in Settings → Data sources for Search Console and GA4 site-level charts (optional)."
             status={step3}
           />
           <StepRow

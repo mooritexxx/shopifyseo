@@ -85,7 +85,7 @@ def main() -> int:
         if not site_url:
             print("No Search Console property selected.")
             return 1
-        access_token = dg.get_google_access_token(conn)
+        access_token = dg.get_search_data_access_token(conn)
         lang = "en-US"
         urls = _targets(conn, args.count, args.offset)
     finally:

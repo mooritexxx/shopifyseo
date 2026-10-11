@@ -4,6 +4,8 @@ import base64
 import logging
 import re
 import time
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from ...dashboard_http import HttpRequestError, request_json
 from ..config import DEFAULT_OPENROUTER_MODEL, GEMINI_API_URL, OPENAI_API_URL, OPENROUTER_API_URL
@@ -12,6 +14,71 @@ from ._alt_text import _ALT_CAPTION_INSTRUCTION, _sanitize_image_alt
 from ._http import _http_get_bytes, _log_gemini_image_usage
 
 logger = logging.getLogger(__name__)
+
+# Free-tier OpenRouter keys return HTTP 402 when several image calls overlap.
+# One initial attempt + these waits = 4 tries. Patchable so tests do not sleep.
+IMAGE_RATE_LIMIT_STATUSES = frozenset({402, 429})
+IMAGE_RATE_LIMIT_BACKOFF_SECONDS: tuple[float, ...] = (20.0, 60.0, 120.0)
+_HTTP_STATUS_RE = re.compile(r"\bHTTP\s+(\d{3})\b")
+_T = TypeVar("_T")
+
+
+def _sleep_image_retry(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _image_error_http_status(exc: BaseException) -> int | None:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status", None)
+        if isinstance(status, int) and status > 0:
+            return status
+        match = _HTTP_STATUS_RE.search(str(current))
+        if match:
+            return int(match.group(1))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _is_image_rate_limit_error(exc: BaseException) -> bool:
+    return _image_error_http_status(exc) in IMAGE_RATE_LIMIT_STATUSES
+
+
+def _call_with_image_rate_limit_retry(
+    operation: Callable[[], _T],
+    *,
+    backoff: Sequence[float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> _T:
+    """Run *operation*, retrying HTTP 402/429 with 20s / 60s / 120s waits.
+
+    ``backoff`` and ``sleep`` are injectable so unit tests do not wait.
+    """
+    delays = tuple(IMAGE_RATE_LIMIT_BACKOFF_SECONDS if backoff is None else backoff)
+    sleeper = _sleep_image_retry if sleep is None else sleep
+    attempts = 1 + len(delays)
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except RuntimeError as exc:
+            last_exc = exc
+            if not _is_image_rate_limit_error(exc) or attempt >= len(delays):
+                raise
+            delay = delays[attempt]
+            status = _image_error_http_status(exc)
+            logger.warning(
+                "Image generation hit HTTP %s; retrying in %ss (attempt %d/%d): %s",
+                status if status is not None else "?",
+                delay,
+                attempt + 2,
+                attempts,
+                exc,
+            )
+            sleeper(delay)
+    raise last_exc  # pragma: no cover
 
 
 def _openai_image_bytes(api_key: str, model: str, prompt: str, timeout: int) -> tuple[bytes, str]:
@@ -139,6 +206,10 @@ def _openrouter_image_bytes(api_key: str, model: str, prompt: str, timeout: int)
             )
             return _extract_openrouter_generated_image(response)
         except (HttpRequestError, RuntimeError) as exc:
+            # 402/429 will also fail the other modality; raise so the outer
+            # retry can back off instead of burning a second quota-failing call.
+            if _is_image_rate_limit_error(exc):
+                raise RuntimeError(f"OpenRouter image generation failed: {exc}") from exc
             last_err = exc
             continue
     raise RuntimeError(f"OpenRouter image generation failed: {last_err}") from last_err
@@ -209,22 +280,28 @@ def _generate_article_image_bytes(
     model: str,
     prompt: str,
     aspect_ratio: str | None = None,
+    backoff: Sequence[float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> tuple[bytes, str]:
     prov = (provider or "").strip().lower()
     timeout = int(settings["timeout"])
-    if prov == "openai":
-        return _openai_image_bytes(settings["openai_api_key"], model, prompt, timeout)
-    if prov == "gemini":
-        return _gemini_image_bytes(
-            settings["gemini_api_key"],
-            model,
-            prompt,
-            timeout,
-            aspect_ratio=aspect_ratio,
-        )
-    if prov == "openrouter":
-        return _openrouter_image_bytes(settings["openrouter_api_key"], model, prompt, timeout)
-    raise RuntimeError(f"Unsupported image provider: {provider}")
+
+    def _once() -> tuple[bytes, str]:
+        if prov == "openai":
+            return _openai_image_bytes(settings["openai_api_key"], model, prompt, timeout)
+        if prov == "gemini":
+            return _gemini_image_bytes(
+                settings["gemini_api_key"],
+                model,
+                prompt,
+                timeout,
+                aspect_ratio=aspect_ratio,
+            )
+        if prov == "openrouter":
+            return _openrouter_image_bytes(settings["openrouter_api_key"], model, prompt, timeout)
+        raise RuntimeError(f"Unsupported image provider: {provider}")
+
+    return _call_with_image_rate_limit_retry(_once, backoff=backoff, sleep=sleep)
 
 
 def _gemini_caption_image_alt(

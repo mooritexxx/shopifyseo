@@ -762,11 +762,11 @@ def _run_generate_article_draft(
                 conn_img.close()
             for note in image_notes:
                 p(note, "image", "running", run_id=run_id, step_key="images", step_label="Generate/upload images", step_index=8, step_total=12)
-            image_failures = [
-                note for note in image_notes
-                if any(token in note.lower() for token in ("failed", "skipp"))
-            ]
-            if not featured_url or image_failures:
+            # Featured cover is required. Missing section images are non-fatal
+            # (logged on the bundle and in image_notes). Matching "skipp"/"failed"
+            # in notes used to abort the whole draft when a free-tier OpenRouter
+            # 402 dropped one section, and also when WebP/resize notes said skipped.
+            if not featured_url:
                 update_run(
                     image_payload_json={
                         "featured_url": featured_url or "",
@@ -776,7 +776,7 @@ def _run_generate_article_draft(
                     },
                     current_step="images",
                 )
-                detail = "; ".join(image_failures[-3:] or image_notes[-3:] or ["Image generation/upload failed"])
+                detail = "; ".join(image_notes[-3:] or ["Image generation/upload failed"])
                 raise RuntimeError(f"Image generation/upload failed: {detail}")
         update_run(
             image_payload_json={

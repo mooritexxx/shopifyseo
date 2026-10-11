@@ -58,15 +58,21 @@ from ._model_tests import (
     test_vision_model,
 )
 from ._providers import (
+    IMAGE_RATE_LIMIT_BACKOFF_SECONDS,
+    IMAGE_RATE_LIMIT_STATUSES,
+    _call_with_image_rate_limit_retry,
     _decode_data_url_image,
     _extract_openrouter_generated_image,
     _gemini_caption_image_alt,
     _gemini_image_bytes,
     _generate_article_image_bytes,
+    _image_error_http_status,
+    _is_image_rate_limit_error,
     _openai_caption_image_alt,
     _openai_image_bytes,
     _openrouter_caption_image_alt,
     _openrouter_image_bytes,
+    _sleep_image_retry,
 )
 from ._vision import (
     _build_article_image_vision_instruction,

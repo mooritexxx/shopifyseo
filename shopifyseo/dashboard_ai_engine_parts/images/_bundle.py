@@ -1,6 +1,5 @@
 """Orchestration: build featured cover + section images, upload to Shopify, return injection-ready bundle."""
 
-import concurrent.futures
 import logging
 from typing import Any, Callable
 
@@ -184,17 +183,17 @@ def try_prepare_article_images_bundle(
         return None, "", [], progress
     progress.append("Featured cover uploaded to Shopify Files.")
     emit(
-        "Featured cover uploaded — generating section images in parallel…",
+        "Featured cover uploaded — generating section images one at a time…",
         "image",
         "running",
         images_total=images_total,
         images_done=1,
     )
 
-    # ── Per-H2-section body images (parallel generation) ───────────────────
-    progress.append(f"Generating {n_sections} section image{'s' if n_sections != 1 else ''} (parallel)...")
+    # ── Per-H2-section body images (sequential — free-tier keys 402 in parallel) ──
+    progress.append(f"Generating {n_sections} section image{'s' if n_sections != 1 else ''} one at a time...")
     emit(
-        f"Generating {n_sections} section images in parallel…",
+        f"Generating {n_sections} section images one at a time…",
         "section-images",
         "start",
         images_total=images_total,
@@ -214,8 +213,11 @@ def try_prepare_article_images_bundle(
             "Photorealistic, well-lit, commercial quality."
         )
 
-    def _generate_one_section_image(sec: dict, idx: int) -> dict | None:
-        """Generate, caption, encode, and upload a single section image. Returns image dict or None."""
+    def _generate_one_section_image(sec: dict, idx: int) -> tuple[dict | None, str | None]:
+        """Generate, caption, encode, and upload a single section image.
+
+        Returns ``(image_dict, None)`` on success or ``(None, reason)`` on failure.
+        """
         prompt = _build_section_prompt(sec, idx)
         try:
             img_bytes, img_mime = _generate_article_image_bytes(
@@ -226,8 +228,12 @@ def try_prepare_article_images_bundle(
                 aspect_ratio=_ARTICLE_INLINE_ASPECT_RATIO,
             )
         except RuntimeError as exc:
-            logger.warning("Section %d image generation failed: %s", idx + 1, exc)
-            return None
+            logger.warning(
+                "Section %d image generation failed: %s; continuing draft without this image.",
+                idx + 1,
+                exc,
+            )
+            return None, str(exc)
 
         alt = _vision_alt_for_article_image(
             settings, img_bytes, img_mime,
@@ -249,38 +255,42 @@ def try_prepare_article_images_bundle(
         try:
             url = upload_image_bytes_and_get_url(upload_bytes, fname, upload_mime, alt=alt)
         except (RuntimeError, SystemExit) as exc:
-            logger.warning("Section %d image upload failed: %s", idx + 1, exc)
-            return None
+            logger.warning(
+                "Section %d image upload failed: %s; continuing draft without this image.",
+                idx + 1,
+                exc,
+            )
+            return None, str(exc)
 
-        return {"url": url, "alt": alt, "insert_pos": sec["insert_pos"]}
+        return {"url": url, "alt": alt, "insert_pos": sec["insert_pos"]}, None
 
     body_images: list[dict] = []
     section_ok = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(n_sections, 4)) as pool:
-        futures = {
-            pool.submit(_generate_one_section_image, sec, idx): idx
-            for idx, sec in enumerate(sections)
-        }
-        for future in concurrent.futures.as_completed(futures):
-            idx = futures[future]
-            try:
-                result = future.result()
-            except Exception:
-                logger.exception("Unexpected error generating section %d image", idx + 1)
-                result = None
-            if result:
-                body_images.append(result)
-                section_ok += 1
-                progress.append(f"Section {idx + 1} image uploaded ('{sections[idx]['heading'][:40]}').")
-            else:
-                progress.append(f"Section {idx + 1} image skipped ('{sections[idx]['heading'][:40]}').")
-            emit(
-                f"Section images: {section_ok}/{n_sections} done ({1 + section_ok}/{images_total} uploaded).",
-                "image",
-                "running",
-                images_total=images_total,
-                images_done=1 + section_ok,
+    for idx, sec in enumerate(sections):
+        try:
+            result, fail_reason = _generate_one_section_image(sec, idx)
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error generating section %d image; continuing draft without this image.",
+                idx + 1,
             )
+            result, fail_reason = None, str(exc)
+        if result:
+            body_images.append(result)
+            section_ok += 1
+            progress.append(f"Section {idx + 1} image uploaded ('{sections[idx]['heading'][:40]}').")
+        else:
+            reason = fail_reason or "unknown error"
+            progress.append(
+                f"Section {idx + 1} image unavailable ('{sections[idx]['heading'][:40]}'): {reason}"
+            )
+        emit(
+            f"Section images: {section_ok}/{n_sections} done ({1 + section_ok}/{images_total} uploaded).",
+            "image",
+            "running",
+            images_total=images_total,
+            images_done=1 + section_ok,
+        )
 
     progress.append(f"Body images ready: {len(body_images)} of {n_sections} sections.")
     return featured_url, feat_alt, body_images, progress

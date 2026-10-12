@@ -764,9 +764,12 @@ SQLite; schema built in `shopifyseo/shopify_catalog_sync/db.py`, `shopifyseo/das
 
 ### Indexes worth knowing
 
-Most lookups ride primary keys. These are the non-obvious ones — all created in
-`ensure_dashboard_schema` (`shopifyseo/dashboard_store.py`), so they appear on
-existing and fresh databases alike.
+Most lookups ride primary keys. These are the non-obvious ones. On SQLite (and
+testdb, `DATABASE_URL` unset) they are created in `ensure_dashboard_schema`
+(`shopifyseo/dashboard_store.py`) via `_sqlite_ddl`. Production Postgres skips
+that request-path `CREATE INDEX IF NOT EXISTS` — it takes ShareLock before
+checking whether the index exists — and the cutover `shopifyseo_ensure_index`
+helper in `scripts/pg_cutover/post_load_constraints.sql` owns those indexes.
 
 | Index | Table | Why it exists |
 | ----- | ----- | ------------- |

@@ -604,3 +604,61 @@ def test_run_job_python_bools(smoke_ids):
         assert st["status"] == "complete", st["error"]
     finally:
         conn.close()
+
+
+def test_draft_run_get_answers_while_link_suggestions_write_held(client, smoke_ids):
+    """GET /api/articles/draft-runs/{id} must not wait on a rebuild ShareLock."""
+    import threading
+
+    from shopifyseo.dashboard_store import create_article_draft_run
+    from shopifyseo.db import connect_postgres, is_lock_error, is_operational_error
+
+    setup = connect_postgres(_URL)
+    try:
+        run_id = create_article_draft_run(setup, {"topic": "rebuild lock"})
+    finally:
+        setup.close()
+
+    holder = connect_postgres(_URL)
+    control = connect_postgres(_URL)
+    worker: threading.Thread | None = None
+    try:
+        holder.execute("DELETE FROM link_suggestions WHERE status = 'suggested' AND id < 0")
+        control.execute("SET lock_timeout = '500ms'")
+        blocked = False
+        try:
+            control.execute(
+                "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status "
+                "ON link_suggestions (status, score)"
+            )
+        except Exception as exc:
+            assert is_lock_error(exc) or is_operational_error(exc), repr(exc)
+            blocked = True
+        assert blocked, "CREATE INDEX IF NOT EXISTS should wait on the rebuild ShareLock"
+
+        done: dict = {}
+
+        def _get() -> None:
+            try:
+                done["resp"] = client.get(f"/api/articles/draft-runs/{run_id}")
+            except Exception as exc:
+                done["error"] = exc
+
+        worker = threading.Thread(target=_get)
+        worker.start()
+        worker.join(timeout=8)
+        assert not worker.is_alive(), "GET /api/articles/draft-runs blocked on the rebuild lock"
+        assert "error" not in done, done.get("error")
+        _assert_not_5xx(done["resp"], "draft-run GET during rebuild")
+        body = done["resp"].json()
+        assert body.get("ok") is True
+        assert body["data"]["id"] == run_id
+    finally:
+        try:
+            holder.rollback()
+        except Exception:
+            pass
+        holder.close()
+        control.close()
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)

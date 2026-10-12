@@ -170,7 +170,13 @@ def _migrate_link_suggestions_check_constraint(conn: Any) -> bool:
 
 
 def _sqlite_ddl(conn: Any, sql: str) -> None:
-    """Run SQLite-only CREATE TABLE (identity PK). Cutover owns the PG schema."""
+    """Run SQLite-only CREATE TABLE / CREATE INDEX. Cutover owns the PG schema.
+
+    Production Postgres skips this: ``CREATE INDEX IF NOT EXISTS`` still takes
+    ShareLock on the table before it checks whether the index exists, so a
+    request-path ``ensure_dashboard_schema`` would block behind a long
+    ``link_suggestions`` writer (internal-link rebuild).
+    """
     if sqlite_runtime_ddl():
         conn.execute(sql)
 
@@ -316,11 +322,12 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE INDEX IF NOT EXISTS idx_gsc_query_dimension_lookup
         ON gsc_query_dimension_rows(object_type, object_handle, dimension_kind)
-        """
+        """,
     )
     # Daily per-page Search Console history. The catalog columns hold only a current
     # snapshot, so trend ("is this page improving?") was unanswerable. Google retains
@@ -341,11 +348,12 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         """
         CREATE INDEX IF NOT EXISTS idx_gsc_page_daily_object
         ON gsc_page_daily(object_type, object_handle, date)
-        """
+        """,
     )
     _sqlite_ddl(
         conn,
@@ -467,21 +475,25 @@ def ensure_dashboard_schema(conn: Any) -> None:
     # exactly, so results are unchanged while the planner stops doing a
     # three-way nested-loop scan. _fetch_competitor_gaps measured 4.4 s per
     # object before these and under 0.1 ms after.
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         "CREATE INDEX IF NOT EXISTS idx_keyword_metrics_keyword_lower"
-        " ON keyword_metrics(LOWER(keyword))"
+        " ON keyword_metrics(LOWER(keyword))",
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         "CREATE INDEX IF NOT EXISTS idx_keyword_page_map_keyword_lower"
-        " ON keyword_page_map(LOWER(keyword))"
+        " ON keyword_page_map(LOWER(keyword))",
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         "CREATE INDEX IF NOT EXISTS idx_competitor_gaps_keyword_lower"
-        " ON competitor_keyword_gaps(LOWER(keyword))"
+        " ON competitor_keyword_gaps(LOWER(keyword))",
     )
-    conn.execute(
+    _sqlite_ddl(
+        conn,
         "CREATE INDEX IF NOT EXISTS idx_keyword_page_map_object"
-        " ON keyword_page_map(object_type, object_handle)"
+        " ON keyword_page_map(object_type, object_handle)",
     )
     conn.execute(
         """
@@ -711,8 +723,9 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(object_type)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(object_type)",
     )
     _sqlite_ddl(
         conn,
@@ -731,8 +744,9 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_usage_log_created ON api_usage_log(created_at)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_log_created ON api_usage_log(created_at)",
     )
     _sqlite_ddl(
         conn,
@@ -749,8 +763,9 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links (target_type, target_handle)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links (target_type, target_handle)",
     )
     # Migrate link_suggestions table if it has the old CHECK constraint (without 'undone')
     _migrate_link_suggestions_check_constraint(conn)
@@ -781,8 +796,9 @@ def ensure_dashboard_schema(conn: Any) -> None:
     _ensure_columns(conn, "link_suggestions", {"weak_anchor": "INTEGER DEFAULT 0"})
     from .internal_links.store import ensure_schema as ensure_link_body_schema
     ensure_link_body_schema(conn)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestions_status ON link_suggestions (status, score)",
     )
     # Phase D: link_suggestion_events for measurement/outcomes
     _sqlite_ddl(
@@ -804,11 +820,13 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_created ON link_suggestion_events (created_at)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_created ON link_suggestion_events (created_at)",
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_suggestion ON link_suggestion_events (suggestion_id)"
+    _sqlite_ddl(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_link_suggestion_events_suggestion ON link_suggestion_events (suggestion_id)",
     )
     from .rank_tracking.store import ensure_schema as ensure_rank_schema
     ensure_rank_schema(conn)

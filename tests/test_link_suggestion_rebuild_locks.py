@@ -65,18 +65,24 @@ def test_ensure_dashboard_schema_skips_index_ddl_on_postgres_runtime(db_conn, mo
 
     ensure_dashboard_schema(db_conn)
     monkeypatch.setattr(ds, "sqlite_runtime_ddl", lambda: False)
-    seen: list[str] = []
-    real_execute = db_conn.execute
 
-    def spy(sql, *args, **kwargs):
-        text = sql if isinstance(sql, str) else str(sql)
-        if "CREATE INDEX" in text.upper():
-            seen.append(text)
-        return real_execute(sql, *args, **kwargs)
+    class _ExecuteSpy:
+        def __init__(self, inner):
+            self._inner = inner
+            self.seen: list[str] = []
 
-    db_conn.execute = spy
-    ensure_dashboard_schema(db_conn)
-    leaked = [sql for sql in seen if any(name in sql for name in DASHBOARD_STORE_INDEX_NAMES)]
+        def execute(self, sql, *args, **kwargs):
+            text = sql if isinstance(sql, str) else str(sql)
+            if "CREATE INDEX" in text.upper():
+                self.seen.append(text)
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    spy = _ExecuteSpy(db_conn)
+    ensure_dashboard_schema(spy)
+    leaked = [sql for sql in spy.seen if any(name in sql for name in DASHBOARD_STORE_INDEX_NAMES)]
     assert leaked == []
 
 

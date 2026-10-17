@@ -122,7 +122,7 @@ DELTA_TABLES: dict[str, tuple[str, ...]] = {
     "team_task_events": ("id",),
     "products": ("shopify_id",),
     "product_variants": ("shopify_id",),
-    "product_images": ("shopify_id",),
+    "product_images": ("product_shopify_id", "shopify_id"),
     "product_metafields": ("shopify_id",),
     "product_image_file_cache": ("image_shopify_id",),
     "collections": ("shopify_id",),

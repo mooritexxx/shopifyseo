@@ -243,6 +243,38 @@ def table_columns(conn: Any, table: str, *, backend: Backend | None = None) -> s
         return {row[1] if isinstance(row, tuple) else row["name"] for row in rows}
 
 
+def primary_key_columns(
+    conn: Any, table: str, *, backend: Backend | None = None
+) -> tuple[tuple[str, ...], str | None]:
+    """Primary key columns of ``table`` in key order, plus the constraint name.
+
+    The name is only known on PostgreSQL (SQLite returns None). An empty tuple
+    means the table has no primary key or does not exist.
+    """
+    if backend is None:
+        backend = _resolve_conn_backend(conn, backend)
+
+    if backend == Backend.POSTGRES:
+        rows = conn.execute(
+            """
+            SELECT c.conname, a.attname
+            FROM pg_constraint c
+            JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+            WHERE c.conrelid = to_regclass(?) AND c.contype = 'p'
+            ORDER BY k.ord
+            """,
+            (table,),
+        ).fetchall()
+        if not rows:
+            return (), None
+        return tuple(r[1] for r in rows), rows[0][0]
+    quoted = table.replace('"', '""')
+    rows = conn.execute(f'PRAGMA table_info("{quoted}")').fetchall()
+    pk = sorted((r[5], r[1]) for r in rows if r[5])
+    return tuple(name for _, name in pk), None
+
+
 def table_ddl(conn: Any, table: str, *, backend: Backend | None = None) -> str | None:
     """Get the CREATE TABLE DDL for a table, or None if it doesn't exist.
 

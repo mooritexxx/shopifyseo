@@ -566,6 +566,53 @@ def test_sync_products_canned_nodes(smoke_ids):
     assert result is not None
 
 
+def test_sync_products_shared_media_across_products(smoke_ids):
+    """One MediaImage on two products must not hit a duplicate key (2026-10-17)."""
+    from shopifyseo.dashboard_store import DB_PATH
+    from shopifyseo.shopify_catalog_sync.products import sync_products
+
+    shared = {
+        "node": {
+            "id": "gid://shopify/MediaImage/47749919342955",
+            "alt": "Shared bottle",
+            "image": {"url": "https://cdn.shopify.com/shared.webp", "width": 800, "height": 800},
+        }
+    }
+
+    def _node(num: int) -> dict:
+        return {
+            "id": f"gid://shopify/Product/{num}",
+            "legacyResourceId": str(num),
+            "handle": f"shared-media-product-{num}",
+            "title": "Shared media",
+            "vendor": "",
+            "productType": "",
+            "status": "ACTIVE",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-10-16T00:00:00Z",
+            "publishedAt": "2026-01-01T00:00:00Z",
+            "descriptionHtml": "",
+            "seo": {"title": "", "description": ""},
+            "tags": [],
+            "totalInventory": 1,
+            "tracksInventory": True,
+            "onlineStoreUrl": f"https://example.com/products/shared-media-product-{num}",
+            "variants": {"edges": []},
+            "media": {"edges": [shared]},
+            "images": {"edges": []},
+            "metafields": {"edges": []},
+            "collections": {"edges": []},
+            "options": [],
+        }
+
+    with mock.patch(
+        "shopifyseo.shopify_catalog_sync.products.fetch_metaobjects_by_ids",
+        return_value=[],
+    ):
+        result = sync_products(DB_PATH, 50, products=[_node(9901), _node(9902)])
+    assert result["images_synced"] == 2
+
+
 def test_run_job_python_bools(smoke_ids):
     import backend.app.services.rank_tracking as rt
     from backend.app import db as app_db

@@ -275,7 +275,7 @@ def ensure_schema(conn: Any) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS product_images (
-          shopify_id TEXT PRIMARY KEY,
+          shopify_id TEXT NOT NULL,
           product_shopify_id TEXT NOT NULL,
           position INTEGER,
           alt_text TEXT,
@@ -284,6 +284,9 @@ def ensure_schema(conn: Any) -> None:
           height INTEGER,
           raw_json TEXT NOT NULL,
           synced_at TEXT NOT NULL,
+          -- One Shopify MediaImage can be referenced by several products
+          -- (fileUpdate referencesToAdd), so the media id alone is not unique.
+          PRIMARY KEY (product_shopify_id, shopify_id),
           FOREIGN KEY(product_shopify_id) REFERENCES products(shopify_id) ON DELETE CASCADE
         );
 
@@ -425,6 +428,11 @@ def ensure_schema(conn: Any) -> None:
         # After executescript's implicit COMMIT — SQLite ignores
         # foreign_keys while a transaction is already open.
         set_foreign_keys(conn, True)
+        # Existing SQLite catalogs: rebuild product_images onto the composite key.
+        # Production Postgres is migrated by scripts/migrate_product_images_pk.py.
+        from .image_pk import migrate_product_images_pk
+
+        migrate_product_images_pk(conn)
     ensure_column(conn, "sync_runs", "collections_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "collection_metafields_synced", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "sync_runs", "pages_synced", "INTEGER NOT NULL DEFAULT 0")

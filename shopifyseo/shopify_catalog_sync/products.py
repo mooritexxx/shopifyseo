@@ -281,7 +281,16 @@ def upsert_product(conn: Any, product: dict, synced_at: str) -> tuple[int, int, 
         ],
     )
 
-    images = _product_images_for_upsert(product)
+    # product_images is keyed (product_shopify_id, shopify_id): the same MediaImage
+    # may be attached to several products. Drop repeats within one product's gallery.
+    images: list[dict] = []
+    seen_image_ids: set[str] = set()
+    for image in _product_images_for_upsert(product):
+        image_id = str(image.get("id") or "")
+        if image_id in seen_image_ids:
+            continue
+        seen_image_ids.add(image_id)
+        images.append(image)
     executemany(conn,
         """
         INSERT INTO product_images (

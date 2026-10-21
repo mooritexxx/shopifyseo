@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any
 
+from .seo_quality import build_seo_input
 from .shopify_admin import graphql_request
 from .shopify_catalog_sync import sync_article, sync_collection, sync_page, sync_product
 
@@ -72,7 +73,7 @@ def _set_seo_metafields(owner_id: str, seo_title: str, seo_description: str) -> 
         raise RuntimeError(json.dumps(result["userErrors"], ensure_ascii=True))
 
 
-def live_update_collection(db_path: str, collection_id: str, title: str, seo_title: str, seo_description: str, body_html: str) -> dict:
+def live_update_collection(db_path: str, collection_id: str, title: str, seo_title: str, seo_description: str, body_html: str | None) -> dict:
     """Push collection SEO + body to Shopify.
 
     SEO title/description go through ``metafieldsSet`` first so they persist even when
@@ -102,7 +103,9 @@ def live_update_collection(db_path: str, collection_id: str, title: str, seo_tit
       }
     }
     """
-    input_data = {"id": collection_id, "descriptionHtml": body_html}
+    input_data = {"id": collection_id}
+    if body_html is not None:
+        input_data["descriptionHtml"] = body_html
     if title.strip():
         input_data["title"] = title
     data = graphql_request(mutation, {"input": input_data})
@@ -117,7 +120,16 @@ def live_update_collection(db_path: str, collection_id: str, title: str, seo_tit
     return result
 
 
-def live_update_product(db_path: str, product_id: str, title: str, seo_title: str, seo_description: str, body_html: str, tags: str) -> dict:
+def live_update_product(
+    db_path: str,
+    product_id: str,
+    title: str,
+    seo_title: str | None,
+    seo_description: str | None,
+    body_html: str | None,
+    tags: str | None,
+    current_seo: dict | None = None,
+) -> dict:
     mutation = """
     mutation ProductUpdate($input: ProductInput!) {
       productUpdate(input: $input) {
@@ -139,15 +151,14 @@ def live_update_product(db_path: str, product_id: str, title: str, seo_title: st
       }
     }
     """
-    input_data = {
+    input_data: dict[str, Any] = {
         "id": product_id,
-        "seo": {
-            "title": seo_title,
-            "description": seo_description,
-        },
-        "descriptionHtml": body_html,
-        "tags": [tag.strip() for tag in tags.split(",") if tag.strip()],
+        "seo": build_seo_input(current_seo, title=seo_title, description=seo_description),
     }
+    if body_html is not None:
+        input_data["descriptionHtml"] = body_html
+    if tags is not None:
+        input_data["tags"] = [tag.strip() for tag in tags.split(",") if tag.strip()]
     if title.strip():
         input_data["title"] = title
     data = graphql_request(mutation, {"input": input_data})
@@ -159,7 +170,7 @@ def live_update_product(db_path: str, product_id: str, title: str, seo_title: st
     return result
 
 
-def live_update_page(db_path: str, page_id: str, title: str, seo_title: str, seo_description: str, body_html: str) -> dict:
+def live_update_page(db_path: str, page_id: str, title: str, seo_title: str, seo_description: str, body_html: str | None) -> dict:
     # Single pageUpdate with PageUpdateInput.metafields (Shopify-recommended for resource-owned SEO metafields).
     # Avoids relying on a separate metafieldsSet in the same request, which can be flaky for page SEO read-back.
     mutation = """
@@ -178,7 +189,9 @@ def live_update_page(db_path: str, page_id: str, title: str, seo_title: str, seo
       }
     }
     """
-    page: dict = {"body": body_html}
+    page: dict = {}
+    if body_html is not None:
+        page["body"] = body_html
     if title.strip():
         page["title"] = title
     metafields = _seo_metafields(seo_title, seo_description)

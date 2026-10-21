@@ -1,8 +1,9 @@
 """Editor write paths.
 
-These mirror UI saves into the local catalog DB. Each helper updates only
-the fields the editor exposes (other columns are left untouched via SQL
-``CASE WHEN ? != '' THEN ? ELSE col END``). All commit on success.
+These mirror UI saves into the local catalog DB. Product writes skip ``None``
+(omitted) fields; empty title/body/tags still leave those columns untouched.
+Collection/page helpers keep ``CASE WHEN ? != '' THEN ? ELSE col END``.
+All commit on success.
 """
 from __future__ import annotations
 
@@ -14,32 +15,44 @@ def apply_saved_product_fields_from_editor(
     conn: Any,
     shopify_id: str,
     *,
-    title: str = "",
-    seo_title: str = "",
-    seo_description: str = "",
-    body_html: str = "",
-    tags: str = "",
+    title: str | None = None,
+    seo_title: str | None = None,
+    seo_description: str | None = None,
+    body_html: str | None = None,
+    tags: str | None = None,
 ) -> None:
-    """Update product fields in the local DB after an editor save."""
-    tags_json_value = json.dumps([t.strip() for t in tags.split(",") if t.strip()]) if tags.strip() else ""
+    """Update product fields in the local DB after an editor save.
+
+    ``None`` means the field was not provided and must be left untouched.
+    Empty title/body/tags still skip the column (same as the previous
+    ``CASE WHEN ? != ''`` behavior). Provided SEO fields are written as-is.
+    """
+    updates: list[str] = []
+    params: list[Any] = []
+
+    if title:
+        updates.append("title = ?")
+        params.append(title)
+    if seo_title is not None:
+        updates.append("seo_title = ?")
+        params.append(seo_title)
+    if seo_description is not None:
+        updates.append("seo_description = ?")
+        params.append(seo_description)
+    if body_html:
+        updates.append("description_html = ?")
+        params.append(body_html)
+    if tags is not None and tags.strip():
+        updates.append("tags_json = ?")
+        params.append(json.dumps([t.strip() for t in tags.split(",") if t.strip()]))
+
+    if not updates:
+        return
+
+    params.append(shopify_id)
     conn.execute(
-        """
-        UPDATE products SET
-            title = CASE WHEN ? != '' THEN ? ELSE title END,
-            seo_title = ?,
-            seo_description = ?,
-            description_html = CASE WHEN ? != '' THEN ? ELSE description_html END,
-            tags_json = CASE WHEN ? != '' THEN ? ELSE tags_json END
-        WHERE shopify_id = ?
-        """,
-        (
-            title, title,
-            seo_title,
-            seo_description,
-            body_html, body_html,
-            tags_json_value, tags_json_value,
-            shopify_id,
-        ),
+        f"UPDATE products SET {', '.join(updates)} WHERE shopify_id = ?",
+        params,
     )
     conn.commit()
 

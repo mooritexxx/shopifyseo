@@ -231,27 +231,40 @@ def update_product(handle: str, payload: dict[str, Any]) -> tuple[bool, str]:
             return False, "Product not found"
         product = detail["product"]
         try:
-            from shopifyseo.seo_quality import validate_changed_metadata
+            from shopifyseo.seo_quality import build_seo_input, validate_changed_metadata
             validate_changed_metadata("product", dict(product), payload)
+            current_seo = {
+                "title": product.get("seo_title") or "",
+                "description": product.get("seo_description") or "",
+            }
+            seo = build_seo_input(
+                current_seo,
+                title=payload.get("seo_title"),
+                description=payload.get("seo_description"),
+            )
+            title = payload.get("title") if payload.get("title") is not None else (product.get("title") or "")
             with SYNC_LOCK:
                 live_update_product(
                     DB_PATH,
                     product["shopify_id"],
-                    payload.get("title", ""),
-                    payload.get("seo_title", ""),
-                    payload.get("seo_description", ""),
-                    payload.get("body_html", ""),
-                    payload.get("tags", ""),
+                    title,
+                    seo["title"],
+                    seo["description"],
+                    payload.get("body_html"),
+                    payload.get("tags"),
+                    current_seo=current_seo,
                 )
-                dq.apply_saved_product_fields_from_editor(
-                    conn,
-                    product["shopify_id"],
-                    title=str(payload.get("title") or ""),
-                    seo_title=str(payload.get("seo_title") or ""),
-                    seo_description=str(payload.get("seo_description") or ""),
-                    body_html=str(payload.get("body_html") or ""),
-                    tags=str(payload.get("tags") or ""),
-                )
+                local_fields = {
+                    key: payload[key]
+                    for key in ("title", "seo_title", "seo_description", "body_html", "tags")
+                    if payload.get(key) is not None
+                }
+                if local_fields:
+                    dq.apply_saved_product_fields_from_editor(
+                        conn,
+                        product["shopify_id"],
+                        **local_fields,
+                    )
                 dq.set_workflow_state(
                     conn,
                     "product",

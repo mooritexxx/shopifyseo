@@ -57,3 +57,30 @@ def validate_changed_metadata(kind, current, payload):
     # Existing content and intentional clearing remain editable; enforce nonempty changes.
     changed = {k: v for k, v in payload.items() if k in quality_policy(kind) and str(v or '').strip() and str(v) != str(current.get(k) or '')}
     validate_metadata(kind, changed)
+
+
+def build_seo_input(current, title=None, description=None):
+    """Build a complete Shopify ``seo {title, description}`` input.
+
+    Shopify replaces the whole ``seo`` object on write, so both keys must be
+    present. ``None`` means "keep the current value". Raises ``ValueError`` if a
+    resolved value would be empty while the current one is not.
+    """
+    current = current or {}
+    current_title = current.get("title")
+    if current_title is None:
+        current_title = current.get("seo_title")
+    current_description = current.get("description")
+    if current_description is None:
+        current_description = current.get("seo_description")
+    current_title = str(current_title or "")
+    current_description = str(current_description or "")
+
+    resolved_title = current_title if title is None else str(title)
+    resolved_description = current_description if description is None else str(description)
+
+    if not resolved_title.strip() and current_title.strip():
+        raise ValueError("Refusing to clear seo.title while the current value is non-empty.")
+    if not resolved_description.strip() and current_description.strip():
+        raise ValueError("Refusing to clear seo.description while the current value is non-empty.")
+    return {"title": resolved_title, "description": resolved_description}

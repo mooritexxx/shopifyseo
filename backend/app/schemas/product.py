@@ -174,11 +174,11 @@ class WorkflowPayload(BaseModel):
 
 
 class ProductDraftPayload(BaseModel):
-    title: str = ""
-    seo_title: str = ""
-    seo_description: str = ""
-    body_html: str = ""
-    tags: str = ""
+    title: str | None = None
+    seo_title: str | None = None
+    seo_description: str | None = None
+    body_html: str | None = None
+    tags: str | None = None
     workflow_status: str = "Needs fix"
     workflow_notes: str = ""
 

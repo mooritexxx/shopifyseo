@@ -182,6 +182,16 @@ def get_content_inspection_link(kind: str, handle: str) -> tuple[bool, str]:
     return get_object_inspection_link(kind, handle)
 
 
+def _live_body_html(current: dict[str, Any], payload: dict[str, Any], current_key: str) -> str | None:
+    """Return body HTML for a live Shopify write, or None when it is unchanged."""
+    incoming = payload.get("body_html")
+    if incoming is None:
+        return None
+    if incoming == (current.get(current_key) or ""):
+        return None
+    return incoming
+
+
 def _smart_collection_partial_message(exc: Exception) -> str:
     """Human-readable message when SEO saved but ``collectionUpdate`` (title/body) was rejected."""
     raw = str(exc)
@@ -227,7 +237,7 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
                             payload.get("title", ""),
                             payload.get("seo_title", ""),
                             payload.get("seo_description", ""),
-                            payload.get("body_html", ""),
+                            _live_body_html(current, payload, "description_html"),
                         )
                     except ShopifyPartialCollectionUpdateError as exc:
                         # SEO metafields saved; only title/body push was rejected. Keep the
@@ -248,7 +258,7 @@ def update_content(kind: str, handle: str, payload: dict[str, Any]) -> tuple[boo
                         payload.get("title", ""),
                         payload.get("seo_title", ""),
                         payload.get("seo_description", ""),
-                        payload.get("body_html", ""),
+                        _live_body_html(current, payload, "body"),
                     )
                     dq.apply_saved_page_fields_from_editor(
                         conn,
@@ -308,7 +318,7 @@ def save_all_collection_meta_to_shopify() -> tuple[bool, str, dict[str, Any]]:
                             "",
                             seo_title,
                             seo_description,
-                            str(collection.get("description_html") or ""),
+                            None,
                         )
                     except ShopifyPartialCollectionUpdateError:
                         # SEO metafields saved; only the body push was rejected (smart
@@ -381,7 +391,7 @@ def save_all_page_meta_to_shopify() -> tuple[bool, str, dict[str, Any]]:
                         "",
                         seo_title,
                         seo_description,
-                        body_html,
+                        None,
                     )
                     dq.apply_saved_page_fields_from_editor(
                         conn,

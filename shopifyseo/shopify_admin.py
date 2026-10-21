@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from .dashboard_http import HttpRequestError, request_json
+from .seo_quality import build_seo_input
 
 
 DEFAULT_API_VERSION = "2026-01"
@@ -538,6 +539,48 @@ def query_pages(args: argparse.Namespace) -> None:
     print_json(data["data"]["pages"])
 
 
+def fetch_seo_by_id(resource: str, resource_id: str) -> dict[str, str]:
+    """Read current Shopify ``seo {title description}`` for a product or collection."""
+    if resource == "product":
+        query = """
+        query ProductSeo($id: ID!) {
+          product(id: $id) {
+            seo { title description }
+          }
+        }
+        """
+        node_key = "product"
+    elif resource == "collection":
+        query = """
+        query CollectionSeo($id: ID!) {
+          collection(id: $id) {
+            seo { title description }
+          }
+        }
+        """
+        node_key = "collection"
+    else:
+        raise ValueError(f"Unsupported SEO resource: {resource}")
+    data = graphql_request(query, {"id": resource_id})
+    node = ((data.get("data") or {}).get(node_key) or {})
+    seo = node.get("seo") or {}
+    return {"title": seo.get("title") or "", "description": seo.get("description") or ""}
+
+
+def _cli_seo_input(args: argparse.Namespace, resource: str) -> dict[str, str] | None:
+    title = args.seo_title
+    description = args.seo_description
+    if title is None and description is None:
+        return None
+    current = fetch_seo_by_id(resource, args.id)
+    if getattr(args, "allow_clear", False):
+        if title is not None and not str(title).strip():
+            current["title"] = ""
+        if description is not None and not str(description).strip():
+            current["description"] = ""
+    return build_seo_input(current, title=title, description=description)
+
+
 def update_product_seo(args: argparse.Namespace) -> None:
     mutation = """
     mutation ProductUpdate($input: ProductInput!) {
@@ -560,13 +603,10 @@ def update_product_seo(args: argparse.Namespace) -> None:
       }
     }
     """
-    input_data = {"id": args.id}
-    if args.seo_title or args.seo_description:
-        input_data["seo"] = {}
-        if args.seo_title:
-            input_data["seo"]["title"] = args.seo_title
-        if args.seo_description:
-            input_data["seo"]["description"] = args.seo_description
+    input_data: dict[str, Any] = {"id": args.id}
+    seo = _cli_seo_input(args, "product")
+    if seo is not None:
+        input_data["seo"] = seo
     if args.body_html:
         input_data["descriptionHtml"] = args.body_html
     if args.tags:
@@ -596,15 +636,12 @@ def update_collection_seo(args: argparse.Namespace) -> None:
       }
     }
     """
-    input_data = {"id": args.id}
+    input_data: dict[str, Any] = {"id": args.id}
     if args.title:
         input_data["title"] = args.title
-    if args.seo_title or args.seo_description:
-        input_data["seo"] = {}
-        if args.seo_title:
-            input_data["seo"]["title"] = args.seo_title
-        if args.seo_description:
-            input_data["seo"]["description"] = args.seo_description
+    seo = _cli_seo_input(args, "collection")
+    if seo is not None:
+        input_data["seo"] = seo
     if args.body_html:
         input_data["descriptionHtml"] = args.body_html
     data = graphql_request(mutation, {"input": input_data})
@@ -853,18 +890,28 @@ def parse_args() -> argparse.Namespace:
 
     product_update = subparsers.add_parser("update-product-seo", help="Update product SEO/body/tags")
     product_update.add_argument("--id", required=True, help="GraphQL product ID")
-    product_update.add_argument("--seo-title", default="")
-    product_update.add_argument("--seo-description", default="")
+    product_update.add_argument("--seo-title", default=None)
+    product_update.add_argument("--seo-description", default=None)
     product_update.add_argument("--body-html", default="")
     product_update.add_argument("--tags", default="")
+    product_update.add_argument(
+        "--allow-clear",
+        action="store_true",
+        help="Allow blanking an SEO field that currently has a value.",
+    )
     product_update.set_defaults(func=update_product_seo)
 
     collection_update = subparsers.add_parser("update-collection-seo", help="Update collection SEO/body")
     collection_update.add_argument("--id", required=True, help="GraphQL collection ID")
     collection_update.add_argument("--title", default="")
-    collection_update.add_argument("--seo-title", default="")
-    collection_update.add_argument("--seo-description", default="")
+    collection_update.add_argument("--seo-title", default=None)
+    collection_update.add_argument("--seo-description", default=None)
     collection_update.add_argument("--body-html", default="")
+    collection_update.add_argument(
+        "--allow-clear",
+        action="store_true",
+        help="Allow blanking an SEO field that currently has a value.",
+    )
     collection_update.set_defaults(func=update_collection_seo)
 
     page_update = subparsers.add_parser("update-page-seo", help="Update page SEO/body")

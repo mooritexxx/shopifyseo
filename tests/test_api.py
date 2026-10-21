@@ -552,7 +552,7 @@ def test_collection_update_uses_targeted_refresh(monkeypatch):
         "title": "Disposable Vapes",
         "seo_title": "Disposable Vapes Canada",
         "seo_description": "Shop disposable vapes in Canada.",
-        "body_html": "<p>Updated collection copy.</p>",
+        "body_html": None,
     }
     assert calls["workflow"] == {
         "kind": "collection",
@@ -643,7 +643,7 @@ def test_page_bulk_save_uses_current_page_drafts(monkeypatch):
             "title": "",
             "seo_title": "About Our Store",
             "seo_description": "Learn about our store and product selection.",
-            "body_html": "<p>About page body.</p>",
+            "body_html": None,
         }
     ]
 
@@ -831,7 +831,7 @@ def test_page_update_uses_targeted_refresh(monkeypatch):
         "title": "Contact",
         "seo_title": "Contact Us",
         "seo_description": "Get in touch with our team.",
-        "body_html": "<p>Contact us.</p>",
+        "body_html": None,
     }
     assert calls["workflow"] == {
         "kind": "page",

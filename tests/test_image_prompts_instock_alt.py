@@ -1,4 +1,4 @@
-"""Follow-up to #84: brand/number-free image prompts, in-stock-first writer candidates, word-safe alt text."""
+"""Follow-up to #84: brand/number-free image prompts, stock-neutral writer candidates, word-safe alt text."""
 import sqlite3
 
 from shopifyseo.dashboard_ai_engine_parts import _article_draft
@@ -41,27 +41,15 @@ def test_section_prompt_has_no_brand_or_numbers():
         assert "smoke" not in p.lower()
 
 
-def test_rank_in_stock_products_first_keeps_non_product_slots():
-    conn = _conn()
-    targets = [
-        {"type": "collection", "handle": "fog"},
-        {"type": "product", "handle": "fog-a"},  # out of stock
-        {"type": "blog_article", "handle": "post"},
-        {"type": "product", "handle": "fog-b"},
-        {"type": "product", "handle": "fog-c"},  # NULL inventory = in stock
-    ]
-    out = _article_draft.rank_in_stock_products_first(conn, targets)
-    assert [t["handle"] for t in out] == ["fog", "fog-b", "post", "fog-c", "fog-a"]
-    assert len(out) == len(targets)
-
-
-def test_focus_product_handles_in_stock_first(monkeypatch):
+def test_focus_product_handles_ignores_stock(monkeypatch):
     conn = _conn()
     monkeypatch.setattr(_article_draft, "_relevance_context", lambda c, t, p: (" fog formulas ", "fog formulas", set()))
     import shopifyseo.product_linkability as pl
     monkeypatch.setattr(pl, "linkable_product_sql", lambda c, alias="p": "1=1")
-    out = _article_draft.focus_product_handles(conn, "Fog Formulas 1600", None, limit=2)
-    assert "fog-a" not in out and len(out) == 2
+    out = _article_draft.focus_product_handles(conn, "Fog Formulas 1600", None, limit=3)
+    # Equal relevance -> alphabetical by title; out-of-stock fog-a (Blue Razz) is not demoted.
+    assert out == ["fog-a", "fog-c", "fog-b"]
+    assert not hasattr(_article_draft, "rank_in_stock_products_first")
 
 
 def test_validate_alt_never_cuts_mid_word():

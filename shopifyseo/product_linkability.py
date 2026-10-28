@@ -15,9 +15,7 @@ A product is **linkable** when all of the following are true:
    linkable.
 
 Stock / inventory is **never** checked for linkability. Out-of-stock products are
-fully valid link targets; do not filter, swap, or reject based on inventory. (Article
-link *suggestions* rank in-stock products first; see
-``_article_draft.relevant_product_repair_targets``.)
+fully valid link targets; do not filter, swap, reorder, or reject based on inventory.
 
 The functions in this module are the single source of truth for linkability.
 Any query, filter, or validation that needs to decide whether a product is a

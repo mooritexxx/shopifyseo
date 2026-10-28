@@ -97,3 +97,11 @@ def test_gemini_caption_discards_truncated(monkeypatch):
     monkeypatch.setattr(_providers.time, "sleep", lambda s: None)
     out = _providers._gemini_caption_image_alt("k", b"x", "image/png", 5, model="gemini-3.5-flash-lite")
     assert out == "A plain matte device on pale stone" and len(calls) == 2
+
+
+def test_strip_injected_body_images():
+    from backend.app.routers.blogs import strip_injected_body_images
+
+    body = '<h2>A</h2><p>x</p>\n<p><img src="https://cdn.shopify.com/s/files/1/a.webp" alt="a" loading="lazy" /></p>\n<p>y</p><p><img src="https://example.com/keep.png"></p>'
+    out = strip_injected_body_images(body)
+    assert "cdn.shopify.com" not in out and "example.com/keep.png" in out and "<p>y</p>" in out

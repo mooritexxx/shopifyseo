@@ -1492,3 +1492,69 @@ def create_draft_article(payload: ArticleCreateRequest):
             is_published=article["isPublished"],
         )
     )
+
+
+class ArticleRegenerateImagesRequest(BaseModel):
+    article_id: str
+    topic: str = ""
+
+
+_INJECTED_BODY_IMAGE_RE = None
+
+
+def strip_injected_body_images(body_html: str) -> str:
+    """Remove paragraph-wrapped inline images previously injected by the image bundle."""
+    import re
+
+    global _INJECTED_BODY_IMAGE_RE
+    if _INJECTED_BODY_IMAGE_RE is None:
+        _INJECTED_BODY_IMAGE_RE = re.compile(
+            r"\s*<p>\s*<img\b[^>]*\bsrc=\"https://cdn\.shopify\.com/[^\"]*\"[^>]*>\s*</p>\s*",
+            re.IGNORECASE,
+        )
+    return _INJECTED_BODY_IMAGE_RE.sub("\n", body_html or "")
+
+
+@router.post("/articles/regenerate-images")
+def regenerate_article_images(payload: ArticleRegenerateImagesRequest):
+    """Regenerate the featured cover + section images of an **unpublished** draft article.
+
+    Refuses published articles. Old inline images are stripped and replaced; the
+    article stays unpublished.
+    """
+    from shopifyseo.shopify_admin import graphql_request, update_article_body_html, update_article_featured_image
+
+    article_id = (payload.article_id or "").strip()
+    if not article_id.startswith("gid://shopify/Article/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="article_id must be a Shopify Article GID")
+    data = graphql_request(
+        "query A($id: ID!) { article(id: $id) { id title body isPublished } }",
+        {"id": article_id},
+    )
+    art = ((data or {}).get("data") or {}).get("article")
+    if not art:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found")
+    if art.get("isPublished"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Refusing to touch a published article")
+    body = strip_injected_body_images(art.get("body") or "")
+    conn_img = open_db_connection()
+    try:
+        featured_url, featured_alt, body_images, notes = try_prepare_article_images_bundle(
+            conn_img, title=art.get("title") or "", topic=payload.topic or art.get("title") or "", body_html=body,
+        )
+    finally:
+        conn_img.close()
+    if not featured_url:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="; ".join(notes[-3:]) or "Image generation failed")
+    from shopifyseo.dashboard_ai_engine_parts.images import inject_article_body_images
+
+    new_body = inject_article_body_images(body, body_images)
+    update_article_featured_image(article_id, featured_url, featured_alt)
+    update_article_body_html(article_id, new_body)
+    return success_response({
+        "article_id": article_id,
+        "featured_url": featured_url,
+        "featured_alt": featured_alt,
+        "body_images": [{"url": i["url"], "alt": i["alt"]} for i in body_images],
+        "notes": notes,
+    })

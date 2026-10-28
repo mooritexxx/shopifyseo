@@ -72,6 +72,10 @@ from shopifyseo.shopify_catalog_sync import upsert_blog_article_from_admin_creat
 
 router = APIRouter(prefix="/api", tags=["blogs"])
 
+# Shopify article tag applied when a draft is saved without a featured cover.
+NEEDS_COVER_TAG = "needs cover"
+NEEDS_COVER_NOTE = "Needs cover"
+
 
 _ProgressFn = Callable[..., None]
 
@@ -766,18 +770,17 @@ def _run_generate_article_draft(
             # (logged on the bundle and in image_notes). Matching "skipp"/"failed"
             # in notes used to abort the whole draft when a free-tier OpenRouter
             # 402 dropped one section, and also when WebP/resize notes said skipped.
+            # Featured cover is preferred but no longer fatal: when generation
+            # still fails after the provider retry, the draft is saved without a
+            # cover and tagged NEEDS_COVER_TAG so an operator can add one later.
             if not featured_url:
-                update_run(
-                    image_payload_json={
-                        "featured_url": featured_url or "",
-                        "featured_alt": featured_alt or "",
-                        "body_images": body_images,
-                        "notes": image_notes,
-                    },
-                    current_step="images",
-                )
                 detail = "; ".join(image_notes[-3:] or ["Image generation/upload failed"])
-                raise RuntimeError(f"Image generation/upload failed: {detail}")
+                image_notes = [*image_notes, f"{NEEDS_COVER_NOTE}: {detail}"]
+                p(
+                    f"Featured cover unavailable; saving draft flagged '{NEEDS_COVER_TAG}'.",
+                    "image", "running", run_id=run_id, step_key="images",
+                    step_label="Generate/upload images", step_index=8, step_total=12,
+                )
         update_run(
             image_payload_json={
                 "featured_url": featured_url or "",
@@ -1072,7 +1075,7 @@ def _run_generate_article_draft(
                     author_name=author_name,
                     handle=handle,
                     summary=generated["seo_description"],
-                    tags=None,
+                    tags=None if (featured_url or "").strip() else [NEEDS_COVER_TAG],
                     is_published=False,
                     seo_title=generated["seo_title"],
                     seo_description=generated["seo_description"],

@@ -1,4 +1,4 @@
-"""Per-provider image generation and vision caption calls (OpenAI, Gemini, OpenRouter)."""
+"""Per-provider image generation and vision caption calls (OpenAI, Gemini, OpenRouter, Cloudflare)."""
 
 import base64
 import logging
@@ -215,6 +215,47 @@ def _openrouter_image_bytes(api_key: str, model: str, prompt: str, timeout: int)
     raise RuntimeError(f"OpenRouter image generation failed: {last_err}") from last_err
 
 
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
+DEFAULT_CLOUDFLARE_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+# Cloudflare Workers AI: one quick retry, then give up (caller saves the draft without
+# the image). Never falls back to another (paid) provider.
+CLOUDFLARE_IMAGE_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0,)
+CLOUDFLARE_FLUX_STEPS = 4
+
+
+def _cloudflare_image_bytes(
+    account_id: str, api_token: str, model: str, prompt: str, timeout: int
+) -> tuple[bytes, str]:
+    """Text-to-image via Cloudflare Workers AI ``/ai/run/{model}`` (Flux returns base64 JPEG)."""
+    acct = (account_id or "").strip()
+    token = (api_token or "").strip()
+    if not acct:
+        raise RuntimeError("Cloudflare account ID is missing")
+    if not token:
+        raise RuntimeError("Cloudflare Workers AI API token is missing")
+    m = (model or "").strip() or DEFAULT_CLOUDFLARE_IMAGE_MODEL
+    try:
+        response = request_json(
+            f"{CLOUDFLARE_API_BASE}/accounts/{acct}/ai/run/{m}",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}"},
+            payload={"prompt": (prompt or "").strip()[:2048], "steps": CLOUDFLARE_FLUX_STEPS},
+            timeout=timeout,
+        )
+    except HttpRequestError as exc:
+        raise RuntimeError(f"Cloudflare image generation failed: {exc}") from exc
+    result = response.get("result") if isinstance(response, dict) else None
+    b64 = result.get("image") if isinstance(result, dict) else None
+    if not isinstance(b64, str) or not b64.strip():
+        raise RuntimeError("Cloudflare response contained no image")
+    try:
+        raw = base64.b64decode(b64)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(f"Cloudflare image was not valid base64: {exc}") from exc
+    mime = "image/png" if raw[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+    return raw, mime
+
+
 def _openrouter_caption_image_alt(
     api_key: str,
     image_bytes: bytes,
@@ -299,9 +340,39 @@ def _generate_article_image_bytes(
             )
         if prov == "openrouter":
             return _openrouter_image_bytes(settings["openrouter_api_key"], model, prompt, timeout)
+        if prov == "cloudflare":
+            return _cloudflare_image_bytes(
+                settings.get("cloudflare_account_id", ""),
+                settings.get("cloudflare_ai_token", ""),
+                model,
+                prompt,
+                timeout,
+            )
         raise RuntimeError(f"Unsupported image provider: {provider}")
 
+    if prov == "cloudflare":
+        return _call_with_cloudflare_retry(_once, backoff=backoff, sleep=sleep)
     return _call_with_image_rate_limit_retry(_once, backoff=backoff, sleep=sleep)
+
+
+def _call_with_cloudflare_retry(
+    fn: Callable[[], _T],
+    *,
+    backoff: Sequence[float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> _T:
+    """Retry any Cloudflare image failure once (configurable), then raise."""
+    waits = tuple(CLOUDFLARE_IMAGE_RETRY_BACKOFF_SECONDS if backoff is None else backoff)
+    sleeper = sleep or _sleep_image_retry
+    for attempt in range(len(waits) + 1):
+        try:
+            return fn()
+        except RuntimeError as exc:
+            if attempt >= len(waits):
+                raise
+            logger.warning("Cloudflare image attempt %d failed (%s); retrying in %.0fs", attempt + 1, exc, waits[attempt])
+            sleeper(waits[attempt])
+    raise RuntimeError("unreachable")
 
 
 def _gemini_caption_image_alt(

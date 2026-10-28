@@ -5,6 +5,8 @@ This module owns everything that speaks directly to an AI provider's HTTP API.
 """
 
 import json
+import os
+import time
 import logging
 import re
 
@@ -44,7 +46,32 @@ def _openai_style_json_schema(json_schema: dict, stage: str = "") -> dict:
 # Article HTML + JSON escaping needs a high ceiling; keep one shared constant for every provider path.
 _LONG_STRING_MINLENGTH_THRESHOLD = 8000
 _DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
-_LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET = 65536
+# Default max output tokens for large-schema / article-draft calls. Override with the
+# ``ai_output_token_budget`` setting (mirrored to env ``AI_OUTPUT_TOKEN_BUDGET``).
+_LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET = 8192
+_OUTPUT_TOKEN_BUDGET_ENV = "AI_OUTPUT_TOKEN_BUDGET"
+_OUTPUT_TOKEN_BUDGET_MIN = 1024
+_OUTPUT_TOKEN_BUDGET_MAX = 65536
+
+# Gemini "model overloaded / high demand" (503) and 500/504: retry with backoff.
+GEMINI_RETRY_STATUSES = frozenset({500, 503, 504})
+GEMINI_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (10.0, 30.0, 60.0)
+
+
+def _sleep_gemini_retry(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _large_schema_output_token_budget() -> int:
+    """Configured large-schema output budget (env/setting), clamped; default 8192."""
+    raw = (os.environ.get(_OUTPUT_TOKEN_BUDGET_ENV) or "").strip()
+    if not raw:
+        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+    try:
+        value = int(raw)
+    except ValueError:
+        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+    return max(_OUTPUT_TOKEN_BUDGET_MIN, min(_OUTPUT_TOKEN_BUDGET_MAX, value))
 
 
 def _max_string_min_length_in_schema_node(node: object, *, depth: int = 0) -> int:
@@ -85,9 +112,9 @@ def _completion_token_budget_from_json_schema(json_schema: dict | None, stage: s
     st = (stage or "").strip()
     # All article draft stages (single-shot, phased outline, phased HTML batches) share the same high cap.
     if st.startswith("article_draft"):
-        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+        return _large_schema_output_token_budget()
     if _max_string_min_length_from_response_json_schema(json_schema) >= _LONG_STRING_MINLENGTH_THRESHOLD:
-        return _LARGE_SCHEMA_OUTPUT_TOKEN_BUDGET
+        return _large_schema_output_token_budget()
     return None
 
 
@@ -635,13 +662,26 @@ def _call_gemini(
     if generation_config:
         payload["generationConfig"] = generation_config
     try:
-        response = request_json(
-            f"{GEMINI_API_URL}/{model_path}:generateContent",
-            method="POST",
-            headers={"x-goog-api-key": api_key},
-            payload=payload,
-            timeout=timeout,
-        )
+        response = None
+        for attempt in range(len(GEMINI_RETRY_BACKOFF_SECONDS) + 1):
+            try:
+                response = request_json(
+                    f"{GEMINI_API_URL}/{model_path}:generateContent",
+                    method="POST",
+                    headers={"x-goog-api-key": api_key},
+                    payload=payload,
+                    timeout=timeout,
+                )
+                break
+            except HttpRequestError as exc:
+                if exc.status not in GEMINI_RETRY_STATUSES or attempt >= len(GEMINI_RETRY_BACKOFF_SECONDS):
+                    raise
+                wait = GEMINI_RETRY_BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "Gemini %s returned HTTP %s (stage=%s); retrying in %.0fs (attempt %d)",
+                    effective_model, exc.status, stage, wait, attempt + 2,
+                )
+                _sleep_gemini_retry(wait)
         _log_gemini_usage(response, effective_model, "chat", stage)
         return _parse_json_response_text("gemini", effective_model, stage, extract_gemini_content(response))
     except HttpRequestError as exc:

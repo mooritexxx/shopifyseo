@@ -103,7 +103,9 @@ export function fingerprintAiImage(values: Record<string, string>): string {
   return stableFingerprint({
     ...allProviderKeys(values),
     ai_image_provider: (values.ai_image_provider || "openrouter").trim().toLowerCase(),
-    ai_image_model: (values.ai_image_model || "").trim()
+    ai_image_model: (values.ai_image_model || "").trim(),
+    cloudflare_account_id: (values.cloudflare_account_id || "").trim(),
+    cloudflare_ai_token: (values.cloudflare_ai_token || "").trim()
   });
 }
 

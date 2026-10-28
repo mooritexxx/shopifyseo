@@ -58,7 +58,11 @@ export type SettingsTabId = (typeof settingsTabs)[number]["id"];
 /** Matches backend `shopifyseo/dashboard_ai_engine_parts` supported vendors. */
 export const providerOptions = ["openai", "gemini", "anthropic", "openrouter", "ollama"] as const;
 
-export const providerOptionLabel: Record<(typeof providerOptions)[number], string> = {
+/** Image generation additionally supports Cloudflare Workers AI (Flux). */
+export const imageProviderOptions = [...providerOptions, "cloudflare"] as const;
+
+export const providerOptionLabel: Record<(typeof imageProviderOptions)[number], string> = {
+  cloudflare: "Cloudflare Workers AI",
   openai: "OpenAI",
   gemini: "Gemini",
   anthropic: "Anthropic",
@@ -200,6 +204,11 @@ export function renderSettingsTabSections({
         ] as const
       },
       {
+        title: "Cloudflare Workers AI",
+        description: "Optional. Free-tier Flux image generation for blog covers and section images.",
+        fields: ["cloudflare_account_id", "cloudflare_ai_token"] as const
+      },
+      {
         title: "DataForSEO",
         description:
           "API login + password from app.dataforseo.com. Required for keyword and competitor research (Labs + SERP).",
@@ -249,7 +258,7 @@ export function renderSettingsTabSections({
       {
         title: "Execution Limits",
         description: "Optional overrides; empty fields use defaults (see hints). Server validates range on save.",
-        fields: ["ai_timeout_seconds", "ai_max_retries"] as const
+        fields: ["ai_timeout_seconds", "ai_max_retries", "ai_output_token_budget"] as const
       }
     ],
     "data-sources": [
@@ -310,6 +319,9 @@ export function renderSettingsTabSections({
     connectionStore.shopify?.status === "live" && connectionStore.shopify.fingerprint === shopifyFp;
 
   function pickModelOnProviderChange(nextProvider: string, currentModel: string): string {
+    if ((nextProvider || "").trim().toLowerCase() === "cloudflare") {
+      return currentModel.startsWith("@cf/") ? currentModel : "@cf/black-forest-labs/flux-1-schnell";
+    }
     if (isOpenRouterProvider(nextProvider)) {
       const opts = openRouterModelList(openRouterModels, "");
       return opts[0] || currentModel || "";
@@ -872,7 +884,7 @@ export function renderSettingsTabSections({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {providerOptions.map((option) => (
+                  {(key === "ai_image_provider" ? imageProviderOptions : providerOptions).map((option) => (
                     <SelectItem key={option} value={option}>
                       {providerOptionLabel[option]}
                     </SelectItem>

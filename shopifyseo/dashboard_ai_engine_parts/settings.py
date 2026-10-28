@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 from .config import (
@@ -75,6 +76,12 @@ def ai_settings(conn: Any, overrides: dict[str, str] | None = None) -> dict:
         "review_model": review_model,
         "image_provider": (setting_with_override("ai_image_provider", "") or "").strip().lower(),
         "image_model": (setting_with_override("ai_image_model", "") or "").strip(),
+        "cloudflare_account_id": (
+            setting_with_override("cloudflare_account_id", "") or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+        ).strip(),
+        "cloudflare_ai_token": (
+            setting_with_override("cloudflare_ai_token", "") or os.environ.get("CLOUDFLARE_AI_TOKEN", "")
+        ).strip(),
         "vision_provider": vision_provider,
         "vision_model": vision_model,
         "prompt_profile": DEFAULT_PROMPT_PROFILE,

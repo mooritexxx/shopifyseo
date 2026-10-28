@@ -1,6 +1,7 @@
 """Orchestration: build featured cover + section images, upload to Shopify, return injection-ready bundle."""
 
 import logging
+import re
 from typing import Any, Callable
 
 from ..settings import ai_settings
@@ -25,23 +26,80 @@ _ARTICLE_COVER_ASPECT_RATIO = "16:9"
 _ARTICLE_INLINE_ASPECT_RATIO = "3:2"
 
 # Applied to every article image prompt (cover + sections), for all providers.
-IMAGE_SAFETY_RULES = (
-    "Absolutely no people, no faces, no hands, no body parts, no one vaping, no smoke or vapour clouds. "
-    "No text, words, letters, numbers, labels, captions, signs, logos, brand marks, watermarks or "
-    "typography of any kind, and no fake or garbled lettering on packaging or devices: keep every "
-    "surface plain. "
+# Phrased positively on purpose: diffusion models such as Flux tend to *draw* whatever a
+# prompt names, even after "no" (e.g. "no smoke" yields smoke, "no numbers" yields numbers).
+IMAGE_STYLE = (
+    "A single plain unbranded matte disposable vape device with smooth blank surfaces, "
+    "an empty object-only still life on a clean seamless studio background, "
+    "clean clear air, soft even studio lighting, minimalist premium product photography, "
+    "photorealistic, sharp focus."
+)
+IMAGE_SAFETY_RULES = IMAGE_STYLE  # backwards-compatible alias
+
+_STOPWORD_BRAND_TOKENS = {
+    "vape", "vapes", "vapor", "vapour", "disposable", "disposables", "pod", "pods", "co", "inc",
+    "ltd", "labs", "the", "and", "salt", "salts", "nic", "juice", "liquid", "e-liquid", "canada",
+}
+
+
+def _brand_terms(conn: Any) -> list[str]:
+    """Vendor names (and their distinctive words) that must never reach an image prompt."""
+    try:
+        from shopifyseo.db import execute as db_execute
+
+        rows = db_execute(conn, "SELECT DISTINCT vendor FROM products WHERE vendor IS NOT NULL AND vendor != ''").fetchall()
+    except Exception:
+        return []
+    terms: set[str] = set()
+    for (vendor,) in rows:
+        v = str(vendor or "").strip()
+        if not v:
+            continue
+        terms.add(v)
+        for w in re.split(r"[\s\-_/&]+", v):
+            if len(w) >= 3 and w.casefold() not in _STOPWORD_BRAND_TOKENS:
+                terms.add(w)
+    return sorted(terms, key=len, reverse=True)
+
+
+def image_safe_text(text: str, banned_terms: list[str] | tuple[str, ...] = ()) -> str:
+    """Strip product/brand names and every number (puff counts, mAh, mg, model numbers) from text.
+
+    The result is only used as a loose scene hint, so over-stripping is harmless.
+    """
+    t = str(text or "")
+    for term in banned_terms:
+        if term:
+            t = re.sub(r"(?<!\w)" + re.escape(term) + r"(?!\w)", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\S*\d\S*", " ", t)  # any token containing a digit (1600, 20mg, 60K, 5%)
+    t = re.sub(r"[\"'“”‘’()\[\]{}|#@*_]", " ", t)
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"\s+([:;,.!?])", r"\1", t)
+    t = re.sub(r"([:;,.!?])(?:\s*[:;,.!?])+", r"\1", t)
+    return t.strip(" :;,.-–—")
+
+
+_SECTION_ANGLES = (
+    "three-quarter angle, device resting on smooth pale stone",
+    "overhead flat lay, device on soft linen fabric",
+    "low side angle, device on light natural wood",
+    "close-up macro detail of the device's smooth matte finish",
+    "device standing upright on a simple white plinth",
+    "device beside a few fresh fruit slices on a clean surface",
+    "device on brushed concrete with soft window light",
+    "device on a pastel paper sweep with a gentle shadow",
 )
 
 
-def _product_look_hint(product_name: str) -> str:
-    name = (product_name or "").strip()[:160]
-    if not name:
-        return ""
+def build_section_image_prompt(heading: str, idx: int, banned_terms: list[str] | tuple[str, ...] = ()) -> str:
+    """Section image prompt: no product/brand names or numbers, positive phrasing only."""
+    theme = image_safe_text(heading, banned_terms)[:100].strip()
+    theme_part = f" Mood loosely inspired by the theme '{theme}'." if theme else ""
     return (
-        f"If a device is shown, depict the real product look implied by its name ({name!r}): a compact "
-        "handheld disposable vape device whose colour and finish suit the flavour or style in the name, "
-        "shown as a clean product-style still life (e.g. on stone, wood or fabric with matching fresh "
-        "ingredients). Do not render the product name or any branding on it. "
+        "In-article editorial photograph, 3:2. "
+        + IMAGE_STYLE
+        + f" Composition: {_SECTION_ANGLES[idx % len(_SECTION_ANGLES)]}."
+        + theme_part
     )
 
 
@@ -148,17 +206,11 @@ def try_prepare_article_images_bundle(
         return raw, rm, _mime_to_file_extension(rm)
 
     # ── Featured (blog cover / social) ─────────────────────────────────────
+    _banned = _brand_terms(conn)
     featured_prompt = (
-        f"Wide blog cover photograph for a {_country_adj} online e-commerce retail article. "
-        f"Topic: {seed[:420]}. Title: {headline[:200]}. "
-        "Premium editorial hero for a blog index or social preview: clear focal subject, "
-        "open composition with space for a headline overlay. "
-        + _product_look_hint(seed)
-        + IMAGE_SAFETY_RULES
-        + "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
-        "NO labels, NO captions, NO signs, NO logos, NO watermarks, NO typography of any kind. "
-        "The entire image must be purely photographic with zero rendered text. "
-        "Photorealistic, well-lit, commercial quality."
+        "Wide blog cover photograph, 16:9 editorial still life. "
+        + IMAGE_STYLE
+        + " Generous open negative space on one side, calm balanced composition."
     )
     progress.append("Generating featured cover image (blog / OG style)…")
     try:
@@ -226,19 +278,7 @@ def try_prepare_article_images_bundle(
     )
 
     def _build_section_prompt(sec: dict, idx: int) -> str:
-        return (
-            f"In-article editorial photograph for the section titled '{sec['heading'][:120]}'. "
-            f"Context from the section: {sec['context'][:450]}. "
-            f"{_country_adj} online e-commerce retail context. Article title: {headline[:200]}. "
-            "Must visually illustrate what this specific section discusses — not a generic stock photo. "
-            f"Distinct composition from a blog cover hero and from other section images. "
-            + _product_look_hint(seed)
-            + IMAGE_SAFETY_RULES
-            + "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
-            "NO labels, NO captions, NO signs, NO logos, NO watermarks, NO typography of any kind. "
-            "The entire image must be purely photographic with zero rendered text. "
-            "Photorealistic, well-lit, commercial quality."
-        )
+        return build_section_image_prompt(sec.get("heading") or "", idx, _banned)
 
     def _generate_one_section_image(sec: dict, idx: int) -> tuple[dict | None, str | None]:
         """Generate, caption, encode, and upload a single section image.

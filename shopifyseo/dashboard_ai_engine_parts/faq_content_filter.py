@@ -1178,11 +1178,14 @@ def validate_and_fix_alt_text(
 
     # Truncate at word boundary if too long
     if len(result) > max_length:
-        truncated = result[:max_length]
-        # Find last word boundary
+        # Look one char past the limit so a word ending exactly at max_length is kept whole.
+        truncated = result[: max_length + 1]
+        # Always cut at the last word boundary: never leave a half word.
         last_space = truncated.rfind(" ")
-        if last_space > min_length:
+        if last_space > 0:
             truncated = truncated[:last_space].rstrip(".,;:!?")
+        else:
+            truncated = truncated[:max_length]
         result = truncated.rstrip()
         was_modified = True
         if log_issues:
@@ -1356,11 +1359,14 @@ def validate_and_fix_excerpt(
 
     # Truncate at word boundary if too long
     if len(result) > max_length:
-        truncated = result[:max_length]
-        # Find last word boundary
+        # Look one char past the limit so a word ending exactly at max_length is kept whole.
+        truncated = result[: max_length + 1]
+        # Always cut at the last word boundary: never leave a half word.
         last_space = truncated.rfind(" ")
-        if last_space > min_length:
+        if last_space > 0:
             truncated = truncated[:last_space].rstrip(".,;:!?")
+        else:
+            truncated = truncated[:max_length]
         result = truncated.rstrip()
         was_modified = True
         if log_issues:

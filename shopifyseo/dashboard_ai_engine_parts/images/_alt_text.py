@@ -74,6 +74,19 @@ def alt_text_from_prompt(generation_prompt: str) -> str:
     return _fallback_alt_from_image_prompt(generation_prompt)
 
 
+def _trim_words(text: str, max_len: int = 125) -> str:
+    """Trim to *max_len* at a word boundary (never mid-word), dropping dangling punctuation."""
+    t = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(t) <= max_len:
+        return t
+    cut = t[: max_len + 1]
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    else:
+        cut = cut[:max_len]
+    return cut.rstrip(" ,;:-–—")
+
+
 def _build_section_alt(heading: str, headline: str) -> str:
     """Build a concise, descriptive alt text for a section image from structured data.
 
@@ -98,10 +111,10 @@ def _build_section_alt(heading: str, headline: str) -> str:
             extra = [w for w in title_words if w.lower() not in alt.lower().split()][:3]
             if extra:
                 alt = f"{alt} — {' '.join(extra).lower()}"
-        return alt[:125]
+        return _trim_words(alt)
 
     if t:
-        return re.sub(r"[:.!?]+$", "", t).strip()[:125]
+        return _trim_words(re.sub(r"[:.!?]+$", "", t).strip())
 
     return "Photograph supporting an e-commerce retail blog article"
 
@@ -116,10 +129,10 @@ def _build_featured_alt(headline: str, topic: str) -> str:
     t = (topic or "").strip()
 
     if h:
-        return re.sub(r"[:.!?]+$", "", h).strip()[:125]
+        return _trim_words(re.sub(r"[:.!?]+$", "", h).strip())
     if t:
         # Topic is often comma-separated keywords; join first few
         parts = [p.strip() for p in t.split(",") if p.strip()][:4]
-        return ", ".join(parts)[:125]
+        return _trim_words(", ".join(parts))
 
     return "Featured image for an e-commerce retail blog article"

@@ -378,7 +378,9 @@ def relevant_product_repair_targets(
     """Select only approved products with catalog evidence of brand/collection relevance.
 
     Narrow reads are bounded to the existing allowlist; an unknown focus produces
-    no fallback products. Stock/inventory does **not** affect ordering or selection.
+    no fallback products. Stock never affects *selection* (out-of-stock products
+    remain valid link targets), but in-stock products are ranked first so the
+    draft links to purchasable products whenever enough exist.
     """
     from ..product_linkability import linkable_product_handles
 
@@ -394,6 +396,7 @@ def relevant_product_repair_targets(
         f"SELECT handle, title, vendor FROM products WHERE handle IN ({placeholders})",
         handles,
     ).fetchall()
+    out_of_stock = _out_of_stock_handles(conn, handles)
 
     focus, primary_vendor, collection_ids = _relevance_context(conn, topic, primary_target)
 
@@ -415,10 +418,26 @@ def relevant_product_repair_targets(
         if not (same_brand or same_collection):
             continue
         score = _topic_relevance_score(title, topic, vendor)
-        ranked.append((-score, str(title or '').casefold(), products[handle]))
+        ranked.append((1 if handle in out_of_stock else 0, -score, str(title or '').casefold(), products[handle]))
 
-    ranked.sort(key=lambda x: (x[0], x[1]))
-    return [entry[2] for entry in ranked]
+    ranked.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [entry[3] for entry in ranked]
+
+
+def _out_of_stock_handles(conn: Any, handles: list[str]) -> set[str]:
+    """Handles whose tracked inventory is <= 0. NULL inventory is treated as in stock."""
+    if not handles:
+        return set()
+    placeholders = ','.join('?' for _ in handles)
+    from shopifyseo.db import execute as db_execute
+
+    rows = db_execute(
+        conn,
+        f"SELECT handle FROM products WHERE handle IN ({placeholders}) "
+        "AND COALESCE(tracks_inventory, 1) != 0 AND total_inventory IS NOT NULL AND total_inventory <= 0",
+        handles,
+    ).fetchall()
+    return {r[0] for r in rows}
 
 
 def generate_article_draft(

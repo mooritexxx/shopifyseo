@@ -21,6 +21,9 @@ export type SettingsFieldKey =
   | "ai_review_model"
   | "ai_image_provider"
   | "ai_image_model"
+  | "cloudflare_account_id"
+  | "cloudflare_ai_token"
+  | "ai_output_token_budget"
   | "ai_vision_provider"
   | "ai_vision_model"
   | "ai_timeout_seconds"
@@ -54,6 +57,7 @@ const SETTINGS_SECRET_FIELD_KEYS_ARR = [
   "gemini_api_key",
   "anthropic_api_key",
   "openrouter_api_key",
+  "cloudflare_ai_token",
   "ollama_api_key",
   "dataforseo_api_password",
   "open_page_rank_api_key",
@@ -168,6 +172,22 @@ export const SETTINGS_FIELD_META: Record<SettingsFieldKey, SettingsFieldMetaEntr
     label: "Image Model",
     hint: "Image-capable model id for the selected provider.",
     detail: "Image generation can take 15–60+ seconds depending on provider and size. The test modal shows elapsed time while waiting."
+  },
+  cloudflare_account_id: {
+    label: "Cloudflare Account ID",
+    hint: "Account that runs Workers AI image models (env CLOUDFLARE_ACCOUNT_ID).",
+    detail: "Found in the Cloudflare dashboard sidebar. Used only when Image Provider is Cloudflare."
+  },
+  cloudflare_ai_token: {
+    label: "Cloudflare Workers AI Token",
+    hint: "API token with Workers AI Read (env CLOUDFLARE_AI_TOKEN).",
+    detail:
+      "Create a scoped API token with the Workers AI permission. The free tier includes 10,000 neurons/day; Flux schnell covers cost roughly 60 neurons each."
+  },
+  ai_output_token_budget: {
+    label: "Max Output Tokens (Drafts)",
+    hint: "Output-token cap for article drafts and large JSON responses. Empty uses 8192.",
+    detail: "Server clamps 1024–65536. Raise it if long drafts are truncated; free-tier models may reject very large values."
   },
   ai_vision_provider: {
     label: "Vision Provider",

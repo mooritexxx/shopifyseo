@@ -24,6 +24,26 @@ _ARTICLE_INLINE_SIZE = (1200, 800)
 _ARTICLE_COVER_ASPECT_RATIO = "16:9"
 _ARTICLE_INLINE_ASPECT_RATIO = "3:2"
 
+# Applied to every article image prompt (cover + sections), for all providers.
+IMAGE_SAFETY_RULES = (
+    "Absolutely no people, no faces, no hands, no body parts, no one vaping, no smoke or vapour clouds. "
+    "No text, words, letters, numbers, labels, captions, signs, logos, brand marks, watermarks or "
+    "typography of any kind, and no fake or garbled lettering on packaging or devices: keep every "
+    "surface plain. "
+)
+
+
+def _product_look_hint(product_name: str) -> str:
+    name = (product_name or "").strip()[:160]
+    if not name:
+        return ""
+    return (
+        f"If a device is shown, depict the real product look implied by its name ({name!r}): a compact "
+        "handheld disposable vape device whose colour and finish suit the flavour or style in the name, "
+        "shown as a clean product-style still life (e.g. on stone, wood or fabric with matching fresh "
+        "ingredients). Do not render the product name or any branding on it. "
+    )
+
 
 def try_prepare_article_images_bundle(
     conn: Any,
@@ -66,9 +86,12 @@ def try_prepare_article_images_bundle(
     if not model_raw:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
         return None, "", [], ["Skipping images: set Image generation model in Settings."]
-    if prov not in {"openai", "gemini", "openrouter"}:
+    if prov not in {"openai", "gemini", "openrouter", "cloudflare"}:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
-        return None, "", [], [f"Skipping images: provider {prov!r} is not supported yet (use OpenAI, Gemini, or OpenRouter)."]
+        return None, "", [], [f"Skipping images: provider {prov!r} is not supported yet (use OpenAI, Gemini, OpenRouter, or Cloudflare)."]
+    if prov == "cloudflare" and not (settings.get("cloudflare_account_id") and settings.get("cloudflare_ai_token")):
+        emit("No images — WebP encoding not needed.", "encode", "skipped")
+        return None, "", [], ["Skipping images: Cloudflare account ID or Workers AI token is missing in Settings."]
     if prov == "openai" and not settings["openai_api_key"]:
         emit("No images — WebP encoding not needed.", "encode", "skipped")
         return None, "", [], ["Skipping images: OpenAI API key is missing in Settings."]
@@ -130,7 +153,9 @@ def try_prepare_article_images_bundle(
         f"Topic: {seed[:420]}. Title: {headline[:200]}. "
         "Premium editorial hero for a blog index or social preview: clear focal subject, "
         "open composition with space for a headline overlay. "
-        "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
+        + _product_look_hint(seed)
+        + IMAGE_SAFETY_RULES
+        + "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
         "NO labels, NO captions, NO signs, NO logos, NO watermarks, NO typography of any kind. "
         "The entire image must be purely photographic with zero rendered text. "
         "Photorealistic, well-lit, commercial quality."
@@ -207,7 +232,9 @@ def try_prepare_article_images_bundle(
             f"{_country_adj} online e-commerce retail context. Article title: {headline[:200]}. "
             "Must visually illustrate what this specific section discusses — not a generic stock photo. "
             f"Distinct composition from a blog cover hero and from other section images. "
-            "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
+            + _product_look_hint(seed)
+            + IMAGE_SAFETY_RULES
+            + "CRITICAL: The image must contain absolutely NO text, NO words, NO letters, NO numbers, "
             "NO labels, NO captions, NO signs, NO logos, NO watermarks, NO typography of any kind. "
             "The entire image must be purely photographic with zero rendered text. "
             "Photorealistic, well-lit, commercial quality."

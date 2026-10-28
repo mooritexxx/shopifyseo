@@ -7,5 +7,7 @@ export function isProviderKeyReady(provider: string, values: Record<string, stri
   if (p === "anthropic") return Boolean((values.anthropic_api_key || "").trim());
   if (p === "openrouter") return Boolean((values.openrouter_api_key || "").trim());
   if (p === "ollama") return Boolean((values.ollama_base_url || "").trim());
+  if (p === "cloudflare")
+    return Boolean((values.cloudflare_account_id || "").trim() && (values.cloudflare_ai_token || "").trim());
   return false;
 }

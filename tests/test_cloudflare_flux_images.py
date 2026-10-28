@@ -57,9 +57,10 @@ def test_cloudflare_missing_credentials():
         _providers._cloudflare_image_bytes("acct", "", "", "x", 10)
 
 
-def test_prompt_rules_and_product_hint():
-    hint = _bundle._product_look_hint("Fog Formulas 1600 Disposable Vape")
-    assert "Fog Formulas 1600" in hint and "Do not render" in hint
-    rules = _bundle.IMAGE_SAFETY_RULES.lower()
-    for word in ("no people", "hands", "smoke", "logos", "lettering"):
-        assert word in rules
+def test_image_style_is_positive_and_unbranded():
+    style = _bundle.IMAGE_STYLE.lower()
+    for phrase in ("plain unbranded matte", "clean seamless studio background", "clean clear air"):
+        assert phrase in style
+    # Flux draws what it is told *not* to draw, so the style never names these.
+    for word in ("smoke", "vapour cloud", "text", "letters", "numbers", "logo", " no "):
+        assert word not in f" {style} "

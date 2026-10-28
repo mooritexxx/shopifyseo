@@ -293,7 +293,7 @@ def _openrouter_caption_image_alt(
                             ],
                         }
                     ],
-                    "max_tokens": 512 if alt_max_len > 200 else 256,
+                    "max_tokens": 1024 if alt_max_len > 200 else 512,
                     "temperature": 0.3,
                 },
                 timeout=timeout,
@@ -306,6 +306,10 @@ def _openrouter_caption_image_alt(
         except RuntimeError as exc:
             last_err = exc
             logger.warning("OpenRouter vision caption extraction attempt %d failed: %s", attempt + 1, exc)
+            continue
+        if _response_was_truncated(response):
+            last_err = RuntimeError("caption hit the output token limit (truncated)")
+            logger.warning("OpenRouter vision caption attempt %d truncated; retrying", attempt + 1)
             continue
         out = _sanitize_image_alt(text, max_len=alt_max_len)
         if out:
@@ -402,7 +406,7 @@ def _gemini_caption_image_alt(
                 ],
             }
         ],
-        "generationConfig": {"maxOutputTokens": 256, "temperature": 0.3},
+        "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.3},
     }
     last_err: Exception | None = None
     for attempt in range(3):
@@ -427,11 +431,32 @@ def _gemini_caption_image_alt(
             last_err = exc
             logger.warning("Gemini vision caption extraction attempt %d failed: %s", attempt + 1, exc)
             continue
+        if _response_was_truncated(response):
+            last_err = RuntimeError("caption hit the output token limit (truncated)")
+            logger.warning("Gemini vision caption attempt %d truncated; retrying", attempt + 1)
+            continue
         out = _sanitize_image_alt(text, max_len=alt_max_len)
         if out:
             return out
     logger.warning("Gemini vision caption failed after 3 attempts: %s", last_err)
     return None
+
+
+def _response_was_truncated(response: object) -> bool:
+    """True when a Gemini/OpenAI-style response stopped because it ran out of output tokens.
+
+    A truncated caption ends mid-word (e.g. "A red rectangular device 16"), so it must be
+    discarded rather than used as alt text.
+    """
+    if not isinstance(response, dict):
+        return False
+    for cand in response.get("candidates") or []:
+        if isinstance(cand, dict) and str(cand.get("finishReason") or "").upper() == "MAX_TOKENS":
+            return True
+    for choice in response.get("choices") or []:
+        if isinstance(choice, dict) and str(choice.get("finish_reason") or "").lower() == "length":
+            return True
+    return False
 
 
 def _openai_caption_image_alt(
@@ -462,7 +487,7 @@ def _openai_caption_image_alt(
                 headers={"Authorization": f"Bearer {api_key.strip()}"},
                 payload={
                     "model": openai_model,
-                    "max_tokens": 200,
+                    "max_tokens": 400,
                     "temperature": 0.3,
                     "messages": [
                         {
@@ -485,6 +510,10 @@ def _openai_caption_image_alt(
         except RuntimeError as exc:
             last_err = exc
             logger.warning("OpenAI vision caption extraction attempt %d failed: %s", attempt + 1, exc)
+            continue
+        if _response_was_truncated(response):
+            last_err = RuntimeError("caption hit the output token limit (truncated)")
+            logger.warning("OpenAI vision caption attempt %d truncated; retrying", attempt + 1)
             continue
         out = _sanitize_image_alt(text, max_len=alt_max_len)
         if out:

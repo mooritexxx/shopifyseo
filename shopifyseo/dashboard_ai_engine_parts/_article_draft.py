@@ -318,10 +318,8 @@ def focus_product_handles(
     found in the product title, descending), then by title. An unknown brand
     or collection returns an empty list with no fallback.
 
-    Stock never excludes a product (out-of-stock products are included), but
-    among equally relevant products the in-stock ones rank first, before the
-    *limit* is applied, so the writer's initial candidates are purchasable
-    whenever enough exist without demoting the product a topic is about.
+    Stock never affects selection or order: out-of-stock products are treated
+    exactly like in-stock ones.
 
     Parameters
     ----------
@@ -371,29 +369,8 @@ def focus_product_handles(
         score = _topic_relevance_score(title, topic, vendor)
         ranked.append((-score, str(title or '').casefold(), handle))
 
-    out_of_stock = _out_of_stock_handles(conn, [h for _, _, h in ranked])
-    ranked.sort(key=lambda x: (x[0], 1 if x[2] in out_of_stock else 0, x[1]))
+    ranked.sort(key=lambda x: (x[0], x[1]))
     return [h for _, _, h in ranked[:limit]]
-
-
-def rank_in_stock_products_first(conn: Any, link_targets: list[dict]) -> list[dict]:
-    """Stable-reorder product entries so in-stock products precede out-of-stock ones.
-
-    Non-product targets keep their exact positions; product entries are only
-    permuted among the slots products already occupy. Nothing is dropped.
-    """
-    slots = [i for i, t in enumerate(link_targets) if (t.get("type") or "") == "product" and t.get("handle")]
-    if len(slots) < 2:
-        return list(link_targets)
-    products = [link_targets[i] for i in slots]
-    oos = _out_of_stock_handles(conn, [str(t["handle"]) for t in products])
-    if not oos:
-        return list(link_targets)
-    ordered = [t for t in products if t["handle"] not in oos] + [t for t in products if t["handle"] in oos]
-    out = list(link_targets)
-    for i, t in zip(slots, ordered):
-        out[i] = t
-    return out
 
 
 def relevant_product_repair_targets(
@@ -402,9 +379,8 @@ def relevant_product_repair_targets(
     """Select only approved products with catalog evidence of brand/collection relevance.
 
     Narrow reads are bounded to the existing allowlist; an unknown focus produces
-    no fallback products. Stock never affects *selection* (out-of-stock products
-    remain valid link targets), but in-stock products are ranked first so the
-    draft links to purchasable products whenever enough exist.
+    no fallback products. Stock never affects selection or order: out-of-stock
+    products are treated exactly like in-stock ones.
     """
     from ..product_linkability import linkable_product_handles
 
@@ -420,7 +396,6 @@ def relevant_product_repair_targets(
         f"SELECT handle, title, vendor FROM products WHERE handle IN ({placeholders})",
         handles,
     ).fetchall()
-    out_of_stock = _out_of_stock_handles(conn, handles)
 
     focus, primary_vendor, collection_ids = _relevance_context(conn, topic, primary_target)
 
@@ -442,26 +417,10 @@ def relevant_product_repair_targets(
         if not (same_brand or same_collection):
             continue
         score = _topic_relevance_score(title, topic, vendor)
-        ranked.append((1 if handle in out_of_stock else 0, -score, str(title or '').casefold(), products[handle]))
+        ranked.append((-score, str(title or '').casefold(), products[handle]))
 
-    ranked.sort(key=lambda x: (x[0], x[1], x[2]))
-    return [entry[3] for entry in ranked]
-
-
-def _out_of_stock_handles(conn: Any, handles: list[str]) -> set[str]:
-    """Handles whose tracked inventory is <= 0. NULL inventory is treated as in stock."""
-    if not handles:
-        return set()
-    placeholders = ','.join('?' for _ in handles)
-    from shopifyseo.db import execute as db_execute
-
-    rows = db_execute(
-        conn,
-        f"SELECT handle FROM products WHERE handle IN ({placeholders}) "
-        "AND COALESCE(tracks_inventory, 1) != 0 AND total_inventory IS NOT NULL AND total_inventory <= 0",
-        handles,
-    ).fetchall()
-    return {r[0] for r in rows}
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return [entry[2] for entry in ranked]
 
 
 def generate_article_draft(
@@ -1367,12 +1326,6 @@ def generate_article_draft(
         link_targets = prioritize_targets_for_write_time(conn, link_targets)
     except Exception:
         logger.debug("Write-time link prioritization unavailable; using default order", exc_info=True)
-
-    # Initial writer candidates: purchasable (in-stock) products first.
-    try:
-        link_targets = rank_in_stock_products_first(conn, link_targets)
-    except Exception:
-        logger.debug("In-stock ranking unavailable; using default order", exc_info=True)
 
     # Widen allowlist with primary/secondary interlink targets so sanitizer keeps them.
     def _normalize_target_entry(t: dict) -> dict | None:

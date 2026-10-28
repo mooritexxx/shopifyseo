@@ -190,16 +190,16 @@ class TestTopicRelevantAllowlist:
         assert len(handles) >= 3
         assert all(h.startswith('zed-') for h in handles)
 
-    def test_repair_targets_prefer_in_stock(self, conn):
+    def test_repair_targets_ignore_stock(self, conn):
         targets, _, _ = build_store_internal_link_allowlist(
             conn, 'https://example.com',
             priority_handles={'product': _article_draft.focus_product_handles(conn, 'Best ZED Flavours', None)}
         )
         handles = [t['handle'] for t in _article_draft.relevant_product_repair_targets(conn, 'Best ZED Flavours', None, targets)]
-        in_stock = {'zed-berry', 'zed-grape', 'zed-watermelon'}
-        present = [h for h in handles if h in in_stock]
-        # in-stock products come first; out-of-stock ones are still allowed after them
-        assert handles[:len(present)] == present and len(present) >= 1
+        # Stock never affects order: same ranking as relevance then title alone.
+        rows = {r[0]: r[1] for r in conn.execute("SELECT handle, title FROM products")}
+        scores = [(-_article_draft._topic_relevance_score(rows[h], 'Best ZED Flavours', 'ZED'), rows[h].casefold()) for h in handles]
+        assert scores == sorted(scores)
 
     def test_topic_token_ordering(self, conn):
         handles = _article_draft.focus_product_handles(conn, 'ZED Mango Review', None)

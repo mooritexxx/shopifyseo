@@ -30,10 +30,50 @@ _H2_H4_BLOCK_RE = re.compile(r"(?is)<h([234])\b[^>]*>(.*?)</h\1\s*>")
 MIN_ARTICLE_BODY_HTML_CHARS = 14000
 # Retry prompts ask the model to aim past the minimum so minor undershoots still pass after edits.
 COMPLIANCE_BODY_LENGTH_RETRY_MARGIN = 600
+MIN_ARTICLE_BODY_HTML_CHARS_BOUND_LOW = 3000
+MIN_ARTICLE_BODY_HTML_CHARS_BOUND_HIGH = 30000
+MAX_ARTICLE_DRAFT_EXTRA_RULES = 20
+MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS = 240
 PRIMARY_KEYWORD_EXACT_MAX_LEN = 80
 PRIMARY_KEYWORD_SUBSTRING_LEN = 60
 
 _LENGTH_GAP_PREFIX = "Body HTML must be at least "
+
+
+def resolve_min_article_body_html_chars(requested: object = None) -> int:
+    """Return the HTML body-length floor for one draft request.
+
+    ``None`` (or a non-int) keeps the historical 14000-character default.
+    Out-of-range ints are clamped to 3000–30000.
+    """
+    if requested is None or isinstance(requested, bool):
+        return MIN_ARTICLE_BODY_HTML_CHARS
+    try:
+        n = int(requested)
+    except (TypeError, ValueError):
+        return MIN_ARTICLE_BODY_HTML_CHARS
+    if n < MIN_ARTICLE_BODY_HTML_CHARS_BOUND_LOW:
+        return MIN_ARTICLE_BODY_HTML_CHARS_BOUND_LOW
+    if n > MIN_ARTICLE_BODY_HTML_CHARS_BOUND_HIGH:
+        return MIN_ARTICLE_BODY_HTML_CHARS_BOUND_HIGH
+    return n
+
+
+def normalize_article_draft_extra_rules(raw: object = None) -> list[str]:
+    """Strip, cap, and bound extra writing rules for one draft request."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item).strip() if item is not None else ""
+        if not text:
+            continue
+        if len(text) > MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS:
+            text = text[:MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS]
+        out.append(text)
+        if len(out) >= MAX_ARTICLE_DRAFT_EXTRA_RULES:
+            break
+    return out
 
 
 def strip_html_for_compliance_search(html: str) -> str:
@@ -687,6 +727,7 @@ def validate_article_draft_compliance(
     check_commerce_headings: bool = False,
     check_tvpa_flavour: bool = False,
     tvpa_allowed_names: list[str] | tuple[str, ...] = (),
+    min_body_html_chars: int | None = None,
 ) -> list[str]:
     """Return a list of human-readable gaps (empty if compliant).
 
@@ -708,6 +749,9 @@ def validate_article_draft_compliance(
 
     ``check_commerce_headings`` (optional): when True, checks for stock-status
     or bulk/wholesale H2 headings that should not appear in articles.
+
+    ``min_body_html_chars`` (optional): override the HTML body-length floor.
+    ``None`` keeps ``MIN_ARTICLE_BODY_HTML_CHARS`` (14000).
     """
     gaps: list[str] = []
     if linkable_product_handles is not None:
@@ -769,11 +813,12 @@ def validate_article_draft_compliance(
                 "those anchors to URLs from approved_internal_link_targets exactly."
             )
     n = len(body_html or "")
-    if n < MIN_ARTICLE_BODY_HTML_CHARS:
-        deficit = MIN_ARTICLE_BODY_HTML_CHARS - n
-        aim = MIN_ARTICLE_BODY_HTML_CHARS + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
+    floor = resolve_min_article_body_html_chars(min_body_html_chars)
+    if n < floor:
+        deficit = floor - n
+        aim = floor + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
         gaps.append(
-            f"{_LENGTH_GAP_PREFIX}{MIN_ARTICLE_BODY_HTML_CHARS} characters (currently {n}). "
+            f"{_LENGTH_GAP_PREFIX}{floor} characters (currently {n}). "
             f"The body is {deficit} characters short. Expand with substantive HTML (new H2/H3 sections, "
             f"paragraphs, lists, tables, or FAQ entries) until the raw `body` string is at least {aim} characters "
             "including every tag, quote, and whitespace — that length is measured exactly as Python `len(body)` "

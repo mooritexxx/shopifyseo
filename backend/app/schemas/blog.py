@@ -1,7 +1,13 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .index_evidence import IndexEvidenceFields
 
 from backend.app.schemas.trend import TrendPayload
+from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
+    MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS,
+    MAX_ARTICLE_DRAFT_EXTRA_RULES,
+    MIN_ARTICLE_BODY_HTML_CHARS_BOUND_HIGH,
+    MIN_ARTICLE_BODY_HTML_CHARS_BOUND_LOW,
+)
 
 
 class BlogListItem(BaseModel):
@@ -105,6 +111,46 @@ class ArticleGenerateDraftRequest(BaseModel):
     """If set, resume a persisted article draft run from its last saved checkpoint."""
     force_cannibalization: bool = False
     """If True, proceed with draft even when cannibalization is detected (warn-level conflicts). Blocks are never overridable."""
+    min_body_chars: int | None = Field(
+        default=None,
+        ge=MIN_ARTICLE_BODY_HTML_CHARS_BOUND_LOW,
+        le=MIN_ARTICLE_BODY_HTML_CHARS_BOUND_HIGH,
+        description=(
+            "Optional floor for the HTML body character count (Python len(body)). "
+            "When omitted, the default 14000-character floor is used."
+        ),
+    )
+    append_related_products: bool = Field(
+        default=True,
+        description=(
+            "When true (default), append a Related products H2/list if the draft "
+            "has fewer than three approved product links. Set false to skip that block."
+        ),
+    )
+    extra_rules: list[str] | None = Field(
+        default=None,
+        max_length=MAX_ARTICLE_DRAFT_EXTRA_RULES,
+        description="Optional extra writing rules injected into draft-stage system prompts.",
+    )
+
+    @field_validator("extra_rules")
+    @classmethod
+    def _normalize_extra_rules(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            if len(text) > MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS:
+                raise ValueError(
+                    f"each extra_rules entry must be at most {MAX_ARTICLE_DRAFT_EXTRA_RULE_CHARS} characters"
+                )
+            cleaned.append(text)
+        if len(cleaned) > MAX_ARTICLE_DRAFT_EXTRA_RULES:
+            raise ValueError(f"at most {MAX_ARTICLE_DRAFT_EXTRA_RULES} extra_rules")
+        return cleaned or None
 
 
 class ArticleGenerateDraftResult(BaseModel):

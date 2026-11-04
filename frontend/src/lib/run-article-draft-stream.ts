@@ -36,6 +36,12 @@ export type ArticleDraftStreamPayload = {
   resume_run_id?: string;
   /** If true, proceed with draft even when warn-level cannibalization is detected. Blocks are never overridable. */
   force_cannibalization?: boolean;
+  /** Optional HTML body-length floor (3000–30000). Omitted = default 14000. */
+  min_body_chars?: number;
+  /** When false, skip the auto-appended related-products H2/list. Default true. */
+  append_related_products?: boolean;
+  /** Optional extra writing rules injected into draft-stage system prompts. */
+  extra_rules?: string[];
 };
 
 /**

@@ -441,6 +441,9 @@ def generate_article_draft(
     draft_run_id: str = "",
     resume_run: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    min_body_chars: int | None = None,
+    append_related_products: bool | None = None,
+    extra_rules: list[str] | None = None,
 ) -> dict:
     """Generate a brand-new blog article draft using AI.
 
@@ -450,6 +453,11 @@ def generate_article_draft(
 
     Returns a dict with keys: title, seo_title, seo_description, body.
     Raises RuntimeError on AI failure.
+
+    Optional request overrides (kwargs, or the same keys on request_context):
+    min_body_chars, append_related_products, extra_rules. Omitted values keep
+    the historical 14000-character floor, related-products H2 append, and
+    stock system prompt.
     """
     settings = ai_settings(conn)
     from .serp_draft_context import (
@@ -459,7 +467,6 @@ def generate_article_draft(
     )
     from .article_draft_compliance import (
         COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
-        MIN_ARTICLE_BODY_HTML_CHARS,
         append_server_generated_faqpage_jsonld,
         build_compliance_retry_user_message,
         collect_hrefs,
@@ -470,10 +477,31 @@ def generate_article_draft(
         length_only_article_compliance_gaps,
         mixed_length_and_serp_compliance_gaps,
         normalize_article_body_spelling,
+        normalize_article_draft_extra_rules,
+        resolve_min_article_body_html_chars,
         strip_faqpage_jsonld_blocks,
         strip_html_for_compliance_search,
         validate_article_draft_compliance,
     )
+
+    _req = request_context if isinstance(request_context, dict) else {}
+    _requested_min = min_body_chars if min_body_chars is not None else _req.get("min_body_chars")
+    _min_body_chars = resolve_min_article_body_html_chars(_requested_min)
+    _arp_raw = (
+        append_related_products
+        if append_related_products is not None
+        else _req.get("append_related_products")
+    )
+    _append_related_products = True if _arp_raw is None else bool(_arp_raw)
+    _extra_rules = normalize_article_draft_extra_rules(
+        extra_rules if extra_rules is not None else _req.get("extra_rules")
+    )
+    _extra_rules_block = ""
+    if _extra_rules:
+        _extra_rules_block = (
+            "\n\nExtra writing rules from the requester (follow these in addition to the other instructions):\n"
+            + "\n".join(f"- {rule}" for rule in _extra_rules)
+        )
     from shopifyseo.dashboard_store import update_article_draft_run
 
     provider = settings["generation_provider"]
@@ -1577,7 +1605,7 @@ def generate_article_draft(
 
     _pre_output_lines = [
         "\n\n=== Pre-output compliance (verify before you return JSON) ===\n",
-        f"- Body HTML length is at least {MIN_ARTICLE_BODY_HTML_CHARS:,} characters (excluding this checklist). "
+        f"- Body HTML length is at least {_min_body_chars:,} characters (excluding this checklist). "
         "The server counts the full JSON `body` string with Python `len(body)` after normalizing internal store links "
         "(same rule as automated checks).\n",
     ]
@@ -1621,7 +1649,7 @@ def generate_article_draft(
             "Do not add competitor hyperlinks or reproduce competitor URLs."
         )
 
-    _body_aim_chars = MIN_ARTICLE_BODY_HTML_CHARS + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
+    _body_aim_chars = _min_body_chars + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN
 
     # Brand voice block — small system-level addition so positioning and named author
     # both influence tone without crowding the per-section user prompt.
@@ -1644,7 +1672,7 @@ def generate_article_draft(
         f"You are an expert SEO content writer for {_brand}. "
         "Write high-quality, editorial blog content that ranks well on Google. "
         f"A machine validator rejects drafts unless the JSON `body` string is at least "
-        f"{MIN_ARTICLE_BODY_HTML_CHARS:,} characters (Python `len(body)` including every HTML tag and space); "
+        f"{_min_body_chars:,} characters (Python `len(body)` including every HTML tag and space); "
         f"aim for {_body_aim_chars:,}+ so edits still pass. "
         f"{spelling_variant(_market_code)} "
         "Do not fabricate statistics, specific study results, or invented data — if you need to reference evidence, "
@@ -1658,6 +1686,7 @@ def generate_article_draft(
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
         + " " + TVPA_FLAVOUR_RULE
+        + _extra_rules_block
     )
 
     system_outline = (
@@ -1672,6 +1701,7 @@ def generate_article_draft(
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
         + " " + TVPA_FLAVOUR_RULE
+        + _extra_rules_block
     )
 
     system_section = (
@@ -1691,6 +1721,7 @@ def generate_article_draft(
         + ARTICLE_CONTENT_FILTER_INSTRUCTION
         + COMMERCE_HEADING_PROMPT_RULE
         + " " + TVPA_FLAVOUR_RULE
+        + _extra_rules_block
     )
 
     # FAQ answer system prompt: plain text only, no HTML tags, no markdown links, no URLs.
@@ -1710,6 +1741,7 @@ def generate_article_draft(
         f"{_brand_voice_block}"
         + _faq_content_filter
         + " " + TVPA_FLAVOUR_RULE
+        + _extra_rules_block
     )
 
     _serp_user_block = ""
@@ -1733,7 +1765,7 @@ def generate_article_draft(
         "each section should include **at least two `<p>` paragraphs** of substantive prose (not one-liners) "
         "plus optional `<ul>`/`<ol>` lists or small tables where they help. "
         f"Target **`body` ≥ {_body_aim_chars:,} characters** so the final HTML clears the "
-        f"{MIN_ARTICLE_BODY_HTML_CHARS:,}-character floor after headings, lists, and JSON-LD blocks. "
+        f"{_min_body_chars:,}-character floor after headings, lists, and JSON-LD blocks. "
         "If you are unsure, add another full H2 section with buyer-focused detail rather than tightening copy.\n\n"
         "Return a JSON object with exactly these four fields:\n"
         f"- title: The H1 article headline (20–70 characters). Keyword-led, specific. {spelling_variant(_market_code)} "
@@ -1753,7 +1785,7 @@ def generate_article_draft(
         "Count every character including spaces.\n"
         f"- body: Full article HTML. CRITICAL: target **2,400+ words** of reader-visible text across the article "
         f"(excluding HTML tags) **and** at least {_body_aim_chars:,} characters in the raw `body` string "
-        f"(including tags) so automated checks on the {MIN_ARTICLE_BODY_HTML_CHARS:,}-character minimum pass reliably. "
+        f"(including tags) so automated checks on the {_min_body_chars:,}-character minimum pass reliably. "
         "Do not stop at a 'complete' short article — keep adding sections until the length plan is clearly satisfied. "
         "Structure with H2 section headings and H3 sub-headings — every major section should have at least one H3 "
         "sub-heading to create a clear hierarchy. "
@@ -1787,7 +1819,7 @@ def generate_article_draft(
 
     _outline_checklist_lines = [
         "\n\n=== Pre-output compliance (outline — verify before JSON) ===\n",
-        f"- Plan for a final merged HTML body of at least {MIN_ARTICLE_BODY_HTML_CHARS:,} characters (Python len on the full HTML string).\n",
+        f"- Plan for a final merged HTML body of at least {_min_body_chars:,} characters (Python len on the full HTML string).\n",
         f"- Aim the written phases at {_body_aim_chars:,}+ so small undershoots still pass.\n",
     ]
     if _is_faq or _has_serp_paa:
@@ -1841,7 +1873,7 @@ def generate_article_draft(
         f"{_authority_link_block}"
         f"{_collection_link_block}"
         f"\n\n**Merged-body length target:** All HTML batches concatenated must reach **{_body_aim_chars:,}+** characters "
-        f"(hard floor {MIN_ARTICLE_BODY_HTML_CHARS:,} after validation). Write each fragment with generous depth.\n"
+        f"(hard floor {_min_body_chars:,} after validation). Write each fragment with generous depth.\n"
     )
 
     json_schema = {
@@ -1872,13 +1904,13 @@ def generate_article_draft(
                     "type": "string",
                     "description": (
                         f"Full article HTML. HARD REQUIREMENT (validated server-side): this string's length must be "
-                        f">= {MIN_ARTICLE_BODY_HTML_CHARS} characters — count every character in the JSON value "
+                        f">= {_min_body_chars} characters — count every character in the JSON value "
                         f"(all HTML tags, attributes, whitespace, scripts). Aim for >= {_body_aim_chars} so small "
                         "losses still pass. Failure mode: models often stop at ~12–13k characters; avoid that by "
                         "planning 9+ H2 sections each with 2+ substantive <p> paragraphs plus lists or tables where "
                         "helpful, FAQPage JSON-LD if required by the user prompt, and the Article JSON-LD block."
                     ),
-                    "minLength": MIN_ARTICLE_BODY_HTML_CHARS,
+                    "minLength": _min_body_chars,
                 },
             },
             "required": ["title", "seo_title", "seo_description", "body"],
@@ -2158,7 +2190,7 @@ def generate_article_draft(
             "primary_link": primary_normalized.get("url") if primary_normalized else "",
             "secondary_links": secondary_urls_for_compliance,
             "information_gain": ["comparison table", "buyer checklist", "troubleshooting/decision guidance"],
-            "body_length_min": MIN_ARTICLE_BODY_HTML_CHARS,
+            "body_length_min": _min_body_chars,
             "body_length_target": _body_aim_chars,
         },
     }
@@ -2253,6 +2285,7 @@ def generate_article_draft(
             check_commerce_headings=True,
             check_tvpa_flavour=True,
             tvpa_allowed_names=_tvpa_allowed_names,
+            min_body_html_chars=_min_body_chars,
         )
         # Check for escaped HTML tags (double-escaping bug)
         gaps.extend(escaped_markup_gaps(body_html))
@@ -2554,6 +2587,8 @@ def generate_article_draft(
         return (body_html or "").rstrip() + block
 
     def _ensure_product_links(body: str) -> str:
+        if not _append_related_products:
+            return body
         if count_distinct_approved_product_links(body, path_to_canonical) >= 3 or len(product_repair_targets) < 3:
             return body
         original_body = body

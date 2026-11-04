@@ -375,6 +375,9 @@ Rejection is not just a delete: rejected titles feed bucket 11 of the next gap a
 | `blog_id` / `blog_handle` | target blog (auto-filled when only one exists) | yes |
 | `angle_label` | optional, for multiple articles from one idea | yes |
 | `resume_run_id` | set only when resuming a failed run | no |
+| `min_body_chars` | optional int 3000–30000; omitted keeps the 14000-character body floor | no (API-only) |
+| `append_related_products` | optional bool, default true; false skips the related-products H2/list | no (API-only) |
+| `extra_rules` | optional list of short strings injected into draft-stage system prompts | no (API-only) |
 
 Everything else is re-derived server-side from `idea_id` — the frontend sends no cluster, SERP, or link data.
 
@@ -496,7 +499,7 @@ A single-shot path with retries exists as a fallback ([`_single_shot_with_retrie
 | Secondary links | Every secondary target URL must appear verbatim as an `<a href>` |
 | FAQPage JSON-LD | Required when the topic is FAQ-style or any PAA exists; every schema `Question.name` must match visible on-page wording |
 | Internal link count | At least N approved storefront links surviving sanitization |
-| Body length | `len(body)` ≥ `MIN_ARTICLE_BODY_HTML_CHARS`; prompts aim higher by `COMPLIANCE_BODY_LENGTH_RETRY_MARGIN` |
+| Body length | `len(body)` ≥ `min_body_chars` when that request field is set, otherwise `MIN_ARTICLE_BODY_HTML_CHARS` (14000); prompts aim higher by `COMPLIANCE_BODY_LENGTH_RETRY_MARGIN` |
 
 **Steered but not enforced:** the cluster keyword table, SEO gap keywords, tier-4+ related searches, PAA coverage beyond the FAQ pair target, AI overview angles, RAG references, and the depth/intent/format directives.
 

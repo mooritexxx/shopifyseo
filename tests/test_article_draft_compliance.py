@@ -6,6 +6,7 @@ from shopifyseo.dashboard_ai_engine_parts.article_draft_compliance import (
     COMPLIANCE_BODY_LENGTH_RETRY_MARGIN,
     MIN_ARTICLE_BODY_HTML_CHARS,
     build_compliance_retry_user_message,
+    resolve_min_article_body_html_chars,
     collect_tier_related_queries,
     extract_faqpage_question_names_from_body,
     faqpage_visible_alignment_gaps,
@@ -77,6 +78,48 @@ def test_retry_message_lists_gaps():
     msg = build_compliance_retry_user_message(["Gap one", "Gap two"])
     assert "Gap one" in msg and "Gap two" in msg
     assert "json object" in msg.lower()
+
+
+def test_resolve_min_article_body_html_chars_default_and_clamp():
+    assert resolve_min_article_body_html_chars(None) == MIN_ARTICLE_BODY_HTML_CHARS
+    assert resolve_min_article_body_html_chars(9500) == 9500
+    assert resolve_min_article_body_html_chars(100) == 3000
+    assert resolve_min_article_body_html_chars(99999) == 30000
+
+
+def test_custom_min_body_chars_used_by_compliance_check():
+    body = "<p>" + ("x " * 2000) + "</p>"
+    assert 3000 < len(body) < MIN_ARTICLE_BODY_HTML_CHARS
+    default_gaps = validate_article_draft_compliance(
+        body_html=body,
+        require_faqpage_ld=False,
+        secondary_urls=[],
+        primary_keyword_for_body=None,
+        path_to_canonical={},
+    )
+    assert len(default_gaps) == 1
+    assert str(MIN_ARTICLE_BODY_HTML_CHARS) in default_gaps[0]
+    custom_ok = validate_article_draft_compliance(
+        body_html=body,
+        require_faqpage_ld=False,
+        secondary_urls=[],
+        primary_keyword_for_body=None,
+        path_to_canonical={},
+        min_body_html_chars=3000,
+    )
+    assert custom_ok == []
+    custom_gap = validate_article_draft_compliance(
+        body_html="<p>x</p>",
+        require_faqpage_ld=False,
+        secondary_urls=[],
+        primary_keyword_for_body=None,
+        path_to_canonical={},
+        min_body_html_chars=9500,
+    )
+    assert len(custom_gap) == 1
+    assert "9500" in custom_gap[0]
+    assert str(9500 + COMPLIANCE_BODY_LENGTH_RETRY_MARGIN) in custom_gap[0]
+    assert str(MIN_ARTICLE_BODY_HTML_CHARS) not in custom_gap[0]
 
 
 def test_length_gap_message_includes_deficit_and_target():

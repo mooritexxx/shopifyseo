@@ -705,6 +705,9 @@ def _run_generate_article_draft(
                 draft_run_id=run_id,
                 resume_run=resume_run,
                 on_progress=on_progress,
+                min_body_chars=payload.min_body_chars,
+                append_related_products=payload.append_related_products,
+                extra_rules=payload.extra_rules,
             )
         finally:
             conn_gen.close()

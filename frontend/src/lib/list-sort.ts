@@ -45,6 +45,9 @@ const SORT_KEYS: Record<string, (row: ListRow) => number | string> = {
   gsc_position: (row) => (row.gsc_position ? num(row.gsc_position) : 999.0),
   ga4_sessions: (row) => num(row.ga4_sessions),
   ga4_views: (row) => num(row.ga4_views),
+  ga4_organic_sessions: (row) => num(row.ga4_organic_sessions),
+  ga4_engaged_sessions: (row) => num(row.ga4_engaged_sessions),
+  ga4_engagement_rate: (row) => num(row.ga4_engagement_rate),
   body_length: (row) => num(row.body_length),
   pagespeed_performance: (row) =>
     row.pagespeed_performance != null ? num(row.pagespeed_performance) : -1,

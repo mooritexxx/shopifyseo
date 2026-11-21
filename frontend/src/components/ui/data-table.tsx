@@ -35,7 +35,7 @@ function isContentComplete(row: { seo_title?: string; seo_description?: string; 
 
 function formatCellValue(value: unknown, key: string): string {
   if (value === null || value === undefined) return "—";
-  if (key.includes("gsc_ctr") || key.includes("ctr")) {
+  if (key.includes("gsc_ctr") || key.includes("ctr") || key === "ga4_engagement_rate") {
     return formatPercent(Number(value));
   }
   if (typeof value === "number") {

@@ -44,25 +44,29 @@ const ARTICLE_SORT_KEYS = new Set([
   "gsc_position",
   "ga4_sessions",
   "ga4_views",
+  "ga4_organic_sessions",
+  "ga4_engaged_sessions",
+  "ga4_engagement_rate",
   "body_length",
   "pagespeed_performance",
   "pagespeed_desktop_performance"
 ]);
 
 const columns: Column[] = [
-  { key: "article_name", label: "Article", align: "left", widthClass: "w-[24%] min-w-0" },
-  { key: "content_status", label: "Content", align: "center", widthClass: "w-[7.6%]" },
-  { key: "gsc_segments", label: "Segments", align: "center", widthClass: "w-[7.6%]" },
-  { key: "index_status", label: "Status", align: "center", widthClass: "w-[7.6%]" },
-  { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[7.6%]" },
-  { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[7.6%]" },
-  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[7.6%]" },
-  { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[7.6%]" },
-  { key: "ga4_sessions", label: "Sessions", align: "center", widthClass: "w-[7.6%]" },
-  { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[6.5%]" },
-  { key: "pagespeed_desktop_performance", label: "Desktop", align: "center", widthClass: "w-[6.5%]" },
-  { key: "score", label: "Score", align: "center", widthClass: "w-[7.6%]" },
-  { key: "published_label", label: "Live", align: "center", sortable: false, widthClass: "w-[7.6%]" }
+  { key: "article_name", label: "Article", align: "left", widthClass: "w-[18%] min-w-0" },
+  { key: "content_status", label: "Content", align: "center", widthClass: "w-[5%]" },
+  { key: "index_status", label: "Status", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[7%]" },
+  { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[5%]" },
+  { key: "ga4_sessions", label: "Sessions (All)", align: "center", widthClass: "w-[7%]" },
+  { key: "ga4_organic_sessions", label: "Sessions (Organic)", align: "center", widthClass: "w-[7%]" },
+  { key: "ga4_engaged_sessions", label: "Engaged", align: "center", widthClass: "w-[6%]" },
+  { key: "ga4_engagement_rate", label: "Engage %", align: "center", widthClass: "w-[6%]" },
+  { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[5%]" },
+  { key: "pagespeed_desktop_performance", label: "Desktop", align: "center", widthClass: "w-[5%]" },
+  { key: "score", label: "Score", align: "center", widthClass: "w-[5%]" },
+  { key: "published_label", label: "Live", align: "center", sortable: false, widthClass: "w-[5%]" }
 ];
 
 function compareArticleRows(
@@ -91,6 +95,9 @@ function compareArticleRows(
     "gsc_position",
     "ga4_sessions",
     "ga4_views",
+    "ga4_organic_sessions",
+    "ga4_engaged_sessions",
+    "ga4_engagement_rate",
     "ga4_avg_session_duration",
     "pagespeed_performance",
     "pagespeed_desktop_performance"

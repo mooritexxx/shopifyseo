@@ -383,9 +383,10 @@ def ensure_dashboard_schema(conn: Any) -> None:
         )
         """
     )
-    # Create index portably (not _sqlite_ddl) so Postgres gets it too.
-    # The index enables efficient lookups by catalog object.
-    conn.execute(
+    # Create index via _sqlite_ddl so it only runs at startup, not on every request.
+    # This avoids ShareLock on Postgres during request path.
+    _sqlite_ddl(
+        conn,
         """
         CREATE INDEX IF NOT EXISTS idx_ga4_organic_funnel_object
         ON ga4_organic_funnel(object_type, object_handle)

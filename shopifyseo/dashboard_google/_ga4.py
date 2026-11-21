@@ -750,13 +750,16 @@ def fetch_ga4_organic_funnel_report(
 
     Returns list of dicts with keys: path, sessions, add_to_carts, checkouts,
     purchases, revenue. Excludes /cart and /checkouts paths.
+
+    Uses landingPagePlusQueryString dimension for consistency with other reports,
+    normalizing to path-only (strips query string) when joining to catalog URLs.
     """
     pid = _ga4_property_id_numeric(property_id)
     url = f"https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport"
 
     body: dict = {
         "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
-        "dimensions": [{"name": "landingPage"}],
+        "dimensions": [{"name": "landingPagePlusQueryString"}],
         "metrics": [
             {"name": "sessions"},
             {"name": "addToCarts"},
@@ -774,24 +777,33 @@ def fetch_ga4_organic_funnel_report(
         "limit": 10000,
     }
     resp = google_api_post(url, access_token, body)
-    out: list[dict] = []
+    # Aggregate by path (strip query string) to handle query param variants
+    aggregated: dict[str, dict] = {}
     for row in resp.get("rows") or []:
         dims = row.get("dimensionValues") or []
         mets = row.get("metricValues") or []
         if not dims:
             continue
-        path = (dims[0].get("value") or "").strip()
+        raw_path = (dims[0].get("value") or "").strip()
+        path = _ga4_strip_query(raw_path)
         if not path or _is_excluded_funnel_path(path):
             continue
-        out.append({
-            "path": path,
-            "sessions": _ga4_metric_values_int(mets, 0),
-            "add_to_carts": _ga4_metric_values_int(mets, 1),
-            "checkouts": _ga4_metric_values_int(mets, 2),
-            "purchases": _ga4_metric_values_int(mets, 3),
-            "revenue": _ga4_metric_values_float(mets, 4),
-        })
-    return out
+        if path in aggregated:
+            aggregated[path]["sessions"] += _ga4_metric_values_int(mets, 0)
+            aggregated[path]["add_to_carts"] += _ga4_metric_values_int(mets, 1)
+            aggregated[path]["checkouts"] += _ga4_metric_values_int(mets, 2)
+            aggregated[path]["purchases"] += _ga4_metric_values_int(mets, 3)
+            aggregated[path]["revenue"] += _ga4_metric_values_float(mets, 4)
+        else:
+            aggregated[path] = {
+                "path": path,
+                "sessions": _ga4_metric_values_int(mets, 0),
+                "add_to_carts": _ga4_metric_values_int(mets, 1),
+                "checkouts": _ga4_metric_values_int(mets, 2),
+                "purchases": _ga4_metric_values_int(mets, 3),
+                "revenue": _ga4_metric_values_float(mets, 4),
+            }
+    return list(aggregated.values())
 
 
 def get_ga4_organic_funnel_summary(

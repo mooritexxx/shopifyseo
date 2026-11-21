@@ -78,7 +78,7 @@ ALLOWED_DIRECT_EXECUTE_COUNTS: dict[str, int] = {
     "shopifyseo/dashboard_queries/_text_tokens.py": 4,
     "shopifyseo/dashboard_queries/_urls.py": 4,
     "shopifyseo/dashboard_actions/_sync.py": 1,
-    "shopifyseo/dashboard_store.py": 46,
+    "shopifyseo/dashboard_store.py": 45,
     "shopifyseo/embedding_store.py": 48,
     "shopifyseo/embedding_sync.py": 0,
     "shopifyseo/index_evidence.py": 14,

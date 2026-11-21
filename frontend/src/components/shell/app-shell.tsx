@@ -152,6 +152,7 @@ const items: NavItem[] = [
   { to: "/rankings", label: "Rankings", icon: Key, group: "Research" },
   { to: "/keywords", label: "Keyword Research", icon: Key, group: "Research" },
   { to: "/opportunities", label: "Opportunity Inbox", icon: Inbox, group: "Research", badge: "NEW" },
+  { to: "/analytics", label: "Analytics", icon: Activity, group: "Research", badge: "NEW" },
   { to: "/article-ideas", label: "Article Ideas", icon: Lightbulb, group: "Research" },
   { to: "/image-seo", label: "Image Optimization", icon: ImageIcon, group: "Research" },
   { to: "/google-ads-lab", label: "Google Ads lab", icon: FlaskConical, group: "Research" },

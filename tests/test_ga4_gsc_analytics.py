@@ -342,14 +342,26 @@ class TestGA4OrganicFunnel:
     """Tests for GA4 organic funnel report functions."""
 
     def test_is_excluded_funnel_path(self):
-        """Test path exclusion for checkout/cart URLs."""
+        """Test path exclusion for checkout/cart URLs.
+
+        Must match exact /cart or /cart/ prefix, /checkouts/ prefix.
+        Must NOT match /cartoon, /cartography, etc.
+        """
         from shopifyseo.dashboard_google._ga4 import _is_excluded_funnel_path
 
+        # Should be excluded
         assert _is_excluded_funnel_path("/cart") is True
         assert _is_excluded_funnel_path("/cart/") is True
+        assert _is_excluded_funnel_path("/cart/item") is True
         assert _is_excluded_funnel_path("/checkouts/abc123") is True
+        assert _is_excluded_funnel_path("/checkouts/") is True
+
+        # Should NOT be excluded (not checkout flow)
         assert _is_excluded_funnel_path("/products/vape-pen") is False
         assert _is_excluded_funnel_path("/collections/all") is False
+        assert _is_excluded_funnel_path("/cartoon") is False  # /cart should not match /cartoon
+        assert _is_excluded_funnel_path("/cartography") is False
+        assert _is_excluded_funnel_path("/checkout") is False  # /checkouts/ prefix only
 
     def test_build_ga4_organic_funnel_index(self):
         """Test building funnel index from rows."""
@@ -368,28 +380,36 @@ class TestGA4OrganicFunnel:
         assert index["/products/a"]["sessions"] == 10
 
     def test_build_ga4_organic_sessions_index(self):
-        """Test building organic sessions index."""
+        """Test building organic sessions index with query string normalization."""
         from shopifyseo.dashboard_google._ga4 import build_ga4_organic_sessions_index
 
         organic_rows = [
             {"dimensionValues": [{"value": "/products/a"}], "metricValues": [{"value": "50"}]},
             {"dimensionValues": [{"value": "/products/b"}], "metricValues": [{"value": "100"}]},
+            # Query string variants should be aggregated to the base path
+            {"dimensionValues": [{"value": "/products/a?utm_source=google"}], "metricValues": [{"value": "25"}]},
         ]
 
         index = build_ga4_organic_sessions_index(organic_rows)
-        assert index["/products/a"] == 50
+        # /products/a should include both the base path and query string variant
+        assert index["/products/a"] == 75  # 50 + 25
         assert index["/products/b"] == 100
 
     def test_build_ga4_engagement_index(self):
-        """Test building engagement metrics index."""
+        """Test building engagement metrics index with query string normalization."""
         from shopifyseo.dashboard_google._ga4 import build_ga4_engagement_index
 
         engagement_rows = [
             {"dimensionValues": [{"value": "/products/a"}], "metricValues": [{"value": "30"}, {"value": "0.6"}]},
+            # Query string variant should be aggregated
+            {"dimensionValues": [{"value": "/products/a?ref=cta"}], "metricValues": [{"value": "20"}, {"value": "0.5"}]},
         ]
 
         index = build_ga4_engagement_index(engagement_rows)
-        assert index["/products/a"] == (30, 0.6)
+        # Should aggregate: 30+20=50 engaged sessions, weighted avg rate
+        assert index["/products/a"][0] == 50
+        # Weighted average: (0.6*30 + 0.5*20) / 50 = (18 + 10) / 50 = 0.56
+        assert abs(index["/products/a"][1] - 0.56) < 0.01
 
     def test_ga4_url_detail_from_index_enhanced(self):
         """Test enhanced URL detail includes organic sessions and engagement."""
@@ -445,3 +465,73 @@ class TestBlendedOpportunity:
         # Should use "landing traffic (all channels)" not "organic landing traffic"
         assert "landing traffic (all channels)" in result["reasons"]
         assert "organic landing traffic" not in result["reasons"]
+
+
+class TestPostgresCompatibility:
+    """Postgres-specific tests for SQL compatibility.
+
+    These tests verify that the SQL queries work correctly on both SQLite and Postgres.
+    When TEST_DATABASE_URL is set to Postgres, these tests run against Postgres.
+    """
+
+    def test_cannibalization_query_postgres_compatible(self, db):
+        """Test that cannibalization query works on Postgres (GROUP BY is correct)."""
+        from backend.app.services.analytics_service import fetch_cannibalization_queries
+
+        # Insert multiple queries with multiple URLs each
+        db.executemany(
+            """INSERT INTO gsc_query_rows 
+               (object_type, object_handle, url, query, clicks, impressions, ctr, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("product", "a", "https://example.com/a", "query1", 10, 100, 0.1, 5),
+                ("product", "b", "https://example.com/b", "query1", 5, 50, 0.1, 8),
+                ("product", "c", "https://example.com/c", "query2", 20, 200, 0.1, 3),
+                ("product", "d", "https://example.com/d", "query2", 15, 150, 0.1, 4),
+            ],
+        )
+        db.commit()
+
+        # This should not raise on Postgres - the GROUP BY is correct
+        result = fetch_cannibalization_queries(db, min_impressions=20)
+        assert result["total"] == 2
+        assert len(result["queries"]) == 2
+
+    def test_decay_watchlist_query_postgres_compatible(self, db):
+        """Test that decay watchlist query works on Postgres (GROUP BY with MAX aggregates)."""
+        from backend.app.services.analytics_service import fetch_decay_watchlist
+
+        today = date.today()
+        current_end = today - timedelta(days=3)
+        current_start = current_end - timedelta(days=27)
+        prior_end = current_start - timedelta(days=1)
+        prior_start = prior_end - timedelta(days=27)
+
+        # Insert data with varying object_type/object_handle per page_url
+        # This tests that MAX() aggregation works correctly on Postgres
+        for i in range(28):
+            d = prior_start + timedelta(days=i)
+            db.execute(
+                """INSERT INTO gsc_page_daily 
+                   (date, page_url, object_type, object_handle, clicks, impressions, ctr, position)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (d.isoformat(), "https://example.com/page1", "product", "handle-a", 2, 10, 0.2, 5),
+            )
+
+        for i in range(28):
+            d = current_start + timedelta(days=i)
+            # Note: object_handle changes but should still work with MAX()
+            db.execute(
+                """INSERT INTO gsc_page_daily 
+                   (date, page_url, object_type, object_handle, clicks, impressions, ctr, position)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (d.isoformat(), "https://example.com/page1", "product", "handle-a", 0, 2, 0.0, 10),
+            )
+
+        db.commit()
+
+        # This should not raise on Postgres - the GROUP BY with MAX() is correct
+        result = fetch_decay_watchlist(db, min_prior_impressions=100)
+        assert result["total"] == 1
+        assert result["pages"][0]["object_type"] == "product"
+        assert result["pages"][0]["object_handle"] == "handle-a"

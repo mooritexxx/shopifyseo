@@ -25,6 +25,9 @@ class ContentListItem(IndexEvidenceFields):
     ga4_sessions: int = 0
     ga4_views: int = 0
     ga4_avg_session_duration: float = 0.0
+    ga4_organic_sessions: int = 0
+    ga4_engaged_sessions: int = 0
+    ga4_engagement_rate: float = 0.0
     index_status: str = ""
     index_coverage: str = ""
     google_canonical: str = ""

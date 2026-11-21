@@ -165,14 +165,17 @@ def fetch_decay_watchlist(
 
     current_start, current_end, prior_start, prior_end = _gsc_daily_window_dates()
 
-    # Aggregate metrics for both windows
+    # Aggregate metrics for both windows.
+    # Note: object_type/object_handle can vary per row in gsc_page_daily, so we
+    # use MAX() to pick one representative value per page_url. This avoids
+    # Postgres GROUP BY errors while keeping the catalog linkage.
     rows = conn.execute(
         """
         WITH current_window AS (
             SELECT
                 page_url,
-                object_type,
-                object_handle,
+                MAX(object_type) as object_type,
+                MAX(object_handle) as object_handle,
                 SUM(clicks) as clicks,
                 SUM(impressions) as impressions,
                 CASE WHEN SUM(impressions) > 0 

@@ -716,18 +716,27 @@ def ga4_url_cache_stale(conn: Any, url: str) -> bool:
 # landing pages only (sessionDefaultChannelGroup = Organic Search). Excludes
 # /cart and /checkouts paths since those are checkout flow, not landing pages.
 
-ORGANIC_FUNNEL_EXCLUDED_PATHS = ("/cart", "/checkouts")
-
-
 def _ga4_organic_funnel_cache_key(property_id: str, window_days: int) -> str:
     pid = _ga4_property_id_numeric(property_id)
     return f"ga4_organic_funnel::{pid}::window_{window_days}"
 
 
 def _is_excluded_funnel_path(path: str) -> bool:
-    """Return True if path is a checkout/cart URL to exclude from funnel analysis."""
+    """Return True if path is a checkout/cart URL to exclude from funnel analysis.
+
+    Matches:
+      - Exact /cart or any path starting with /cart/
+      - Any path starting with /checkouts/
+    Does NOT match /cartoon, /cartography, etc.
+    """
     p = (path or "").lower()
-    return any(p.startswith(exc) for exc in ORGANIC_FUNNEL_EXCLUDED_PATHS)
+    # Match exact /cart or /cart/ prefix
+    if p == "/cart" or p.startswith("/cart/"):
+        return True
+    # Match /checkouts/ prefix
+    if p.startswith("/checkouts/"):
+        return True
+    return False
 
 
 def fetch_ga4_organic_funnel_report(
@@ -905,14 +914,22 @@ def fetch_ga4_organic_landing_rows(
 
 
 def build_ga4_organic_sessions_index(organic_rows: list) -> dict[str, int]:
-    """Map landing path -> organic sessions count."""
+    """Map landing path -> organic sessions count.
+
+    Normalizes landingPagePlusQueryString to path-only (strips query string)
+    for consistent joining with catalog URLs.
+    """
     by_path: dict[str, int] = {}
     for row in organic_rows:
-        key = ga4_report_page_path_from_row(row)
+        raw_key = ga4_report_page_path_from_row(row)
+        if not raw_key:
+            continue
+        key = _ga4_strip_query(raw_key)
         if not key:
             continue
         metrics = row.get("metricValues") or []
-        by_path[key] = _ga4_metric_values_int(metrics, 0)
+        # Accumulate sessions across query-string variants
+        by_path[key] = by_path.get(key, 0) + _ga4_metric_values_int(metrics, 0)
     return by_path
 
 
@@ -943,18 +960,36 @@ def fetch_ga4_engagement_landing_rows(
 
 
 def build_ga4_engagement_index(engagement_rows: list) -> dict[str, tuple[int, float]]:
-    """Map landing path -> (engagedSessions, engagementRate)."""
-    by_path: dict[str, tuple[int, float]] = {}
+    """Map landing path -> (engagedSessions, engagementRate).
+
+    Normalizes landingPagePlusQueryString to path-only (strips query string)
+    for consistent joining with catalog URLs. Engagement rate is weighted by
+    engaged sessions when aggregating across query-string variants.
+    """
+    by_path: dict[str, tuple[int, float, int]] = {}  # path -> (engagedSessions, weighted_rate, total_sessions)
     for row in engagement_rows:
-        key = ga4_report_page_path_from_row(row)
+        raw_key = ga4_report_page_path_from_row(row)
+        if not raw_key:
+            continue
+        key = _ga4_strip_query(raw_key)
         if not key:
             continue
         metrics = row.get("metricValues") or []
+        engaged = _ga4_metric_values_int(metrics, 0)
+        rate = _ga4_metric_values_float(metrics, 1)
+        # Accumulate for weighted average
+        prev = by_path.get(key, (0, 0.0, 0))
         by_path[key] = (
-            _ga4_metric_values_int(metrics, 0),
-            _ga4_metric_values_float(metrics, 1),
+            prev[0] + engaged,
+            prev[1] + rate * engaged,  # weighted rate sum
+            prev[2] + engaged,  # total for weighting
         )
-    return by_path
+    # Compute final weighted average rates
+    result: dict[str, tuple[int, float]] = {}
+    for path, (engaged, weighted_rate, total) in by_path.items():
+        avg_rate = weighted_rate / total if total > 0 else 0.0
+        result[path] = (engaged, avg_rate)
+    return result
 
 
 # -- Enhanced summary with organic sessions and engagement --------------------
@@ -981,13 +1016,27 @@ def get_ga4_summary_enhanced(conn: Any, refresh: bool = False) -> dict:
         organic_rows = fetch_ga4_organic_landing_rows(
             property_id, access_token, start_date=start_date, end_date=end_date
         )
+        base["organic_landing_rows"] = organic_rows
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to fetch organic landing rows for GA4 property %s: %s",
+            property_id, exc
+        )
+        base["_warnings"] = base.get("_warnings", []) + [f"organic_sessions_fetch_failed: {exc}"]
+
+    try:
         engagement_rows = fetch_ga4_engagement_landing_rows(
             property_id, access_token, start_date=start_date, end_date=end_date
         )
-        base["organic_landing_rows"] = organic_rows
         base["engagement_rows"] = engagement_rows
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to fetch engagement rows for GA4 property %s: %s",
+            property_id, exc
+        )
+        base["_warnings"] = base.get("_warnings", []) + [f"engagement_fetch_failed: {exc}"]
 
     return base
 

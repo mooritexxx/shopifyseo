@@ -7,7 +7,7 @@ Provides endpoints for:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.db import open_db_connection
 from backend.app.schemas.common import SuccessResponse, success_response
@@ -74,7 +74,7 @@ def get_decay_watchlist(
 
 @router.get("/organic-funnel-flags", response_model=SuccessResponse[dict])
 def get_organic_funnel_flags(
-    window_days: int = Query(28, description="Window size (28 or 90 days)"),
+    window_days: int = Query(28, description="Window size (28 or 90 days only)"),
     high_sessions_threshold: int = Query(10, ge=1, description="Min sessions for high-sessions flag"),
     limit: int = Query(200, ge=1, le=500, description="Max results per flag type"),
 ):
@@ -84,6 +84,8 @@ def get_organic_funnel_flags(
     - high_sessions_no_carts: Pages with organic sessions but zero add-to-cart events
     - checkout_assists: Pages that assisted checkout or purchase events
     """
+    if window_days not in (28, 90):
+        raise HTTPException(status_code=422, detail="window_days must be 28 or 90")
     conn = open_db_connection()
     try:
         result = fetch_organic_funnel_flags(

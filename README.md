@@ -22,6 +22,7 @@ Setup takes about 15 minutes.
 - **Image optimization** — Catalog image workflow: vision-assisted alt text, SEO-friendly filenames, optional **WebP** conversion for smaller files, and **normalized dimensions** (square canvas / consistent sizing) before replacing media in Shopify
 - **Embeddings** — Background vector indexes for products, pages, keywords, clusters, competitor pages, and more—powers similarity and gap-style analysis (when Gemini embedding API is configured)
 - **Google Ads lab** — Experimental keyword workflows against your connected Google Ads account (optional)
+- **Advanced Analytics** — Organic funnel tracking (Organic Search landing pages with add-to-cart, checkout, purchase events), query×page cannibalization detection, decay watch-list (pages with declining GSC metrics), and enhanced engagement metrics
 - **Everything local** — SQLite database, no SaaS, no usage fees beyond your own API keys
 
 ---

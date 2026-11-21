@@ -366,7 +366,50 @@ and can be retried; provider failures remain visible in the task.
 policy endpoint. Hard minimum/maximum violations block generated metadata and changed,
 nonempty metadata saves. Existing unchanged metadata and intentional clearing remain
 editable. Recommended targets are advisory: AI tries up to two corrections and the editor
-shows a warning if valid output remains below target. Full generation and single-field
+shows a warning if valid output remains below target.
+
+**GSC Signal Integration:** The opportunity score now incorporates catalog-level GSC signals
+(average CTR and position across all queries for a page) with modest weights (up to ±5 points).
+This surfaces cross-query patterns without disrupting the primary query-level ranking. Items
+without catalog GSC data receive no adjustment, keeping existing ordering stable.
+
+### Advanced Analytics
+
+| Method | Path | Query | Response | Purpose |
+| ------ | ---- | ----- | -------- | ------- |
+| GET | `/api/analytics/cannibalization` | `min_impressions`, `limit`, `offset` | `{ ok, data }` | Query × page cannibalization report |
+| GET | `/api/analytics/decay-watchlist` | `clicks_threshold`, `impressions_threshold`, `min_prior_impressions`, `limit`, `offset` | `{ ok, data }` | Pages with declining GSC metrics |
+| GET | `/api/analytics/organic-funnel-flags` | `window_days`, `high_sessions_threshold`, `limit` | `{ ok, data }` | Organic funnel flags for catalog pages |
+
+**Query × Page Cannibalization:** Detects queries where 2+ of your URLs rank with meaningful
+impressions (default: ≥20). Returns grouped results showing each cannibalizing query with the
+URLs competing for it, their clicks, impressions, CTR, and positions. Use to consolidate content
+or add canonical signals.
+
+**Decay Watch-List:** Surfaces pages whose last-28d clicks or impressions dropped materially
+(default: clicks down 20%, impressions down 25%) vs prior 28d. Requires minimum prior-window
+volume (default: 100 impressions) to avoid flagging low-volume pages. Useful for catching
+ranking drops before they become severe.
+
+**Organic Funnel Flags:** Returns two flag types from the GA4 organic funnel table:
+- `high_sessions_no_carts`: Landing pages with organic sessions but zero add-to-cart events
+- `checkout_assists`: Landing pages that assisted checkout or purchase events
+
+**GA4 Organic Funnel:** The GA4 sync now fetches organic landing page funnel metrics:
+sessions, addToCarts, checkouts, ecommercePurchases, and purchaseRevenue for Organic Search
+channel only (28d and 90d windows). Excludes /cart and /checkouts paths. Stored in
+`ga4_organic_funnel` table.
+
+**Enhanced GA4 Metrics:** Per-URL GA4 reports now include:
+- `organic_sessions`: Sessions from Organic Search channel (vs all-channel `sessions`)
+- `engaged_sessions`: GA4 engaged sessions metric
+- `engagement_rate`: GA4 engagement rate (0-1)
+
+**Service:** `backend/app/services/analytics_service.py`
+**Router:** `backend/app/routers/analytics.py`
+**GA4 Functions:** `shopifyseo/dashboard_google/_ga4.py`
+
+Full generation and single-field
 regeneration share this loop; overlength output is rewritten and the former separate
 length-padding path is no longer used. The policy describes app quality rules, not a
 promise of a search ranking outcome.

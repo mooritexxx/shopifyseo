@@ -709,3 +709,315 @@ def ga4_url_cache_stale(conn: Any, url: str) -> bool:
     _payload, meta = _load_cached_payload(conn, cache_key)
     return bool(meta.get("stale", True))
 
+
+# -- Organic funnel landing page report (Feature 1) ---------------------------
+#
+# Fetches GA4 key events (addToCarts, checkouts, purchases, revenue) for organic
+# landing pages only (sessionDefaultChannelGroup = Organic Search). Excludes
+# /cart and /checkouts paths since those are checkout flow, not landing pages.
+
+ORGANIC_FUNNEL_EXCLUDED_PATHS = ("/cart", "/checkouts")
+
+
+def _ga4_organic_funnel_cache_key(property_id: str, window_days: int) -> str:
+    pid = _ga4_property_id_numeric(property_id)
+    return f"ga4_organic_funnel::{pid}::window_{window_days}"
+
+
+def _is_excluded_funnel_path(path: str) -> bool:
+    """Return True if path is a checkout/cart URL to exclude from funnel analysis."""
+    p = (path or "").lower()
+    return any(p.startswith(exc) for exc in ORGANIC_FUNNEL_EXCLUDED_PATHS)
+
+
+def fetch_ga4_organic_funnel_report(
+    property_id: str,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    """Fetch organic landing page funnel metrics (Organic Search channel only).
+
+    Returns list of dicts with keys: path, sessions, add_to_carts, checkouts,
+    purchases, revenue. Excludes /cart and /checkouts paths.
+    """
+    pid = _ga4_property_id_numeric(property_id)
+    url = f"https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport"
+
+    body: dict = {
+        "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
+        "dimensions": [{"name": "landingPage"}],
+        "metrics": [
+            {"name": "sessions"},
+            {"name": "addToCarts"},
+            {"name": "checkouts"},
+            {"name": "ecommercePurchases"},
+            {"name": "purchaseRevenue"},
+        ],
+        "dimensionFilter": {
+            "filter": {
+                "fieldName": "sessionDefaultChannelGroup",
+                "stringFilter": {"matchType": "EXACT", "value": "Organic Search"},
+            }
+        },
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+        "limit": 10000,
+    }
+    resp = google_api_post(url, access_token, body)
+    out: list[dict] = []
+    for row in resp.get("rows") or []:
+        dims = row.get("dimensionValues") or []
+        mets = row.get("metricValues") or []
+        if not dims:
+            continue
+        path = (dims[0].get("value") or "").strip()
+        if not path or _is_excluded_funnel_path(path):
+            continue
+        out.append({
+            "path": path,
+            "sessions": _ga4_metric_values_int(mets, 0),
+            "add_to_carts": _ga4_metric_values_int(mets, 1),
+            "checkouts": _ga4_metric_values_int(mets, 2),
+            "purchases": _ga4_metric_values_int(mets, 3),
+            "revenue": _ga4_metric_values_float(mets, 4),
+        })
+    return out
+
+
+def get_ga4_organic_funnel_summary(
+    conn: Any,
+    *,
+    window_days: int = 28,
+    refresh: bool = False,
+) -> dict:
+    """Fetch organic landing page funnel metrics for a window (28d or 90d).
+
+    Returns dict with:
+      - rows: list of {path, sessions, add_to_carts, checkouts, purchases, revenue}
+      - start_date, end_date: the window boundaries
+      - totals: aggregate totals across all landing pages
+    """
+    gsc_cache = _pkg().GSC_CACHE
+    property_id = get_service_setting(conn, "ga4_property_id")
+    if not property_id:
+        return {
+            "available": False,
+            "error": "GA4 property ID not configured",
+            "rows": [],
+            "totals": {},
+            "_cache": {"exists": False, "stale": True, "fetched_at": None, "expires_at": None},
+        }
+
+    cache_key = _ga4_organic_funnel_cache_key(property_id, window_days)
+    if not refresh:
+        cached_payload, meta = _load_cached_payload(conn, cache_key)
+        if cached_payload and isinstance(cached_payload, dict):
+            return {**cached_payload, "_cache": meta}
+
+    end_date = date.today() - timedelta(days=1)
+    start_date = end_date - timedelta(days=window_days - 1)
+
+    try:
+        access_token = get_google_access_token(conn)
+        rows = fetch_ga4_organic_funnel_report(
+            property_id, access_token, start_date=start_date, end_date=end_date
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "rows": [],
+            "totals": {},
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "_cache": {"exists": False, "stale": True, "fetched_at": None, "expires_at": None},
+        }
+
+    totals = {
+        "sessions": sum(r["sessions"] for r in rows),
+        "add_to_carts": sum(r["add_to_carts"] for r in rows),
+        "checkouts": sum(r["checkouts"] for r in rows),
+        "purchases": sum(r["purchases"] for r in rows),
+        "revenue": sum(r["revenue"] for r in rows),
+    }
+
+    payload = {
+        "available": True,
+        "error": None,
+        "rows": rows,
+        "totals": totals,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "window_days": window_days,
+    }
+    meta = _write_cache_payload(
+        conn,
+        cache_key=cache_key,
+        cache_type="ga4_organic_funnel",
+        payload=payload,
+        ttl_seconds=CACHE_TTLS.get("ga4_organic_funnel", CACHE_TTLS["ga4_summary"]),
+    )
+    return {**payload, "_cache": meta}
+
+
+def build_ga4_organic_funnel_index(funnel_data: dict | None) -> dict[str, dict]:
+    """Index organic funnel rows by path for O(1) lookup."""
+    by_path: dict[str, dict] = {}
+    for row in (funnel_data or {}).get("rows") or []:
+        path = row.get("path") or ""
+        if path:
+            by_path[path] = row
+    return by_path
+
+
+# -- Organic sessions (Feature 2) ---------------------------------------------
+#
+# Adds organic-only sessions to the existing summary report. The existing
+# landing_rows are all-channel; this adds an organic_landing_rows report with
+# sessionDefaultChannelGroup = Organic Search filter.
+
+def fetch_ga4_organic_landing_rows(
+    property_id: str,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    """Fetch organic-only landing page sessions (for splitting organic vs all-channel)."""
+    pid = _ga4_property_id_numeric(property_id)
+    url = f"https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport"
+    body: dict = {
+        "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
+        "dimensions": [{"name": "landingPagePlusQueryString"}],
+        "metrics": [{"name": "sessions"}],
+        "dimensionFilter": {
+            "filter": {
+                "fieldName": "sessionDefaultChannelGroup",
+                "stringFilter": {"matchType": "EXACT", "value": "Organic Search"},
+            }
+        },
+        "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
+        "limit": 10000,
+    }
+    resp = google_api_post(url, access_token, body)
+    return resp.get("rows") or []
+
+
+def build_ga4_organic_sessions_index(organic_rows: list) -> dict[str, int]:
+    """Map landing path -> organic sessions count."""
+    by_path: dict[str, int] = {}
+    for row in organic_rows:
+        key = ga4_report_page_path_from_row(row)
+        if not key:
+            continue
+        metrics = row.get("metricValues") or []
+        by_path[key] = _ga4_metric_values_int(metrics, 0)
+    return by_path
+
+
+# -- Engagement metrics (Feature 5) -------------------------------------------
+#
+# Adds engagedSessions and engagementRate to the per-URL GA4 report. These are
+# fetched alongside the existing sessions/averageSessionDuration metrics.
+
+def fetch_ga4_engagement_landing_rows(
+    property_id: str,
+    access_token: str,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    """Fetch landing page engagement metrics (engagedSessions, engagementRate)."""
+    pid = _ga4_property_id_numeric(property_id)
+    url = f"https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport"
+    body: dict = {
+        "dateRanges": [{"startDate": start_date.isoformat(), "endDate": end_date.isoformat()}],
+        "dimensions": [{"name": "landingPagePlusQueryString"}],
+        "metrics": [{"name": "engagedSessions"}, {"name": "engagementRate"}],
+        "orderBys": [{"metric": {"metricName": "engagedSessions"}, "desc": True}],
+        "limit": 10000,
+    }
+    resp = google_api_post(url, access_token, body)
+    return resp.get("rows") or []
+
+
+def build_ga4_engagement_index(engagement_rows: list) -> dict[str, tuple[int, float]]:
+    """Map landing path -> (engagedSessions, engagementRate)."""
+    by_path: dict[str, tuple[int, float]] = {}
+    for row in engagement_rows:
+        key = ga4_report_page_path_from_row(row)
+        if not key:
+            continue
+        metrics = row.get("metricValues") or []
+        by_path[key] = (
+            _ga4_metric_values_int(metrics, 0),
+            _ga4_metric_values_float(metrics, 1),
+        )
+    return by_path
+
+
+# -- Enhanced summary with organic sessions and engagement --------------------
+
+def get_ga4_summary_enhanced(conn: Any, refresh: bool = False) -> dict:
+    """Get GA4 summary with additional organic sessions and engagement data.
+
+    Extends get_ga4_summary() with:
+      - organic_landing_rows: landing page sessions from Organic Search only
+      - engagement_rows: engagedSessions and engagementRate by landing page
+    """
+    base = get_ga4_summary(conn, refresh=refresh)
+    if not refresh or not base.get("rows"):
+        return base
+
+    property_id = get_service_setting(conn, "ga4_property_id")
+    if not property_id:
+        return base
+
+    access_token = get_google_access_token(conn)
+    start_date, end_date = ga4_summary_window()
+
+    try:
+        organic_rows = fetch_ga4_organic_landing_rows(
+            property_id, access_token, start_date=start_date, end_date=end_date
+        )
+        engagement_rows = fetch_ga4_engagement_landing_rows(
+            property_id, access_token, start_date=start_date, end_date=end_date
+        )
+        base["organic_landing_rows"] = organic_rows
+        base["engagement_rows"] = engagement_rows
+    except Exception:
+        pass
+
+    return base
+
+
+def build_ga4_summary_index_enhanced(summary: dict | None) -> dict:
+    """Enhanced index with organic sessions and engagement metrics."""
+    base_index = build_ga4_summary_index(summary)
+    base_index["organic_sessions_by_path"] = build_ga4_organic_sessions_index(
+        (summary or {}).get("organic_landing_rows") or []
+    )
+    base_index["engagement_by_path"] = build_ga4_engagement_index(
+        (summary or {}).get("engagement_rows") or []
+    )
+    return base_index
+
+
+def ga4_url_detail_from_index_enhanced(
+    index: dict, url: str, *, start_date: date, end_date: date
+) -> dict:
+    """Build enhanced per-URL payload with organic sessions and engagement."""
+    base = ga4_url_detail_from_index(index, url, start_date=start_date, end_date=end_date)
+    path_used = base.get("path_used") or ""
+
+    organic_by_path = index.get("organic_sessions_by_path") or {}
+    engagement_by_path = index.get("engagement_by_path") or {}
+
+    base["organic_sessions"] = organic_by_path.get(path_used, 0)
+    engaged_sessions, engagement_rate = engagement_by_path.get(path_used, (0, 0.0))
+    base["engaged_sessions"] = engaged_sessions
+    base["engagement_rate"] = engagement_rate
+
+    return base
+

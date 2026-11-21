@@ -36,6 +36,7 @@ from backend.app.routers.google_ads_lab import router as google_ads_lab_router
 from backend.app.routers.opportunities import router as opportunities_router
 from backend.app.routers.status import router as status_router
 from backend.app.routers.rankings import router as rankings_router
+from backend.app.routers.analytics import router as analytics_router
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +93,7 @@ app.include_router(image_seo_router)
 app.include_router(internal_links_router)
 app.include_router(google_ads_lab_router)
 app.include_router(opportunities_router)
+app.include_router(analytics_router)
 
 
 @app.exception_handler(HTTPException)

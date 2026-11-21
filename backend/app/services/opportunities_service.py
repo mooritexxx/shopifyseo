@@ -182,30 +182,161 @@ def _infer_content_type(query: str) -> str:
     return "Blog / Guide"
 
 
+def _fetch_catalog_gsc_signals(
+    conn: Any, rows: list
+) -> dict[tuple[str, str], dict[str, float | None]]:
+    """Batch-fetch catalog-level GSC signals (gsc_ctr, gsc_position) for objects.
+
+    Returns dict mapping (object_type, handle) -> {gsc_ctr, gsc_position}.
+    Objects without GSC data return empty dict, ensuring stable scoring for
+    items with no catalog GSC signals.
+    """
+    if not rows:
+        return {}
+
+    # Collect unique (object_type, handle) pairs
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        obj_type = row["object_type"]
+        handle = row["object_handle"]
+        if obj_type and handle:
+            seen.add((obj_type, handle))
+
+    if not seen:
+        return {}
+
+    result: dict[tuple[str, str], dict[str, float | None]] = {}
+
+    # Query each catalog table for GSC signals
+    table_map = {
+        "product": "products",
+        "collection": "collections",
+        "page": "pages",
+    }
+
+    for obj_type, table in table_map.items():
+        handles = [h for t, h in seen if t == obj_type]
+        if not handles:
+            continue
+
+        placeholders = ",".join("?" * len(handles))
+        try:
+            catalog_rows = conn.execute(
+                f"""
+                SELECT handle, gsc_ctr, gsc_position
+                FROM {table}
+                WHERE handle IN ({placeholders})
+                """,
+                handles,
+            ).fetchall()
+
+            for crow in catalog_rows:
+                gsc_ctr = crow["gsc_ctr"]
+                gsc_position = crow["gsc_position"]
+                # Only include if we have actual GSC data
+                if gsc_ctr is not None or gsc_position is not None:
+                    result[(obj_type, crow["handle"])] = {
+                        "gsc_ctr": float(gsc_ctr) if gsc_ctr is not None else None,
+                        "gsc_position": float(gsc_position) if gsc_position is not None else None,
+                    }
+        except Exception:
+            pass
+
+    # Handle blog_articles separately (composite handle)
+    article_handles = [(t, h) for t, h in seen if t == "blog_article"]
+    if article_handles:
+        for _, composite_handle in article_handles:
+            parts = composite_handle.split("/", 1)
+            if len(parts) != 2:
+                continue
+            blog_h, art_h = parts
+            try:
+                crow = conn.execute(
+                    """
+                    SELECT gsc_ctr, gsc_position
+                    FROM blog_articles
+                    WHERE blog_handle = ? AND handle = ?
+                    """,
+                    (blog_h, art_h),
+                ).fetchone()
+                if crow:
+                    gsc_ctr = crow["gsc_ctr"]
+                    gsc_position = crow["gsc_position"]
+                    if gsc_ctr is not None or gsc_position is not None:
+                        result[("blog_article", composite_handle)] = {
+                            "gsc_ctr": float(gsc_ctr) if gsc_ctr is not None else None,
+                            "gsc_position": float(gsc_position) if gsc_position is not None else None,
+                        }
+            except Exception:
+                pass
+
+    return result
+
+
 def compute_opportunity_score(
     position: float,
     impressions: int,
     clicks: int,
     ctr: float | None = None,
+    *,
+    gsc_avg_ctr: float | None = None,
+    gsc_avg_position: float | None = None,
 ) -> float:
-    """Compute overall opportunity score (0-100).
-    
-    Weighting:
-    - Position opportunity: 40%
-    - Impressions: 30%
-    - CTR gap: 30%
+    """Compute overall opportunity score (0-100) with optional GSC catalog signals.
+
+    Base Weighting (100% when no GSC catalog signals):
+      - Position opportunity: 40% — striking distance (4-20) scores highest
+      - Impressions: 30% — log-scaled search volume
+      - CTR gap: 30% — actual vs expected CTR for position
+
+    With GSC Catalog Signals (page-level averages across all queries):
+      The base score is adjusted by up to ±5 points based on catalog-level GSC data.
+      This is a modest modifier that surfaces cross-query patterns without
+      disrupting the primary query-level ranking.
+
+      - gsc_avg_ctr: Page's average CTR across all queries. Below-average CTR
+        adds up to +3 points (more opportunity); above-average subtracts up to -2.
+      - gsc_avg_position: Page's average position. Near page 1 boundary (8-12)
+        adds up to +2 points (quick win potential).
+
+    Items without GSC data receive no adjustment, keeping existing ordering stable.
+
+    Returns:
+        Score from 0-100 where higher = more opportunity to improve.
     """
     if ctr is None:
         ctr = clicks / impressions if impressions > 0 else 0.0
-    
+
     pos_score = _position_opportunity_score(position)
     imp_score = _impressions_score(impressions)
     ctr_score = _ctr_gap_score(ctr, position)
-    
-    return round(
-        pos_score * 0.40 + imp_score * 0.30 + ctr_score * 0.30,
-        2
-    )
+
+    base_score = pos_score * 0.40 + imp_score * 0.30 + ctr_score * 0.30
+
+    # GSC catalog signal adjustment (modest: max ±5 points)
+    gsc_adjustment = 0.0
+
+    if gsc_avg_ctr is not None and gsc_avg_ctr >= 0:
+        # Benchmark: 2.5% is roughly median CTR for organic results
+        benchmark_ctr = 0.025
+        if gsc_avg_ctr < benchmark_ctr:
+            # Below benchmark = more opportunity (up to +3)
+            gap = (benchmark_ctr - gsc_avg_ctr) / benchmark_ctr
+            gsc_adjustment += min(3.0, gap * 6.0)
+        else:
+            # Above benchmark = less opportunity (up to -2)
+            gap = (gsc_avg_ctr - benchmark_ctr) / benchmark_ctr
+            gsc_adjustment -= min(2.0, gap * 4.0)
+
+    if gsc_avg_position is not None and gsc_avg_position > 0:
+        # Pages near page 1 boundary (positions 8-12) are quick wins
+        if 8 <= gsc_avg_position <= 12:
+            gsc_adjustment += 2.0
+        elif 4 <= gsc_avg_position < 8:
+            gsc_adjustment += 1.0
+
+    final_score = max(0.0, min(100.0, base_score + gsc_adjustment))
+    return round(final_score, 2)
 
 
 def fetch_opportunities(
@@ -269,19 +400,29 @@ def fetch_opportunities(
         """,
         params,
     ).fetchall()
-    
+
+    # Batch-fetch catalog-level GSC signals for all relevant objects
+    catalog_gsc_signals = _fetch_catalog_gsc_signals(conn, rows)
+
     items: list[dict[str, Any]] = []
     for row in rows:
         ctr_val = float(row["ctr"]) if row["ctr"] is not None else (
             row["clicks"] / row["impressions"] if row["impressions"] > 0 else 0.0
         )
+
+        # Get catalog-level GSC signals for this object (if available)
+        obj_key = (row["object_type"], row["object_handle"])
+        catalog_signals = catalog_gsc_signals.get(obj_key, {})
+
         opp_score = compute_opportunity_score(
             position=float(row["position"]) if row["position"] else 0.0,
             impressions=int(row["impressions"]) if row["impressions"] else 0,
             clicks=int(row["clicks"]) if row["clicks"] else 0,
             ctr=ctr_val,
+            gsc_avg_ctr=catalog_signals.get("gsc_ctr"),
+            gsc_avg_position=catalog_signals.get("gsc_position"),
         )
-        
+
         items.append({
             "id": f"{row['object_type']}:{row['object_handle']}:{row['query'][:50]}",
             "query": row["query"],

@@ -65,6 +65,11 @@ SEO_SIGNAL_COLUMNS = {
     "ga4_views": "INTEGER",
     "ga4_avg_session_duration": "REAL",
     "ga4_last_fetched_at": "INTEGER",
+    # Organic-only sessions (from sessionDefaultChannelGroup = Organic Search filter)
+    "ga4_organic_sessions": "INTEGER",
+    # Engagement metrics (engagedSessions, engagementRate)
+    "ga4_engaged_sessions": "INTEGER",
+    "ga4_engagement_rate": "REAL",
     "index_status": "TEXT",
     "index_coverage": "TEXT",
     "google_canonical": "TEXT",
@@ -353,6 +358,36 @@ def ensure_dashboard_schema(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_gsc_page_daily_object
         ON gsc_page_daily(object_type, object_handle, date)
+        """,
+    )
+    # Organic funnel metrics per landing page from GA4 (Organic Search channel only).
+    # Stores both 28-day and 90-day windows for trend analysis. Key events: add_to_cart,
+    # begin_checkout, purchase, purchaseRevenue. Excludes /cart and /checkouts paths.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ga4_organic_funnel (
+          page_url TEXT NOT NULL,
+          object_type TEXT NOT NULL DEFAULT '',
+          object_handle TEXT NOT NULL DEFAULT '',
+          window_days INTEGER NOT NULL DEFAULT 28,
+          sessions INTEGER NOT NULL DEFAULT 0,
+          add_to_carts INTEGER NOT NULL DEFAULT 0,
+          checkouts INTEGER NOT NULL DEFAULT 0,
+          purchases INTEGER NOT NULL DEFAULT 0,
+          revenue REAL NOT NULL DEFAULT 0,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          fetched_at INTEGER NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(page_url, window_days)
+        )
+        """
+    )
+    _sqlite_ddl(
+        conn,
+        """
+        CREATE INDEX IF NOT EXISTS idx_ga4_organic_funnel_object
+        ON ga4_organic_funnel(object_type, object_handle)
         """,
     )
     _sqlite_ddl(
@@ -941,6 +976,62 @@ def _resolve_ga4_metrics_for_url(
         float(ga4_landing_metrics[1].get("value", 0)) if len(ga4_landing_metrics) > 1 else None,
         ga4_meta.get("fetched_at"),
     )
+
+
+def _resolve_ga4_metrics_for_url_enhanced(
+    conn: Any,
+    url: str,
+    object_type: str,
+    handle: str,
+    *,
+    ga4_refresh: bool = False,
+) -> dict:
+    """Get all GA4 metrics for a URL including organic sessions and engagement.
+
+    Returns a dict with keys:
+      - sessions, views, avg_session_duration, fetched_at (original metrics)
+      - organic_sessions (Organic Search channel only)
+      - engaged_sessions, engagement_rate (engagement metrics)
+    """
+    detail: dict | None = None
+    try:
+        detail = dg.get_ga4_url_detail(
+            conn, url, refresh=ga4_refresh, object_type=object_type, object_handle=handle
+        )
+    except Exception as exc:
+        _LOG.debug("GA4 URL detail failed for %s: %s", url, exc)
+
+    meta = (detail or {}).get("_cache") or {}
+    if detail is not None and meta.get("exists") and detail.get("views") is not None:
+        return {
+            "sessions": int(detail.get("sessions") or 0),
+            "views": int(detail.get("views") or 0),
+            "avg_session_duration": float(detail.get("avg_session_duration") or 0.0),
+            "fetched_at": meta.get("fetched_at"),
+            "organic_sessions": int(detail.get("organic_sessions") or 0),
+            "engaged_sessions": int(detail.get("engaged_sessions") or 0),
+            "engagement_rate": float(detail.get("engagement_rate") or 0.0),
+        }
+
+    # Fall back to summary rollup (without enhanced metrics)
+    try:
+        ga4_summary = dg.get_ga4_summary(conn, refresh=False)
+    except Exception:
+        ga4_summary = None
+    ga4_meta = (ga4_summary or {}).get("_cache") or {}
+    ga4_landing_row = _ga4_landing_row_for_url(ga4_summary, url)
+    ga4_landing_metrics = ga4_landing_row.get("metricValues", []) if ga4_landing_row else []
+    ga4_pageview_row = _ga4_pageview_row_for_url(ga4_summary, url)
+    ga4_pageview_metrics = ga4_pageview_row.get("metricValues", []) if ga4_pageview_row else []
+    return {
+        "sessions": int(float(ga4_landing_metrics[0].get("value", 0))) if len(ga4_landing_metrics) > 0 else None,
+        "views": int(float(ga4_pageview_metrics[0].get("value", 0))) if len(ga4_pageview_metrics) > 0 else None,
+        "avg_session_duration": float(ga4_landing_metrics[1].get("value", 0)) if len(ga4_landing_metrics) > 1 else None,
+        "fetched_at": ga4_meta.get("fetched_at"),
+        "organic_sessions": None,
+        "engaged_sessions": None,
+        "engagement_rate": None,
+    }
 
 
 GSC_TREND_WINDOW_DAYS = 30
@@ -1588,7 +1679,7 @@ def _refresh_object_ga4_into_table(
     conn: Any, table: str, object_type: str, handle: str, *, ga4_refresh: bool = False
 ) -> None:
     url = dq.object_url(object_type, handle)
-    ga4_sessions, ga4_views, ga4_avg_dur, ga4_fetched_at = _resolve_ga4_metrics_for_url(
+    ga4 = _resolve_ga4_metrics_for_url_enhanced(
         conn, url, object_type, handle, ga4_refresh=ga4_refresh
     )
     conn.execute(
@@ -1598,14 +1689,20 @@ def _refresh_object_ga4_into_table(
             ga4_views = ?,
             ga4_avg_session_duration = ?,
             ga4_last_fetched_at = ?,
+            ga4_organic_sessions = ?,
+            ga4_engaged_sessions = ?,
+            ga4_engagement_rate = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE handle = ?
         """,
         (
-            ga4_sessions,
-            ga4_views,
-            ga4_avg_dur,
-            ga4_fetched_at,
+            ga4.get("sessions"),
+            ga4.get("views"),
+            ga4.get("avg_session_duration"),
+            ga4.get("fetched_at"),
+            ga4.get("organic_sessions"),
+            ga4.get("engaged_sessions"),
+            ga4.get("engagement_rate"),
             handle,
         ),
     )
@@ -1621,7 +1718,7 @@ def _refresh_object_ga4_into_blog_article(
     object_type = "blog_article"
     handle = composite_handle
     url = dq.object_url(object_type, handle)
-    ga4_sessions, ga4_views, ga4_avg_dur, ga4_fetched_at = _resolve_ga4_metrics_for_url(
+    ga4 = _resolve_ga4_metrics_for_url_enhanced(
         conn, url, object_type, handle, ga4_refresh=ga4_refresh
     )
     conn.execute(
@@ -1631,14 +1728,20 @@ def _refresh_object_ga4_into_blog_article(
             ga4_views = ?,
             ga4_avg_session_duration = ?,
             ga4_last_fetched_at = ?,
+            ga4_organic_sessions = ?,
+            ga4_engaged_sessions = ?,
+            ga4_engagement_rate = ?,
             seo_signal_updated_at = CURRENT_TIMESTAMP
         WHERE blog_handle = ? AND handle = ?
         """,
         (
-            ga4_sessions,
-            ga4_views,
-            ga4_avg_dur,
-            ga4_fetched_at,
+            ga4.get("sessions"),
+            ga4.get("views"),
+            ga4.get("avg_session_duration"),
+            ga4.get("fetched_at"),
+            ga4.get("organic_sessions"),
+            ga4.get("engaged_sessions"),
+            ga4.get("engagement_rate"),
             blog_h,
             art_h,
         ),

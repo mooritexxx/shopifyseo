@@ -899,11 +899,13 @@ def bulk_refresh_search_console(db_path: str, throttle_seconds: float = 0.1, for
 def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
     """Refresh GA4 metrics for every catalog URL from the summary reports.
 
-    ``get_ga4_summary`` pages every row of two unfiltered ``runReport`` calls, and those
-    rows already carry every metric the old per-URL path re-fetched with 2-3 filtered
-    ``runReport`` calls each. The work list and the resulting ``ga4_url`` cache rows are
-    identical to the per-URL implementation; only the source of the numbers changed
-    (local index instead of one API round trip per URL).
+    ``get_ga4_summary_enhanced`` pages every row of multiple unfiltered ``runReport``
+    calls, including:
+      - all-channel sessions and avg duration
+      - organic-only sessions (sessionDefaultChannelGroup = Organic Search)
+      - engagement metrics (engagedSessions, engagementRate)
+    The work list and the resulting ``ga4_url`` cache rows now include organic sessions
+    and engagement data alongside the original all-channel metrics.
     """
     conn = _db_connect_for_actions(db_path)
     summary = {
@@ -917,15 +919,29 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         "queue_total": 0,
     }
     try:
-        _sync_current("GA4: fetching property reports (all pages)…")
-        payload = dg.get_ga4_summary(conn, refresh=True)
+        _sync_current("GA4: fetching property reports (all pages + organic + engagement)…")
+        payload = dg.get_ga4_summary_enhanced(conn, refresh=True)
         page_rows: list = list(payload.get("page_rows") or [])
         summary["rows"] = len(page_rows)
         SYNC_STATE["ga4_rows"] = summary["rows"]
 
         property_id = dg.get_service_setting(conn, "ga4_property_id")
         start_date, end_date = dg.ga4_summary_window()
-        index = dg.build_ga4_summary_index(payload)
+        # Use enhanced index that includes organic sessions and engagement
+        index = dg.build_ga4_summary_index_enhanced(payload)
+
+        # Also fetch organic funnel data (28d and 90d)
+        _sync_current("GA4: fetching organic funnel metrics (28d + 90d)…")
+        try:
+            funnel_28d = dg.get_ga4_organic_funnel_summary(conn, window_days=28, refresh=True)
+            funnel_90d = dg.get_ga4_organic_funnel_summary(conn, window_days=90, refresh=True)
+            summary["organic_funnel_28d_rows"] = len(funnel_28d.get("rows") or [])
+            summary["organic_funnel_90d_rows"] = len(funnel_90d.get("rows") or [])
+            # Store funnel data in the ga4_organic_funnel table
+            _upsert_ga4_organic_funnel(conn, funnel_28d, 28, _catalog_targets_by_path(conn))
+            _upsert_ga4_organic_funnel(conn, funnel_90d, 90, _catalog_targets_by_path(conn))
+        except Exception:
+            logger.warning("GA4 organic funnel fetch failed (non-fatal)", exc_info=True)
 
         base = dq._base_store_url(conn)
         by_path = _catalog_targets_by_path(conn)
@@ -958,7 +974,8 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
             summary["considered"] += 1
             if url not in seen_urls:
                 seen_urls.add(url)
-                detail = dg.ga4_url_detail_from_index(index, url, start_date=start_date, end_date=end_date)
+                # Use enhanced index for per-URL details (includes organic + engagement)
+                detail = dg.ga4_url_detail_from_index_enhanced(index, url, start_date=start_date, end_date=end_date)
                 dg.write_ga4_url_detail_cache(
                     conn,
                     detail,
@@ -989,6 +1006,73 @@ def refresh_ga4_summary(db_path: str, force_refresh: bool = False) -> dict:
         raise
     finally:
         conn.close()
+
+
+def _upsert_ga4_organic_funnel(
+    conn: Any,
+    funnel_data: dict,
+    window_days: int,
+    by_path: dict[str, tuple[str, str, str]],
+) -> int:
+    """Store organic funnel rows, tagging each with its catalog object when known."""
+    if not funnel_data.get("available"):
+        return 0
+    rows = funnel_data.get("rows") or []
+    start_date = funnel_data.get("start_date") or ""
+    end_date = funnel_data.get("end_date") or ""
+    fetched_at = int(time.time())
+    written = 0
+    for row in rows:
+        path = row.get("path") or ""
+        if not path:
+            continue
+        # Find matching catalog object by path variants
+        kind, handle = "", ""
+        for key in (path, path + "/", path.rstrip("/") if path != "/" else path):
+            hit = by_path.get(key)
+            if hit:
+                kind, handle, _ = hit
+                break
+        # Build a full URL-like key for the funnel table
+        page_url = path  # Store just the path, not full URL
+        conn.execute(
+            """
+            INSERT INTO ga4_organic_funnel(
+              page_url, object_type, object_handle, window_days, sessions,
+              add_to_carts, checkouts, purchases, revenue, start_date, end_date,
+              fetched_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(page_url, window_days) DO UPDATE SET
+              object_type = excluded.object_type,
+              object_handle = excluded.object_handle,
+              sessions = excluded.sessions,
+              add_to_carts = excluded.add_to_carts,
+              checkouts = excluded.checkouts,
+              purchases = excluded.purchases,
+              revenue = excluded.revenue,
+              start_date = excluded.start_date,
+              end_date = excluded.end_date,
+              fetched_at = excluded.fetched_at,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                page_url,
+                kind,
+                handle,
+                window_days,
+                int(row.get("sessions") or 0),
+                int(row.get("add_to_carts") or 0),
+                int(row.get("checkouts") or 0),
+                int(row.get("purchases") or 0),
+                float(row.get("revenue") or 0.0),
+                start_date,
+                end_date,
+                fetched_at,
+            ),
+        )
+        written += 1
+    conn.commit()
+    return written
 
 
 def _retry_on_db_lock(fn, *args, attempts: int = 4, **kwargs):

@@ -70,12 +70,15 @@ def blended_opportunity(
     ga4_row = ga4_row_for_url(ga4_summary, url)
     if ga4_row:
         metrics = ga4_row.get("metricValues", [])
-        sessions = int(float(metrics[0].get("value", 0))) if len(metrics) > 0 else 0
+        all_channel_sessions = int(float(metrics[0].get("value", 0))) if len(metrics) > 0 else 0
         avg_duration = float(metrics[2].get("value", 0)) if len(metrics) > 2 else 0.0
-        if sessions >= 5:
-            score += min(12, sessions // 2)
-            reasons.append("organic landing traffic")
-        if sessions >= 5 and avg_duration < 60:
+        # Note: GA4 summary rows report all-channel sessions, not organic-only.
+        # For organic traffic analysis, use the ga4_organic_sessions column from catalog.
+        # This blended score uses all-channel traffic as a proxy for page importance.
+        if all_channel_sessions >= 5:
+            score += min(12, all_channel_sessions // 2)
+            reasons.append("landing traffic (all channels)")
+        if all_channel_sessions >= 5 and avg_duration < 60:
             score += 10
             reasons.append("weak engagement")
 

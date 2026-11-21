@@ -30,6 +30,8 @@ CACHE_TTLS: dict[str, int] = {
     "pagespeed": 7 * 24 * 60 * 60,
     "ga4_summary": 24 * 60 * 60,
     "ga4_url": 24 * 60 * 60,
+    # Organic funnel (Organic Search landing page key events)
+    "ga4_organic_funnel": 24 * 60 * 60,
 }
 
 # Single-dimension property reports for Google Signals (searchAnalytics/query).

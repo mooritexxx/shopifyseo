@@ -34,25 +34,31 @@ const PRODUCT_SORT_KEYS = new Set([
   "gsc_impressions_delta",
   "ga4_sessions",
   "ga4_views",
+  "ga4_organic_sessions",
+  "ga4_engaged_sessions",
+  "ga4_engagement_rate",
   "body_length",
   "pagespeed_performance",
   "pagespeed_desktop_performance"
 ]);
 
 const columns: Column[] = [
-  { key: "title", label: "Product name", align: "left", widthClass: "min-w-[12rem] w-[19%]" },
-  { key: "content_status", label: "Content", align: "center", widthClass: "w-[9%]" },
-  { key: "gsc_segments", label: "Segments", align: "center", widthClass: "w-[9%]" },
-  { key: "index_last_crawl_at", label: "Last crawl", align: "center", widthClass: "w-[8%]" },
-  { key: "index_status", label: "Status", align: "center", widthClass: "w-[9%]" },
-  { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[9%]" },
-  { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[9%]" },
-  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[9%]" },
-  { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[9%]" },
-  { key: "ga4_views", label: "Views", align: "center", widthClass: "w-[9%]" },
-  { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[7%]" },
-  { key: "pagespeed_desktop_performance", label: "Desktop", align: "center", widthClass: "w-[7%]" },
-  { key: "score", label: "Score", align: "center", widthClass: "w-[9%]" }
+  { key: "title", label: "Product name", align: "left", widthClass: "min-w-[12rem] w-[14%]" },
+  { key: "content_status", label: "Content", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_segments", label: "Segments", align: "center", widthClass: "w-[5%]" },
+  { key: "index_last_crawl_at", label: "Last crawl", align: "center", widthClass: "w-[5%]" },
+  { key: "index_status", label: "Status", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_impressions", label: "Impressions", align: "center", widthClass: "w-[6%]" },
+  { key: "gsc_clicks", label: "Clicks", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_clicks_delta", label: "Trend", align: "center", widthClass: "w-[5%]" },
+  { key: "gsc_ctr", label: "CTR", align: "center", widthClass: "w-[5%]" },
+  { key: "ga4_views", label: "Views", align: "center", widthClass: "w-[5%]" },
+  { key: "ga4_organic_sessions", label: "Organic", align: "center", widthClass: "w-[5%]" },
+  { key: "ga4_engaged_sessions", label: "Engaged", align: "center", widthClass: "w-[5%]" },
+  { key: "ga4_engagement_rate", label: "Engage %", align: "center", widthClass: "w-[5%]" },
+  { key: "pagespeed_performance", label: "Mobile", align: "center", widthClass: "w-[5%]" },
+  { key: "pagespeed_desktop_performance", label: "Desktop", align: "center", widthClass: "w-[5%]" },
+  { key: "score", label: "Score", align: "center", widthClass: "w-[5%]" }
 ];
 
 export function ProductsPage() {

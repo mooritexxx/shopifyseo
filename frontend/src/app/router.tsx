@@ -38,6 +38,7 @@ const InternalLinksPage = lazy(() =>
 );
 
 const RankingsPage = lazy(() => import("../routes/rankings-page").then(m => ({default: m.RankingsPage})));
+const AnalyticsPage = lazy(() => import("../routes/analytics-page").then(m => ({default: m.AnalyticsPage})));
 
 function PageFallback() {
   return (
@@ -149,6 +150,10 @@ export const router = createBrowserRouter(
     {
       path: "/internal-links",
       element: shell(<InternalLinksPage />)
+    },
+    {
+      path: "/analytics",
+      element: shell(<AnalyticsPage />)
     },
     {
       path: "/settings",
